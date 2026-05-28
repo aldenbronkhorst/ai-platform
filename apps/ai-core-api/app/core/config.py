@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     service_bus_namespace: str = os.environ.get("SERVICE_BUS_NAMESPACE", "")
     appinsights_connection_string: str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 
-    # Auth
-    dev_api_key: str = os.environ.get("DEV_API_KEY", "dev-key-change-in-production")
+    # Auth (temporary — replace with Entra ID / JWT)
+    api_key: str = os.environ.get("API_KEY", "change-in-production")
 
     @property
     def database_url(self) -> str:

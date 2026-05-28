@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import dev_api_key_auth
+from app.core.security import api_key_auth
 from app.services.artifact import ArtifactService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIArtifactCreate, AIArtifactResponse, AIAuditEventCreate
@@ -21,7 +21,7 @@ async def create_artifact(
     retention_policy: str = Form("standard"),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = ArtifactService(db)
     data = AIArtifactCreate(
@@ -56,7 +56,7 @@ async def create_artifact(
 async def get_artifact(
     artifact_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = ArtifactService(db)
     artifact = await svc.get_by_id(artifact_id)

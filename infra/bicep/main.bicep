@@ -30,7 +30,7 @@ param postgresAdminUsername string = 'aiplatformadmin'
 @secure()
 param postgresAdminPassword string
 
-@description('Budget amount for dev environment')
+@description('Budget amount for the environment')
 param budgetAmount int = 2000
 
 @description('Budget start date')

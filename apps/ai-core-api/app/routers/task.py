@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import dev_api_key_auth
+from app.core.security import api_key_auth
 from app.services.task import TaskService
 from app.services.audit import AuditService
 from app.schemas.schemas import AITaskCreate, AITaskResponse, AITaskUpdate, AIAuditEventCreate
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 async def create_task(
     data: AITaskCreate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = TaskService(db)
     task = await svc.create(data, created_by_user_id=auth.get("user_id"))
@@ -41,7 +41,7 @@ async def list_tasks(
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = TaskService(db)
     return await svc.list_tasks(status=status, owner_user_id=auth.get("user_id"), limit=limit, offset=offset)
@@ -52,7 +52,7 @@ async def update_task(
     task_id: UUID,
     data: AITaskUpdate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = TaskService(db)
     task = await svc.update(task_id, data)

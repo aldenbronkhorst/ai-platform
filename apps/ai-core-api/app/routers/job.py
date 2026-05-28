@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import dev_api_key_auth
+from app.core.security import api_key_auth
 from app.services.job import JobService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIJobCreate, AIJobResponse, AIAuditEventCreate
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 async def create_job(
     data: AIJobCreate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = JobService(db)
     job = await svc.create(data, requested_by_user_id=auth.get("user_id"))
@@ -39,7 +39,7 @@ async def create_job(
 async def get_job(
     job_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(dev_api_key_auth),
+    auth=Depends(api_key_auth),
 ):
     svc = JobService(db)
     job = await svc.get_by_id(job_id)

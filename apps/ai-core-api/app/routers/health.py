@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import dev_api_key_auth
+from app.core.security import api_key_auth
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
 import os
