@@ -22,6 +22,9 @@ param apiManagedIdentityResourceId string
 @description('ACR login server')
 param acrLoginServer string
 
+@description('Container image to deploy')
+param containerImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
@@ -100,7 +103,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'ai-core-api'
-          image: '${acrLoginServer}/ai-core-api:latest'
+          image: containerImage
           env: [
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'

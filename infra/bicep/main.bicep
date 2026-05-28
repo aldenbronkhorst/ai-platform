@@ -160,6 +160,7 @@ module containerApps 'modules/containerApps.bicep' = {
     apiManagedIdentityClientId: identity.outputs.apiManagedIdentityClientId
     apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
     acrLoginServer: acr.outputs.loginServer
+    containerImage: '${acr.outputs.loginServer}/ai-core-api:latest'
     appInsightsConnectionString: monitoring.outputs.connectionString
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
     keyVaultUri: keyVault.outputs.vaultUri

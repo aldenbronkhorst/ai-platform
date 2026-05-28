@@ -108,17 +108,6 @@ resource functionAppResource 'Microsoft.Web/sites@2022-03-01' = {
   }
 }
 
-// Grant Storage Blob Data Contributor to function app identity for the function storage
-resource blobContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccount.id, apiManagedIdentityPrincipalId, 'funcblobcontributor')
-  scope: storageAccount
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-    principalId: apiManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
 output functionAppName string = functionAppResource.name
 output functionAppId string = functionAppResource.id
 output functionAppDefaultHost string = functionAppResource.properties.defaultHostName

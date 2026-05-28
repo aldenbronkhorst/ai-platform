@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "17412190336268463543"
+      "templateHash": "4968105447151230061"
     }
   },
   "parameters": {
@@ -372,7 +372,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "2525201316163227853"
+              "templateHash": "15033637949106904129"
             }
           },
           "parameters": {
@@ -420,7 +420,7 @@
             }
           },
           "variables": {
-            "keyVaultName": "[format('kv-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]"
+            "keyVaultName": "[format('kv-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 6))]"
           },
           "resources": [
             {
@@ -1008,7 +1008,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "12435115587455628551"
+              "templateHash": "15422470246021550345"
             }
           },
           "parameters": {
@@ -1116,7 +1116,7 @@
               "scope": "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusName'))]",
               "name": "[guid(resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusName')), parameters('apiManagedIdentityPrincipalId'), 'sbreceiver')]",
               "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f35-9a63-2c5f8c5c5c5c')]",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')]",
                 "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
                 "principalType": "ServicePrincipal"
               },
@@ -1185,6 +1185,9 @@
           "acrLoginServer": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'acrDeploy'), '2025-04-01').outputs.loginServer.value]"
           },
+          "containerImage": {
+            "value": "[format('{0}/ai-core-api:latest', reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'acrDeploy'), '2025-04-01').outputs.loginServer.value)]"
+          },
           "appInsightsConnectionString": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'monitoringDeploy'), '2025-04-01').outputs.connectionString.value]"
           },
@@ -1220,7 +1223,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "12799468840745852359"
+              "templateHash": "9217354806320866459"
             }
           },
           "parameters": {
@@ -1270,6 +1273,13 @@
               "type": "string",
               "metadata": {
                 "description": "ACR login server"
+              }
+            },
+            "containerImage": {
+              "type": "string",
+              "defaultValue": "mcr.microsoft.com/k8se/quickstart:latest",
+              "metadata": {
+                "description": "Container image to deploy"
               }
             },
             "appInsightsConnectionString": {
@@ -1382,7 +1392,7 @@
                   "containers": [
                     {
                       "name": "ai-core-api",
-                      "image": "[format('{0}/ai-core-api:latest', parameters('acrLoginServer'))]",
+                      "image": "[parameters('containerImage')]",
                       "env": [
                         {
                           "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
@@ -1549,7 +1559,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "8605589794810774127"
+              "templateHash": "16465541355391803878"
             }
           },
           "parameters": {
@@ -1702,17 +1712,6 @@
               "dependsOn": [
                 "[resourceId('Microsoft.Web/serverfarms', variables('functionPlanName'))]"
               ]
-            },
-            {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "scope": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
-              "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), parameters('apiManagedIdentityPrincipalId'), 'funcblobcontributor')]",
-              "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
-                "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
-                "principalType": "ServicePrincipal"
-              }
             }
           ],
           "outputs": {
