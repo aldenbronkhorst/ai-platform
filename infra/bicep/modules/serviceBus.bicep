@@ -70,7 +70,7 @@ resource sbReceiverRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(serviceBusNamespace.id, apiManagedIdentityPrincipalId, 'sbreceiver')
   scope: serviceBusNamespace
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f35-9a63-2c5f8c5c5c5c') // Azure Service Bus Data Receiver
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0') // Azure Service Bus Data Receiver
     principalId: apiManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }

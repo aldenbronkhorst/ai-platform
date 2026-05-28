@@ -4,8 +4,11 @@ param resourceGroupName string
 @description('Budget amount in local currency')
 param budgetAmount int
 
-@description('Tags for resources')
-param tags object
+@description('Budget start date (yyyy-MM-dd)')
+param startDate string
+
+@description('Budget end date (yyyy-MM-dd)')
+param endDate string
 
 var budgetName = 'budget-${resourceGroupName}'
 
@@ -16,8 +19,8 @@ resource budget 'Microsoft.Consumption/budgets@2023-05-01' = {
     amount: budgetAmount
     timeGrain: 'Monthly'
     timePeriod: {
-      startDate: '${utcNow('yyyy-MM')}-01'
-      endDate: '${string(int(utcNow('yyyy')) + 1)}-${utcNow('MM')}-01'
+      startDate: startDate
+      endDate: endDate
     }
     notifications: {
       Alert50: {

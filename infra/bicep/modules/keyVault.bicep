@@ -19,7 +19,7 @@ param apiManagedIdentityPrincipalId string
 @description('API managed identity object ID')
 param apiManagedIdentityObjectId string
 
-var keyVaultName = 'kv-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
+var keyVaultName = 'kv-${baseName}-${environment}-${take(uniqueSuffix, 6)}'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName

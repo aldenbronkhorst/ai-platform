@@ -25,12 +25,8 @@ param acrLoginServer string
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
-@description('Log Analytics Workspace Customer ID')
-param logAnalyticsCustomerId string
-
-@description('Log Analytics Workspace Shared Key')
-@secure()
-param logAnalyticsSharedKey string
+@description('Log Analytics Workspace Name')
+param logAnalyticsWorkspaceName string
 
 @description('Key Vault URI')
 param keyVaultUri string
@@ -65,8 +61,8 @@ resource containerAppsEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
-        customerId: logAnalyticsCustomerId
-        sharedKey: logAnalyticsSharedKey
+        customerId: reference(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsWorkspaceName), '2022-10-01').customerId
+        sharedKey: listKeys(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsWorkspaceName), '2022-10-01').primarySharedKey
       }
     }
   }

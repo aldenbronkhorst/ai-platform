@@ -33,6 +33,12 @@ param postgresAdminPassword string
 @description('Budget amount in ZAR for dev environment')
 param budgetAmount int = 5000
 
+@description('Budget start date')
+param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
+
+@description('Budget end date')
+param budgetEndDate string = '${string(int(utcNow('yyyy')) + 1)}-${utcNow('MM')}-01'
+
 // Variables
 var resourceGroupName = 'rg-${baseName}-${environment}'
 var uniqueSuffix = uniqueString(subscription().id, resourceGroupName)
@@ -66,6 +72,7 @@ module acr 'modules/containerRegistry.bicep' = {
     location: location
     tags: tags
     uniqueSuffix: uniqueSuffix
+    apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
   }
 }
 
@@ -154,8 +161,7 @@ module containerApps 'modules/containerApps.bicep' = {
     apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
     acrLoginServer: acr.outputs.loginServer
     appInsightsConnectionString: monitoring.outputs.connectionString
-    logAnalyticsCustomerId: reference(monitoring.outputs.logAnalyticsWorkspaceId, '2022-10-01').customerId
-    logAnalyticsSharedKey: listKeys(monitoring.outputs.logAnalyticsWorkspaceId, '2022-10-01').primarySharedKey
+    logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
     keyVaultUri: keyVault.outputs.vaultUri
     storageAccountName: storage.outputs.storageAccountName
     serviceBusNamespace: serviceBus.outputs.namespaceName
@@ -221,7 +227,8 @@ module budget 'modules/budget.bicep' = {
   params: {
     resourceGroupName: rg.name
     budgetAmount: budgetAmount
-    tags: tags
+    startDate: budgetStartDate
+    endDate: budgetEndDate
   }
 }
 
