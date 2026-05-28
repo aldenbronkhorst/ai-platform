@@ -77,4 +77,3 @@ resource healthOperation 'Microsoft.ApiManagement/service/apis/operations@2022-0
 output name string = apiManagement.name
 output id string = apiManagement.id
 output gatewayUrl string = apiManagement.properties.gatewayUrl
-output managementApiUrl string = apiManagement.properties.managementApiUrl
