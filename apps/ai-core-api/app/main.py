@@ -1,0 +1,25 @@
+from fastapi import FastAPI
+from app.routers import health, audit, artifact, context, job, task, tool
+
+app = FastAPI(
+    title="AI Platform Core API",
+    version="0.1.0",
+    description="Central operating layer for AI interfaces and tools",
+)
+
+app.include_router(health.router)
+app.include_router(audit.router)
+app.include_router(artifact.router)
+app.include_router(context.router)
+app.include_router(job.router)
+app.include_router(task.router)
+app.include_router(tool.router)
+
+
+@app.get("/")
+async def root():
+    return {
+        "name": "AI Platform Core API",
+        "version": "0.1.0",
+        "docs": "/docs",
+    }
