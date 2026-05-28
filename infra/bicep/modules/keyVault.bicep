@@ -16,8 +16,9 @@ param uniqueSuffix string
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
 
-@description('API managed identity object ID')
-param apiManagedIdentityObjectId string
+@description('PostgreSQL admin password to store in Key Vault')
+@secure()
+param postgresAdminPassword string
 
 var keyVaultName = 'kv-${baseName}-${environment}-${take(uniqueSuffix, 6)}'
 
@@ -41,7 +42,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// Grant Key Vault Secrets User to API managed identity
+// Grant Key Vault Secrets User to API managed identity (read-only)
 resource kvSecretsUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, apiManagedIdentityPrincipalId, 'kvsecretsuser')
   scope: keyVault
@@ -52,14 +53,12 @@ resource kvSecretsUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
-// Grant Key Vault Secrets Officer to current user (for admin setup)
-resource kvSecretsOfficerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, deployment().name, 'kvsecretsofficer')
-  scope: keyVault
+// Store PostgreSQL password in Key Vault
+resource postgresPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'postgres-admin-password'
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7') // Key Vault Secrets Officer
-    principalId: apiManagedIdentityObjectId
-    principalType: 'ServicePrincipal'
+    value: postgresAdminPassword
   }
 }
 

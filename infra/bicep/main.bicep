@@ -30,8 +30,8 @@ param postgresAdminUsername string = 'aiplatformadmin'
 @secure()
 param postgresAdminPassword string
 
-@description('Budget amount in ZAR for dev environment')
-param budgetAmount int = 5000
+@description('Budget amount for dev environment')
+param budgetAmount int = 2000
 
 @description('Budget start date')
 param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
@@ -87,7 +87,7 @@ module keyVault 'modules/keyVault.bicep' = {
     tags: tags
     uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
-    apiManagedIdentityObjectId: identity.outputs.apiManagedIdentityObjectId
+    postgresAdminPassword: postgresAdminPassword
   }
 }
 
@@ -169,7 +169,6 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresHost: postgres.outputs.fqdn
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
-    postgresAdminPassword: postgresAdminPassword
   }
 }
 

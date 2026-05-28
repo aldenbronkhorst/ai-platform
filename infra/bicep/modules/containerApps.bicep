@@ -49,10 +49,6 @@ param postgresDatabaseName string
 @description('PostgreSQL admin username')
 param postgresAdminUsername string
 
-@description('PostgreSQL admin password')
-@secure()
-param postgresAdminPassword string
-
 var envName = 'cae-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
 var containerAppName = 'ca-${baseName}-api-${environment}'
 
@@ -96,7 +92,13 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           identity: apiManagedIdentityResourceId
         }
       ]
-      secrets: []
+      secrets: [
+        {
+          name: 'postgres-password'
+          keyVaultUrl: '${keyVaultUri}secrets/postgres-admin-password'
+          identity: apiManagedIdentityResourceId
+        }
+      ]
     }
     template: {
       revisionSuffix: ''
@@ -139,7 +141,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'POSTGRES_PASSWORD'
-              value: postgresAdminPassword
+              secretRef: 'postgres-password'
             }
           ]
           resources: {
@@ -169,8 +171,8 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
         }
       ]
       scale: {
-        minReplicas: 1
-        maxReplicas: 3
+        minReplicas: 0
+        maxReplicas: 2
         rules: []
       }
     }

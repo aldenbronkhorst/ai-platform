@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "4968105447151230061"
+      "templateHash": "7356281916947949917"
     }
   },
   "parameters": {
@@ -70,9 +70,9 @@
     },
     "budgetAmount": {
       "type": "int",
-      "defaultValue": 5000,
+      "defaultValue": 2000,
       "metadata": {
-        "description": "Budget amount in ZAR for dev environment"
+        "description": "Budget amount for dev environment"
       }
     },
     "budgetStartDate": {
@@ -361,8 +361,8 @@
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
           },
-          "apiManagedIdentityObjectId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityObjectId.value]"
+          "postgresAdminPassword": {
+            "value": "[parameters('postgresAdminPassword')]"
           }
         },
         "template": {
@@ -372,7 +372,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "15033637949106904129"
+              "templateHash": "9015877402041218455"
             }
           },
           "parameters": {
@@ -412,10 +412,10 @@
                 "description": "API managed identity principal ID"
               }
             },
-            "apiManagedIdentityObjectId": {
-              "type": "string",
+            "postgresAdminPassword": {
+              "type": "securestring",
               "metadata": {
-                "description": "API managed identity object ID"
+                "description": "PostgreSQL admin password to store in Key Vault"
               }
             }
           },
@@ -459,14 +459,11 @@
               ]
             },
             {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
-              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), deployment().name, 'kvsecretsofficer')]",
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', variables('keyVaultName'), 'postgres-admin-password')]",
               "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')]",
-                "principalId": "[parameters('apiManagedIdentityObjectId')]",
-                "principalType": "ServicePrincipal"
+                "value": "[parameters('postgresAdminPassword')]"
               },
               "dependsOn": [
                 "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
@@ -1211,9 +1208,6 @@
           },
           "postgresAdminUsername": {
             "value": "[parameters('postgresAdminUsername')]"
-          },
-          "postgresAdminPassword": {
-            "value": "[parameters('postgresAdminPassword')]"
           }
         },
         "template": {
@@ -1223,7 +1217,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "9217354806320866459"
+              "templateHash": "4068551621262073565"
             }
           },
           "parameters": {
@@ -1329,12 +1323,6 @@
               "metadata": {
                 "description": "PostgreSQL admin username"
               }
-            },
-            "postgresAdminPassword": {
-              "type": "securestring",
-              "metadata": {
-                "description": "PostgreSQL admin password"
-              }
             }
           },
           "variables": {
@@ -1385,7 +1373,13 @@
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
                     }
                   ],
-                  "secrets": []
+                  "secrets": [
+                    {
+                      "name": "postgres-password",
+                      "keyVaultUrl": "[format('{0}secrets/postgres-admin-password', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    }
+                  ]
                 },
                 "template": {
                   "revisionSuffix": "",
@@ -1428,7 +1422,7 @@
                         },
                         {
                           "name": "POSTGRES_PASSWORD",
-                          "value": "[parameters('postgresAdminPassword')]"
+                          "secretRef": "postgres-password"
                         }
                       ],
                       "resources": {
@@ -1458,8 +1452,8 @@
                     }
                   ],
                   "scale": {
-                    "minReplicas": 1,
-                    "maxReplicas": 3,
+                    "minReplicas": 0,
+                    "maxReplicas": 2,
                     "rules": []
                   }
                 }
@@ -1929,7 +1923,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "2016594939610686342"
+              "templateHash": "7666145812684865882"
             }
           },
           "parameters": {
@@ -2050,10 +2044,6 @@
             "gatewayUrl": {
               "type": "string",
               "value": "[reference(resourceId('Microsoft.ApiManagement/service', variables('apimName')), '2022-08-01').gatewayUrl]"
-            },
-            "managementApiUrl": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ApiManagement/service', variables('apimName')), '2022-08-01').managementApiUrl]"
             }
           }
         }
