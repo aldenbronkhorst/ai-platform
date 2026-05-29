@@ -1,28 +1,32 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { PublicClientApplication, EventType } from "@azure/msal-browser";
+import type { AuthenticationResult } from "@azure/msal-browser";
 import { MsalProvider } from "@azure/msal-react";
 import { msalConfig } from "./authConfig";
 import "./index.css";
 import App from "./App.tsx";
 
-// Initialize MSAL PublicClientApplication
 const msalInstance = new PublicClientApplication(msalConfig);
 
-// MSAL v3 requires asynchronous initialization before rendering
-msalInstance.initialize().then(() => {
-  // Set active account if accounts are already present (e.g. on page refresh)
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    msalInstance.setActiveAccount(accounts[0]);
+msalInstance.initialize().then(async () => {
+  const redirectResponse = await msalInstance.handleRedirectPromise();
+
+  if (redirectResponse?.account) {
+    msalInstance.setActiveAccount(redirectResponse.account);
+  } else {
+    const accounts = msalInstance.getAllAccounts();
+    if (accounts.length > 0) {
+      msalInstance.setActiveAccount(accounts[0]);
+    }
   }
 
-  // Listen for successful login events and set active account automatically
   msalInstance.addEventCallback((event) => {
     if (event.eventType === EventType.LOGIN_SUCCESS && event.payload) {
-      const payload = event.payload as any;
-      const account = payload.account;
-      msalInstance.setActiveAccount(account);
+      const payload = event.payload as AuthenticationResult;
+      if (payload.account) {
+        msalInstance.setActiveAccount(payload.account);
+      }
     }
   });
 
@@ -31,7 +35,7 @@ msalInstance.initialize().then(() => {
       <MsalProvider instance={msalInstance}>
         <App />
       </MsalProvider>
-    </StrictMode>,
+    </StrictMode>
   );
 }).catch(err => {
   console.error("MSAL initialization failed:", err);
