@@ -1,7 +1,9 @@
-import { Bot, User, Shield, Mic } from "lucide-react";
-import type { ChatMessage, ChatSession } from "../../types";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { ChevronDown } from "lucide-react";
+import type { ChatMessage, ChatSession, AttachedFile, VoiceState } from "../../types";
 import { ChatComposer } from "./ChatComposer";
-import type { AttachedFile, VoiceState } from "../../types";
+import { ChatEmptyState } from "./ChatEmptyState";
+import { MessageBubble } from "./MessageBubble";
 
 interface ChatViewProps {
   activeSession: ChatSession | null;
@@ -11,7 +13,6 @@ interface ChatViewProps {
   voiceState: VoiceState;
   isMessagesLoading: boolean;
   isChatSending: boolean;
-  expandedTraceMsgs: Record<string, boolean>;
   displayName: string;
   onInputChange: (value: string) => void;
   onSend: (e: React.FormEvent) => void;
@@ -19,7 +20,8 @@ interface ChatViewProps {
   onRemoveFile: (id: string) => void;
   onTriggerUpload: () => void;
   onToggleVoice: () => void;
-  onToggleTrace: (id: string) => void;
+  onRetryMessage: (messageId: string) => void;
+  onSuggestionClick: (prompt: string) => void;
   placeholder?: string;
 }
 
@@ -31,7 +33,6 @@ export function ChatView({
   voiceState,
   isMessagesLoading,
   isChatSending,
-  expandedTraceMsgs,
   displayName,
   onInputChange,
   onSend,
@@ -39,96 +40,99 @@ export function ChatView({
   onRemoveFile,
   onTriggerUpload,
   onToggleVoice,
-  onToggleTrace,
+  onRetryMessage,
+  onSuggestionClick,
   placeholder,
 }: ChatViewProps) {
-  const firstName = displayName.split(" ")[0];
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
 
-  const renderMessages = () => {
-    if (!activeSession) {
-      return (
-        <div className="text-center py-24 select-none space-y-3">
-          <h3 className="text-xl font-extrabold text-default">
-            How can I help you today, {firstName}?
-          </h3>
-          <p className="text-xs text-muted max-w-sm mx-auto leading-relaxed">
-            Ask business operational questions, run audits, or check Odoo data.
-          </p>
-        </div>
-      );
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    setIsUserScrolledUp(false);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    setIsUserScrolledUp(!isNearBottom);
+  }, []);
+
+  useEffect(() => {
+    if (!isUserScrolledUp) {
+      scrollToBottom();
     }
+  }, [chatMessages, isUserScrolledUp, scrollToBottom]);
 
-    if (isMessagesLoading) {
-      return <div className="text-center py-20 text-muted">Loading messages...</div>;
-    }
-
-    if (chatMessages.length === 0) {
-      return (
-        <div className="text-center py-20 text-muted select-none space-y-2">
-          <p className="font-semibold text-default">
-            This conversation has no messages yet.
-          </p>
-          <p className="text-xs text-soft max-w-xs mx-auto">
-            Ask about credit notes, attendance, or Odoo accounts.
-          </p>
+  if (isMessagesLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="flex items-center gap-2 text-muted text-sm">
+          <div className="w-4 h-4 border-2 border-muted border-t-default rounded-full animate-spin" />
+          Loading messages…
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    return chatMessages.map((msg) => (
-      <div
-        key={msg.id}
-        className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-      >
-        {msg.role === "assistant" && (
-          <div className="w-8 h-8 rounded-lg bg-surface border border-default flex items-center justify-center shrink-0">
-            <Bot className="w-4 h-4 text-muted" />
-          </div>
-        )}
-
-        <div
-          className={`max-w-[75%] p-4 rounded-2xl border text-xs leading-relaxed whitespace-pre-wrap ${
-            msg.role === "user"
-              ? "bg-surface border-default text-default rounded-tr-none"
-              : "bg-canvas border-default text-default rounded-tl-none"
-          }`}
-        >
-          {msg.content}
-
-          {msg.metadata_json?.technical_details && (
-            <div className="mt-3 pt-3 border-t border-default">
-              <button
-                onClick={() => onToggleTrace(msg.id)}
-                className="text-[10px] text-muted hover-text-default font-semibold flex items-center gap-1 select-none"
-              >
-                <Shield className="w-3 h-3" />
-                {expandedTraceMsgs[msg.id]
-                  ? "Hide technical trail"
-                  : "View operational trail"}
-              </button>
-              {expandedTraceMsgs[msg.id] && (
-                <pre className="mt-2.5 p-3 bg-canvas border border-default rounded-xl overflow-x-auto text-[10px] font-mono text-muted max-h-48 overflow-y-auto">
-                  {JSON.stringify(msg.metadata_json.technical_details, null, 2)}
-                </pre>
-              )}
-            </div>
-          )}
+  if (!activeSession || chatMessages.length === 0) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="flex-1 flex flex-col">
+          <ChatEmptyState displayName={displayName} onSuggestion={onSuggestionClick} />
         </div>
-
-        {msg.role === "user" && (
-          <div className="w-8 h-8 rounded-lg bg-surface border border-default flex items-center justify-center shrink-0">
-            <User className="w-4 h-4 text-muted" />
+        <ChatComposer
+          chatInput={chatInput}
+          attachedFiles={attachedFiles}
+          voiceState={voiceState}
+          isChatSending={isChatSending}
+          placeholder={placeholder}
+          onInputChange={onInputChange}
+          onSend={onSend}
+          onFileUpload={onFileUpload}
+          onRemoveFile={onRemoveFile}
+          onTriggerUpload={onTriggerUpload}
+          onToggleVoice={onToggleVoice}
+        />
+        {voiceState === "listening" && (
+          <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">
+            Speak now…
           </div>
         )}
       </div>
-    ));
-  };
+    );
+  }
 
   return (
-    <div className="h-full flex flex-col justify-between max-w-4xl mx-auto">
-      <div className="flex-1 overflow-y-auto space-y-4 px-2 py-4">
-        {renderMessages()}
+    <div className="h-full flex flex-col max-w-4xl mx-auto">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto space-y-4 px-2 py-4 scroll-smooth"
+      >
+        {chatMessages.map((msg) => (
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            onRetry={() => onRetryMessage(msg.id)}
+          />
+        ))}
+        <div ref={messagesEndRef} />
       </div>
+
+      {isUserScrolledUp && (
+        <div className="flex justify-center -mb-2 relative z-10">
+          <button
+            onClick={scrollToBottom}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-surface border border-default text-xs font-semibold text-muted hover:text-default shadow-sm transition-all"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+            Jump to latest
+          </button>
+        </div>
+      )}
 
       <ChatComposer
         chatInput={chatInput}
@@ -145,8 +149,8 @@ export function ChatView({
       />
 
       {voiceState === "listening" && (
-        <div className="text-center pb-2 text-xs text-[var(--color-danger)] font-semibold flex items-center justify-center gap-1 animate-pulse">
-          <Mic className="w-3.5 h-3.5" /> Speak now...
+        <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">
+          Speak now…
         </div>
       )}
     </div>

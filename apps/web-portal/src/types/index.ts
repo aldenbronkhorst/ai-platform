@@ -14,6 +14,8 @@ export interface ChatSession {
   last_message_at: string;
 }
 
+export type MessageStatus = "sending" | "pending" | "streaming" | "completed" | "failed" | "tool_running" | "tool_completed";
+
 export interface ChatMessage {
   id: string;
   chat_session_id: string;
@@ -22,6 +24,14 @@ export interface ChatMessage {
   created_at: string;
   model_name?: string;
   metadata_json?: any;
+  status?: MessageStatus;
+  error_message?: string;
+}
+
+export interface SuggestedAction {
+  label: string;
+  prompt: string;
+  icon: string;
 }
 
 export interface WorkflowCardData {

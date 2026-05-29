@@ -42,7 +42,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [isChatSending, setIsChatSending] = useState(false);
-  const [expandedTraceMsgs, setExpandedTraceMsgs] = useState<Record<string, boolean>>({});
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -205,14 +204,28 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       }
     }
 
+    const userMsgId = Math.random().toString();
+    const pendingMsgId = Math.random().toString();
+
     const tempUserMsg: ChatMessage = {
-      id: Math.random().toString(),
+      id: userMsgId,
       chat_session_id: currentSess.id,
       role: "user",
       content,
       created_at: new Date().toISOString(),
+      status: "completed",
     };
-    setChatMessages(prev => [...prev, tempUserMsg]);
+
+    const pendingAssistantMsg: ChatMessage = {
+      id: pendingMsgId,
+      chat_session_id: currentSess.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+    };
+
+    setChatMessages(prev => [...prev, tempUserMsg, pendingAssistantMsg]);
 
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
@@ -221,14 +234,85 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         body: JSON.stringify({ content, artifact_ids: artIds, workflow_context: currentSess.workflow_context }),
       });
       if (res.ok) {
-        const botMsg = await res.json();
-        setChatMessages(prev => [...prev, botMsg]);
+        const botMsg: ChatMessage = await res.json();
+        botMsg.status = "completed";
+        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
         fetchChatSessions();
+      } else {
+        const errorText = await res.text().catch(() => "");
+        setChatMessages(prev => prev.map(m =>
+          m.id === pendingMsgId
+            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
+            : m
+        ));
       }
     } catch (err) {
-      console.error("Failed to send message:", err);
+      setChatMessages(prev => prev.map(m =>
+        m.id === pendingMsgId
+          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          : m
+      ));
     } finally {
       setIsChatSending(false);
+    }
+  };
+
+  const handleRetryMessage = async (messageId: string) => {
+    const msg = chatMessages.find(m => m.id === messageId);
+    if (!msg || !activeSession) return;
+
+    const newPendingId = Math.random().toString();
+    const pendingAssistantMsg: ChatMessage = {
+      id: newPendingId,
+      chat_session_id: activeSession.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+    };
+
+    setChatMessages(prev => [
+      ...prev.filter(m => m.id !== messageId),
+      pendingAssistantMsg,
+    ]);
+
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${activeSession.id}/messages`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({
+          content: "Please retry: " + (chatMessages.find(m => m.chat_session_id === activeSession.id && m.role === "user" && m.status === "completed")?.content || ""),
+          artifact_ids: [],
+          workflow_context: activeSession.workflow_context,
+        }),
+      });
+      if (res.ok) {
+        const botMsg: ChatMessage = await res.json();
+        botMsg.status = "completed";
+        setChatMessages(prev => prev.map(m => m.id === newPendingId ? botMsg : m));
+        fetchChatSessions();
+      } else {
+        const errorText = await res.text().catch(() => "");
+        setChatMessages(prev => prev.map(m =>
+          m.id === newPendingId
+            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
+            : m
+        ));
+      }
+    } catch (err) {
+      setChatMessages(prev => prev.map(m =>
+        m.id === newPendingId
+          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          : m
+      ));
+    }
+  };
+
+  const handleSuggestionClick = (prompt: string) => {
+    setChatInput(prompt);
+    if (!activeSession) {
+      createNewChat();
+      setActiveTab("chat");
     }
   };
 
@@ -335,7 +419,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             voiceState={voiceState}
             isMessagesLoading={isMessagesLoading}
             isChatSending={isChatSending}
-            expandedTraceMsgs={expandedTraceMsgs}
             displayName={activeUser.displayName}
             onInputChange={setChatInput}
             onSend={handleSendMessage}
@@ -343,7 +426,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             onRemoveFile={handleRemoveFile}
             onTriggerUpload={() => fileInputRef.current?.click()}
             onToggleVoice={handleToggleVoice}
-            onToggleTrace={(id) => setExpandedTraceMsgs(prev => ({ ...prev, [id]: !prev[id] }))}
+            onRetryMessage={handleRetryMessage}
+            onSuggestionClick={handleSuggestionClick}
           />
         );
       case "workflows":
