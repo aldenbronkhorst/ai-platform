@@ -1158,17 +1158,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           </div>
 
           <div className="flex items-center gap-4">
-            {odooStatus.status === "connected" ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-xs font-bold text-emerald-400 select-none">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Odoo ERP Link Active
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/30 border border-gray-800 rounded-full text-xs font-bold text-gray-500 select-none">
-                <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
-                Odoo ERP Disconnected
-              </div>
-            )}
+            {/* Minimal un-cluttered header, top-right is empty as profile menu is in bottom-left popover */}
           </div>
         </header>
 
