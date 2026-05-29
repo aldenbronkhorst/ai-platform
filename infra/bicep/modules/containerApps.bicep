@@ -25,8 +25,11 @@ param apiManagedIdentityResourceId string
 @description('ACR login server')
 param acrLoginServer string
 
-@description('Container image to deploy')
-param containerImage string = 'mcr.microsoft.com/azuredocs/aci-helloworld:latest'
+@description('AI Core API container image tag')
+param apiImageTag string = 'latest'
+
+@description('Odoo Connector container image tag')
+param odooConnectorImageTag string = 'latest'
 
 @description('Application Insights connection string')
 param appInsightsConnectionString string
@@ -54,6 +57,9 @@ param postgresAdminUsername string
 
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
+var odooConnectorAppName = 'ca-${workload}-odoo-connector-${environment}-${regionCode}-${instance}'
+var containerImage = '${acrLoginServer}/ai-core-api:${apiImageTag}'
+var odooConnectorImage = '${acrLoginServer}/odoo-connector-api:${odooConnectorImageTag}'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = {
   name: logAnalyticsWorkspaceName
@@ -173,7 +179,94 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
+resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: odooConnectorAppName
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${apiManagedIdentityResourceId}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 8000
+        transport: 'auto'
+        allowInsecure: false
+      }
+      registries: [
+        {
+          server: acrLoginServer
+          identity: apiManagedIdentityResourceId
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'odoo-connector'
+          image: odooConnectorImage
+          env: [
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+            { name: 'ENVIRONMENT', value: environment }
+            { name: 'VERSION', value: '1.0.0' }
+          ]
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/health'
+                port: 8000
+              }
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
+            {
+              type: 'Readiness'
+              httpGet: {
+                path: '/health'
+                port: 8000
+              }
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 2
+        rules: [
+          {
+            name: 'http-rule'
+            custom: {
+              type: 'http'
+              metadata: {
+                concurrentRequests: '50'
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
 output containerAppName string = containerApp.name
 output environmentName string = containerAppsEnvironment.name
 output apiUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output fqdn string = containerApp.properties.configuration.ingress.fqdn
+output odooConnectorAppName string = odooConnectorApp.name
+output odooConnectorUrl string = 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}'

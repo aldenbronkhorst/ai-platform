@@ -47,6 +47,12 @@ param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
 @description('Budget end date')
 param budgetEndDate string = '${string(int(utcNow('yyyy')) + 1)}-${utcNow('MM')}-01'
 
+@description('AI Core API container image tag')
+param apiImageTag string = 'latest'
+
+@description('Odoo Connector container image tag')
+param odooConnectorImageTag string = 'latest'
+
 // Naming helper variables
 var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
 
@@ -176,6 +182,8 @@ module containerApps 'modules/containerApps.bicep' = {
     apiManagedIdentityClientId: identity.outputs.apiManagedIdentityClientId
     apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
     acrLoginServer: acr.outputs.loginServer
+    apiImageTag: apiImageTag
+    odooConnectorImageTag: odooConnectorImageTag
     appInsightsConnectionString: monitoring.outputs.connectionString
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
     keyVaultUri: keyVault.outputs.vaultUri
@@ -250,3 +258,5 @@ output apiManagementGatewayUrl string = apiManagement.outputs.gatewayUrl
 output apiManagedIdentityClientId string = identity.outputs.apiManagedIdentityClientId
 output apiManagedIdentityPrincipalId string = identity.outputs.apiManagedIdentityPrincipalId
 output apiUrl string = containerApps.outputs.apiUrl
+output odooConnectorAppName string = containerApps.outputs.odooConnectorAppName
+output odooConnectorUrl string = containerApps.outputs.odooConnectorUrl
