@@ -30,6 +30,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
+  const [showTechDetails, setShowTechDetails] = useState(false);
 
   const [odooUrl, setOdooUrl] = useState("https://odoo.lotslotsmore.com");
   const [odooDb, setOdooDb] = useState("Lots Lots More Production");
@@ -60,11 +61,24 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (accessToken) fetchOdooStatus();
   }, [accessToken]);
 
+  const KV_ERROR_PHRASES = [
+    "forbiddenbyrbac",
+    "setsecret/action",
+    "key vault secrets officer",
+    "rbac",
+    "authorization failed",
+    "authorizationfailed",
+  ];
+
+  const isKeyVaultError = (msg: string) =>
+    KV_ERROR_PHRASES.some((p) => msg.toLowerCase().includes(p));
+
   const handleConnectOdoo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accessToken) return;
     setIsConnecting(true);
     setTestResult(null);
+    setShowTechDetails(false);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/connect`, {
         method: "POST",
@@ -78,10 +92,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setOdooApiKey("");
         fetchOdooStatus();
       } else {
-        setTestResult({ success: false, message: data.detail || "Connection failed." });
+        const rawMsg = data.detail || "Connection failed.";
+        setTestResult({
+          success: false,
+          message: rawMsg,
+          isKeyVaultError: isKeyVaultError(rawMsg),
+        });
       }
     } catch (err: any) {
-      setTestResult({ success: false, message: `Could not reach backend: ${err.message}` });
+      setTestResult({
+        success: false,
+        message: `Could not reach backend: ${err.message}`,
+      });
     } finally {
       setIsConnecting(false);
     }
@@ -273,28 +295,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         </GlassPanel>
       </div>
 
-      {testResult && (
-        <div
-          className={`p-4 border rounded-xl flex items-start gap-3 text-sm ${
-            testResult.success
-              ? "border-[var(--color-success)]/25 bg-[var(--color-success)]/5 text-[var(--color-success)]"
-              : "border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5 text-[var(--color-danger)]"
-          }`}
-        >
-          {testResult.success ? (
-            <CheckCircle2 className="w-5 h-5 shrink-0" />
-          ) : (
-            <XCircle className="w-5 h-5 shrink-0" />
-          )}
-          <div>
-            <p className="font-semibold">
-              {testResult.success ? "Verification Success" : "Verification Failed"}
-            </p>
-            <p className="mt-0.5">{testResult.message}</p>
-          </div>
-        </div>
-      )}
-
       {isConnectOpen && (
         <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-surface border border-default rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
@@ -335,10 +335,53 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   placeholder="Enter Odoo API Key..."
                 />
               </div>
+
+              {testResult && !testResult.success && (
+                <div className="p-3 rounded-xl border border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5 text-sm space-y-2">
+                  <div className="flex items-start gap-2">
+                    <XCircle className="w-4 h-4 text-[var(--color-danger)] shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-[var(--color-danger)]">Connection Failed</p>
+                      <p className="text-muted mt-0.5">
+                        {testResult.isKeyVaultError
+                          ? "Could not save Odoo credentials securely. The AI Platform service does not currently have permission to write to Key Vault. Please contact an administrator."
+                          : testResult.message}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTechDetails(!showTechDetails)}
+                    className="text-xs text-muted hover:text-default underline underline-offset-2"
+                  >
+                    {showTechDetails ? "Hide technical details" : "Show technical details"}
+                  </button>
+                  {showTechDetails && (
+                    <pre className="text-xs text-muted bg-surface p-2 rounded-lg overflow-x-auto whitespace-pre-wrap font-mono border border-default">
+                      {testResult.message}
+                    </pre>
+                  )}
+                </div>
+              )}
+
+              {testResult && testResult.success && (
+                <div className="p-3 rounded-xl border border-[var(--color-success)]/25 bg-[var(--color-success)]/5 text-sm flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-[var(--color-success)]">Success</p>
+                    <p className="text-default mt-0.5">{testResult.message}</p>
+                  </div>
+                </div>
+              )}
+
               <div className="pt-4 flex gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsConnectOpen(false)}
+                  onClick={() => {
+                    setIsConnectOpen(false);
+                    setTestResult(null);
+                    setShowTechDetails(false);
+                  }}
                   className="flex-1 py-3 bg-surface border border-default text-muted rounded-xl text-sm font-semibold tracking-wide transition-all hover-text-default"
                 >
                   Cancel
