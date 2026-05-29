@@ -148,7 +148,6 @@ jobs:
           context: ${{ env.API_PATH }}
           push: true
           tags: |
-            ${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:latest
             ${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -159,7 +158,6 @@ jobs:
           context: ${{ env.CONNECTOR_PATH }}
           push: true
           tags: |
-            ${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:latest
             ${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

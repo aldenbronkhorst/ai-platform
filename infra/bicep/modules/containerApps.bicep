@@ -270,3 +270,4 @@ output apiUrl string = 'https://${containerApp.properties.configuration.ingress.
 output fqdn string = containerApp.properties.configuration.ingress.fqdn
 output odooConnectorAppName string = odooConnectorApp.name
 output odooConnectorUrl string = 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}'
+output environmentId string = containerAppsEnvironment.id

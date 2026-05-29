@@ -1,0 +1,13 @@
+# Global owners
+* @aldenbronkhorst
+
+# API services
+/apps/ai-core-api/ @aldenbronkhorst
+/apps/odoo-connector-api/ @aldenbronkhorst
+
+# Web portal
+/apps/web-portal/ @aldenbronkhorst
+
+# Infrastructure
+/infra/ @aldenbronkhorst
+/.github/workflows/ @aldenbronkhorst

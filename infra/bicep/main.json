@@ -5,20 +5,20 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "7356281916947949917"
+      "templateHash": "3043323062747549314"
     }
   },
   "parameters": {
-    "baseName": {
+    "workload": {
       "type": "string",
-      "defaultValue": "aiplatform",
+      "defaultValue": "ai-platform",
       "metadata": {
-        "description": "Base name for all resources"
+        "description": "Workload name"
       }
     },
     "environment": {
       "type": "string",
-      "defaultValue": "dev",
+      "defaultValue": "prod",
       "allowedValues": [
         "dev",
         "staging",
@@ -35,24 +35,32 @@
         "description": "Primary Azure region"
       }
     },
-    "fallbackLocation": {
+    "regionCode": {
       "type": "string",
-      "defaultValue": "westeurope",
+      "defaultValue": "san",
       "metadata": {
-        "description": "Fallback region for services not available in primary"
+        "description": "Region code abbreviation"
+      }
+    },
+    "instance": {
+      "type": "string",
+      "defaultValue": "001",
+      "metadata": {
+        "description": "Instance number"
       }
     },
     "tags": {
       "type": "object",
       "defaultValue": {
-        "project": "ai-platform",
+        "application": "[parameters('workload')]",
         "environment": "[parameters('environment')]",
+        "region": "[parameters('location')]",
+        "region-code": "[parameters('regionCode')]",
         "owner": "alden",
         "managed-by": "iac",
-        "cost-center": "ai-platform"
-      },
-      "metadata": {
-        "description": "Tags for all resources"
+        "cost-center": "[parameters('workload')]",
+        "business-criticality": "pilot-production",
+        "data-classification": "company-internal"
       }
     },
     "postgresAdminUsername": {
@@ -70,9 +78,9 @@
     },
     "budgetAmount": {
       "type": "int",
-      "defaultValue": 2000,
+      "defaultValue": 3000,
       "metadata": {
-        "description": "Budget amount for dev environment"
+        "description": "Budget amount"
       }
     },
     "budgetStartDate": {
@@ -88,11 +96,24 @@
       "metadata": {
         "description": "Budget end date"
       }
+    },
+    "apiImageTag": {
+      "type": "string",
+      "defaultValue": "latest",
+      "metadata": {
+        "description": "AI Core API container image tag"
+      }
+    },
+    "odooConnectorImageTag": {
+      "type": "string",
+      "defaultValue": "latest",
+      "metadata": {
+        "description": "Odoo Connector container image tag"
+      }
     }
   },
   "variables": {
-    "resourceGroupName": "[format('rg-{0}-{1}', parameters('baseName'), parameters('environment'))]",
-    "uniqueSuffix": "[uniqueString(subscription().id, variables('resourceGroupName'))]"
+    "resourceGroupName": "[format('rg-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
   },
   "resources": [
     {
@@ -113,11 +134,17 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
@@ -133,20 +160,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "2072075188879723573"
+              "templateHash": "9950290377942675890"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -162,11 +201,14 @@
               }
             }
           },
+          "variables": {
+            "identityName": "[format('id-{0}-api-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+          },
           "resources": [
             {
               "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
               "apiVersion": "2023-01-31",
-              "name": "[format('id-{0}-api-{1}', parameters('baseName'), parameters('environment'))]",
+              "name": "[variables('identityName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]"
             }
@@ -174,23 +216,19 @@
           "outputs": {
             "apiManagedIdentityClientId": {
               "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}-api-{1}', parameters('baseName'), parameters('environment'))), '2023-01-31').clientId]"
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').clientId]"
             },
             "apiManagedIdentityPrincipalId": {
               "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}-api-{1}', parameters('baseName'), parameters('environment'))), '2023-01-31').principalId]"
-            },
-            "apiManagedIdentityObjectId": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}-api-{1}', parameters('baseName'), parameters('environment'))), '2023-01-31').principalId]"
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]"
             },
             "apiManagedIdentityResourceId": {
               "type": "string",
-              "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-{0}-api-{1}', parameters('baseName'), parameters('environment')))]"
+              "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
             },
             "apiManagedIdentityName": {
               "type": "string",
-              "value": "[format('id-{0}-api-{1}', parameters('baseName'), parameters('environment'))]"
+              "value": "[variables('identityName')]"
             }
           }
         }
@@ -210,20 +248,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
@@ -236,20 +277,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "3991629781485902029"
+              "templateHash": "17284253756435340156"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -264,12 +317,6 @@
                 "description": "Tags for resources"
               }
             },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
             "apiManagedIdentityPrincipalId": {
               "type": "string",
               "metadata": {
@@ -278,7 +325,8 @@
             }
           },
           "variables": {
-            "acrName": "[format('acr{0}{1}{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]"
+            "sanitizedWorkload": "[replace(parameters('workload'), '-', '')]",
+            "acrName": "[format('acr{0}{1}{2}{3}', variables('sanitizedWorkload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
@@ -343,20 +391,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
@@ -372,20 +423,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "9015877402041218455"
+              "templateHash": "297101713648802487"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -398,12 +461,6 @@
               "type": "object",
               "metadata": {
                 "description": "Tags for resources"
-              }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
               }
             },
             "apiManagedIdentityPrincipalId": {
@@ -420,7 +477,8 @@
             }
           },
           "variables": {
-            "keyVaultName": "[format('kv-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 6))]"
+            "sanitizedWorkload": "[replace(parameters('workload'), '-', '')]",
+            "keyVaultName": "[format('kv{0}{1}{2}{3}', variables('sanitizedWorkload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
@@ -502,20 +560,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
@@ -528,20 +589,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "8350406191901387707"
+              "templateHash": "8639643890565161724"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -556,12 +629,6 @@
                 "description": "Tags for resources"
               }
             },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
             "apiManagedIdentityPrincipalId": {
               "type": "string",
               "metadata": {
@@ -570,7 +637,8 @@
             }
           },
           "variables": {
-            "storageName": "[format('st{0}{1}{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
+            "sanitizedWorkload": "[replace(parameters('workload'), '-', '')]",
+            "storageName": "[format('st{0}{1}{2}{3}', variables('sanitizedWorkload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
             "containerNames": [
               "artifacts",
               "ocr",
@@ -608,6 +676,12 @@
               "type": "Microsoft.Storage/storageAccounts/blobServices",
               "apiVersion": "2023-01-01",
               "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+              "properties": {
+                "deleteRetentionPolicy": {
+                  "enabled": true,
+                  "days": 7
+                }
+              },
               "dependsOn": [
                 "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
               ]
@@ -647,7 +721,7 @@
               "type": "string",
               "value": "[variables('storageName')]"
             },
-            "storageAccountId": {
+            "id": {
               "type": "string",
               "value": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
             },
@@ -674,20 +748,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "adminUsername": {
             "value": "[parameters('postgresAdminUsername')]"
@@ -703,20 +780,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "15235764168889780275"
+              "templateHash": "11268180522709316578"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -729,12 +818,6 @@
               "type": "object",
               "metadata": {
                 "description": "Tags for resources"
-              }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
               }
             },
             "adminUsername": {
@@ -751,7 +834,7 @@
             }
           },
           "variables": {
-            "postgresName": "[format('psql-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
+            "postgresName": "[format('psql-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
             "postgresDatabaseName": "aicore"
           },
           "resources": [
@@ -779,8 +862,7 @@
                 },
                 "highAvailability": {
                   "mode": "Disabled"
-                },
-                "publicNetworkAccess": "Enabled"
+                }
               }
             },
             {
@@ -840,20 +922,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           }
         },
         "template": {
@@ -863,20 +948,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "9394325841898439017"
+              "templateHash": "17213538066772851176"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -890,17 +987,11 @@
               "metadata": {
                 "description": "Tags for resources"
               }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
             }
           },
           "variables": {
-            "logAnalyticsName": "[format('law-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
-            "appInsightsName": "[format('appi-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]"
+            "logAnalyticsName": "[format('log-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
+            "appInsightsName": "[format('appi-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
@@ -979,20 +1070,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
@@ -1005,20 +1099,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "15422470246021550345"
+              "templateHash": "4564603698042173146"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -1033,12 +1139,6 @@
                 "description": "Tags for resources"
               }
             },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
             "apiManagedIdentityPrincipalId": {
               "type": "string",
               "metadata": {
@@ -1047,7 +1147,7 @@
             }
           },
           "variables": {
-            "serviceBusName": "[format('sb-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
+            "serviceBusName": "[format('sb-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
             "queueNames": [
               "ai-jobs",
               "ai-runner-requests",
@@ -1127,7 +1227,7 @@
               "type": "string",
               "value": "[variables('serviceBusName')]"
             },
-            "namespaceId": {
+            "id": {
               "type": "string",
               "value": "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusName'))]"
             },
@@ -1158,20 +1258,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityClientId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityClientId.value]"
@@ -1182,8 +1285,11 @@
           "acrLoginServer": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'acrDeploy'), '2025-04-01').outputs.loginServer.value]"
           },
-          "containerImage": {
-            "value": "[format('{0}/ai-core-api:latest', reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'acrDeploy'), '2025-04-01').outputs.loginServer.value)]"
+          "apiImageTag": {
+            "value": "[parameters('apiImageTag')]"
+          },
+          "odooConnectorImageTag": {
+            "value": "[parameters('odooConnectorImageTag')]"
           },
           "appInsightsConnectionString": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'monitoringDeploy'), '2025-04-01').outputs.connectionString.value]"
@@ -1217,20 +1323,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "4068551621262073565"
+              "templateHash": "6959095214819485716"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -1243,12 +1361,6 @@
               "type": "object",
               "metadata": {
                 "description": "Tags for resources"
-              }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
               }
             },
             "apiManagedIdentityClientId": {
@@ -1269,11 +1381,18 @@
                 "description": "ACR login server"
               }
             },
-            "containerImage": {
+            "apiImageTag": {
               "type": "string",
-              "defaultValue": "mcr.microsoft.com/k8se/quickstart:latest",
+              "defaultValue": "latest",
               "metadata": {
-                "description": "Container image to deploy"
+                "description": "AI Core API container image tag"
+              }
+            },
+            "odooConnectorImageTag": {
+              "type": "string",
+              "defaultValue": "latest",
+              "metadata": {
+                "description": "Odoo Connector container image tag"
               }
             },
             "appInsightsConnectionString": {
@@ -1285,7 +1404,7 @@
             "logAnalyticsWorkspaceName": {
               "type": "string",
               "metadata": {
-                "description": "Log Analytics Workspace Name"
+                "description": "Log Analytics workspace name"
               }
             },
             "keyVaultUri": {
@@ -1303,13 +1422,13 @@
             "serviceBusNamespace": {
               "type": "string",
               "metadata": {
-                "description": "Service Bus namespace name"
+                "description": "Service Bus namespace"
               }
             },
             "postgresHost": {
               "type": "string",
               "metadata": {
-                "description": "PostgreSQL host FQDN"
+                "description": "PostgreSQL host"
               }
             },
             "postgresDatabaseName": {
@@ -1326,14 +1445,17 @@
             }
           },
           "variables": {
-            "envName": "[format('cae-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
-            "containerAppName": "[format('ca-{0}-api-{1}', parameters('baseName'), parameters('environment'))]"
+            "environmentName": "[format('cae-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
+            "containerAppName": "[format('ca-{0}-api-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
+            "odooConnectorAppName": "[format('ca-{0}-odoo-connector-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
+            "containerImage": "[format('{0}/ai-core-api:{1}', parameters('acrLoginServer'), parameters('apiImageTag'))]",
+            "odooConnectorImage": "[format('{0}/odoo-connector-api:{1}', parameters('acrLoginServer'), parameters('odooConnectorImageTag'))]"
           },
           "resources": [
             {
               "type": "Microsoft.App/managedEnvironments",
               "apiVersion": "2023-05-01",
-              "name": "[variables('envName')]",
+              "name": "[variables('environmentName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
               "properties": {
@@ -1359,7 +1481,7 @@
                 }
               },
               "properties": {
-                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
                 "configuration": {
                   "ingress": {
                     "external": true,
@@ -1375,19 +1497,34 @@
                   ],
                   "secrets": [
                     {
-                      "name": "postgres-password",
+                      "name": "keyvault-dsn",
                       "keyVaultUrl": "[format('{0}secrets/postgres-admin-password', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
                     }
                   ]
                 },
                 "template": {
-                  "revisionSuffix": "",
                   "containers": [
                     {
                       "name": "ai-core-api",
-                      "image": "[parameters('containerImage')]",
+                      "image": "[variables('containerImage')]",
                       "env": [
+                        {
+                          "name": "POSTGRES_HOST",
+                          "value": "[parameters('postgresHost')]"
+                        },
+                        {
+                          "name": "POSTGRES_DATABASE",
+                          "value": "[parameters('postgresDatabaseName')]"
+                        },
+                        {
+                          "name": "POSTGRES_USERNAME",
+                          "value": "[parameters('postgresAdminUsername')]"
+                        },
+                        {
+                          "name": "POSTGRES_PASSWORD",
+                          "secretRef": "keyvault-dsn"
+                        },
                         {
                           "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
                           "value": "[parameters('appInsightsConnectionString')]"
@@ -1397,37 +1534,25 @@
                           "value": "[parameters('apiManagedIdentityClientId')]"
                         },
                         {
-                          "name": "KEY_VAULT_URI",
-                          "value": "[parameters('keyVaultUri')]"
-                        },
-                        {
-                          "name": "STORAGE_ACCOUNT_NAME",
+                          "name": "AZURE_STORAGE_ACCOUNT",
                           "value": "[parameters('storageAccountName')]"
                         },
                         {
-                          "name": "SERVICE_BUS_NAMESPACE",
+                          "name": "AZURE_SERVICE_BUS_NAMESPACE",
                           "value": "[parameters('serviceBusNamespace')]"
                         },
                         {
-                          "name": "POSTGRES_HOST",
-                          "value": "[parameters('postgresHost')]"
+                          "name": "ENVIRONMENT",
+                          "value": "[parameters('environment')]"
                         },
                         {
-                          "name": "POSTGRES_DB",
-                          "value": "[parameters('postgresDatabaseName')]"
-                        },
-                        {
-                          "name": "POSTGRES_USER",
-                          "value": "[parameters('postgresAdminUsername')]"
-                        },
-                        {
-                          "name": "POSTGRES_PASSWORD",
-                          "secretRef": "postgres-password"
+                          "name": "VERSION",
+                          "value": "1.0.0"
                         }
                       ],
                       "resources": {
-                        "cpu": "[json('0.5')]",
-                        "memory": "1Gi"
+                        "cpu": "[json('0.25')]",
+                        "memory": "0.5Gi"
                       },
                       "probes": [
                         {
@@ -1436,8 +1561,10 @@
                             "path": "/health",
                             "port": 8000
                           },
-                          "initialDelaySeconds": 10,
-                          "periodSeconds": 30
+                          "initialDelaySeconds": 30,
+                          "periodSeconds": 30,
+                          "timeoutSeconds": 5,
+                          "failureThreshold": 3
                         },
                         {
                           "type": "Readiness",
@@ -1445,8 +1572,10 @@
                             "path": "/health",
                             "port": 8000
                           },
-                          "initialDelaySeconds": 5,
-                          "periodSeconds": 10
+                          "initialDelaySeconds": 10,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 5,
+                          "failureThreshold": 3
                         }
                       ]
                     }
@@ -1454,35 +1583,151 @@
                   "scale": {
                     "minReplicas": 0,
                     "maxReplicas": 2,
-                    "rules": []
+                    "rules": [
+                      {
+                        "name": "http-rule",
+                        "custom": {
+                          "type": "http",
+                          "metadata": {
+                            "concurrentRequests": "50"
+                          }
+                        }
+                      }
+                    ]
                   }
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]"
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2023-05-01",
+              "name": "[variables('odooConnectorAppName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('apiManagedIdentityResourceId'))]": {}
+                }
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+                "configuration": {
+                  "ingress": {
+                    "external": true,
+                    "targetPort": 8000,
+                    "transport": "auto",
+                    "allowInsecure": false
+                  },
+                  "registries": [
+                    {
+                      "server": "[parameters('acrLoginServer')]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "odoo-connector",
+                      "image": "[variables('odooConnectorImage')]",
+                      "env": [
+                        {
+                          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                          "value": "[parameters('appInsightsConnectionString')]"
+                        },
+                        {
+                          "name": "ENVIRONMENT",
+                          "value": "[parameters('environment')]"
+                        },
+                        {
+                          "name": "VERSION",
+                          "value": "1.0.0"
+                        }
+                      ],
+                      "resources": {
+                        "cpu": "[json('0.25')]",
+                        "memory": "0.5Gi"
+                      },
+                      "probes": [
+                        {
+                          "type": "Liveness",
+                          "httpGet": {
+                            "path": "/health",
+                            "port": 8000
+                          },
+                          "initialDelaySeconds": 30,
+                          "periodSeconds": 30,
+                          "timeoutSeconds": 5,
+                          "failureThreshold": 3
+                        },
+                        {
+                          "type": "Readiness",
+                          "httpGet": {
+                            "path": "/health",
+                            "port": 8000
+                          },
+                          "initialDelaySeconds": 10,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 5,
+                          "failureThreshold": 3
+                        }
+                      ]
+                    }
+                  ],
+                  "scale": {
+                    "minReplicas": 0,
+                    "maxReplicas": 2,
+                    "rules": [
+                      {
+                        "name": "http-rule",
+                        "custom": {
+                          "type": "http",
+                          "metadata": {
+                            "concurrentRequests": "50"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
               ]
             }
           ],
           "outputs": {
-            "environmentName": {
-              "type": "string",
-              "value": "[variables('envName')]"
-            },
-            "environmentId": {
-              "type": "string",
-              "value": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]"
-            },
             "containerAppName": {
               "type": "string",
               "value": "[variables('containerAppName')]"
             },
-            "containerAppId": {
+            "environmentName": {
               "type": "string",
-              "value": "[resourceId('Microsoft.App/containerApps', variables('containerAppName'))]"
+              "value": "[variables('environmentName')]"
             },
             "apiUrl": {
               "type": "string",
               "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01').configuration.ingress.fqdn)]"
+            },
+            "fqdn": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01').configuration.ingress.fqdn]"
+            },
+            "odooConnectorAppName": {
+              "type": "string",
+              "value": "[variables('odooConnectorAppName')]"
+            },
+            "odooConnectorUrl": {
+              "type": "string",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName')), '2023-05-01').configuration.ingress.fqdn)]"
+            },
+            "environmentId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
             }
           }
         }
@@ -1501,241 +1746,6 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
-      "name": "functionAppDeploy",
-      "resourceGroup": "[variables('resourceGroupName')]",
-      "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
-          },
-          "environment": {
-            "value": "[parameters('environment')]"
-          },
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "tags": {
-            "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
-          },
-          "apiManagedIdentityClientId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityClientId.value]"
-          },
-          "apiManagedIdentityPrincipalId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
-          },
-          "apiManagedIdentityResourceId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityResourceId.value]"
-          },
-          "appInsightsConnectionString": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'monitoringDeploy'), '2025-04-01').outputs.connectionString.value]"
-          },
-          "storageAccountName": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'storageDeploy'), '2025-04-01').outputs.storageAccountName.value]"
-          },
-          "serviceBusNamespace": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy'), '2025-04-01').outputs.namespaceName.value]"
-          },
-          "keyVaultUri": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy'), '2025-04-01').outputs.vaultUri.value]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.43.8.12551",
-              "templateHash": "16465541355391803878"
-            }
-          },
-          "parameters": {
-            "baseName": {
-              "type": "string",
-              "metadata": {
-                "description": "Base name for resources"
-              }
-            },
-            "environment": {
-              "type": "string",
-              "metadata": {
-                "description": "Environment name"
-              }
-            },
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region"
-              }
-            },
-            "tags": {
-              "type": "object",
-              "metadata": {
-                "description": "Tags for resources"
-              }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
-            "apiManagedIdentityClientId": {
-              "type": "string",
-              "metadata": {
-                "description": "API managed identity client ID"
-              }
-            },
-            "apiManagedIdentityPrincipalId": {
-              "type": "string",
-              "metadata": {
-                "description": "API managed identity principal ID"
-              }
-            },
-            "apiManagedIdentityResourceId": {
-              "type": "string",
-              "metadata": {
-                "description": "API managed identity resource ID"
-              }
-            },
-            "appInsightsConnectionString": {
-              "type": "string",
-              "metadata": {
-                "description": "Application Insights connection string"
-              }
-            },
-            "storageAccountName": {
-              "type": "string",
-              "metadata": {
-                "description": "Storage account name"
-              }
-            },
-            "serviceBusNamespace": {
-              "type": "string",
-              "metadata": {
-                "description": "Service Bus namespace name"
-              }
-            },
-            "keyVaultUri": {
-              "type": "string",
-              "metadata": {
-                "description": "Key Vault URI"
-              }
-            }
-          },
-          "variables": {
-            "functionAppName": "[format('func-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
-            "functionPlanName": "[format('plan-{0}-func-{1}', parameters('baseName'), parameters('environment'))]"
-          },
-          "resources": [
-            {
-              "type": "Microsoft.Web/serverfarms",
-              "apiVersion": "2022-03-01",
-              "name": "[variables('functionPlanName')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "sku": {
-                "name": "Y1",
-                "tier": "Dynamic"
-              },
-              "kind": "functionapp",
-              "properties": {
-                "reserved": true
-              }
-            },
-            {
-              "type": "Microsoft.Web/sites",
-              "apiVersion": "2022-03-01",
-              "name": "[variables('functionAppName')]",
-              "location": "[parameters('location')]",
-              "tags": "[parameters('tags')]",
-              "kind": "functionapp,linux",
-              "identity": {
-                "type": "UserAssigned",
-                "userAssignedIdentities": {
-                  "[format('{0}', parameters('apiManagedIdentityResourceId'))]": {}
-                }
-              },
-              "properties": {
-                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('functionPlanName'))]",
-                "siteConfig": {
-                  "linuxFxVersion": "PYTHON|3.11",
-                  "appSettings": [
-                    {
-                      "name": "AzureWebJobsStorage__accountName",
-                      "value": "[parameters('storageAccountName')]"
-                    },
-                    {
-                      "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
-                      "value": "[parameters('appInsightsConnectionString')]"
-                    },
-                    {
-                      "name": "FUNCTIONS_EXTENSION_VERSION",
-                      "value": "~4"
-                    },
-                    {
-                      "name": "FUNCTIONS_WORKER_RUNTIME",
-                      "value": "python"
-                    },
-                    {
-                      "name": "AzureWebJobsFeatureFlags",
-                      "value": "EnableWorkerIndexing"
-                    },
-                    {
-                      "name": "AZURE_CLIENT_ID",
-                      "value": "[parameters('apiManagedIdentityClientId')]"
-                    },
-                    {
-                      "name": "KEY_VAULT_URI",
-                      "value": "[parameters('keyVaultUri')]"
-                    },
-                    {
-                      "name": "SERVICE_BUS_NAMESPACE",
-                      "value": "[parameters('serviceBusNamespace')]"
-                    }
-                  ]
-                }
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.Web/serverfarms', variables('functionPlanName'))]"
-              ]
-            }
-          ],
-          "outputs": {
-            "functionAppName": {
-              "type": "string",
-              "value": "[variables('functionAppName')]"
-            },
-            "functionAppId": {
-              "type": "string",
-              "value": "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]"
-            },
-            "functionAppDefaultHost": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName')), '2022-03-01').defaultHostName]"
-            }
-          }
-        }
-      },
-      "dependsOn": [
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy')]",
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy')]",
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'monitoringDeploy')]",
-        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]",
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy')]",
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'storageDeploy')]"
-      ]
-    },
-    {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
       "name": "aiSearchDeploy",
       "resourceGroup": "[variables('resourceGroupName')]",
       "properties": {
@@ -1744,20 +1754,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
@@ -1770,20 +1783,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "147230287185583961"
+              "templateHash": "7420018581396041391"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -1798,12 +1823,6 @@
                 "description": "Tags for resources"
               }
             },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
             "apiManagedIdentityPrincipalId": {
               "type": "string",
               "metadata": {
@@ -1812,23 +1831,26 @@
             }
           },
           "variables": {
-            "searchName": "[format('srch-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]"
+            "searchName": "[format('srch-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
               "type": "Microsoft.Search/searchServices",
-              "apiVersion": "2023-11-01",
+              "apiVersion": "2022-09-01",
               "name": "[variables('searchName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
               "sku": {
-                "name": "basic"
+                "name": "standard"
               },
               "properties": {
                 "replicaCount": 1,
                 "partitionCount": 1,
+                "publicNetworkAccess": "enabled",
+                "networkRuleSet": {
+                  "ipRules": []
+                },
                 "hostingMode": "default",
-                "publicNetworkAccess": "Enabled",
                 "authOptions": {
                   "aadOrApiKey": {
                     "aadAuthFailureMode": "http401WithBearerChallenge"
@@ -1840,21 +1862,7 @@
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]",
-              "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchindexcontributor')]",
-              "properties": {
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a00-799e-43f5-93ac-243d3dce84a7')]",
-                "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
-                "principalType": "ServicePrincipal"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]"
-              ]
-            },
-            {
-              "type": "Microsoft.Authorization/roleAssignments",
-              "apiVersion": "2022-04-01",
-              "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]",
-              "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchservicecontributor')]",
+              "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchcontributor')]",
               "properties": {
                 "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')]",
                 "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
@@ -1897,23 +1905,23 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "baseName": {
-            "value": "[parameters('baseName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
           },
           "environment": {
             "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "location": {
             "value": "[parameters('location')]"
           },
           "tags": {
             "value": "[parameters('tags')]"
-          },
-          "uniqueSuffix": {
-            "value": "[variables('uniqueSuffix')]"
-          },
-          "apiBackendUrl": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.apiUrl.value]"
           }
         },
         "template": {
@@ -1923,20 +1931,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "7666145812684865882"
+              "templateHash": "11764639082454649825"
             }
           },
           "parameters": {
-            "baseName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Base name for resources"
+                "description": "Workload name"
               }
             },
             "environment": {
               "type": "string",
               "metadata": {
                 "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "location": {
@@ -1950,30 +1970,16 @@
               "metadata": {
                 "description": "Tags for resources"
               }
-            },
-            "uniqueSuffix": {
-              "type": "string",
-              "metadata": {
-                "description": "Unique suffix for globally unique names"
-              }
-            },
-            "apiBackendUrl": {
-              "type": "string",
-              "metadata": {
-                "description": "Backend URL for AI Core API"
-              }
             }
           },
           "variables": {
-            "apimName": "[format('apim-{0}-{1}-{2}', parameters('baseName'), parameters('environment'), take(parameters('uniqueSuffix'), 8))]",
-            "apimPublisherEmail": "alden@lotslotsmore.com",
-            "apimPublisherName": "Lots Lots More AI Platform"
+            "apiManagementName": "[format('apim-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
               "type": "Microsoft.ApiManagement/service",
               "apiVersion": "2022-08-01",
-              "name": "[variables('apimName')]",
+              "name": "[variables('apiManagementName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
               "sku": {
@@ -1981,76 +1987,268 @@
                 "capacity": 0
               },
               "properties": {
-                "publisherEmail": "[variables('apimPublisherEmail')]",
-                "publisherName": "[variables('apimPublisherName')]"
+                "publisherName": "AI Platform Team",
+                "publisherEmail": "alden@lotslotsmore.com"
               }
-            },
-            {
-              "type": "Microsoft.ApiManagement/service/backends",
-              "apiVersion": "2022-08-01",
-              "name": "[format('{0}/{1}', variables('apimName'), 'ai-core-api')]",
-              "properties": {
-                "title": "AI Core API",
-                "description": "Backend for AI Core API running on Azure Container Apps",
-                "url": "[parameters('apiBackendUrl')]",
-                "protocol": "http"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
-              ]
-            },
-            {
-              "type": "Microsoft.ApiManagement/service/apis",
-              "apiVersion": "2022-08-01",
-              "name": "[format('{0}/{1}', variables('apimName'), 'ai-platform-api')]",
-              "properties": {
-                "displayName": "AI Platform API",
-                "description": "Main API for the AI Platform",
-                "serviceUrl": "[parameters('apiBackendUrl')]",
-                "path": "",
-                "protocols": [
-                  "https"
-                ],
-                "subscriptionRequired": true
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
-              ]
-            },
-            {
-              "type": "Microsoft.ApiManagement/service/apis/operations",
-              "apiVersion": "2022-08-01",
-              "name": "[format('{0}/{1}/{2}', variables('apimName'), 'ai-platform-api', 'health')]",
-              "properties": {
-                "displayName": "Health Check",
-                "method": "GET",
-                "urlTemplate": "/health",
-                "description": "Health check endpoint"
-              },
-              "dependsOn": [
-                "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'ai-platform-api')]"
-              ]
             }
           ],
           "outputs": {
             "name": {
               "type": "string",
-              "value": "[variables('apimName')]"
+              "value": "[variables('apiManagementName')]"
             },
             "id": {
               "type": "string",
-              "value": "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+              "value": "[resourceId('Microsoft.ApiManagement/service', variables('apiManagementName'))]"
             },
             "gatewayUrl": {
               "type": "string",
-              "value": "[reference(resourceId('Microsoft.ApiManagement/service', variables('apimName')), '2022-08-01').gatewayUrl]"
+              "value": "[reference(resourceId('Microsoft.ApiManagement/service', variables('apiManagementName')), '2022-08-01').gatewayUrl]"
             }
           }
         }
       },
       "dependsOn": [
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy')]",
         "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "privateEndpointsDeploy",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "workload": {
+            "value": "[parameters('workload')]"
+          },
+          "environment": {
+            "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          },
+          "vnetName": {
+            "value": "[format('vnet-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+          },
+          "vnetResourceGroupName": {
+            "value": "[variables('resourceGroupName')]"
+          },
+          "keyVaultId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy'), '2025-04-01').outputs.id.value]"
+          },
+          "storageAccountId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'storageDeploy'), '2025-04-01').outputs.id.value]"
+          },
+          "serviceBusNamespaceId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy'), '2025-04-01').outputs.id.value]"
+          },
+          "aiSearchId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.id.value]"
+          },
+          "postgresServerId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy'), '2025-04-01').outputs.id.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "4846421792045710342"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]"
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {}
+            },
+            "workload": {
+              "type": "string"
+            },
+            "environment": {
+              "type": "string"
+            },
+            "regionCode": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "vnetName": {
+              "type": "string"
+            },
+            "vnetResourceGroupName": {
+              "type": "string"
+            },
+            "subnetName": {
+              "type": "string",
+              "defaultValue": "private-endpoints"
+            },
+            "keyVaultId": {
+              "type": "string"
+            },
+            "storageAccountId": {
+              "type": "string"
+            },
+            "serviceBusNamespaceId": {
+              "type": "string"
+            },
+            "aiSearchId": {
+              "type": "string"
+            },
+            "postgresServerId": {
+              "type": "string"
+            }
+          },
+          "variables": {
+            "namePrefix": "[format('{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-11-01",
+              "name": "[format('pe-{0}-kv', variables('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "subnet": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('subnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "keyvault",
+                    "properties": {
+                      "privateLinkServiceId": "[parameters('keyVaultId')]",
+                      "groupIds": [
+                        "vault"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-11-01",
+              "name": "[format('pe-{0}-st-blob', variables('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "subnet": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('subnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "storageblob",
+                    "properties": {
+                      "privateLinkServiceId": "[parameters('storageAccountId')]",
+                      "groupIds": [
+                        "blob"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-11-01",
+              "name": "[format('pe-{0}-sb', variables('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "subnet": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('subnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "servicebus",
+                    "properties": {
+                      "privateLinkServiceId": "[parameters('serviceBusNamespaceId')]",
+                      "groupIds": [
+                        "namespace"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-11-01",
+              "name": "[format('pe-{0}-srch', variables('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "subnet": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('subnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "search",
+                    "properties": {
+                      "privateLinkServiceId": "[parameters('aiSearchId')]",
+                      "groupIds": [
+                        "searchService"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-11-01",
+              "name": "[format('pe-{0}-psql', variables('namePrefix'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "subnet": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks/subnets', parameters('vnetName'), parameters('subnetName'))]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "postgres",
+                    "properties": {
+                      "privateLinkServiceId": "[parameters('postgresServerId')]",
+                      "groupIds": [
+                        "postgresqlServer"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'storageDeploy')]"
       ]
     },
     {
@@ -2064,8 +2262,17 @@
         },
         "mode": "Incremental",
         "parameters": {
-          "resourceGroupName": {
-            "value": "[variables('resourceGroupName')]"
+          "workload": {
+            "value": "[parameters('workload')]"
+          },
+          "environment": {
+            "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
           },
           "budgetAmount": {
             "value": "[parameters('budgetAmount')]"
@@ -2084,14 +2291,32 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "10604485647182781334"
+              "templateHash": "9403058738403970637"
             }
           },
           "parameters": {
-            "resourceGroupName": {
+            "workload": {
               "type": "string",
               "metadata": {
-                "description": "Resource group name"
+                "description": "Workload name"
+              }
+            },
+            "environment": {
+              "type": "string",
+              "metadata": {
+                "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
               }
             },
             "budgetAmount": {
@@ -2103,18 +2328,18 @@
             "startDate": {
               "type": "string",
               "metadata": {
-                "description": "Budget start date (yyyy-MM-dd)"
+                "description": "Budget start date"
               }
             },
             "endDate": {
               "type": "string",
               "metadata": {
-                "description": "Budget end date (yyyy-MM-dd)"
+                "description": "Budget end date"
               }
             }
           },
           "variables": {
-            "budgetName": "[format('budget-{0}', parameters('resourceGroupName'))]"
+            "budgetName": "[format('budget-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
           },
           "resources": [
             {
@@ -2130,28 +2355,26 @@
                   "endDate": "[parameters('endDate')]"
                 },
                 "notifications": {
-                  "Alert50": {
-                    "enabled": true,
-                    "operator": "GreaterThan",
-                    "threshold": 50,
-                    "contactEmails": [
-                      "alden@lotslotsmore.com"
-                    ]
-                  },
-                  "Alert80": {
+                  "80Percent": {
                     "enabled": true,
                     "operator": "GreaterThan",
                     "threshold": 80,
                     "contactEmails": [
                       "alden@lotslotsmore.com"
+                    ],
+                    "contactRoles": [
+                      "Owner"
                     ]
                   },
-                  "Alert100": {
+                  "100Percent": {
                     "enabled": true,
                     "operator": "GreaterThan",
                     "threshold": 100,
                     "contactEmails": [
                       "alden@lotslotsmore.com"
+                    ],
+                    "contactRoles": [
+                      "Owner"
                     ]
                   }
                 }
@@ -2162,6 +2385,121 @@
             "budgetName": {
               "type": "string",
               "value": "[variables('budgetName')]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "staticWebAppDeploy",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "workload": {
+            "value": "[parameters('workload')]"
+          },
+          "environment": {
+            "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "9608361460635396642"
+            }
+          },
+          "parameters": {
+            "workload": {
+              "type": "string",
+              "metadata": {
+                "description": "Workload name"
+              }
+            },
+            "environment": {
+              "type": "string",
+              "metadata": {
+                "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "global",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Tags for resources"
+              }
+            }
+          },
+          "variables": {
+            "staticSiteName": "[format('swa-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Web/staticSites",
+              "apiVersion": "2022-09-01",
+              "name": "[variables('staticSiteName')]",
+              "location": "[if(equals(parameters('location'), 'southafricanorth'), 'westeurope', parameters('location'))]",
+              "tags": "[parameters('tags')]",
+              "sku": {
+                "name": "Free",
+                "tier": "Free"
+              },
+              "properties": {
+                "allowConfigFileUpdates": true,
+                "enterpriseGradeCdnStatus": "Disabled"
+              }
+            }
+          ],
+          "outputs": {
+            "name": {
+              "type": "string",
+              "value": "[variables('staticSiteName')]"
+            },
+            "defaultHostname": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Web/staticSites', variables('staticSiteName')), '2022-09-01').defaultHostname]"
             }
           }
         }
@@ -2220,10 +2558,6 @@
       "type": "string",
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.environmentName.value]"
     },
-    "functionAppName": {
-      "type": "string",
-      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'functionAppDeploy'), '2025-04-01').outputs.functionAppName.value]"
-    },
     "aiSearchName": {
       "type": "string",
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.name.value]"
@@ -2247,6 +2581,22 @@
     "apiUrl": {
       "type": "string",
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.apiUrl.value]"
+    },
+    "odooConnectorAppName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.odooConnectorAppName.value]"
+    },
+    "odooConnectorUrl": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.odooConnectorUrl.value]"
+    },
+    "staticSiteName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'staticWebAppDeploy'), '2025-04-01').outputs.name.value]"
+    },
+    "staticSiteDefaultHostname": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'staticWebAppDeploy'), '2025-04-01').outputs.defaultHostname.value]"
     }
   }
 }

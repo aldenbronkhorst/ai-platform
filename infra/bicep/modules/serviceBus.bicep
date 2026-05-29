@@ -78,6 +78,6 @@ resource sbReceiverRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 output namespaceName string = serviceBusNamespace.name
-output namespaceId string = serviceBusNamespace.id
+output id string = serviceBusNamespace.id
 output namespaceEndpoint string = serviceBusNamespace.properties.serviceBusEndpoint
 output queueNames array = queueNames

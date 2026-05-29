@@ -224,6 +224,27 @@ module apiManagement 'modules/apiManagement.bicep' = {
   }
 }
 
+// Module: Private Endpoints (requires pre-existing VNet with private-endpoints subnet)
+module privateEndpoints 'modules/privateEndpoints.bicep' = {
+  name: 'privateEndpointsDeploy'
+  scope: rg
+  params: {
+    workload: workload
+    environment: environment
+    regionCode: regionCode
+    instance: instance
+    location: location
+    tags: tags
+    vnetName: 'vnet-${workload}-${environment}-${regionCode}-${instance}'
+    vnetResourceGroupName: resourceGroupName
+    keyVaultId: keyVault.outputs.id
+    storageAccountId: storage.outputs.id
+    serviceBusNamespaceId: serviceBus.outputs.id
+    aiSearchId: aiSearch.outputs.id
+    postgresServerId: postgres.outputs.id
+  }
+}
+
 // Module: Budget
 module budget 'modules/budget.bicep' = {
   name: 'budgetDeploy'

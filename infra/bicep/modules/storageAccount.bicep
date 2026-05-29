@@ -83,5 +83,5 @@ resource blobContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01
 }
 
 output storageAccountName string = storageAccount.name
-output storageAccountId string = storageAccount.id
+output id string = storageAccount.id
 output primaryEndpoints object = storageAccount.properties.primaryEndpoints
