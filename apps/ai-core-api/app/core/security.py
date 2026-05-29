@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.models import AIUser
+from datetime import datetime
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -176,6 +177,21 @@ async def api_key_auth(
 
     # Validate temporary production API key (will log warning to transition to JWT)
     if api_key and api_key == settings.api_key:
+        # Auto-provision user if they don't exist (API key is a fallback auth)
+        result = await db.execute(select(AIUser).where(AIUser.id == target_user_id))
+        existing_user = result.scalar_one_or_none()
+        if not existing_user:
+            db_user = AIUser(
+                id=target_user_id,
+                email=f"api-key-{target_user_id}@internal",
+                display_name=f"API User ({str(target_user_id)[:8]})",
+                role="admin",
+                is_active="true",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            db.add(db_user)
+            await db.commit()
         return {"user_id": target_user_id, "email": "api-key@local", "roles": ["AIPlatform.Admin"], "mode": "api-key"}
 
     raise HTTPException(
