@@ -1,3 +1,4 @@
+import logging
 import xmlrpc.client
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -8,6 +9,25 @@ from app.routers import health, schema, records, execute_kw, attachments, messag
 
 settings = get_settings()
 
+# Application Insights telemetry
+if settings.appinsights_connection_string:
+    from opencensus.ext.azure.log_exporter import AzureLogHandler
+    from opencensus.ext.azure.trace_exporter import AzureExporter
+    from opencensus.trace.samplers import ProbabilitySampler
+    from opencensus.trace.tracer import Tracer
+    from opencensus.trace.span import SpanKind
+
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    logger.addHandler(AzureLogHandler(connection_string=settings.appinsights_connection_string))
+
+    tracer = Tracer(
+        exporter=AzureExporter(connection_string=settings.appinsights_connection_string),
+        sampler=ProbabilitySampler(1.0),
+    )
+else:
+    tracer = None
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -15,6 +35,22 @@ app = FastAPI(
 )
 
 app.add_middleware(CorrelationIdMiddleware)
+
+
+@app.middleware("http")
+async def appinsights_middleware(request: Request, call_next):
+    if tracer:
+        with tracer.span(name=f"{request.method} {request.url.path}") as span:
+            span.span_kind = SpanKind.SERVER
+            span.add_attribute("http.method", request.method)
+            span.add_attribute("http.path", request.url.path)
+            span.add_attribute("http.target", str(request.url))
+            response = await call_next(request)
+            span.add_attribute("http.status_code", response.status_code)
+            return response
+    else:
+        return await call_next(request)
+
 
 app.include_router(health.router, tags=["Health"])
 app.include_router(schema.router, prefix="/schema", tags=["Schema"])

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     execute_kw_allow_write_methods: bool = os.environ.get("EXECUTE_KW_ALLOW_WRITE", "false").lower() == "true"
     execute_kw_blocked_methods: str = os.environ.get("EXECUTE_KW_BLOCKED_METHODS", "")
 
+    # Application Insights
+    appinsights_connection_string: str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
