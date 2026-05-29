@@ -129,12 +129,14 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
             "mode": "entra-jwt"
         }
 
-    except jwt.ExpiredSignatureError:
+    except jwt.ExpiredSignatureError as e:
+        print(f"Token validation failed (ExpiredSignatureError): {e}", flush=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token signature has expired."
         )
     except jwt.InvalidTokenError as e:
+        print(f"Token validation failed (InvalidTokenError): {e}", flush=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid JWT: {e}"
