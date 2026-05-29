@@ -14,8 +14,9 @@ async def get_context(
     db: AsyncSession = Depends(get_db),
     auth=Depends(api_key_auth),
 ):
+    user_id = auth.get("user_id")
     svc = ContextService(db)
-    result = await svc.get_context(req)
+    result = await svc.get_context(req, user_id=user_id)
     return {
         "rules": [AIRuleResponse.model_validate(r) for r in result["rules"]],
         "facts": [AICompanyFactResponse.model_validate(f) for f in result["facts"]],
