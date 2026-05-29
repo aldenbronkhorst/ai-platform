@@ -14,9 +14,11 @@ from app.core.database import get_db
 # Mock DB dependency completely
 async def mock_get_db():
     session = AsyncMock()
-    # Make execute() return a mock result with awaitable scalar_one_or_none
+    # Make execute() return a mock result with scalar_one_or_none as sync method
     result_mock = AsyncMock()
-    result_mock.scalar_one_or_none = AsyncMock(return_value=None)
+    result_mock.scalar_one_or_none = lambda self=None: None
+    result_mock.scalars = lambda self=None: result_mock
+    result_mock.all = lambda self=None: []
     session.execute = AsyncMock(return_value=result_mock)
     yield session
 
@@ -190,8 +192,8 @@ class TestIdentityModeTracking:
             assert response.status_code == 200
             
             # Verify identity_mode was forwarded
-            call_kwargs = mock_call.call_args[1]
-            payload = call_kwargs.get("json", {})
+            args = mock_call.call_args[0]
+            payload = args[2] if len(args) > 2 else {}
             assert payload.get("identity_mode") == "user-delegated"
     
     def test_target_environment_forwarded(self):
@@ -214,7 +216,7 @@ class TestIdentityModeTracking:
             assert response.status_code == 200
             
             # Verify target_environment and operation_mode were forwarded
-            call_kwargs = mock_call.call_args[1]
-            payload = call_kwargs.get("json", {})
+            args = mock_call.call_args[0]
+            payload = args[2] if len(args) > 2 else {}
             assert payload.get("target_environment") == "production"
             assert payload.get("operation_mode") == "read-only"
