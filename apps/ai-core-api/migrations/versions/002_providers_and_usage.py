@@ -1,6 +1,6 @@
-"""add chat tables + model provider tables
+"""add provider/model/route/usage tables (chat tables already exist)
 
-Revision ID: 002_chat_and_providers
+Revision ID: 002_providers_and_usage
 Revises: 001_initial
 Create Date: 2026-05-29
 
@@ -11,58 +11,13 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 
-revision: str = "002_chat_and_providers"
+revision: str = "002_providers_and_usage"
 down_revision: Union[str, None] = "001_initial"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "ai_chat_sessions",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("ai_users.id"), nullable=False, index=True),
-        sa.Column("title", sa.String(255), nullable=False),
-        sa.Column("status", sa.String(20), nullable=False, server_default="active"),
-        sa.Column("workflow_context", sa.String(100), nullable=True),
-        sa.Column("last_message_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("metadata_json", sa.JSON, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_chat_messages",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("chat_session_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_sessions.id"), nullable=False, index=True),
-        sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("ai_users.id"), nullable=False, index=True),
-        sa.Column("role", sa.String(20), nullable=False),
-        sa.Column("content", sa.Text, nullable=False),
-        sa.Column("model_provider", sa.String(100), nullable=True),
-        sa.Column("model_name", sa.String(100), nullable=True),
-        sa.Column("token_usage_json", sa.JSON, nullable=True),
-        sa.Column("tool_call_json", sa.JSON, nullable=True),
-        sa.Column("metadata_json", sa.JSON, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_chat_artifacts",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("chat_session_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_sessions.id"), nullable=False, index=True),
-        sa.Column("artifact_id", UUID(as_uuid=True), sa.ForeignKey("ai_artifacts.id"), nullable=False, index=True),
-        sa.Column("linked_message_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_messages.id"), nullable=True, index=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_chat_jobs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("chat_session_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_sessions.id"), nullable=False, index=True),
-        sa.Column("job_id", UUID(as_uuid=True), sa.ForeignKey("ai_jobs.id"), nullable=False, index=True),
-        sa.Column("linked_message_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_messages.id"), nullable=True, index=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
     op.create_table(
         "ai_providers",
         sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
@@ -131,7 +86,3 @@ def downgrade() -> None:
     op.drop_table("ai_routes")
     op.drop_table("ai_models")
     op.drop_table("ai_providers")
-    op.drop_table("ai_chat_jobs")
-    op.drop_table("ai_chat_artifacts")
-    op.drop_table("ai_chat_messages")
-    op.drop_table("ai_chat_sessions")
