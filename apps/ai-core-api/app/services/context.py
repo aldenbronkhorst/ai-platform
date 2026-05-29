@@ -1,8 +1,13 @@
-from typing import List
+"""Context service: builds scoped context for the model from rules, facts, tools.
+
+Respects connector availability so that tools and rules for disconnected systems
+are not injected as available capabilities.
+"""
+from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
-from app.models.models import AIRule, AICompanyFact, AITool
+from app.models.models import AIRule, AICompanyFact, AITool, AIConnectedAccount
 from app.schemas.schemas import ContextRequest
 
 
@@ -10,8 +15,26 @@ class ContextService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_context(self, req: ContextRequest) -> dict:
-        # Fetch relevant rules
+    async def _get_connected_systems(self, user_id: Optional[UUID]) -> set[str]:
+        """Return the set of systems the user has connected accounts for."""
+        if not user_id:
+            return set()
+        result = await self.db.execute(
+            select(AIConnectedAccount).where(
+                AIConnectedAccount.user_id == user_id,
+                or_(
+                    AIConnectedAccount.status == "connected",
+                    AIConnectedAccount.status == "active",
+                ),
+            )
+        )
+        accounts = result.scalars().all()
+        return {a.provider for a in accounts}
+
+    async def get_context(self, req: ContextRequest, user_id: Optional[UUID] = None) -> dict:
+        connected_systems = await self._get_connected_systems(user_id)
+
+        # ── Fetch relevant rules ──
         rules_query = select(AIRule).where(
             and_(
                 AIRule.status == "active",
@@ -45,7 +68,16 @@ class ContextService:
         rules_result = await self.db.execute(rules_query)
         rules = rules_result.scalars().all()
 
-        # Fetch relevant facts
+        # Filter rules: exclude system-scoped rules for disconnected systems
+        filtered_rules = []
+        for rule in rules:
+            if rule.scope_type == "system" and rule.scope_value:
+                # System-scoped rule: only include if that system is connected
+                if rule.scope_value not in connected_systems:
+                    continue
+            filtered_rules.append(rule)
+
+        # ── Fetch relevant facts (limit to connected systems unless global) ──
         facts_query = select(AICompanyFact).where(
             or_(
                 AICompanyFact.effective_from.is_(None),
@@ -60,16 +92,41 @@ class ContextService:
         facts_result = await self.db.execute(facts_query)
         facts = facts_result.scalars().all()
 
-        # Fetch relevant tools for the requested systems
+        # Filter facts: exclude system-connector facts for disconnected systems
+        SYSTEM_FACT_PREFIXES = ("odoo_", "github_", "azure_", "m365_")
+        filtered_facts = []
+        for fact in facts:
+            should_skip = False
+            for prefix in SYSTEM_FACT_PREFIXES:
+                if fact.key.startswith(prefix):
+                    system_name = prefix.rstrip("_")
+                    if system_name not in connected_systems:
+                        should_skip = True
+                        break
+            if not should_skip:
+                filtered_facts.append(fact)
+
+        # ── Fetch relevant tools (only for connected or requested systems) ──
         tools_query = select(AITool).where(AITool.status == "active")
+
+        # Determine which systems to include: requested systems OR connected systems
+        target_systems = set()
         if req.systems:
-            tools_query = tools_query.where(AITool.target_system.in_(req.systems))
+            target_systems.update(req.systems)
+        target_systems.update(connected_systems)
+
+        if target_systems:
+            tools_query = tools_query.where(AITool.target_system.in_(target_systems))
+        else:
+            # No connected or requested systems: only show AI-platform tools
+            tools_query = tools_query.where(AITool.target_system == "ai-platform")
+
         tools_query = tools_query.limit(req.limit)
         tools_result = await self.db.execute(tools_query)
         tools = tools_result.scalars().all()
 
         return {
-            "rules": rules,
-            "facts": facts,
+            "rules": filtered_rules,
+            "facts": filtered_facts,
             "tools": tools,
         }

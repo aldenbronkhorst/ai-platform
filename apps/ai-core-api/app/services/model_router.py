@@ -8,12 +8,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog
+from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount
 from app.services.foundry_client import FoundryClient
 
 logger = logging.getLogger(__name__)
 
 ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure a model in Settings \u2192 AI Configuration."
+
+CANONICAL_SYSTEM_PROMPT = (
+    "You are the AI Platform for Lots Lots More. "
+    "You help employees work across company knowledge, workflows, documents, "
+    "tasks, connected accounts, and business systems. "
+    "You are not tied to one system. "
+    "You may use connected tools such as Odoo, GitHub, Azure, Microsoft 365, "
+    "documents, and future connectors only when they are available, authorised, "
+    "and relevant. "
+    "Never claim live access to a system unless that connector is connected and "
+    "permitted for the current user. "
+    "If a required connector is not connected, explain that clearly and guide "
+    "the user to Connected Accounts. "
+    "Keep responses practical, business-focused, and clear."
+)
 
 
 class RouteNotFoundError(Exception):
@@ -97,6 +112,49 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
     )
 
 
+KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure", "microsoft_365", "azure_devops"]
+
+
+async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> str:
+    """Build a connector-availability context block for the current user.
+
+    Queries AIConnectedAccount for the user and returns a human-readable
+    block that the model can use to know which systems are actually available.
+    """
+    lines: list[str] = ["Connected Account Status:"]
+    if not user_id:
+        lines.append("  (no authenticated user context)")
+        return "\n".join(lines)
+
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == user_id,
+        )
+    )
+    accounts = result.scalars().all()
+
+    conn_map: dict[str, str] = {}
+    for acct in accounts:
+        status = acct.status
+        if status == "connected":
+            conn_map[acct.provider] = "connected"
+        elif status == "active":
+            conn_map[acct.provider] = "connected"
+        else:
+            conn_map[acct.provider] = status
+
+    for conn_type in KNOWN_CONNECTOR_TYPES:
+        display_name = conn_type.replace("_", " ").title()
+        if conn_type in conn_map:
+            status = conn_map[conn_type]
+            icon = "✓" if status == "connected" else "✗"
+            lines.append(f"  {icon} {display_name}: {status}")
+        else:
+            lines.append(f"  - {display_name}: not connected")
+
+    return "\n".join(lines)
+
+
 async def execute_chat(
     db: AsyncSession,
     messages: list,
@@ -108,7 +166,12 @@ async def execute_chat(
 
     client = await build_foundry_client(provider, model)
 
-    system_prompt = route.system_prompt
+    # Build system prompt with dynamic connector context
+    system_prompt = route.system_prompt or ""
+    connector_context = await _get_connector_context(db, user_id)
+    if connector_context:
+        system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
+
     if system_prompt:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
     else:
