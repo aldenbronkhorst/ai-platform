@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
@@ -21,7 +21,6 @@ import {
   XCircle, 
   AlertTriangle,
   HardDrive,
-  Cpu,
   Eye,
   Key,
   ExternalLink,
@@ -33,7 +32,12 @@ import {
   ClipboardList,
   Compass,
   Play,
-  ChevronDown
+  ChevronDown,
+  Paperclip,
+  Mic,
+  MicOff,
+  CornerDownLeft,
+  X
 } from "lucide-react";
 
 // API base URL pointing to the production APIM Gateway (which routes to AI Core API)
@@ -50,6 +54,25 @@ interface UserProfile {
   email: string;
   displayName: string;
   roles: string[];
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  status: string;
+  workflow_context?: string;
+  created_at: string;
+  last_message_at: string;
+}
+
+interface ChatMessage {
+  id: string;
+  chat_session_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  created_at: string;
+  model_name?: string;
+  metadata_json?: any;
 }
 
 interface WorkflowCard {
@@ -185,38 +208,47 @@ const BUSINESS_WORKFLOWS: WorkflowCard[] = [
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
   const { instance, accounts, inProgress } = useMsal();
 
-  // Tab State (Redirected to Workflows first!)
+  // Navigation Tabs
   const [activeTab, setActiveTab] = useState<string>("workflows");
 
-  // Profile overlay menu visibility state (bottom-left)
+  // Profile overlay menu states
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState<boolean>(false);
-
-  // MSAL / Entra ID Auth Error state
   const [authError, setAuthError] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
 
-  // Local Mock Auth States (local-only)
+  // Local Mock Auth States
   const [localMockAuthenticated, setLocalMockAuthenticated] = useState<boolean>(false);
   const [localMockUser, setLocalMockUser] = useState<UserProfile | null>(null);
 
-  // Unified active user derived from active auth method
+  // Unified active user
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
   const [accessToken, setAccessToken] = useState<string>("");
+
+  // Multiple Chat Sessions States
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
+  const [isSessionsLoading, setIsSessionsLoading] = useState<boolean>(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isMessagesLoading, setIsMessagesLoading] = useState<boolean>(false);
+  const [chatInput, setChatInput] = useState<string>("");
+  const [isChatSending, setIsChatSending] = useState<boolean>(false);
+
+  // Unused Job/Blob technical detail toggle
+  const [expandedTraceMsgs, setExpandedTraceMsgs] = useState<Record<string, boolean>>({});
+
+  // File Upload State
+  const [attachedFiles, setAttachedFiles] = useState<Array<{ file: File; id?: string; uploading: boolean }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Voice Input State
+  const [voiceState, setVoiceState] = useState<"idle" | "listening" | "processing" | "unsupported" | "denied">("idle");
+  const recognitionRef = useRef<any>(null);
 
   // Workflow orchestration states
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowCard | null>(null);
   const [workflowInputs, setWorkflowInputs] = useState<Record<string, string>>({});
   const [isWorkflowRunning, setIsWorkflowRunning] = useState<boolean>(false);
   const [workflowOutcome, setWorkflowOutcome] = useState<any | null>(null);
-  const [activeWorkflowContext, setActiveWorkflowContext] = useState<WorkflowCard | null>(null);
-
-  // Chat States
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: "user" | "bot"; text: string; timestamp: Date; systemInfo?: any; contextWorkflow?: string }>>([
-    { sender: "bot", text: "Hello! I am your AI Core assistant. I am connected securely to the AI Platform. How can I help you manage your business systems today?", timestamp: new Date() }
-  ]);
-  const [chatInput, setChatInput] = useState<string>("");
-  const [isChatSending, setIsChatSending] = useState<boolean>(false);
-  const [useOdooJob, setUseOdooJob] = useState<boolean>(false);
 
   // Connected Accounts States
   const [odooStatus, setOdooStatus] = useState<any>({ status: "not_connected" });
@@ -252,7 +284,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     const activeAccount = instance.getActiveAccount() || (accounts.length > 0 ? accounts[0] : null);
     
     if (activeAccount) {
-      // Decode user roles if present in token claims, or default
       const idTokenClaims = activeAccount.idTokenClaims as any;
       const roles = idTokenClaims?.roles || ["AIPlatform.User"];
 
@@ -264,15 +295,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       
       setAuthError(null);
 
-      // Acquire JWT access token silently
+      // Acquire access token silently
       instance.acquireTokenSilent({
         ...loginRequest,
         account: activeAccount
       }).then(response => {
         setAccessToken(response.accessToken);
       }).catch(err => {
-        console.warn("Silent token acquisition failed:", err);
-        setAuthError(`Token acquisition failed: ${err.message || err}. Please try signing in again.`);
+        console.warn("Silent token acquisition failed, prompting login:", err);
+        setAuthError(`Token acquisition failed. Please sign in again.`);
       });
     } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
       setActiveUser(localMockUser);
@@ -284,7 +315,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   }, [accounts, localMockAuthenticated, localMockUser, instance]);
 
-  // Fetch Odoo Status, Audit Logs, Jobs on tab switches
+  // Fetch Chat Sessions on load
+  useEffect(() => {
+    if (accessToken) {
+      fetchChatSessions();
+      fetchOdooStatus();
+    }
+  }, [accessToken]);
+
+  // Fetch Odoo, Audit, Jobs, and Artifacts on active Tab changes
   useEffect(() => {
     if (!accessToken) return;
     if (activeTab === "connected-accounts") fetchOdooStatus();
@@ -292,6 +331,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (activeTab === "jobs") fetchJobs();
     if (activeTab === "artifacts") fetchArtifacts();
   }, [activeTab, accessToken]);
+
+  // Sync active message list when chat session changes
+  useEffect(() => {
+    if (activeSession && accessToken) {
+      fetchSessionMessages(activeSession.id);
+    } else {
+      setChatMessages([]);
+    }
+  }, [activeSession]);
 
   const getRequestHeaders = () => {
     return {
@@ -302,11 +350,228 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   const hasRole = (allowedRoles: string[]) => {
     if (!activeUser) return false;
-    // Admins bypass role checks
     if (activeUser.roles.includes("AIPlatform.Admin")) return true;
     return activeUser.roles.some(r => allowedRoles.includes(r));
   };
 
+  // --- VOICE INPUT (WEB SPEECH API) ---
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setVoiceState("unsupported");
+    } else {
+      const rec = new SpeechRecognition();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = "en-US";
+
+      rec.onstart = () => setVoiceState("listening");
+      rec.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setChatInput(prev => (prev ? prev + " " + transcript : transcript));
+        setVoiceState("processing");
+      };
+      rec.onerror = (e: any) => {
+        console.error("Speech error:", e);
+        if (e.error === "not-allowed") {
+          setVoiceState("denied");
+        } else {
+          setVoiceState("idle");
+        }
+      };
+      rec.onend = () => {
+        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
+      };
+      recognitionRef.current = rec;
+    }
+  }, []);
+
+  const handleToggleVoice = () => {
+    if (voiceState === "unsupported") return;
+    if (voiceState === "listening") {
+      recognitionRef.current.stop();
+    } else {
+      try {
+        recognitionRef.current.start();
+      } catch (err) {
+        console.error("Could not start recognition:", err);
+      }
+    }
+  };
+
+  // --- MULTIPLE CHAT SESSIONS API ---
+  const fetchChatSessions = async () => {
+    if (!accessToken) return;
+    setIsSessionsLoading(true);
+    try {
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
+        headers: getRequestHeaders()
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setChatSessions(data);
+        if (data.length > 0 && !activeSession) {
+          setActiveSession(data[0]);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch chat sessions:", err);
+    } finally {
+      setIsSessionsLoading(false);
+    }
+  };
+
+  const createNewChat = async (workflowContext?: string) => {
+    if (!accessToken) return;
+    try {
+      const title = workflowContext ? `${BUSINESS_WORKFLOWS.find(w=>w.id===workflowContext)?.title} Review` : "New Chat";
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
+        method: "POST",
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ title, workflow_context: workflowContext })
+      });
+      if (response.ok) {
+        const newSess = await response.json();
+        setChatSessions(prev => [newSess, ...prev]);
+        setActiveSession(newSess);
+        setActiveTab("chat");
+      }
+    } catch (err) {
+      console.error("Failed to create new chat session:", err);
+    }
+  };
+
+  const fetchSessionMessages = async (sid: string) => {
+    setIsMessagesLoading(true);
+    try {
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, {
+        headers: getRequestHeaders()
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setChatMessages(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch session messages:", err);
+    } finally {
+      setIsMessagesLoading(false);
+    }
+  };
+
+  const deleteChatSession = async (sid: string) => {
+    if (!confirm("Are you sure you want to archive/delete this chat session?")) return;
+    try {
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions/${sid}`, {
+        method: "DELETE",
+        headers: getRequestHeaders()
+      });
+      if (response.ok) {
+        setChatSessions(prev => prev.filter(s => s.id !== sid));
+        if (activeSession?.id === sid) {
+          setActiveSession(null);
+        }
+        fetchChatSessions();
+      }
+    } catch (err) {
+      console.error("Delete session failed:", err);
+    }
+  };
+
+  // --- FILE UPLOADS IN CHAT ---
+  const handleTriggerUpload = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || !accessToken) return;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.size > 15 * 1024 * 1024) {
+        alert(`File ${file.name} exceeds 15MB limit.`);
+        continue;
+      }
+
+      const tempId = Math.random().toString();
+      setAttachedFiles(prev => [...prev, { file, id: tempId, uploading: true }]);
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("artifact_type", "job-file");
+      formData.append("filename", file.name);
+      formData.append("mime_type", file.type || "application/octet-stream");
+
+      try {
+        const response = await fetch(`${APIM_BASE_URL}/artifacts`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`
+          },
+          body: formData
+        });
+        if (response.ok) {
+          const art = await response.json();
+          setAttachedFiles(prev => prev.map(f => f.id === tempId ? { file, id: art.id, uploading: false } : f));
+        } else {
+          setAttachedFiles(prev => prev.filter(f => f.id !== tempId));
+          alert(`Failed to upload ${file.name}.`);
+        }
+      } catch (err) {
+        setAttachedFiles(prev => prev.filter(f => f.id !== tempId));
+        console.error("File upload error:", err);
+      }
+    }
+  };
+
+  const handleRemoveFile = (id: string) => {
+    setAttachedFiles(prev => prev.filter(f => f.id !== id));
+  };
+
+  // --- POST MESSAGE & CHAT ASSISTANT ---
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken || !activeSession) return;
+
+    const userMsgContent = chatInput;
+    setChatInput("");
+    setIsChatSending(true);
+
+    const artIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
+    setAttachedFiles([]);
+
+    const tempUserMsg: ChatMessage = {
+      id: Math.random().toString(),
+      chat_session_id: activeSession.id,
+      role: "user",
+      content: userMsgContent,
+      created_at: new Date().toISOString()
+    };
+    setChatMessages(prev => [...prev, tempUserMsg]);
+
+    try {
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions/${activeSession.id}/messages`, {
+        method: "POST",
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+          content: userMsgContent,
+          artifact_ids: artIds,
+          workflow_context: activeSession.workflow_context
+        })
+      });
+      if (response.ok) {
+        const botMsg = await response.json();
+        setChatMessages(prev => [...prev, botMsg]);
+        fetchChatSessions();
+      }
+    } catch (err) {
+      console.error("Failed to send chat message:", err);
+    } finally {
+      setIsChatSending(false);
+    }
+  };
+
+  // --- STANDARD ODOO MANAGEMENT CONNECTIONS ---
   const fetchOdooStatus = async () => {
     if (!accessToken) return;
     setIsStatusLoading(true);
@@ -427,6 +692,70 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
+  // --- EXECUTIONS OF GUIDED BUSINESS WORKFLOWS ---
+  const handleRunWorkflow = async () => {
+    if (!selectedWorkflow || !accessToken) return;
+    setIsWorkflowRunning(true);
+    setWorkflowOutcome(null);
+
+    try {
+      let endpoint = "/tools/odoo/search-read";
+      let payload: Record<string, any> = {
+        create_job: true,
+        job_title: `${selectedWorkflow.title}: ${Object.values(workflowInputs).join(", ")}`,
+        identity_mode: "user-delegated"
+      };
+
+      if (selectedWorkflow.id === "attendance_review" || selectedWorkflow.id === "attendance_exceptions") {
+        payload.model = "hr.attendance";
+        payload.limit = 5;
+      } else if (selectedWorkflow.id === "credit_note_review") {
+        payload.model = "account.move";
+        payload.domain = [["move_type", "=", "out_refund"]];
+        payload.limit = 3;
+      } else if (selectedWorkflow.id === "outstanding_tasks") {
+        payload.model = "project.task";
+        payload.limit = 5;
+      } else {
+        payload.model = "res.partner";
+        payload.limit = 1;
+      }
+
+      const response = await fetch(`${APIM_BASE_URL}${endpoint}`, {
+        method: "POST",
+        headers: getRequestHeaders(),
+        body: JSON.stringify(payload)
+      });
+      
+      const data = await response.json();
+      if (response.ok) {
+        setWorkflowOutcome({
+          success: true,
+          message: `Successfully executed the ${selectedWorkflow.title} workflow.`,
+          details: data.records || data,
+          jobId: data._job?.job_id,
+          artifactId: data._job?.artifact_id
+        });
+        fetchJobs();
+        fetchArtifacts();
+      } else {
+        setWorkflowOutcome({
+          success: false,
+          message: data.detail || "Workflow execution failed. Ensure Odoo is connected."
+        });
+      }
+    } catch (err: any) {
+      setWorkflowOutcome({ success: false, message: `Connection error: ${err.message}` });
+    } finally {
+      setIsWorkflowRunning(false);
+    }
+  };
+
+  const handleLaunchContextualChat = (workflow: WorkflowCard) => {
+    createNewChat(workflow.id);
+  };
+
+  // --- ADMIN PORTAL SERVICES ---
   const fetchAuditLogs = async () => {
     if (!accessToken) return;
     setIsAuditLoading(true);
@@ -481,139 +810,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
-  // Run Guided Business Workflow
-  const handleRunWorkflow = async () => {
-    if (!selectedWorkflow || !accessToken) return;
-    setIsWorkflowRunning(true);
-    setWorkflowOutcome(null);
-
-    try {
-      // Simulate real Odoo operations behind business workflow logic
-      let endpoint = "/tools/odoo/search-read";
-      let payload: Record<string, any> = {
-        create_job: true,
-        job_title: `${selectedWorkflow.title}: ${Object.values(workflowInputs).join(", ")}`,
-        identity_mode: "user-delegated"
-      };
-
-      if (selectedWorkflow.id === "attendance_review" || selectedWorkflow.id === "attendance_exceptions") {
-        payload.model = "hr.attendance";
-        payload.limit = 5;
-      } else if (selectedWorkflow.id === "credit_note_review") {
-        payload.model = "account.move";
-        payload.domain = [["move_type", "=", "out_refund"]];
-        payload.limit = 3;
-      } else if (selectedWorkflow.id === "outstanding_tasks") {
-        payload.model = "project.task";
-        payload.limit = 5;
-      } else {
-        payload.model = "res.partner";
-        payload.limit = 1;
-      }
-
-      const response = await fetch(`${APIM_BASE_URL}${endpoint}`, {
-        method: "POST",
-        headers: getRequestHeaders(),
-        body: JSON.stringify(payload)
-      });
-      
-      const data = await response.json();
-      if (response.ok) {
-        setWorkflowOutcome({
-          success: true,
-          message: `Successfully executed the ${selectedWorkflow.title} workflow.`,
-          details: data.records || data,
-          jobId: data._job?.job_id,
-          artifactId: data._job?.artifact_id
-        });
-      } else {
-        setWorkflowOutcome({
-          success: false,
-          message: data.detail || "Workflow execution failed. Ensure Odoo is connected."
-        });
-      }
-    } catch (err: any) {
-      setWorkflowOutcome({ success: false, message: `Connection error: ${err.message}` });
-    } finally {
-      setIsWorkflowRunning(false);
-    }
-  };
-
-  // Launch context-aware chat assistant from workflow page
-  const handleLaunchContextualChat = (workflow: WorkflowCard) => {
-    setActiveWorkflowContext(workflow);
-    setChatMessages(prev => [
-      ...prev,
-      { 
-        sender: "bot", 
-        text: `Locked chat context into active workflow: **${workflow.title}** (Context: \`${workflow.id}\`). Any questions you ask now will be processed securely on behalf of this operational workflow context.`, 
-        timestamp: new Date() 
-      }
-    ]);
-    setActiveTab("chat");
-  };
-
-  // Send Message in Chat
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim() || !accessToken) return;
-
-    const userMsg = chatInput;
-    setChatInput("");
-    setChatMessages(prev => [...prev, { sender: "user", text: userMsg, timestamp: new Date() }]);
-    setIsChatSending(true);
-
-    try {
-      const isOdooQuery = userMsg.toLowerCase().includes("odoo") || userMsg.toLowerCase().includes("partner") || userMsg.toLowerCase().includes("customer") || userMsg.toLowerCase().includes("read") || activeWorkflowContext !== null;
-      
-      let botResponse = "";
-      let systemInfo = null;
-
-      if (isOdooQuery) {
-        let payloadModel = "res.partner";
-        if (activeWorkflowContext?.id === "attendance_review") {
-          payloadModel = "hr.attendance";
-        }
-
-        const response = await fetch(`${APIM_BASE_URL}/tools/odoo/search-read`, {
-          method: "POST",
-          headers: getRequestHeaders(),
-          body: JSON.stringify({
-            model: payloadModel,
-            limit: 3,
-            create_job: useOdooJob,
-            job_title: `Chat query: ${userMsg.slice(0, 30)}`,
-            operation_mode: activeWorkflowContext ? "workflow-context" : "standard"
-          })
-        });
-        const data = await response.json();
-        if (response.ok) {
-          botResponse = `I called the Odoo Connector API securely. Found ${data.records?.length || 0} records:\n\n` + 
-            data.records.map((r: any) => `• **${r.display_name || r.name}** (ID: ${r.id})`).join("\n") +
-            (data._job ? `\n\n💼 **Platform Job Linked:** Created Job ID \`${data._job.job_id}\` and uploaded JSON result as Blob Artifact ID \`${data._job.artifact_id}\`` : "");
-          systemInfo = { apiCalled: "POST /tools/odoo/search-read", status: "200 OK", recordsCount: data.records?.length };
-        } else {
-          botResponse = `Odoo tool call failed: ${data.detail || "Credentials missing or connection issue."}`;
-          systemInfo = { apiCalled: "POST /tools/odoo/search-read", status: `${response.status}`, error: data.detail };
-        }
-      } else {
-        botResponse = `I received your message: "${userMsg}". How can I assist you with your business workflows, or should I retrieve some info from Odoo? Let me know!`;
-      }
-
-      setChatMessages(prev => [...prev, { 
-        sender: "bot", 
-        text: botResponse, 
-        timestamp: new Date(), 
-        systemInfo,
-        contextWorkflow: activeWorkflowContext?.title
-      }]);
-    } catch (err: any) {
-      setChatMessages(prev => [...prev, { sender: "bot", text: `Error calling API Core: ${err.message}`, timestamp: new Date() }]);
-    } finally {
-      setIsChatSending(false);
-    }
-  };
-
   const handleSignOut = () => {
     if (localMockAuthenticated) {
       setLocalMockAuthenticated(false);
@@ -623,10 +819,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
-  // ENTRA LOGIN SCREEN FOR PRODUCTION
+  // Render MSAL Interaction Status Loading
   if (inProgress !== InteractionStatus.None) {
     return (
-      <div className="flex h-screen bg-[#070b15] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
+      <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.08),transparent_50%)]" />
         <div className="relative z-10 text-center space-y-4">
           <RefreshCw className="w-10 h-10 text-indigo-400 animate-spin mx-auto" />
@@ -636,43 +832,39 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     );
   }
 
+  // --- UNAUTHENTICATED LOGIN SCREEN ---
   if (!activeUser) {
     return (
-      <div className="flex h-screen bg-[#070b15] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.08),transparent_50%)]" />
-        
-        <div className="relative z-10 max-w-md w-full bg-[#0a0f1d] border border-[#1e293b] rounded-2xl p-8 shadow-2xl text-center space-y-6">
-          <div className="mx-auto w-16 h-16 rounded-2xl bg-indigo-600/10 border border-indigo-500/25 flex items-center justify-center mb-4">
+      <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative px-4">
+        {/* Glow effect */}
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-indigo-500/10 rounded-full blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-[120px] pointer-events-none" />
+
+        {/* Liquid Glass Login Card */}
+        <div className="relative z-10 max-w-md w-full liquid-glass rounded-3xl p-8 text-center space-y-6">
+          <div className="mx-auto w-16 h-16 rounded-2xl bg-indigo-600/10 border border-indigo-500/35 flex items-center justify-center">
             <Bot className="w-8 h-8 text-indigo-400" />
           </div>
           
           <div>
-            <h2 className="text-2xl font-bold text-white tracking-tight">AI Platform Portal</h2>
-            <p className="text-sm text-gray-400 mt-2">Sign in using your corporate Microsoft identity to securely access tools.</p>
+            <h2 className="text-2xl font-extrabold text-white tracking-tight">AI Platform</h2>
+            <p className="text-xs text-gray-400 mt-2 leading-relaxed">Secure operational portal for Lots Lots More business workflows, Timesheet reviews, and Ledger checks.</p>
           </div>
 
           {(authError || startupAuthError) && (
-            <div className="p-4 border border-rose-500/25 bg-rose-500/10 text-rose-400 text-xs rounded-xl space-y-3 text-left">
+            <div className="p-4 border border-rose-500/25 bg-rose-500/10 text-rose-400 text-xs rounded-2xl space-y-3 text-left animate-fade-in">
               <div className="flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-bold">Authentication Error</p>
+                  <p className="font-bold">Authentication Failed</p>
                   <p className="mt-0.5 opacity-90">{authError || startupAuthError}</p>
                 </div>
               </div>
               <button 
-                onClick={() => {
-                  const activeAccount = instance.getActiveAccount() || accounts[0];
-                  instance.acquireTokenRedirect({
-                    ...loginRequest,
-                    account: activeAccount
-                  }).catch(e => {
-                    setAuthError(`Redirect failed: ${e.message}`);
-                  });
-                }}
-                className="w-full py-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-bold rounded-lg text-[11px] transition-all cursor-pointer"
+                onClick={() => instance.acquireTokenRedirect(loginRequest)}
+                className="w-full py-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-bold rounded-xl text-[11px] transition-all cursor-pointer"
               >
-                Continue Microsoft permission
+                Continue Microsoft Permission
               </button>
             </div>
           )}
@@ -681,7 +873,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             {/* Real Microsoft Entra ID Login Button */}
             <button 
               onClick={() => instance.loginRedirect(loginRequest)}
-              className="w-full py-3 bg-white hover:bg-gray-100 text-gray-900 font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-3 shadow-lg cursor-pointer"
+              className="w-full py-3 bg-white hover:bg-gray-100 text-gray-900 font-extrabold rounded-2xl text-sm transition-all flex items-center justify-center gap-3 shadow-xl cursor-pointer"
             >
               <div className="grid grid-cols-2 gap-0.5 shrink-0 w-4 h-4">
                 <div className="bg-[#f25f22] w-1.5 h-1.5" />
@@ -703,34 +895,30 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   });
                   setLocalMockAuthenticated(true);
                 }}
-                className="w-full py-3 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3 bg-gray-900/40 hover:bg-gray-800/40 border border-gray-800/40 text-gray-300 font-bold rounded-2xl text-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <User className="w-4 h-4 text-indigo-400" />
-                Local Mock Sign In (Developer)
+                Local Mock Sign In
               </button>
             )}
           </div>
 
-          {/* Show/Hide Diagnostics link (only visible on localhost or VITE_SHOW_AUTH_DIAGNOSTICS=true) */}
-          {(import.meta.env.VITE_SHOW_AUTH_DIAGNOSTICS === "true" || 
-            (typeof window !== "undefined" && 
-              (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))) && (
+          {/* Show/Hide Diagnostics link (only visible on localhost) */}
+          {ENABLE_LOCAL_MOCK && (
             <button 
               onClick={() => setShowDiagnostics(!showDiagnostics)}
-              className="text-[11px] text-gray-500 hover:text-indigo-400 underline cursor-pointer select-none"
+              className="text-[11px] text-gray-500 hover:text-indigo-400 underline cursor-pointer select-none block mx-auto"
             >
               {showDiagnostics ? "Hide Security Diagnostics" : "Show Security Diagnostics"}
             </button>
           )}
 
-          {showDiagnostics && (import.meta.env.VITE_SHOW_AUTH_DIAGNOSTICS === "true" || 
-            (typeof window !== "undefined" && 
-              (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))) && (
-            <div className="border border-[#1e293b]/50 p-4 bg-gray-900/40 rounded-xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
+          {/* Local Diagnostics */}
+          {showDiagnostics && ENABLE_LOCAL_MOCK && (
+            <div className="border border-[#1e293b]/50 p-4 bg-gray-950/50 rounded-2xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
               <p className="text-gray-500 font-bold border-b border-[#1e293b]/30 pb-1 mb-1.5 flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security Diagnostics</p>
               <p><span className="text-gray-500">inProgress:</span> {inProgress}</p>
               <p><span className="text-gray-500">accounts.length:</span> {accounts.length}</p>
-              <p><span className="text-gray-500">activeAccount:</span> {instance.getActiveAccount()?.username || "None"}</p>
               <p><span className="text-gray-500">startupAuthError:</span> {startupAuthError || "None"}</p>
               <p><span className="text-gray-500">lastError:</span> {authError || "None"}</p>
               <p><span className="text-gray-500">scopes:</span> {JSON.stringify(loginRequest.scopes)}</p>
@@ -738,7 +926,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          <div className="border-t border-[#1e293b]/50 pt-4 flex items-center justify-between text-xs text-gray-500">
+          <div className="border-t border-gray-800/40 pt-4 flex items-center justify-between text-xs text-gray-500 select-none">
             <span>Microsoft Security Active</span>
             <span>v1.0.0</span>
           </div>
@@ -748,29 +936,29 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   }
 
   return (
-    <div className="flex h-screen bg-[#070b15] text-[#f3f4f6] font-sans antialiased overflow-hidden">
+    <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden">
       
-      {/* SIDEBAR */}
-      <aside className="w-64 bg-[#0a0f1d] border-r border-[#1e293b] flex flex-col justify-between select-none shrink-0">
-        <div>
-          {/* Logo */}
-          <div className="p-6 border-b border-[#1e293b] flex items-center gap-3">
-            <div className="p-2 bg-indigo-600/25 border border-indigo-500/50 rounded-xl">
+      {/* SIDEBAR NAVIGATION */}
+      <aside className="w-64 bg-[#0a0f1d]/90 border-r border-[#1e293b]/80 flex flex-col justify-between select-none shrink-0 relative z-30">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Logo & Branding */}
+          <div className="p-6 border-b border-[#1e293b]/50 flex items-center gap-3">
+            <div className="p-2 bg-indigo-600/20 border border-indigo-500/30 rounded-xl">
               <Bot className="w-6 h-6 text-indigo-400" />
             </div>
             <div>
-              <h1 className="font-bold text-lg leading-tight tracking-wide text-white">AI Platform</h1>
-              <span className="text-xs text-indigo-400 font-medium tracking-widest uppercase">Assistant</span>
+              <h1 className="font-extrabold text-base leading-tight tracking-wide text-white">AI Platform</h1>
+              <span className="text-[10px] text-indigo-400 font-extrabold tracking-widest uppercase">Assistant</span>
             </div>
           </div>
 
           {/* Navigation Links */}
-          <nav className="p-4 space-y-1">
+          <nav className="p-4 space-y-1 flex-1 overflow-y-auto">
             <span className="px-4 py-2 block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Business</span>
             
             <button 
               onClick={() => setActiveTab("chat")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "chat" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "chat" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
             >
               <MessageSquare className="w-4 h-4" />
               Chat Assistant
@@ -783,7 +971,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 setWorkflowInputs({});
                 setActiveTab("workflows");
               }}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "workflows" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "workflows" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
             >
               <Layers className="w-4 h-4" />
               Workflows
@@ -791,15 +979,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
             <button 
               onClick={() => setActiveTab("tasks")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "tasks" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "tasks" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
             >
               <ClipboardList className="w-4 h-4" />
-              Tasks
+              Tasks Tracker
             </button>
 
             <button 
               onClick={() => setActiveTab("artifacts")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "artifacts" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "artifacts" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
             >
               <FileText className="w-4 h-4" />
               Documents Vault
@@ -807,7 +995,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
             <button 
               onClick={() => setActiveTab("connected-accounts")}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "connected-accounts" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "connected-accounts" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
             >
               <Database className="w-4 h-4" />
               Connected Accounts
@@ -821,7 +1009,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 {hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) && (
                   <button 
                     onClick={() => setActiveTab("audit")}
-                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "audit" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "audit" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
                   >
                     <ShieldAlert className="w-4 h-4" />
                     Audit Logs
@@ -830,7 +1018,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
                 <button 
                   onClick={() => setActiveTab("settings")}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${activeTab === "settings" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/20 hover:text-gray-200 border border-transparent"}`}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all ${activeTab === "settings" ? "bg-indigo-600/15 border border-indigo-500/50 text-white" : "text-gray-400 hover:bg-gray-800/10 hover:text-gray-200 border border-transparent"}`}
                 >
                   <Settings className="w-4 h-4" />
                   System Settings
@@ -840,11 +1028,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           </nav>
         </div>
 
-        {/* Minimal Footer & Floating Profile Menu */}
-        <div className="p-4 border-t border-[#1e293b] relative">
-          {/* Floating Profile Menu */}
+        {/* Profile popover section */}
+        <div className="p-4 border-t border-[#1e293b]/50 relative z-40 bg-[#0a0f1d]">
+          {/* Floating popover */}
           {isProfileMenuOpen && (
-            <div className="absolute bottom-16 left-4 right-4 bg-[#0d1427] border border-[#1e293b] rounded-xl shadow-2xl p-2 py-3 space-y-2 z-50 animate-fade-in text-left">
+            <div className="absolute bottom-16 left-4 right-4 bg-[#0a0f1d] border border-[#1e293b] rounded-2xl shadow-2xl p-2 py-3 space-y-1.5 z-50 animate-fade-in text-left">
               <div className="px-3 py-1">
                 <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
                 <p className="text-[10px] text-gray-500 truncate mt-0.5">{activeUser.email}</p>
@@ -857,7 +1045,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     setActiveTab("settings");
                     setIsProfileMenuOpen(false);
                   }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800/40 rounded-lg text-left transition-all cursor-pointer"
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800/40 rounded-xl text-left transition-all cursor-pointer"
                 >
                   <Settings className="w-3.5 h-3.5 text-indigo-400" />
                   System Settings
@@ -869,7 +1057,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   setIsProfileMenuOpen(false);
                   handleSignOut();
                 }}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg text-left transition-all cursor-pointer"
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl text-left transition-all cursor-pointer"
               >
                 <LogOut className="w-3.5 h-3.5 text-rose-400" />
                 Sign Out
@@ -877,7 +1065,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* Profile Trigger Button */}
+          {/* Profile trigger button */}
           <button 
             onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
             className="w-full flex items-center justify-between p-2 rounded-xl bg-gray-800/10 hover:bg-gray-800/20 border border-gray-800/40 transition-all cursor-pointer"
@@ -888,7 +1076,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               </div>
               <div className="text-left overflow-hidden">
                 <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
-                <span className="text-[10px] text-gray-500 truncate block">Microsoft ID Active</span>
+                <span className="text-[9px] text-gray-500 truncate block">Microsoft ID Active</span>
               </div>
             </div>
             <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-all ${isProfileMenuOpen ? "rotate-180" : ""}`} />
@@ -896,28 +1084,82 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         </div>
       </aside>
 
-      {/* MAIN CONTENT VIEW */}
+      {/* CHAT SESSION DRAWER */}
+      {activeTab === "chat" && (
+        <aside className="w-64 bg-[#080c17]/90 border-r border-[#1e293b]/40 flex flex-col justify-between shrink-0 select-none relative z-20">
+          <div className="p-4 border-b border-[#1e293b]/30">
+            <button 
+              onClick={() => createNewChat()}
+              className="w-full py-2 bg-indigo-600/10 hover:bg-indigo-600/25 border border-indigo-500/30 text-indigo-400 rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              New Chat
+            </button>
+          </div>
+
+          {/* Sessions List */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-1">
+            <span className="px-3 py-1.5 block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Recent Chats</span>
+            {isSessionsLoading ? (
+              <div className="text-center py-6 text-xs text-gray-500">Loading chats...</div>
+            ) : (
+              chatSessions.map(sess => (
+                <div 
+                  key={sess.id}
+                  onClick={() => setActiveSession(sess)}
+                  className={`group p-2.5 rounded-xl cursor-pointer transition-all flex items-center justify-between border ${
+                    activeSession?.id === sess.id 
+                      ? "bg-indigo-600/10 border-indigo-500/25 text-white" 
+                      : "border-transparent text-gray-400 hover:bg-gray-800/10 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="overflow-hidden flex-1 pr-2">
+                    <p className="text-xs font-semibold truncate leading-tight">{sess.title}</p>
+                    {sess.workflow_context && (
+                      <span className="text-[9px] text-indigo-400 font-bold block truncate mt-0.5 uppercase tracking-wide">
+                        Context: {sess.workflow_context.split("_").join(" ")}
+                      </span>
+                    )}
+                  </div>
+                  
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteChatSession(sess.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition-all shrink-0"
+                    title="Archive/Delete Chat"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+      )}
+
+      {/* MAIN CONTAINER */}
       <main className="flex-1 flex flex-col overflow-hidden">
         
-        {/* TOP HEADER */}
-        <header className="h-16 bg-[#0a0f1d] border-b border-[#1e293b] px-8 flex justify-between items-center select-none shrink-0">
+        {/* HEADER */}
+        <header className="h-16 bg-[#0a0f1d] border-b border-[#1e293b]/50 px-8 flex justify-between items-center select-none shrink-0 relative z-10">
           <div className="flex items-center gap-3">
             <span className="text-xs uppercase tracking-widest text-indigo-400 font-bold">{activeTab}</span>
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
             
             {/* Context aware chat banner */}
-            {activeTab === "chat" && activeWorkflowContext && (
+            {activeTab === "chat" && activeSession?.workflow_context && (
               <span className="ml-4 flex items-center gap-1.5 px-3 py-1 bg-indigo-500/15 border border-indigo-500/20 text-indigo-300 rounded-full text-xs font-semibold">
                 <Compass className="w-3.5 h-3.5" />
-                Active Context: {activeWorkflowContext.title}
-                <button onClick={() => setActiveWorkflowContext(null)} className="ml-1 text-indigo-400 hover:text-indigo-200">✕</button>
+                Active Context: {BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}
               </span>
             )}
           </div>
 
           <div className="flex items-center gap-4">
             {odooStatus.status === "connected" ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/25 rounded-full text-xs font-bold text-emerald-400 select-none">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-xs font-bold text-emerald-400 select-none">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Odoo ERP Link Active
               </div>
@@ -930,90 +1172,169 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           </div>
         </header>
 
-        {/* WORKSPACE AREA */}
-        <section className="flex-1 overflow-y-auto p-8 bg-[#070b15] relative">
+        {/* COMPONENT VIEWS */}
+        <section className="flex-1 overflow-y-auto p-8 bg-[#070b15] relative z-0">
           
-          {/* CHAT VIEW */}
-          {activeTab === "chat" && (
-            <div className="h-full flex flex-col justify-between max-w-4xl mx-auto border border-[#1e293b] rounded-2xl bg-[#0a0f1d]/50 overflow-hidden">
+          {/* CHAT ASSISTANT VIEW */}
+          {activeTab === "chat" && activeSession && (
+            <div className="h-full flex flex-col justify-between max-w-4xl mx-auto liquid-glass rounded-3xl overflow-hidden shadow-2xl">
+              
+              {/* Message Flow */}
               <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {chatMessages.map((msg, idx) => (
-                  <div key={idx} className={`flex gap-4 ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
-                    
-                    {msg.sender === "bot" && (
-                      <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/50 flex items-center justify-center shrink-0">
-                        <Bot className="w-4 h-4 text-indigo-400" />
-                      </div>
-                    )}
-
-                    <div className={`max-w-[75%] p-4 rounded-2xl border text-sm leading-relaxed whitespace-pre-wrap ${
-                      msg.sender === "user" 
-                        ? "bg-indigo-600/10 border-indigo-500/40 text-indigo-50 rounded-tr-none" 
-                        : "bg-gray-800/35 border-gray-800 text-gray-200 rounded-tl-none"
-                    }`}>
-                      {msg.text}
-
-                      {/* Display context workflow badge if relevant */}
-                      {msg.contextWorkflow && (
-                        <div className="mt-2.5 inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-600/15 border border-indigo-500/20 text-indigo-300 rounded text-[10px] font-bold">
-                          <Compass className="w-3 h-3" /> Context: {msg.contextWorkflow}
-                        </div>
-                      )}
-
-                      {/* Display diagnostics to system admin/dev role */}
-                      {msg.systemInfo && hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) && (
-                        <div className="mt-4 pt-3 border-t border-gray-800 flex items-center justify-between text-xs text-indigo-400 font-mono select-text">
-                          <span className="flex items-center gap-1.5"><Cpu className="w-3.5 h-3.5" /> {msg.systemInfo.apiCalled}</span>
-                          <span className="bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/25 font-bold">{msg.systemInfo.status}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {msg.sender === "user" && (
-                      <div className="w-8 h-8 rounded-lg bg-gray-800/50 border border-gray-700 flex items-center justify-center shrink-0">
-                        <User className="w-4 h-4 text-gray-300" />
-                      </div>
-                    )}
-
+                {isMessagesLoading ? (
+                  <div className="text-center py-20 text-gray-400">Retrieving chat messages...</div>
+                ) : chatMessages.length === 0 ? (
+                  <div className="text-center py-20 text-gray-500 select-none space-y-2">
+                    <Bot className="w-10 h-10 text-gray-700 mx-auto mb-2" />
+                    <p className="font-semibold">This conversation has no messages yet.</p>
+                    <p className="text-xs text-gray-600 max-w-xs mx-auto">Ask the AI Platform assistant to audit credit notes, check attendance exceptions, or examine Odoo accounts!</p>
                   </div>
-                ))}
+                ) : (
+                  chatMessages.map((msg) => (
+                    <div key={msg.id} className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                      
+                      {msg.role === "assistant" && (
+                        <div className="w-8 h-8 rounded-lg bg-indigo-600/15 border border-indigo-500/25 flex items-center justify-center shrink-0">
+                          <Bot className="w-4 h-4 text-indigo-400" />
+                        </div>
+                      )}
+
+                      <div className={`max-w-[75%] p-4 rounded-2xl border text-xs leading-relaxed whitespace-pre-wrap ${
+                        msg.role === "user" 
+                          ? "bg-indigo-600/10 border-indigo-500/25 text-indigo-50 rounded-tr-none" 
+                          : "bg-gray-800/20 border-gray-800/50 text-gray-200 rounded-tl-none"
+                      }`}>
+                        {msg.content}
+
+                        {/* Collapsible Technical Details (View details option) */}
+                        {msg.metadata_json?.technical_details && (
+                          <div className="mt-3 pt-3 border-t border-gray-800/40">
+                            <button 
+                              onClick={() => setExpandedTraceMsgs(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
+                              className="text-[10px] text-gray-500 hover:text-indigo-400 font-semibold flex items-center gap-1 cursor-pointer select-none"
+                            >
+                              <Shield className="w-3 h-3" />
+                              {expandedTraceMsgs[msg.id] ? "Hide technical trail" : "View operational trail"}
+                            </button>
+
+                            {expandedTraceMsgs[msg.id] && (
+                              <pre className="mt-2.5 p-3 bg-gray-950/50 border border-[#1e293b]/50 rounded-xl overflow-x-auto text-[10px] font-mono text-gray-400 max-h-48 overflow-y-auto">
+                                {JSON.stringify(msg.metadata_json.technical_details, null, 2)}
+                              </pre>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {msg.role === "user" && (
+                        <div className="w-8 h-8 rounded-lg bg-gray-800/30 border border-gray-800 flex items-center justify-center shrink-0">
+                          <User className="w-4 h-4 text-gray-300" />
+                        </div>
+                      )}
+
+                    </div>
+                  ))
+                )}
               </div>
 
-              {/* Chat Input Section */}
-              <div className="p-4 border-t border-[#1e293b] bg-[#0a0f1d] flex flex-col gap-3 select-none">
-                <form onSubmit={handleSendMessage} className="flex gap-3">
+              {/* Chat Input / Composer */}
+              <div className="p-4 border-t border-[#1e293b]/50 bg-[#0a0f1d]/90 flex flex-col gap-3 select-none">
+                
+                {/* File chips attachment container */}
+                {attachedFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2 pb-1.5 border-b border-gray-800/30">
+                    {attachedFiles.map((chip, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5 px-3 py-1 bg-indigo-600/10 border border-indigo-500/25 rounded-full text-xs text-indigo-300 font-semibold animate-fade-in">
+                        <FileText className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate max-w-[120px]">{chip.file.name}</span>
+                        {chip.uploading ? (
+                          <RefreshCw className="w-3 h-3 animate-spin shrink-0 ml-1 text-indigo-400" />
+                        ) : (
+                          <button 
+                            type="button"
+                            onClick={() => chip.id && handleRemoveFile(chip.id)}
+                            className="text-indigo-400 hover:text-indigo-200 ml-1 text-xs shrink-0 cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <form onSubmit={handleSendMessage} className="flex gap-3 items-center">
+                  <input 
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileUpload}
+                    className="hidden"
+                    multiple
+                  />
+                  <button 
+                    type="button"
+                    onClick={handleTriggerUpload}
+                    className="p-3 bg-gray-800/20 border border-gray-800/60 text-gray-400 hover:text-white rounded-xl hover:bg-gray-800/40 transition-all cursor-pointer"
+                    title="Upload secure business documents"
+                  >
+                    <Paperclip className="w-4 h-4" />
+                  </button>
+
                   <input 
                     type="text"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    placeholder={activeWorkflowContext ? `Ask Odoo about ${activeWorkflowContext.title}...` : "Ask AI Assistant anything..."}
+                    placeholder={activeSession.workflow_context ? `Ask Odoo about ${BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}...` : "Ask AI Assistant anything..."}
                     disabled={isChatSending}
-                    className="flex-1 px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm placeholder-gray-500 text-white"
+                    className="flex-1 px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-xs placeholder-gray-500 text-white"
                   />
+
+                  {/* Microphone Button */}
+                  <button 
+                    type="button"
+                    onClick={handleToggleVoice}
+                    className={`p-3 border rounded-xl transition-all cursor-pointer relative ${
+                      voiceState === "listening" 
+                        ? "bg-rose-500/15 border-rose-500 text-rose-400 animate-pulse" 
+                        : "bg-gray-800/20 border-gray-800/60 text-gray-400 hover:text-white hover:bg-gray-800/40"
+                    }`}
+                    title={voiceState === "unsupported" ? "Voice input unsupported" : "Speak voice message"}
+                  >
+                    {voiceState === "listening" ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                  </button>
+
                   <button 
                     type="submit"
-                    disabled={isChatSending || !chatInput.trim()}
-                    className="px-6 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white font-medium rounded-xl text-sm transition-all flex items-center gap-2 cursor-pointer"
+                    disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
+                    className="p-3 px-5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                   >
-                    {isChatSending ? "Sending..." : "Submit"}
-                    <ArrowRight className="w-4 h-4" />
+                    Send
+                    <CornerDownLeft className="w-3.5 h-3.5" />
                   </button>
                 </form>
 
-                <div className="flex items-center justify-between px-2 text-xs text-gray-500 select-none">
-                  <span className="flex items-center gap-2">
-                    <input 
-                      type="checkbox" 
-                      id="useOdooJob"
-                      checked={useOdooJob}
-                      onChange={(e) => setUseOdooJob(e.target.checked)}
-                      className="rounded border-[#1e293b] text-indigo-600 focus:ring-0 bg-[#070b15] cursor-pointer"
-                    />
-                    <label htmlFor="useOdooJob" className="cursor-pointer">Create Platform Job & upload JSON results to Blob Storage</label>
-                  </span>
-                  <span>Press Submit to secure Odoo proxy query</span>
+                <div className="flex items-center justify-between px-2 text-[10px] text-gray-500 select-none">
+                  {voiceState === "listening" ? (
+                    <span className="text-rose-400 font-semibold flex items-center gap-1 animate-pulse"><Mic className="w-3.5 h-3.5" /> Speak now... browser transcriber listening</span>
+                  ) : voiceState === "processing" ? (
+                    <span className="text-indigo-400 font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing voice transcript...</span>
+                  ) : voiceState === "denied" ? (
+                    <span className="text-rose-400 font-semibold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> Mic permission denied</span>
+                  ) : (
+                    <span>Supports voice recording & multi-file uploads securely</span>
+                  )}
+                  <span>All documents are encrypted in Microsoft Azure Storage</span>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* NO ACTIVE CHAT STATE */}
+          {activeTab === "chat" && !activeSession && (
+            <div className="p-8 border border-[#1e293b]/50 border-dashed rounded-3xl bg-transparent text-center py-16 text-gray-400 select-none max-w-lg mx-auto mt-20">
+              <MessageSquare className="w-10 h-10 text-gray-600 mb-3 mx-auto animate-bounce" />
+              <p className="font-semibold text-gray-300">No active chat session selected</p>
+              <p className="text-xs text-gray-500 max-w-sm mx-auto mt-1">To begin, click \"New Chat\" in the chat drawer or select an active operational workflow!</p>
             </div>
           )}
 
@@ -1068,7 +1389,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           {activeTab === "workflows" && selectedWorkflow && (
             <div className="max-w-2xl mx-auto space-y-6">
               
-              {/* Back button */}
               <button 
                 onClick={() => {
                   setSelectedWorkflow(null);
@@ -1085,7 +1405,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   <p className="text-xs text-gray-400 leading-relaxed">{selectedWorkflow.description}</p>
                 </div>
 
-                {/* Form Inputs */}
                 <div className="space-y-4">
                   {selectedWorkflow.inputs.map((input) => (
                     <div key={input.name}>
@@ -1115,7 +1434,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 </div>
 
                 <div className="flex gap-4 pt-4 border-t border-[#1e293b]/50">
-                  {/* Contextual Ask AI Button */}
                   <button 
                     onClick={() => handleLaunchContextualChat(selectedWorkflow)}
                     className="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
@@ -1124,7 +1442,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     Ask AI Assistant
                   </button>
 
-                  {/* Run Workflow Button */}
                   <button 
                     onClick={handleRunWorkflow}
                     disabled={isWorkflowRunning}
@@ -1136,7 +1453,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 </div>
               </div>
 
-              {/* Execution Outcome feedback */}
               {workflowOutcome && (
                 <div className={`p-5 border rounded-2xl flex items-start gap-4 text-sm ${workflowOutcome.success ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" : "bg-rose-500/10 border-rose-500/25 text-rose-400"}`}>
                   {workflowOutcome.success ? <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" /> : <XCircle className="w-5 h-5 shrink-0 mt-0.5" />}
@@ -1214,7 +1530,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* ARTIFACTS / DOCUMENTS VIEW */}
+          {/* DOCUMENTS VIEW */}
           {activeTab === "artifacts" && (
             <div className="max-w-6xl mx-auto space-y-6">
               <div className="flex justify-between items-center select-none">
@@ -1282,7 +1598,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 <BookOpen className="w-12 h-12 text-indigo-500/25 shrink-0" />
               </div>
 
-              {/* Accounts list grid */}
               <div className="grid md:grid-cols-2 gap-6">
                 
                 {/* ODOO ACCOUNT CARD */}
@@ -1299,7 +1614,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                         </div>
                       </div>
 
-                      {/* Status pill */}
                       {isStatusLoading ? (
                         <span className="text-xs bg-gray-800 text-gray-400 px-3 py-1 rounded-full font-medium flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Checking</span>
                       ) : odooStatus.status === "connected" ? (
@@ -1327,7 +1641,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     </div>
                   </div>
 
-                  {/* Actions */}
                   <div className="mt-6 flex flex-wrap gap-3">
                     {odooStatus.status === "connected" || odooStatus.status === "error" ? (
                       <>
@@ -1366,7 +1679,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   </div>
                 </div>
 
-                {/* PLACEHOLDER CARD */}
                 <div className="p-6 border border-[#1e293b]/50 border-dashed rounded-2xl bg-transparent flex flex-col justify-center items-center text-center p-8 select-none">
                   <Database className="w-8 h-8 text-gray-600 mb-3" />
                   <h4 className="font-bold text-gray-400 mb-1">Microsoft / Microsoft 365</h4>
@@ -1375,7 +1687,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
               </div>
 
-              {/* Form Validation Feedback */}
               {testResult && (
                 <div className={`p-4 border rounded-xl flex items-start gap-3 text-sm ${testResult.success ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-400" : "bg-rose-500/10 border-rose-500/25 text-rose-400"}`}>
                   {testResult.success ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <XCircle className="w-5 h-5 shrink-0" />}
@@ -1385,120 +1696,119 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   </div>
                 </div>
               )}
-            </div>
-          )}
+              {/* Odoo Connect Modal Overlay */}
+              {isConnectOpen && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-[#0a0f1d] border border-[#1e293b] rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
+                    <div className="p-6 border-b border-[#1e293b] flex justify-between items-center select-none">
+                      <h3 className="font-bold text-lg text-white">Connect Odoo Enterprise</h3>
+                      <button onClick={() => setIsConnectOpen(false)} className="text-gray-400 hover:text-white">✕</button>
+                    </div>
+                    <form onSubmit={handleConnectOdoo} className="p-6 space-y-4 text-left">
+                      <div>
+                        <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Instance URL</label>
+                        <input 
+                          type="url" 
+                          required 
+                          value={odooUrl}
+                          onChange={(e) => setOdooUrl(e.target.value)}
+                          className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Database Name</label>
+                        <input 
+                          type="text" 
+                          required 
+                          value={odooDb}
+                          onChange={(e) => setOdooDb(e.target.value)}
+                          className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Username / Email</label>
+                        <input 
+                          type="email" 
+                          required 
+                          value={odooUsername}
+                          onChange={(e) => setOdooUsername(e.target.value)}
+                          className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo API Key / Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          value={odooApiKey}
+                          onChange={(e) => setOdooApiKey(e.target.value)}
+                          placeholder="Input Odoo API Key securely..."
+                          className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm placeholder-gray-600"
+                        />
+                      </div>
 
-          {/* CONNECT ODOO MODAL */}
-          {isConnectOpen && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-              <div className="bg-[#0a0f1d] border border-[#1e293b] rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
-                <div className="p-6 border-b border-[#1e293b] flex justify-between items-center select-none">
-                  <h3 className="font-bold text-lg text-white">Connect Odoo Enterprise</h3>
-                  <button onClick={() => setIsConnectOpen(false)} className="text-gray-400 hover:text-white">✕</button>
+                      <div className="pt-4 flex gap-3">
+                        <button 
+                          type="button" 
+                          onClick={() => setIsConnectOpen(false)}
+                          className="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold tracking-wide transition-all cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          type="submit"
+                          disabled={isConnecting}
+                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
+                        >
+                          {isConnecting ? "Connecting..." : "Verify & Save"}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <form onSubmit={handleConnectOdoo} className="p-6 space-y-4">
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Instance URL</label>
-                    <input 
-                      type="url" 
-                      required 
-                      value={odooUrl}
-                      onChange={(e) => setOdooUrl(e.target.value)}
-                      className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Database Name</label>
-                    <input 
-                      type="text" 
-                      required 
-                      value={odooDb}
-                      onChange={(e) => setOdooDb(e.target.value)}
-                      className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo Username / Email</label>
-                    <input 
-                      type="email" 
-                      required 
-                      value={odooUsername}
-                      onChange={(e) => setOdooUsername(e.target.value)}
-                      className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">Odoo API Key / Password</label>
-                    <input 
-                      type="password" 
-                      required 
-                      value={odooApiKey}
-                      onChange={(e) => setOdooApiKey(e.target.value)}
-                      placeholder="Input Odoo API Key securely..."
-                      className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm placeholder-gray-600"
-                    />
-                  </div>
+              )}
 
-                  <div className="pt-4 flex gap-3">
-                    <button 
-                      type="button" 
-                      onClick={() => setIsConnectOpen(false)}
-                      className="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold tracking-wide transition-all cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit"
-                      disabled={isConnecting}
-                      className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
-                    >
-                      {isConnecting ? "Connecting..." : "Verify & Save"}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            </div>
-          )}
+              {/* Odoo Rotate Key Modal Overlay */}
+              {isRotateOpen && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+                  <div className="bg-[#0a0f1d] border border-[#1e293b] rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+                    <div className="p-6 border-b border-[#1e293b] flex justify-between items-center select-none">
+                      <h3 className="font-bold text-lg text-white">Rotate API Key</h3>
+                      <button onClick={() => setIsRotateOpen(false)} className="text-gray-400 hover:text-white">✕</button>
+                    </div>
+                    <form onSubmit={handleRotateOdoo} className="p-6 space-y-4 text-left">
+                      <div>
+                        <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">New Odoo API Key / Password</label>
+                        <input 
+                          type="password" 
+                          required 
+                          value={odooApiKey}
+                          onChange={(e) => setOdooApiKey(e.target.value)}
+                          placeholder="Input new API Key securely..."
+                          className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm placeholder-gray-600"
+                        />
+                      </div>
 
-          {/* ROTATE KEY MODAL */}
-          {isRotateOpen && (
-            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-              <div className="bg-[#0a0f1d] border border-[#1e293b] rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
-                <div className="p-6 border-b border-[#1e293b] flex justify-between items-center select-none">
-                  <h3 className="font-bold text-lg text-white">Rotate API Key</h3>
-                  <button onClick={() => setIsRotateOpen(false)} className="text-gray-400 hover:text-white">✕</button>
+                      <div className="pt-4 flex gap-3">
+                        <button 
+                          type="button" 
+                          onClick={() => setIsRotateOpen(false)}
+                          className="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold tracking-wide transition-all cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          type="submit"
+                          disabled={isConnecting}
+                          className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
+                        >
+                          {isConnecting ? "Updating..." : "Rotate Key"}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
-                <form onSubmit={handleRotateOdoo} className="p-6 space-y-4">
-                  <div>
-                    <label className="text-xs text-gray-400 font-bold block mb-1.5 uppercase">New Odoo API Key / Password</label>
-                    <input 
-                      type="password" 
-                      required 
-                      value={odooApiKey}
-                      onChange={(e) => setOdooApiKey(e.target.value)}
-                      placeholder="Input new API Key securely..."
-                      className="w-full px-4 py-3 bg-[#070b15] border border-[#1e293b] rounded-xl focus:outline-none focus:border-indigo-500 text-sm placeholder-gray-600"
-                    />
-                  </div>
-
-                  <div className="pt-4 flex gap-3">
-                    <button 
-                      type="button" 
-                      onClick={() => setIsRotateOpen(false)}
-                      className="flex-1 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl text-sm font-semibold tracking-wide transition-all cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button 
-                      type="submit"
-                      disabled={isConnecting}
-                      className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
-                    >
-                      {isConnecting ? "Updating..." : "Rotate Key"}
-                    </button>
-                  </div>
-                </form>
-              </div>
+              )}
             </div>
           )}
 

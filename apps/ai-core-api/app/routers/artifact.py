@@ -63,3 +63,22 @@ async def get_artifact(
     if not artifact:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     return artifact
+
+
+@router.get("/{artifact_id}/download")
+async def download_artifact(
+    artifact_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    auth=Depends(api_key_auth),
+):
+    svc = ArtifactService(db)
+    artifact = await svc.get_by_id(artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    
+    container = svc._get_container(artifact.artifact_type)
+    blob_name = f"{artifact.job_id or 'standalone'}/{artifact.filename}"
+    sas_url = svc.generate_sas_url(container, blob_name)
+    
+    return {"download_url": sas_url}
+

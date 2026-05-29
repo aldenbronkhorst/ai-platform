@@ -169,3 +169,49 @@ class AIAuditEvent(Base):
     risk_level = Column(String(20), default="low", nullable=False)  # low, medium, high, critical
     status = Column(String(20), default="success", nullable=False)
     cost_estimate = Column(Numeric(10, 4), nullable=True)
+
+
+class AIChatSession(Base, AuditMixin):
+    __tablename__ = "ai_chat_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    status = Column(String(20), default="active", nullable=False)  # active, archived, deleted
+    workflow_context = Column(String(100), nullable=True)
+    last_message_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    metadata_json = Column(JSON, nullable=True)
+
+
+class AIChatMessage(Base, AuditMixin):
+    __tablename__ = "ai_chat_messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # user, assistant, system, tool
+    content = Column(Text, nullable=False)
+    model_provider = Column(String(100), nullable=True)
+    model_name = Column(String(100), nullable=True)
+    token_usage_json = Column(JSON, nullable=True)
+    tool_call_json = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+
+
+class AIChatArtifact(Base, AuditMixin):
+    __tablename__ = "ai_chat_artifacts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
+    artifact_id = Column(UUID(as_uuid=True), ForeignKey("ai_artifacts.id"), nullable=False, index=True)
+    linked_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True, index=True)
+
+
+class AIChatJob(Base, AuditMixin):
+    __tablename__ = "ai_chat_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
+    job_id = Column(UUID(as_uuid=True), ForeignKey("ai_jobs.id"), nullable=False, index=True)
+    linked_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True, index=True)
+

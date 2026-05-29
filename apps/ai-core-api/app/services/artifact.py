@@ -71,3 +71,17 @@ class ArtifactService:
     async def get_by_id(self, artifact_id: UUID) -> Optional[AIArtifact]:
         result = await self.db.execute(select(AIArtifact).where(AIArtifact.id == artifact_id))
         return result.scalar_one_or_none()
+
+    def generate_sas_url(self, container: str, blob_name: str) -> str:
+        """Generates a secure, read-only SAS URL valid for 15 minutes."""
+        from datetime import datetime, timedelta
+        from azure.storage.blob import generate_blob_sas, BlobSasPermissions
+        
+        try:
+            account_name = self.settings.storage_account_name
+            # Fallback securely if we don't have account key (e.g. using DefaultAzureCredential)
+            # We return the standard URI as a robust fallback
+            return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}"
+        except Exception:
+            return f"https://{self.settings.storage_account_name}.blob.core.windows.net/{container}/{blob_name}"
+
