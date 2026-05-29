@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useMsal, useIsAuthenticated } from "@azure/msal-react";
+import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "./authConfig";
 import { 
   MessageSquare, 
@@ -46,7 +46,6 @@ interface UserProfile {
 
 export default function App() {
   const { instance, accounts } = useMsal();
-  const msalAuthenticated = useIsAuthenticated();
 
   // Tab State
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -101,8 +100,9 @@ export default function App() {
 
   // Synchronize active authentication session
   useEffect(() => {
-    if (msalAuthenticated && accounts.length > 0) {
-      const activeAccount = instance.getActiveAccount() || accounts[0];
+    const activeAccount = instance.getActiveAccount() || (accounts.length > 0 ? accounts[0] : null);
+    
+    if (activeAccount) {
       setActiveUser({
         email: activeAccount.username,
         displayName: activeAccount.name || activeAccount.username,
@@ -118,15 +118,8 @@ export default function App() {
       }).then(response => {
         setAccessToken(response.accessToken);
       }).catch(err => {
-        console.warn("Silent token acquisition failed, prompting interactive login:", err);
-        // If silent token acquisition fails, prompt interactive login
-        instance.acquireTokenRedirect({
-          ...loginRequest,
-          account: activeAccount
-        }).catch(redirectErr => {
-          console.error("Interactive token acquisition redirect failed:", redirectErr);
-          setAuthError(redirectErr.message || "Interactive login redirect failed.");
-        });
+        console.warn("Silent token acquisition failed:", err);
+        setAuthError(`Token acquisition failed: ${err.message || err}. Please try signing in again.`);
       });
     } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
       setActiveUser(localMockUser);
@@ -136,7 +129,7 @@ export default function App() {
       setActiveUser(null);
       setAccessToken("");
     }
-  }, [msalAuthenticated, accounts, localMockAuthenticated, localMockUser]);
+  }, [accounts, localMockAuthenticated, localMockUser, instance]);
 
   // Fetch Odoo Status, Audit Logs, Jobs on tab switches
   useEffect(() => {
