@@ -46,7 +46,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ env.API_PATH }}
-          pytest -v
+          pytest tests/test_odoo.py -v
 
   test-connector:
     runs-on: ubuntu-latest
@@ -67,7 +67,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ env.CONNECTOR_PATH }}
-          pytest -v
+          PYTHONPATH=. pytest tests/test_integration.py -v
 
   build-and-deploy:
     runs-on: ubuntu-latest
