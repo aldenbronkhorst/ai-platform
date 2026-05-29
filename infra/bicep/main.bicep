@@ -239,6 +239,20 @@ module budget 'modules/budget.bicep' = {
   }
 }
 
+// Module: Static Web App (Web Portal)
+module staticWebApp 'modules/staticWebApp.bicep' = {
+  name: 'staticWebAppDeploy'
+  scope: rg
+  params: {
+    workload: workload
+    environment: environment
+    regionCode: regionCode
+    instance: instance
+    location: location
+    tags: tags
+  }
+}
+
 // Outputs
 output resourceGroupName string = rg.name
 output acrLoginServer string = acr.outputs.loginServer
@@ -260,3 +274,5 @@ output apiManagedIdentityPrincipalId string = identity.outputs.apiManagedIdentit
 output apiUrl string = containerApps.outputs.apiUrl
 output odooConnectorAppName string = containerApps.outputs.odooConnectorAppName
 output odooConnectorUrl string = containerApps.outputs.odooConnectorUrl
+output staticSiteName string = staticWebApp.outputs.name
+output staticSiteDefaultHostname string = staticWebApp.outputs.defaultHostname
