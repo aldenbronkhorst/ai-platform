@@ -1,8 +1,14 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
@@ -10,26 +16,26 @@ param location string
 @description('Tags for resources')
 param tags object
 
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
-
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
 
-var searchName = 'srch-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
+var searchName = 'srch-${workload}-${environment}-${regionCode}-${instance}'
 
-resource searchService 'Microsoft.Search/searchServices@2023-11-01' = {
+resource search 'Microsoft.Search/searchServices@2022-09-01' = {
   name: searchName
   location: location
   tags: tags
   sku: {
-    name: 'basic'
+    name: 'standard'
   }
   properties: {
     replicaCount: 1
     partitionCount: 1
+    publicNetworkAccess: 'enabled'
+    networkRuleSet: {
+      ipRules: []
+    }
     hostingMode: 'default'
-    publicNetworkAccess: 'Enabled'
     authOptions: {
       aadOrApiKey: {
         aadAuthFailureMode: 'http401WithBearerChallenge'
@@ -38,28 +44,16 @@ resource searchService 'Microsoft.Search/searchServices@2023-11-01' = {
   }
 }
 
-// Grant Search Index Data Contributor to API managed identity
-resource searchIndexDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(searchService.id, apiManagedIdentityPrincipalId, 'searchindexcontributor')
-  scope: searchService
+resource searchContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, apiManagedIdentityPrincipalId, 'searchcontributor')
+  scope: search
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a00-799e-43f5-93ac-243d3dce84a7') // Search Index Data Contributor
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')
     principalId: apiManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
 
-// Grant Search Service Contributor to API managed identity
-resource searchServiceContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(searchService.id, apiManagedIdentityPrincipalId, 'searchservicecontributor')
-  scope: searchService
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0') // Search Service Contributor
-    principalId: apiManagedIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-output name string = searchService.name
-output id string = searchService.id
-output endpoint string = 'https://${searchService.name}.search.windows.net'
+output name string = search.name
+output id string = search.id
+output endpoint string = 'https://${search.name}.search.windows.net'

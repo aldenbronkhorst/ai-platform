@@ -1,17 +1,20 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
 
 @description('Tags for resources')
 param tags object
-
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
 
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
@@ -20,7 +23,8 @@ param apiManagedIdentityPrincipalId string
 @secure()
 param postgresAdminPassword string
 
-var keyVaultName = 'kv-${baseName}-${environment}-${take(uniqueSuffix, 6)}'
+var sanitizedWorkload = replace(workload, '-', '')
+var keyVaultName = 'kv${sanitizedWorkload}${environment}${regionCode}${instance}'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
@@ -42,18 +46,16 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// Grant Key Vault Secrets User to API managed identity (read-only)
 resource kvSecretsUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, apiManagedIdentityPrincipalId, 'kvsecretsuser')
   scope: keyVault
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
     principalId: apiManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
 
-// Store PostgreSQL password in Key Vault
 resource postgresPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'postgres-admin-password'

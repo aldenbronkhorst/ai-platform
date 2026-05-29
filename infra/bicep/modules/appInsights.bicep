@@ -1,8 +1,14 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
@@ -10,11 +16,8 @@ param location string
 @description('Tags for resources')
 param tags object
 
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
-
-var logAnalyticsName = 'law-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
-var appInsightsName = 'appi-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
+var logAnalyticsName = 'log-${workload}-${environment}-${regionCode}-${instance}'
+var appInsightsName = 'appi-${workload}-${environment}-${regionCode}-${instance}'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: logAnalyticsName

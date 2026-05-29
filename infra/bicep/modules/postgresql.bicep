@@ -1,17 +1,20 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
 
 @description('Tags for resources')
 param tags object
-
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
 
 @description('PostgreSQL admin username')
 param adminUsername string
@@ -20,7 +23,7 @@ param adminUsername string
 @secure()
 param adminPassword string
 
-var postgresName = 'psql-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
+var postgresName = 'psql-${workload}-${environment}-${regionCode}-${instance}'
 var postgresDatabaseName = 'aicore'
 
 resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview' = {
@@ -46,11 +49,9 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
     highAvailability: {
       mode: 'Disabled'
     }
-    publicNetworkAccess: 'Enabled'
   }
 }
 
-// Allow Azure services
 resource firewallRuleAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = {
   parent: postgres
   name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
@@ -60,7 +61,6 @@ resource firewallRuleAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRu
   }
 }
 
-// Create initial database
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
   parent: postgres
   name: postgresDatabaseName

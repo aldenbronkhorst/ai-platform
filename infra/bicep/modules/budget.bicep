@@ -1,16 +1,25 @@
-@description('Resource group name')
-param resourceGroupName string
+@description('Workload name')
+param workload string
+
+@description('Environment name')
+param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Budget amount in local currency')
 param budgetAmount int
 
-@description('Budget start date (yyyy-MM-dd)')
+@description('Budget start date')
 param startDate string
 
-@description('Budget end date (yyyy-MM-dd)')
+@description('Budget end date')
 param endDate string
 
-var budgetName = 'budget-${resourceGroupName}'
+var budgetName = 'budget-${workload}-${environment}-${regionCode}-${instance}'
 
 resource budget 'Microsoft.Consumption/budgets@2023-05-01' = {
   name: budgetName
@@ -23,29 +32,19 @@ resource budget 'Microsoft.Consumption/budgets@2023-05-01' = {
       endDate: endDate
     }
     notifications: {
-      Alert50: {
-        enabled: true
-        operator: 'GreaterThan'
-        threshold: 50
-        contactEmails: [
-          'alden@lotslotsmore.com'
-        ]
-      }
-      Alert80: {
+      '80Percent': {
         enabled: true
         operator: 'GreaterThan'
         threshold: 80
-        contactEmails: [
-          'alden@lotslotsmore.com'
-        ]
+        contactEmails: ['alden@lotslotsmore.com']
+        contactRoles: ['Owner']
       }
-      Alert100: {
+      '100Percent': {
         enabled: true
         operator: 'GreaterThan'
         threshold: 100
-        contactEmails: [
-          'alden@lotslotsmore.com'
-        ]
+        contactEmails: ['alden@lotslotsmore.com']
+        contactRoles: ['Owner']
       }
     }
   }

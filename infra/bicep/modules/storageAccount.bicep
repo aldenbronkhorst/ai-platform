@@ -1,8 +1,14 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
@@ -10,13 +16,11 @@ param location string
 @description('Tags for resources')
 param tags object
 
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
-
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
 
-var storageName = 'st${baseName}${environment}${take(uniqueSuffix, 8)}'
+var sanitizedWorkload = replace(workload, '-', '')
+var storageName = 'st${sanitizedWorkload}${environment}${regionCode}${instance}'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: storageName
@@ -38,13 +42,17 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// Blob service
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   parent: storageAccount
   name: 'default'
+  properties: {
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
+  }
 }
 
-// Containers
 var containerNames = [
   'artifacts'
   'ocr'
@@ -64,12 +72,11 @@ resource containers 'Microsoft.Storage/storageAccounts/blobServices/containers@2
   }
 }]
 
-// Grant Storage Blob Data Contributor to API managed identity
 resource blobContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storageAccount.id, apiManagedIdentityPrincipalId, 'blobcontributor')
   scope: storageAccount
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe') // Storage Blob Data Contributor
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
     principalId: apiManagedIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }

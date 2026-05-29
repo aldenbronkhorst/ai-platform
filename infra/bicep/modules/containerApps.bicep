@@ -1,17 +1,20 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
 
 @description('Tags for resources')
 param tags object
-
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
 
 @description('API managed identity client ID')
 param apiManagedIdentityClientId string
@@ -23,12 +26,12 @@ param apiManagedIdentityResourceId string
 param acrLoginServer string
 
 @description('Container image to deploy')
-param containerImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
+param containerImage string = 'mcr.microsoft.com/azuredocs/aci-helloworld:latest'
 
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
-@description('Log Analytics Workspace Name')
+@description('Log Analytics workspace name')
 param logAnalyticsWorkspaceName string
 
 @description('Key Vault URI')
@@ -37,10 +40,10 @@ param keyVaultUri string
 @description('Storage account name')
 param storageAccountName string
 
-@description('Service Bus namespace name')
+@description('Service Bus namespace')
 param serviceBusNamespace string
 
-@description('PostgreSQL host FQDN')
+@description('PostgreSQL host')
 param postgresHost string
 
 @description('PostgreSQL database name')
@@ -49,19 +52,23 @@ param postgresDatabaseName string
 @description('PostgreSQL admin username')
 param postgresAdminUsername string
 
-var envName = 'cae-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
-var containerAppName = 'ca-${baseName}-api-${environment}'
+var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
+var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
 
-resource containerAppsEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
-  name: envName
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = {
+  name: logAnalyticsWorkspaceName
+}
+
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
+  name: environmentName
   location: location
   tags: tags
   properties: {
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
-        customerId: reference(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsWorkspaceName), '2022-10-01').customerId
-        sharedKey: listKeys(resourceId('Microsoft.OperationalInsights/workspaces', logAnalyticsWorkspaceName), '2022-10-01').primarySharedKey
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
   }
@@ -78,7 +85,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
     }
   }
   properties: {
-    managedEnvironmentId: containerAppsEnv.id
+    managedEnvironmentId: containerAppsEnvironment.id
     configuration: {
       ingress: {
         external: true
@@ -94,59 +101,32 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       secrets: [
         {
-          name: 'postgres-password'
+          name: 'keyvault-dsn'
           keyVaultUrl: '${keyVaultUri}secrets/postgres-admin-password'
           identity: apiManagedIdentityResourceId
         }
       ]
     }
     template: {
-      revisionSuffix: ''
       containers: [
         {
           name: 'ai-core-api'
           image: containerImage
           env: [
-            {
-              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-              value: appInsightsConnectionString
-            }
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: apiManagedIdentityClientId
-            }
-            {
-              name: 'KEY_VAULT_URI'
-              value: keyVaultUri
-            }
-            {
-              name: 'STORAGE_ACCOUNT_NAME'
-              value: storageAccountName
-            }
-            {
-              name: 'SERVICE_BUS_NAMESPACE'
-              value: serviceBusNamespace
-            }
-            {
-              name: 'POSTGRES_HOST'
-              value: postgresHost
-            }
-            {
-              name: 'POSTGRES_DB'
-              value: postgresDatabaseName
-            }
-            {
-              name: 'POSTGRES_USER'
-              value: postgresAdminUsername
-            }
-            {
-              name: 'POSTGRES_PASSWORD'
-              secretRef: 'postgres-password'
-            }
+            { name: 'POSTGRES_HOST', value: postgresHost }
+            { name: 'POSTGRES_DATABASE', value: postgresDatabaseName }
+            { name: 'POSTGRES_USERNAME', value: postgresAdminUsername }
+            { name: 'POSTGRES_PASSWORD', secretRef: 'keyvault-dsn' }
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+            { name: 'AZURE_CLIENT_ID', value: apiManagedIdentityClientId }
+            { name: 'AZURE_STORAGE_ACCOUNT', value: storageAccountName }
+            { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
+            { name: 'ENVIRONMENT', value: environment }
+            { name: 'VERSION', value: '1.0.0' }
           ]
           resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
+            cpu: json('0.25')
+            memory: '0.5Gi'
           }
           probes: [
             {
@@ -155,8 +135,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/health'
                 port: 8000
               }
-              initialDelaySeconds: 10
+              initialDelaySeconds: 30
               periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
             }
             {
               type: 'Readiness'
@@ -164,8 +146,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
                 path: '/health'
                 port: 8000
               }
-              initialDelaySeconds: 5
+              initialDelaySeconds: 10
               periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
             }
           ]
         }
@@ -173,14 +157,23 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       scale: {
         minReplicas: 0
         maxReplicas: 2
-        rules: []
+        rules: [
+          {
+            name: 'http-rule'
+            custom: {
+              type: 'http'
+              metadata: {
+                concurrentRequests: '50'
+              }
+            }
+          }
+        ]
       }
     }
   }
 }
 
-output environmentName string = containerAppsEnv.name
-output environmentId string = containerAppsEnv.id
 output containerAppName string = containerApp.name
-output containerAppId string = containerApp.id
+output environmentName string = containerAppsEnvironment.name
 output apiUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
+output fqdn string = containerApp.properties.configuration.ingress.fqdn

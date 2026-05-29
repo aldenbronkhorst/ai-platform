@@ -1,28 +1,36 @@
 targetScope = 'subscription'
 
-// Parameters
-@description('Base name for all resources')
-param baseName string = 'aiplatform'
+// Naming parameters
+@description('Workload name')
+param workload string = 'ai-platform'
 
 @description('Environment name')
 @allowed(['dev', 'staging', 'prod'])
-param environment string = 'dev'
+param environment string = 'prod'
 
 @description('Primary Azure region')
 param location string = 'southafricanorth'
 
-@description('Fallback region for services not available in primary')
-param fallbackLocation string = 'westeurope'
+@description('Region code abbreviation')
+param regionCode string = 'san'
 
-@description('Tags for all resources')
+@description('Instance number')
+param instance string = '001'
+
+// Tags
 param tags object = {
-  project: 'ai-platform'
+  application: workload
   environment: environment
+  region: location
+  'region-code': regionCode
   owner: 'alden'
   'managed-by': 'iac'
-  'cost-center': 'ai-platform'
+  'cost-center': workload
+  'business-criticality': 'pilot-production'
+  'data-classification': 'company-internal'
 }
 
+// Admin credentials
 @description('PostgreSQL admin username')
 param postgresAdminUsername string = 'aiplatformadmin'
 
@@ -30,8 +38,8 @@ param postgresAdminUsername string = 'aiplatformadmin'
 @secure()
 param postgresAdminPassword string
 
-@description('Budget amount for the environment')
-param budgetAmount int = 2000
+@description('Budget amount')
+param budgetAmount int = 3000
 
 @description('Budget start date')
 param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
@@ -39,9 +47,8 @@ param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
 @description('Budget end date')
 param budgetEndDate string = '${string(int(utcNow('yyyy')) + 1)}-${utcNow('MM')}-01'
 
-// Variables
-var resourceGroupName = 'rg-${baseName}-${environment}'
-var uniqueSuffix = uniqueString(subscription().id, resourceGroupName)
+// Naming helper variables
+var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
 
 // Resource Group
 resource rg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
@@ -55,8 +62,10 @@ module identity 'modules/managedIdentity.bicep' = {
   name: 'managedIdentityDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
   }
@@ -67,11 +76,12 @@ module acr 'modules/containerRegistry.bicep' = {
   name: 'acrDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
   }
 }
@@ -81,11 +91,12 @@ module keyVault 'modules/keyVault.bicep' = {
   name: 'keyVaultDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
     postgresAdminPassword: postgresAdminPassword
   }
@@ -96,11 +107,12 @@ module storage 'modules/storageAccount.bicep' = {
   name: 'storageDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
   }
 }
@@ -110,11 +122,12 @@ module postgres 'modules/postgresql.bicep' = {
   name: 'postgresDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     adminUsername: postgresAdminUsername
     adminPassword: postgresAdminPassword
   }
@@ -125,11 +138,12 @@ module monitoring 'modules/appInsights.bicep' = {
   name: 'monitoringDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
   }
 }
 
@@ -138,11 +152,12 @@ module serviceBus 'modules/serviceBus.bicep' = {
   name: 'serviceBusDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
   }
 }
@@ -152,15 +167,15 @@ module containerApps 'modules/containerApps.bicep' = {
   name: 'containerAppsDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityClientId: identity.outputs.apiManagedIdentityClientId
     apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
     acrLoginServer: acr.outputs.loginServer
-    containerImage: '${acr.outputs.loginServer}/ai-core-api:latest'
     appInsightsConnectionString: monitoring.outputs.connectionString
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
     keyVaultUri: keyVault.outputs.vaultUri
@@ -172,36 +187,17 @@ module containerApps 'modules/containerApps.bicep' = {
   }
 }
 
-// Module: Function App (Durable Functions)
-module functionApp 'modules/functionApp.bicep' = {
-  name: 'functionAppDeploy'
-  scope: rg
-  params: {
-    baseName: baseName
-    environment: environment
-    location: location
-    tags: tags
-    uniqueSuffix: uniqueSuffix
-    apiManagedIdentityClientId: identity.outputs.apiManagedIdentityClientId
-    apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
-    apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
-    appInsightsConnectionString: monitoring.outputs.connectionString
-    storageAccountName: storage.outputs.storageAccountName
-    serviceBusNamespace: serviceBus.outputs.namespaceName
-    keyVaultUri: keyVault.outputs.vaultUri
-  }
-}
-
 // Module: AI Search
 module aiSearch 'modules/searchService.bicep' = {
   name: 'aiSearchDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
   }
 }
@@ -211,12 +207,12 @@ module apiManagement 'modules/apiManagement.bicep' = {
   name: 'apiManagementDeploy'
   scope: rg
   params: {
-    baseName: baseName
+    workload: workload
     environment: environment
+    regionCode: regionCode
+    instance: instance
     location: location
     tags: tags
-    uniqueSuffix: uniqueSuffix
-    apiBackendUrl: containerApps.outputs.apiUrl
   }
 }
 
@@ -225,7 +221,10 @@ module budget 'modules/budget.bicep' = {
   name: 'budgetDeploy'
   scope: rg
   params: {
-    resourceGroupName: rg.name
+    workload: workload
+    environment: environment
+    regionCode: regionCode
+    instance: instance
     budgetAmount: budgetAmount
     startDate: budgetStartDate
     endDate: budgetEndDate
@@ -245,7 +244,6 @@ output appInsightsName string = monitoring.outputs.name
 output serviceBusNamespace string = serviceBus.outputs.namespaceName
 output containerAppName string = containerApps.outputs.containerAppName
 output containerAppsEnvironmentName string = containerApps.outputs.environmentName
-output functionAppName string = functionApp.outputs.functionAppName
 output aiSearchName string = aiSearch.outputs.name
 output apiManagementName string = apiManagement.outputs.name
 output apiManagementGatewayUrl string = apiManagement.outputs.gatewayUrl

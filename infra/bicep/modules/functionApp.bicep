@@ -1,8 +1,14 @@
-@description('Base name for resources')
-param baseName string
+@description('Workload name')
+param workload string
 
 @description('Environment name')
 param environment string
+
+@description('Region code')
+param regionCode string
+
+@description('Instance number')
+param instance string
 
 @description('Azure region')
 param location string
@@ -10,14 +16,8 @@ param location string
 @description('Tags for resources')
 param tags object
 
-@description('Unique suffix for globally unique names')
-param uniqueSuffix string
-
 @description('API managed identity client ID')
 param apiManagedIdentityClientId string
-
-@description('API managed identity principal ID')
-param apiManagedIdentityPrincipalId string
 
 @description('API managed identity resource ID')
 param apiManagedIdentityResourceId string
@@ -25,24 +25,20 @@ param apiManagedIdentityResourceId string
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
-@description('Storage account name')
+@description('Storage account name for function app')
 param storageAccountName string
 
-@description('Service Bus namespace name')
+@description('Service Bus namespace')
 param serviceBusNamespace string
 
 @description('Key Vault URI')
 param keyVaultUri string
 
-var functionAppName = 'func-${baseName}-${environment}-${take(uniqueSuffix, 8)}'
-var functionPlanName = 'plan-${baseName}-func-${environment}'
+var appServicePlanName = 'asp-${workload}-func-${environment}-${regionCode}-${instance}'
+var functionAppName = 'func-${workload}-${environment}-${regionCode}-${instance}'
 
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
-  name: storageAccountName
-}
-
-resource functionPlan 'Microsoft.Web/serverfarms@2022-03-01' = {
-  name: functionPlanName
+resource appServicePlan 'Microsoft.Web/serverfarms@2022-03-01' = {
+  name: appServicePlanName
   location: location
   tags: tags
   sku: {
@@ -50,16 +46,14 @@ resource functionPlan 'Microsoft.Web/serverfarms@2022-03-01' = {
     tier: 'Dynamic'
   }
   kind: 'functionapp'
-  properties: {
-    reserved: true
-  }
+  properties: {}
 }
 
 resource functionAppResource 'Microsoft.Web/sites@2022-03-01' = {
   name: functionAppName
   location: location
   tags: tags
-  kind: 'functionapp,linux'
+  kind: 'functionapp'
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
@@ -67,47 +61,29 @@ resource functionAppResource 'Microsoft.Web/sites@2022-03-01' = {
     }
   }
   properties: {
-    serverFarmId: functionPlan.id
+    serverFarmId: appServicePlan.id
     siteConfig: {
-      linuxFxVersion: 'PYTHON|3.11'
       appSettings: [
-        {
-          name: 'AzureWebJobsStorage__accountName'
-          value: storageAccountName
-        }
-        {
-          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: appInsightsConnectionString
-        }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'python'
-        }
-        {
-          name: 'AzureWebJobsFeatureFlags'
-          value: 'EnableWorkerIndexing'
-        }
-        {
-          name: 'AZURE_CLIENT_ID'
-          value: apiManagedIdentityClientId
-        }
-        {
-          name: 'KEY_VAULT_URI'
-          value: keyVaultUri
-        }
-        {
-          name: 'SERVICE_BUS_NAMESPACE'
-          value: serviceBusNamespace
-        }
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
+        { name: 'AzureWebJobsStorage', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccountName};EndpointSuffix=${az.environment().suffixes.storage};' }
+        { name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING', value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccountName};EndpointSuffix=${az.environment().suffixes.storage};' }
+        { name: 'WEBSITE_CONTENTSHARE', value: toLower(functionAppName) }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+        { name: 'AZURE_CLIENT_ID', value: apiManagedIdentityClientId }
+        { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
+        { name: 'AZURE_KEY_VAULT_URI', value: keyVaultUri }
       ]
+      pythonVersion: '3.11'
+      use32BitWorkerProcess: false
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      scmMinTlsVersion: '1.2'
     }
+    httpsOnly: true
   }
 }
 
 output functionAppName string = functionAppResource.name
 output functionAppId string = functionAppResource.id
-output functionAppDefaultHost string = functionAppResource.properties.defaultHostName
+output defaultHostName string = functionAppResource.properties.defaultHostName
