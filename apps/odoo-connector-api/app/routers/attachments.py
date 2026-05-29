@@ -2,6 +2,7 @@ import base64
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
+from app.core.formatting import format_attachment_response
 from app.models.schemas import AttachmentListRequest, AttachmentGetRequest, AttachmentCreateRequest
 
 router = APIRouter()
@@ -28,11 +29,13 @@ async def list_attachments(req: AttachmentListRequest, auth: dict = Depends(inte
     records = client.search_read(
         "ir.attachment",
         domain=domain,
-        fields=["id", "name", "mimetype", "res_model", "res_id", "create_date", "file_size"],
+        fields=["id", "name", "mimetype", "res_model", "res_id", "create_date", "file_size", "index_content"],
         limit=req.limit,
         include_ids=True,
     )
-    return {"attachments": records}
+    return {
+        "attachments": [format_attachment_response(r, mode="metadata") for r in records],
+    }
 
 
 @router.post("/get")
@@ -41,32 +44,12 @@ async def get_attachment(req: AttachmentGetRequest, auth: dict = Depends(interna
     records = client.read(
         "ir.attachment",
         [req.attachment_id],
-        fields=["id", "name", "mimetype", "res_model", "res_id", "datas", "index_content"],
+        fields=["id", "name", "mimetype", "res_model", "res_id", "datas", "index_content", "file_size"],
     )
     if not records:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    record = dict(records[0])
-    raw_b64 = record.pop("datas", None)
-
-    if req.mode == "metadata":
-        return record
-
-    data = base64.b64decode(raw_b64) if isinstance(raw_b64, str) else b""
-
-    if req.mode == "base64":
-        record["content_base64"] = base64.b64encode(data).decode()
-        return record
-
-    if req.mode == "text":
-        text = ""
-        if record.get("index_content"):
-            text = str(record.get("index_content") or "")
-            record["text_source"] = "index_content"
-        record["text"] = text
-        return record
-
-    return record
+    return format_attachment_response(records[0], mode=req.mode)
 
 
 @router.post("/create")
@@ -82,4 +65,9 @@ async def create_attachment(req: AttachmentCreateRequest, auth: dict = Depends(i
         values["mimetype"] = req.mimetype
 
     result = client.call_with_transport("ir.attachment", "create", args=[values], kwargs={})
-    return {"attachment_id": result, "model": req.model, "record_id": req.record_id}
+    return {
+        "attachment_id": result,
+        "model": req.model,
+        "record_id": req.record_id,
+        "status": "created",
+    }

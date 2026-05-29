@@ -2,6 +2,7 @@ import html
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
+from app.core.formatting import format_message_response
 from app.models.schemas import MessageListRequest, MessageCreateRequest
 
 router = APIRouter()
@@ -32,7 +33,9 @@ async def list_messages(req: MessageListRequest, auth: dict = Depends(internal_a
         limit=req.limit,
         include_ids=True,
     )
-    return {"messages": records}
+    return {
+        "messages": [format_message_response(r) for r in records],
+    }
 
 
 @router.post("/create")
@@ -58,4 +61,9 @@ async def create_message(req: MessageCreateRequest, auth: dict = Depends(interna
         kwargs=kwargs,
     )
 
-    return {"message_id": result, "model": req.model, "record_id": req.record_id}
+    return {
+        "message_id": result,
+        "model": req.model,
+        "record_id": req.record_id,
+        "status": "posted",
+    }

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
+from app.core.formatting import format_search_read_response, format_mutation_response
 from app.models.schemas import (
     RecordsSearchReadRequest,
     RecordsCountRequest,
@@ -35,7 +36,21 @@ async def search_read(req: RecordsSearchReadRequest, auth: dict = Depends(intern
         order=req.order,
         include_ids=req.include_ids,
     )
-    return {"model": req.model, "records": records}
+
+    # Get field metadata for human references if fields were requested
+    fields_info = {}
+    if req.fields:
+        try:
+            fields_info = client.fields_get(req.model, fields=req.fields).get("fields", {})
+        except Exception:
+            pass
+
+    return format_search_read_response(
+        model=req.model,
+        records=records,
+        fields_info=fields_info,
+        include_human_references=True,
+    )
 
 
 @router.post("/count")
@@ -49,7 +64,20 @@ async def count_records(req: RecordsCountRequest, auth: dict = Depends(internal_
 async def read_records(req: RecordsReadRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     records = client.read(model=req.model, ids=req.ids, fields=req.fields)
-    return {"model": req.model, "records": records}
+
+    fields_info = {}
+    if req.fields:
+        try:
+            fields_info = client.fields_get(req.model, fields=req.fields).get("fields", {})
+        except Exception:
+            pass
+
+    return format_search_read_response(
+        model=req.model,
+        records=records,
+        fields_info=fields_info,
+        include_human_references=True,
+    )
 
 
 @router.post("/mutate")
@@ -85,15 +113,15 @@ async def mutate_records(req: RecordsMutateRequest, auth: dict = Depends(interna
         result = client.call_with_transport(req.model, method, args=[req.record_ids], kwargs={})
         affected_ids = req.record_ids
 
-    output = {
-        "model": req.model,
-        "operation": operation,
-        "result": result,
-        "record_ids": affected_ids,
-    }
-
+    verified_records = None
     if req.verify and affected_ids and operation != "delete":
         verify_fields = req.verify_fields or ["id", "display_name"]
-        output["verified_records"] = client.read(req.model, affected_ids, verify_fields)
+        verified_records = client.read(req.model, affected_ids, verify_fields)
 
-    return output
+    return format_mutation_response(
+        model=req.model,
+        operation=operation,
+        result=result,
+        record_ids=affected_ids,
+        verified_records=verified_records,
+    )

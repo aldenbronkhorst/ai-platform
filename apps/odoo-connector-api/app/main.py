@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.odoo_client import OdooError, OdooAuthError
+from app.core.middleware import CorrelationIdMiddleware
 from app.routers import health, schema, records, execute_kw, attachments, messages
 
 settings = get_settings()
@@ -12,6 +13,8 @@ app = FastAPI(
     version=settings.app_version,
     description="Internal HTTP API for Odoo integration. Not an MCP server.",
 )
+
+app.add_middleware(CorrelationIdMiddleware)
 
 app.include_router(health.router, tags=["Health"])
 app.include_router(schema.router, prefix="/schema", tags=["Schema"])
@@ -25,7 +28,11 @@ app.include_router(messages.router, prefix="/messages", tags=["Messages"])
 async def odoo_auth_error_handler(request: Request, exc: OdooAuthError):
     return JSONResponse(
         status_code=401,
-        content={"error": "odoo_auth_failed", "message": str(exc)},
+        content={
+            "error": "odoo_auth_failed",
+            "message": str(exc),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
     )
 
 
@@ -33,7 +40,11 @@ async def odoo_auth_error_handler(request: Request, exc: OdooAuthError):
 async def odoo_error_handler(request: Request, exc: OdooError):
     return JSONResponse(
         status_code=400,
-        content={"error": "odoo_error", "message": str(exc)},
+        content={
+            "error": "odoo_error",
+            "message": str(exc),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
     )
 
 
@@ -41,7 +52,11 @@ async def odoo_error_handler(request: Request, exc: OdooError):
 async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.ProtocolError):
     return JSONResponse(
         status_code=502,
-        content={"error": "odoo_transport_error", "message": f"XML-RPC protocol error: {exc}"},
+        content={
+            "error": "odoo_transport_error",
+            "message": f"XML-RPC protocol error: {exc}",
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
     )
 
 
@@ -49,7 +64,11 @@ async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.Pro
 async def generic_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
-        content={"error": "internal_error", "message": str(exc)},
+        content={
+            "error": "internal_error",
+            "message": str(exc),
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
     )
 
 
