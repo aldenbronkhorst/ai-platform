@@ -339,7 +339,7 @@ async def test_route(
     except Exception as e:
         return TestConsoleResponse(success=False, error=str(e))
 
-    client = build_foundry_client(provider, model)
+    client = await build_foundry_client(provider, model)
     temperature = float(route.temperature) if route.temperature is not None else 0.3
     max_tokens = route.max_tokens or 2000
 
