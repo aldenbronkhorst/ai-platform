@@ -1,6 +1,6 @@
 import os
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 # Enable debug mode for tests
@@ -15,10 +15,10 @@ from app.core.database import get_db
 
 async def mock_get_db():
     """Return a mock DB session"""
-    mock_session = MagicMock()
+    mock_session = AsyncMock()
     
     # Mock execute().scalar_one_or_none() chain for connected account lookup
-    mock_result = MagicMock()
+    mock_result = AsyncMock()
     mock_result.scalar_one_or_none.return_value = None
     mock_session.execute.return_value = mock_result
     
