@@ -1,9 +1,12 @@
+import os
 import logging
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 
 from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog
 from app.services.foundry_client import FoundryClient
@@ -51,12 +54,46 @@ async def get_enabled_route(db: AsyncSession, task_type: str = "general_chat") -
     return route, model, provider
 
 
-def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryClient:
+_secret_client: Optional[SecretClient] = None
+
+
+def _get_kv_client() -> SecretClient:
+    global _secret_client
+    if _secret_client is None:
+        vault_uri = os.environ.get("KEY_VAULT_URI", "")
+        if vault_uri:
+            credential = DefaultAzureCredential()
+            _secret_client = SecretClient(vault_url=vault_uri, credential=credential)
+    return _secret_client
+
+
+async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
+    """Try Key Vault secret first, then env var, then fall back to hard-coded."""
+    if provider.auth_type == "key_vault_secret" and provider.secret_reference:
+        try:
+            client = _get_kv_client()
+            if client:
+                secret = client.get_secret(provider.secret_reference)
+                if secret and secret.value:
+                    return secret.value
+        except Exception as exc:
+            logger.warning("Failed to fetch KV secret %s: %s", provider.secret_reference, exc)
+    # Fallback: check environment variable
+    env_key = provider.name.upper().replace(" ", "_") + "_API_KEY"
+    env_val = os.environ.get(env_key)
+    if env_val:
+        return env_val
+    return None
+
+
+async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryClient:
+    api_key = await _resolve_api_key(provider)
+    use_mi = provider.auth_type == "managed_identity"
     return FoundryClient(
         base_url=provider.base_url,
         deployment_name=model.deployment_name,
-        api_key=None,
-        use_managed_identity=provider.auth_type == "managed_identity",
+        api_key=api_key,
+        use_managed_identity=use_mi and not api_key,
     )
 
 
@@ -69,7 +106,7 @@ async def execute_chat(
 ) -> dict:
     route, model, provider = await get_enabled_route(db, task_type)
 
-    client = build_foundry_client(provider, model)
+    client = await build_foundry_client(provider, model)
 
     system_prompt = route.system_prompt
     if system_prompt:
