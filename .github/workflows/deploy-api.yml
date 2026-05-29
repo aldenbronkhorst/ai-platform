@@ -6,6 +6,7 @@ on:
     paths:
       - 'apps/ai-core-api/**'
       - 'apps/odoo-connector-api/**'
+      - 'apps/web-portal/**'
       - '.github/workflows/deploy-api.yml'
   workflow_dispatch:
     inputs:
