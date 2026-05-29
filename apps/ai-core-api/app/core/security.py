@@ -16,7 +16,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 # Microsoft Entra JWKS URL for the specific tenant
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
-CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "9067d9d9-b0bf-4d56-be8f-8d5bc3bc06b5")
+CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208")
 JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 ISSUER = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
 

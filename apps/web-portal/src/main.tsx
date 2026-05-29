@@ -10,15 +10,22 @@ import App from "./App.tsx";
 const msalInstance = new PublicClientApplication(msalConfig);
 
 msalInstance.initialize().then(async () => {
-  const redirectResponse = await msalInstance.handleRedirectPromise();
+  let startupAuthError: string | null = null;
 
-  if (redirectResponse?.account) {
-    msalInstance.setActiveAccount(redirectResponse.account);
-  } else {
-    const accounts = msalInstance.getAllAccounts();
-    if (accounts.length > 0) {
-      msalInstance.setActiveAccount(accounts[0]);
+  try {
+    const redirectResponse = await msalInstance.handleRedirectPromise();
+
+    if (redirectResponse?.account) {
+      msalInstance.setActiveAccount(redirectResponse.account);
+    } else {
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        msalInstance.setActiveAccount(accounts[0]);
+      }
     }
+  } catch (err: any) {
+    startupAuthError = err.message || String(err);
+    console.error("MSAL redirect processing failed:", err);
   }
 
   msalInstance.addEventCallback((event) => {
@@ -33,7 +40,7 @@ msalInstance.initialize().then(async () => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <MsalProvider instance={msalInstance}>
-        <App />
+        <App startupAuthError={startupAuthError} />
       </MsalProvider>
     </StrictMode>
   );

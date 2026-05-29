@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
+import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
 import { 
   MessageSquare, 
@@ -44,8 +45,8 @@ interface UserProfile {
   role: string;
 }
 
-export default function App() {
-  const { instance, accounts } = useMsal();
+export default function App({ startupAuthError }: { startupAuthError: string | null }) {
+  const { instance, accounts, inProgress } = useMsal();
 
   // Tab State
   const [activeTab, setActiveTab] = useState<string>("chat");
@@ -378,6 +379,18 @@ export default function App() {
   };
 
   // ENTRA LOGIN SCREEN FOR PRODUCTION
+  if (inProgress !== InteractionStatus.None) {
+    return (
+      <div className="flex h-screen bg-[#070b15] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.08),transparent_50%)]" />
+        <div className="relative z-10 text-center space-y-4">
+          <RefreshCw className="w-10 h-10 text-indigo-400 animate-spin mx-auto" />
+          <p className="text-sm font-semibold tracking-wide text-gray-300">Completing Microsoft sign-in...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!activeUser) {
     return (
       <div className="flex h-screen bg-[#070b15] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
@@ -393,13 +406,29 @@ export default function App() {
             <p className="text-sm text-gray-400 mt-2">Sign in using your corporate Microsoft identity to securely access tools.</p>
           </div>
 
-          {authError && (
-            <div className="p-3 border border-rose-500/25 bg-rose-500/10 text-rose-400 text-xs rounded-xl flex items-start gap-2 text-left">
-              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold">Authentication Error</p>
-                <p className="mt-0.5 opacity-90">{authError}</p>
+          {(authError || startupAuthError) && (
+            <div className="p-4 border border-rose-500/25 bg-rose-500/10 text-rose-400 text-xs rounded-xl space-y-3 text-left">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold">Authentication Error</p>
+                  <p className="mt-0.5 opacity-90">{authError || startupAuthError}</p>
+                </div>
               </div>
+              <button 
+                onClick={() => {
+                  const activeAccount = instance.getActiveAccount() || accounts[0];
+                  instance.acquireTokenRedirect({
+                    ...loginRequest,
+                    account: activeAccount
+                  }).catch(e => {
+                    setAuthError(`Redirect failed: ${e.message}`);
+                  });
+                }}
+                className="w-full py-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-bold rounded-lg text-[11px] transition-all cursor-pointer"
+              >
+                Continue Microsoft permission
+              </button>
             </div>
           )}
 
@@ -436,6 +465,18 @@ export default function App() {
                 Local Mock Sign In (Developer)
               </button>
             )}
+          </div>
+
+          {/* Temporary Diagnostics Panel */}
+          <div className="border border-[#1e293b]/50 p-4 bg-gray-900/40 rounded-xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
+            <p className="text-gray-500 font-bold border-b border-[#1e293b]/30 pb-1 mb-1.5 flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security Diagnostics</p>
+            <p><span className="text-gray-500">inProgress:</span> {inProgress}</p>
+            <p><span className="text-gray-500">accounts.length:</span> {accounts.length}</p>
+            <p><span className="text-gray-500">activeAccount:</span> {instance.getActiveAccount()?.username || "None"}</p>
+            <p><span className="text-gray-500">startupAuthError:</span> {startupAuthError || "None"}</p>
+            <p><span className="text-gray-500">lastError:</span> {authError || "None"}</p>
+            <p><span className="text-gray-500">scopes:</span> {JSON.stringify(loginRequest.scopes)}</p>
+            <p><span className="text-gray-500">currentOrigin:</span> {typeof window !== "undefined" ? window.location.origin : ""}</p>
           </div>
 
           <div className="border-t border-[#1e293b]/50 pt-4 flex items-center justify-between text-xs text-gray-500">
