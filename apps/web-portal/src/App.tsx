@@ -51,6 +51,9 @@ export default function App() {
   // Tab State
   const [activeTab, setActiveTab] = useState<string>("chat");
 
+  // MSAL / Entra ID Auth Error state
+  const [authError, setAuthError] = useState<string | null>(null);
+
   // Local Mock Auth States (local-only)
   const [localMockAuthenticated, setLocalMockAuthenticated] = useState<boolean>(false);
   const [localMockUser, setLocalMockUser] = useState<UserProfile | null>(null);
@@ -99,13 +102,15 @@ export default function App() {
   // Synchronize active authentication session
   useEffect(() => {
     if (msalAuthenticated && accounts.length > 0) {
-      const activeAccount = accounts[0];
+      const activeAccount = instance.getActiveAccount() || accounts[0];
       setActiveUser({
         email: activeAccount.username,
         displayName: activeAccount.name || activeAccount.username,
         role: "user" // App roles will be read and validated securely by backend JWT validation
       });
       
+      setAuthError(null);
+
       // Acquire JWT access token silently
       instance.acquireTokenSilent({
         ...loginRequest,
@@ -114,10 +119,19 @@ export default function App() {
         setAccessToken(response.accessToken);
       }).catch(err => {
         console.warn("Silent token acquisition failed, prompting interactive login:", err);
+        // If silent token acquisition fails, prompt interactive login
+        instance.acquireTokenRedirect({
+          ...loginRequest,
+          account: activeAccount
+        }).catch(redirectErr => {
+          console.error("Interactive token acquisition redirect failed:", redirectErr);
+          setAuthError(redirectErr.message || "Interactive login redirect failed.");
+        });
       });
     } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
       setActiveUser(localMockUser);
       setAccessToken("mock-local-token");
+      setAuthError(null);
     } else {
       setActiveUser(null);
       setAccessToken("");
@@ -385,6 +399,16 @@ export default function App() {
             <h2 className="text-2xl font-bold text-white tracking-tight">AI Platform Portal</h2>
             <p className="text-sm text-gray-400 mt-2">Sign in using your corporate Microsoft identity to securely access tools.</p>
           </div>
+
+          {authError && (
+            <div className="p-3 border border-rose-500/25 bg-rose-500/10 text-rose-400 text-xs rounded-xl flex items-start gap-2 text-left">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Authentication Error</p>
+                <p className="mt-0.5 opacity-90">{authError}</p>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-3 pt-4">
             {/* Real Microsoft Entra ID Login Button */}

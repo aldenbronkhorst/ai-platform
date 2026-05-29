@@ -9,8 +9,23 @@ import App from "./App.tsx";
 // Initialize MSAL PublicClientApplication
 const msalInstance = new PublicClientApplication(msalConfig);
 
-// MSAL v3 requires asynchronous initialization before any rendering or authentication attempts
-msalInstance.initialize().then(() => {
+// MSAL v3 requires asynchronous initialization and handling the redirect promise before rendering
+msalInstance.initialize().then(async () => {
+  try {
+    const response = await msalInstance.handleRedirectPromise();
+
+    if (response?.account) {
+      msalInstance.setActiveAccount(response.account);
+    } else {
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) {
+        msalInstance.setActiveAccount(accounts[0]);
+      }
+    }
+  } catch (err) {
+    console.error("MSAL redirect handling failed:", err);
+  }
+
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <MsalProvider instance={msalInstance}>
