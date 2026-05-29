@@ -1,6 +1,11 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+
+# Enable debug mode for tests to bypass API key auth
+os.environ["DEBUG"] = "true"
+
 from app.main import app
 from app.core.database import Base, get_db
 
