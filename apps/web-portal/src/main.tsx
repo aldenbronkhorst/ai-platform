@@ -9,10 +9,15 @@ import App from "./App.tsx";
 // Initialize MSAL PublicClientApplication
 const msalInstance = new PublicClientApplication(msalConfig);
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <MsalProvider instance={msalInstance}>
-      <App />
-    </MsalProvider>
-  </StrictMode>,
-);
+// MSAL v3 requires asynchronous initialization before any rendering or authentication attempts
+msalInstance.initialize().then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <MsalProvider instance={msalInstance}>
+        <App />
+      </MsalProvider>
+    </StrictMode>,
+  );
+}).catch(err => {
+  console.error("MSAL initialization failed:", err);
+});

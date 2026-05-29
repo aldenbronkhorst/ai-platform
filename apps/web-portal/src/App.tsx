@@ -81,10 +81,10 @@ export default function App() {
   const [odooUrl, setOdooUrl] = useState<string>("https://odoo.lotslotsmore.com");
   const [odooDb, setOdooDb] = useState<string>("Lots Lots More Production");
   const [odooUsername, setOdooUsername] = useState<string>("alden@lotslotsmore.com");
-  const [odooApiKey, setOdooApiKey] = useState<string>(""),
+  const [odooApiKey, setOdooApiKey] = useState<string>("");
 
   // Audit Logs States
-  [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [isAuditLoading, setIsAuditLoading] = useState<boolean>(false);
   const [auditFilter, setAuditFilter] = useState<string>("");
   const [inspectLog, setInspectLog] = useState<any | null>(null);
