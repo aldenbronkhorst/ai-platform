@@ -10,7 +10,6 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.models import AIUser
-from datetime import datetime
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
