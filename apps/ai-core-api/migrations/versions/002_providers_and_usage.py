@@ -1,4 +1,4 @@
-"""add provider/model/route/usage tables (chat tables already exist)
+"""add provider/model/route/usage tables idempotently
 
 Revision ID: 002_providers_and_usage
 Revises: 001_initial
@@ -9,7 +9,6 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
-import uuid
 
 revision: str = "002_providers_and_usage"
 down_revision: Union[str, None] = "001_initial"
@@ -18,67 +17,79 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "ai_providers",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("name", sa.String(100), unique=True, nullable=False, index=True),
-        sa.Column("provider_type", sa.String(50), nullable=False),
-        sa.Column("base_url", sa.String(500), nullable=False),
-        sa.Column("auth_type", sa.String(30), nullable=False, server_default="key_vault_secret"),
-        sa.Column("secret_reference", sa.String(500), nullable=True),
-        sa.Column("enabled", sa.String(10), nullable=False, server_default="true"),
-        sa.Column("capabilities", sa.JSON, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_models",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("provider_id", UUID(as_uuid=True), sa.ForeignKey("ai_providers.id"), nullable=False, index=True),
-        sa.Column("display_name", sa.String(255), nullable=False),
-        sa.Column("model_name", sa.String(255), nullable=False),
-        sa.Column("deployment_name", sa.String(255), nullable=False),
-        sa.Column("model_family", sa.String(100), nullable=True),
-        sa.Column("model_version", sa.String(100), nullable=True),
-        sa.Column("supports_tools", sa.String(10), nullable=False, server_default="false"),
-        sa.Column("supports_json_schema", sa.String(10), nullable=False, server_default="false"),
-        sa.Column("context_window", sa.Integer, nullable=True),
-        sa.Column("enabled", sa.String(10), nullable=False, server_default="true"),
-        sa.Column("config_json", sa.JSON, nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_routes",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("task_type", sa.String(100), unique=True, nullable=False, index=True),
-        sa.Column("primary_model_id", UUID(as_uuid=True), sa.ForeignKey("ai_models.id"), nullable=False),
-        sa.Column("fallback_model_id", UUID(as_uuid=True), sa.ForeignKey("ai_models.id"), nullable=True),
-        sa.Column("temperature", sa.Numeric(4, 2), nullable=False, server_default="0.3"),
-        sa.Column("max_tokens", sa.Integer, nullable=False, server_default="2000"),
-        sa.Column("system_prompt", sa.Text, nullable=True),
-        sa.Column("enabled", sa.String(10), nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-    )
-    op.create_table(
-        "ai_usage_logs",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, default=uuid.uuid4),
-        sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False, index=True),
-        sa.Column("provider_id", UUID(as_uuid=True), sa.ForeignKey("ai_providers.id"), nullable=True),
-        sa.Column("model_id", UUID(as_uuid=True), sa.ForeignKey("ai_models.id"), nullable=True),
-        sa.Column("route_id", UUID(as_uuid=True), sa.ForeignKey("ai_routes.id"), nullable=True),
-        sa.Column("task_type", sa.String(100), nullable=True),
-        sa.Column("chat_session_id", UUID(as_uuid=True), sa.ForeignKey("ai_chat_sessions.id"), nullable=True),
-        sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("ai_users.id"), nullable=True, index=True),
-        sa.Column("prompt_tokens", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("completion_tokens", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("total_tokens", sa.Integer, nullable=False, server_default="0"),
-        sa.Column("latency_ms", sa.Integer, nullable=True),
-        sa.Column("cost_estimate", sa.Numeric(12, 6), nullable=True),
-        sa.Column("status", sa.String(20), nullable=False, server_default="success"),
-        sa.Column("error_message", sa.Text, nullable=True),
-    )
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS ai_providers (
+            id UUID PRIMARY KEY,
+            name VARCHAR(100) NOT NULL UNIQUE,
+            provider_type VARCHAR(50) NOT NULL,
+            base_url VARCHAR(500) NOT NULL,
+            auth_type VARCHAR(30) NOT NULL DEFAULT 'key_vault_secret',
+            secret_reference VARCHAR(500),
+            enabled VARCHAR(10) NOT NULL DEFAULT 'true',
+            capabilities JSONB,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+    """))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_ai_providers_name ON ai_providers (name)"))
+    
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS ai_models (
+            id UUID PRIMARY KEY,
+            provider_id UUID NOT NULL REFERENCES ai_providers(id),
+            display_name VARCHAR(255) NOT NULL,
+            model_name VARCHAR(255) NOT NULL,
+            deployment_name VARCHAR(255) NOT NULL,
+            model_family VARCHAR(100),
+            model_version VARCHAR(100),
+            supports_tools VARCHAR(10) NOT NULL DEFAULT 'false',
+            supports_json_schema VARCHAR(10) NOT NULL DEFAULT 'false',
+            context_window INTEGER,
+            enabled VARCHAR(10) NOT NULL DEFAULT 'true',
+            config_json JSONB,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+    """))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_ai_models_provider_id ON ai_models (provider_id)"))
+    
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS ai_routes (
+            id UUID PRIMARY KEY,
+            task_type VARCHAR(100) NOT NULL UNIQUE,
+            primary_model_id UUID NOT NULL REFERENCES ai_models(id),
+            fallback_model_id UUID REFERENCES ai_models(id),
+            temperature NUMERIC(4,2) NOT NULL DEFAULT 0.3,
+            max_tokens INTEGER NOT NULL DEFAULT 2000,
+            system_prompt TEXT,
+            enabled VARCHAR(10) NOT NULL DEFAULT 'true',
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+    """))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_ai_routes_task_type ON ai_routes (task_type)"))
+    
+    op.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS ai_usage_logs (
+            id UUID PRIMARY KEY,
+            timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+            provider_id UUID REFERENCES ai_providers(id),
+            model_id UUID REFERENCES ai_models(id),
+            route_id UUID REFERENCES ai_routes(id),
+            task_type VARCHAR(100),
+            chat_session_id UUID REFERENCES ai_chat_sessions(id),
+            user_id UUID REFERENCES ai_users(id),
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            latency_ms INTEGER,
+            cost_estimate NUMERIC(12,6),
+            status VARCHAR(20) NOT NULL DEFAULT 'success',
+            error_message TEXT
+        )
+    """))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_timestamp ON ai_usage_logs (timestamp)"))
+    op.execute(sa.text("CREATE INDEX IF NOT EXISTS ix_ai_usage_logs_user_id ON ai_usage_logs (user_id)"))
 
 
 def downgrade() -> None:
