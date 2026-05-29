@@ -1142,7 +1142,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           {ENABLE_LOCAL_MOCK && (
             <button 
               onClick={() => setShowDiagnostics(!showDiagnostics)}
-              className="text-[11px] text-gray-500 hover:text-indigo-400 underline cursor-pointer select-none block mx-auto"
+              className="text-[11px] text-gray-500 hover:text-zinc-400 underline cursor-pointer select-none block mx-auto"
             >
               {showDiagnostics ? "Hide Security Diagnostics" : "Show Security Diagnostics"}
             </button>
@@ -1274,7 +1274,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                           <div className="mt-3 pt-3 border-t border-white/5">
                             <button 
                               onClick={() => setExpandedTraceMsgs(prev => ({ ...prev, [msg.id]: !prev[msg.id] }))}
-                              className="text-[10px] text-gray-500 hover:text-indigo-400 font-semibold flex items-center gap-1 cursor-pointer select-none"
+                              className="text-[10px] text-gray-500 hover:text-zinc-400 font-semibold flex items-center gap-1 cursor-pointer select-none"
                             >
                               <Shield className="w-3 h-3" />
                               {expandedTraceMsgs[msg.id] ? "Hide technical trail" : "View operational trail"}
