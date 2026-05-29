@@ -939,7 +939,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden">
       
       {/* SIDEBAR NAVIGATION */}
-      <aside className="w-64 bg-[#0a0f1d]/90 border-r border-[#1e293b]/80 flex flex-col justify-between select-none shrink-0 relative z-30">
+      <aside className="w-64 liquid-glass rounded-none border-t-0 border-b-0 border-l-0 border-r border-[#1e293b]/40 flex flex-col justify-between select-none shrink-0 relative z-30">
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Logo & Branding */}
           <div className="p-6 border-b border-[#1e293b]/50 flex items-center gap-3">
@@ -1086,7 +1086,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
       {/* CHAT SESSION DRAWER */}
       {activeTab === "chat" && (
-        <aside className="w-64 bg-[#080c17]/90 border-r border-[#1e293b]/40 flex flex-col justify-between shrink-0 select-none relative z-20">
+        <aside className="w-64 liquid-glass rounded-none border-t-0 border-b-0 border-l-0 border-r border-[#1e293b]/30 flex flex-col justify-between shrink-0 select-none relative z-20">
           <div className="p-4 border-b border-[#1e293b]/30">
             <button 
               onClick={() => createNewChat()}
@@ -1358,7 +1358,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                             setWorkflowInputs({});
                             setWorkflowOutcome(null);
                           }}
-                          className="p-6 border border-[#1e293b] rounded-2xl bg-[#0a0f1d] hover:border-indigo-500/50 hover:bg-gray-800/10 transition-all cursor-pointer flex flex-col justify-between"
+                          className="p-6 liquid-glass liquid-glass-hover rounded-2xl cursor-pointer flex flex-col justify-between"
                         >
                           <div>
                             <h4 className="font-bold text-sm text-white mb-2">{workflow.title}</h4>
