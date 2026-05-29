@@ -3,32 +3,32 @@
 @tailwind utilities;
 
 :root {
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --heading: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --mono: sfmono-regular, Consolas, Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --heading: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  /* Sophisticated, Neutral Liquid Gloss Design Tokens */
-  --glass-bg-neutral: rgba(13, 17, 28, 0.35);
-  --glass-bg-strong: rgba(23, 28, 41, 0.65);
+  /* Sophisticated, Neutral Coal/Zinc Liquid Gloss Design Tokens (Pure Greys & Whites) */
+  --glass-bg-neutral: rgba(18, 18, 20, 0.45);
+  --glass-bg-strong: rgba(24, 24, 27, 0.75);
   --glass-border-light: rgba(255, 255, 255, 0.08);
-  --glass-border-bright: rgba(255, 255, 255, 0.18);
-  --glass-border-selected: rgba(255, 255, 255, 0.25);
+  --glass-border-bright: rgba(255, 255, 255, 0.2);
+  --glass-border-selected: rgba(255, 255, 255, 0.35);
   
   --glass-blur: 24px;
   --glass-saturation: 140%;
   --glass-radius: 16px;
   
-  --glass-text-neutral: #e5e7eb;
-  --glass-text-muted: #9ca3af;
-  --glass-shadow: rgba(0, 0, 0, 0.6);
+  --glass-text-neutral: #f4f4f5; /* Zinc 100 */
+  --glass-text-muted: #a1a1aa; /* Zinc 400 */
+  --glass-shadow: rgba(0, 0, 0, 0.7);
 }
 
 body {
   font-family: var(--sans);
-  background-color: #030712;
+  background-color: #09090b; /* Zinc 950 */
   background-image: 
-    radial-gradient(at 0% 0%, rgba(255, 255, 255, 0.03) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(255, 255, 255, 0.015) 0px, transparent 50%);
+    radial-gradient(at 0% 0%, rgba(255, 255, 255, 0.02) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(255, 255, 255, 0.01) 0px, transparent 50%);
   background-attachment: fixed;
   color: var(--glass-text-neutral);
   margin: 0;
@@ -37,10 +37,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom modern scrollbars */
+/* Custom sleek, neutral scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -49,23 +49,23 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* 🧪 High-Fidelity Apple Liquid Gloss Web System */
+/* 🧪 High-Fidelity Apple Liquid Gloss Web System (Neutral Charcoal) */
 .liquid-gloss {
   position: relative;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.01) 100%), var(--glass-bg-neutral);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.005) 100%), var(--glass-bg-neutral);
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturation));
   border: 1px solid var(--glass-border-light);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.02),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.01),
     0 12px 40px var(--glass-shadow);
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -78,29 +78,29 @@ body {
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, transparent 40%),
-    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.08), transparent 30%);
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, transparent 40%),
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.05), transparent 30%);
   mix-blend-mode: screen;
   opacity: 0.85;
 }
 
-/* Selected active state for Liquid Gloss items */
+/* Selected active state for Liquid Gloss items (Glossy white/silver indicator) */
 .liquid-gloss-active {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.03) 100%), rgba(255, 255, 255, 0.05);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%), rgba(255, 255, 255, 0.05);
   border-color: var(--glass-border-selected) !important;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.2),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.04),
-    0 8px 32px rgba(255, 255, 255, 0.05);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
+    0 8px 32px rgba(255, 255, 255, 0.04);
   color: #fff !important;
 }
 
 .liquid-gloss-hover:hover {
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: rgba(255, 255, 255, 0.05);
   border-color: var(--glass-border-bright);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.18),
-    0 15px 45px rgba(0, 0, 0, 0.7);
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 15px 45px rgba(0, 0, 0, 0.75);
   transform: translateY(-1px);
 }
 
@@ -111,24 +111,24 @@ body {
 /* Glassy, neutral buttons with micro-highlights */
 .liquid-gloss-btn {
   position: relative;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%), rgba(255, 255, 255, 0.03);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.01) 100%), rgba(255, 255, 255, 0.02);
   border: 1px solid var(--glass-border-bright);
   color: #fff;
   font-weight: 600;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 4px 12px rgba(0,0,0,0.3);
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 4px 12px rgba(0,0,0,0.4);
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .liquid-gloss-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 100%), rgba(255, 255, 255, 0.06);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0.03) 100%), rgba(255, 255, 255, 0.04);
   border-color: var(--glass-border-selected);
   box-shadow: 
-    inset 0 1px 0 rgba(255, 255, 255, 0.22),
-    0 10px 30px rgba(0, 0, 0, 0.6);
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 10px 30px rgba(0, 0, 0, 0.7);
   transform: translateY(-1px);
 }
 
@@ -138,22 +138,22 @@ body {
 
 /* Neutral input fields with active gloss borders */
 .liquid-gloss-input {
-  background: rgba(255, 255, 255, 0.015);
+  background: rgba(255, 255, 255, 0.01);
   border: 1px solid var(--glass-border-light);
   color: #fff;
   transition: all 0.25s ease;
 }
 
 .liquid-gloss-input:focus {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--glass-border-selected);
-  box-shadow: 0 0 15px rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--glass-border-bright);
+  box-shadow: 0 0 15px rgba(255, 255, 255, 0.05);
 }
 
 /* Fallback for browsers without backdrop-filter support */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .liquid-gloss {
-    background: #0d111c;
+    background: #121214;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
