@@ -51,6 +51,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   // Tab State
   const [activeTab, setActiveTab] = useState<string>("chat");
 
+  // Diagnostics panel visibility (local-only / flag-only)
+  const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
+
   // MSAL / Entra ID Auth Error state
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -467,17 +470,33 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             )}
           </div>
 
+          {/* Show/Hide Diagnostics link (only visible on localhost or VITE_SHOW_AUTH_DIAGNOSTICS=true) */}
+          {(import.meta.env.VITE_SHOW_AUTH_DIAGNOSTICS === "true" || 
+            (typeof window !== "undefined" && 
+              (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))) && (
+            <button 
+              onClick={() => setShowDiagnostics(!showDiagnostics)}
+              className="text-[11px] text-gray-500 hover:text-indigo-400 underline cursor-pointer select-none"
+            >
+              {showDiagnostics ? "Hide Security Diagnostics" : "Show Security Diagnostics"}
+            </button>
+          )}
+
           {/* Temporary Diagnostics Panel */}
-          <div className="border border-[#1e293b]/50 p-4 bg-gray-900/40 rounded-xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
-            <p className="text-gray-500 font-bold border-b border-[#1e293b]/30 pb-1 mb-1.5 flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security Diagnostics</p>
-            <p><span className="text-gray-500">inProgress:</span> {inProgress}</p>
-            <p><span className="text-gray-500">accounts.length:</span> {accounts.length}</p>
-            <p><span className="text-gray-500">activeAccount:</span> {instance.getActiveAccount()?.username || "None"}</p>
-            <p><span className="text-gray-500">startupAuthError:</span> {startupAuthError || "None"}</p>
-            <p><span className="text-gray-500">lastError:</span> {authError || "None"}</p>
-            <p><span className="text-gray-500">scopes:</span> {JSON.stringify(loginRequest.scopes)}</p>
-            <p><span className="text-gray-500">currentOrigin:</span> {typeof window !== "undefined" ? window.location.origin : ""}</p>
-          </div>
+          {showDiagnostics && (import.meta.env.VITE_SHOW_AUTH_DIAGNOSTICS === "true" || 
+            (typeof window !== "undefined" && 
+              (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"))) && (
+            <div className="border border-[#1e293b]/50 p-4 bg-gray-900/40 rounded-xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
+              <p className="text-gray-500 font-bold border-b border-[#1e293b]/30 pb-1 mb-1.5 flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security Diagnostics</p>
+              <p><span className="text-gray-500">inProgress:</span> {inProgress}</p>
+              <p><span className="text-gray-500">accounts.length:</span> {accounts.length}</p>
+              <p><span className="text-gray-500">activeAccount:</span> {instance.getActiveAccount()?.username || "None"}</p>
+              <p><span className="text-gray-500">startupAuthError:</span> {startupAuthError || "None"}</p>
+              <p><span className="text-gray-500">lastError:</span> {authError || "None"}</p>
+              <p><span className="text-gray-500">scopes:</span> {JSON.stringify(loginRequest.scopes)}</p>
+              <p><span className="text-gray-500">currentOrigin:</span> {typeof window !== "undefined" ? window.location.origin : ""}</p>
+            </div>
+          )}
 
           <div className="border-t border-[#1e293b]/50 pt-4 flex items-center justify-between text-xs text-gray-500">
             <span>Microsoft Security Active</span>
