@@ -210,6 +210,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   // Navigation State
   const [activeTab, setActiveTab] = useState<string>("workflows");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
   // Profile overlay menu states
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState<boolean>(false);
@@ -224,7 +225,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
   const [accessToken, setAccessToken] = useState<string>("");
 
-  // Multiple Chat Sessions States (Integrated Sidebar, point 3)
+  // Multiple Chat Sessions States (Integrated Sidebar)
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [isSessionsLoading, setIsSessionsLoading] = useState<boolean>(false);
@@ -263,10 +264,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [odooUrl, setOdooUrl] = useState<string>("https://odoo.lotslotsmore.com");
   const [odooDb, setOdooDb] = useState<string>("Lots Lots More Production");
   const [odooUsername, setOdooUsername] = useState<string>("alden@lotslotsmore.com");
-  const [odooApiKey, setOdooApiKey] = useState<string>("");
+  const [odooApiKey, setOdooApiKey] = useState<string>(""),
 
   // Audit Logs States
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [isAuditLoading, setIsAuditLoading] = useState<boolean>(false);
   const [auditFilter, setAuditFilter] = useState<string>("");
   const [inspectLog, setInspectLog] = useState<any | null>(null);
@@ -421,8 +422,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
-  const createNewChat = async (workflowContext?: string) => {
-    if (!accessToken) return;
+  const createNewChat = async (workflowContext?: string): Promise<ChatSession | null> => {
+    if (!accessToken) return null;
     try {
       const title = workflowContext ? `${BUSINESS_WORKFLOWS.find(w=>w.id===workflowContext)?.title} Review` : "New Chat";
       const response = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
@@ -434,11 +435,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         const newSess = await response.json();
         setChatSessions(prev => [newSess, ...prev]);
         setActiveSession(newSess);
-        setActiveTab("chat");
+        return newSess;
       }
     } catch (err) {
       console.error("Failed to create new chat session:", err);
     }
+    return null;
   };
 
   const fetchSessionMessages = async (sid: string) => {
@@ -531,7 +533,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   // --- POST MESSAGE & CHAT ASSISTANT ---
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken || !activeSession) return;
+    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
 
     const userMsgContent = chatInput;
     setChatInput("");
@@ -540,9 +542,22 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     const artIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
     setAttachedFiles([]);
 
+    let currentSess = activeSession;
+    
+    // Auto-provision a new conversation session seamlessly on the fly if empty (Claude / ChatGPT style!)
+    if (!currentSess) {
+      const createdSess = await createNewChat();
+      if (!createdSess) {
+        setIsChatSending(false);
+        alert("Failed to initialize conversation. Please try again.");
+        return;
+      }
+      currentSess = createdSess;
+    }
+
     const tempUserMsg: ChatMessage = {
       id: Math.random().toString(),
-      chat_session_id: activeSession.id,
+      chat_session_id: currentSess.id,
       role: "user",
       content: userMsgContent,
       created_at: new Date().toISOString()
@@ -550,13 +565,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     setChatMessages(prev => [...prev, tempUserMsg]);
 
     try {
-      const response = await fetch(`${APIM_BASE_URL}/chat/sessions/${activeSession.id}/messages`, {
+      const response = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
         method: "POST",
         headers: getRequestHeaders(),
         body: JSON.stringify({
           content: userMsgContent,
           artifact_ids: artIds,
-          workflow_context: activeSession.workflow_context
+          workflow_context: currentSess.workflow_context
         })
       });
       if (response.ok) {
@@ -819,13 +834,233 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     createNewChat(workflow.id);
   };
 
+  // Render Side Nav Menu Content (to keep it DRY and reusable)
+  const renderSidebarContent = () => (
+    <>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Logo & Header */}
+        <div className="p-5 border-b border-white/10 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-white/5 border border-white/10 rounded-xl">
+              <Bot className="w-5 h-5 text-gray-300" />
+            </div>
+            <div>
+              <h1 className="font-extrabold text-sm leading-tight tracking-wide text-white">AI Platform</h1>
+              <span className="text-[9px] text-gray-500 font-extrabold tracking-widest uppercase font-mono">ASSISTANT</span>
+            </div>
+          </div>
+
+          {/* Sidebar collapse button (Only for Desktop) */}
+          <button 
+            onClick={() => setIsSidebarCollapsed(true)}
+            className="hidden md:block p-1.5 text-gray-500 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+            title="Collapse Sidebar"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+
+          {/* Close button (Only for Mobile) */}
+          <button 
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="md:hidden p-1.5 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+            title="Close Menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Quick Actions & Navigation */}
+        <div className="p-4 border-b border-white/5 space-y-3">
+          <button 
+            onClick={() => {
+              createNewChat();
+              setActiveTab("chat");
+              setIsMobileMenuOpen(false);
+            }}
+            className="w-full py-2.5 liquid-gloss-btn rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New Chat
+          </button>
+
+          {/* Sidebar Nav buttons with .liquid-gloss-active state */}
+          <div className="space-y-1">
+            <button 
+              onClick={() => {
+                setSelectedWorkflow(null);
+                setWorkflowOutcome(null);
+                setWorkflowInputs({});
+                setActiveTab("workflows");
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "workflows" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Workflows
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("tasks");
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "tasks" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
+            >
+              <ClipboardList className="w-3.5 h-3.5" />
+              Tasks Tracker
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("artifacts");
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "artifacts" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Documents Vault
+            </button>
+
+            <button 
+              onClick={() => {
+                setActiveTab("connected-accounts");
+                setIsMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "connected-accounts" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
+            >
+              <Database className="w-3.5 h-3.5" />
+              Connected Accounts
+            </button>
+          </div>
+        </div>
+
+        {/* Combined Chat List directly in the main sidebar */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-1">
+          <span className="px-3 py-1 block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Conversations</span>
+          {isSessionsLoading ? (
+            <div className="text-center py-6 text-xs text-gray-500">Loading sessions...</div>
+          ) : chatSessions.length === 0 ? (
+            <div className="text-center py-8 text-xs text-gray-600 font-medium">No recent conversations.</div>
+          ) : (
+            chatSessions.map(sess => (
+              <div 
+                key={sess.id}
+                onClick={() => {
+                  setActiveSession(sess);
+                  setActiveTab("chat");
+                  setIsMobileMenuOpen(false);
+                }}
+                className={`group p-2.5 rounded-xl cursor-pointer transition-all flex items-center justify-between border ${
+                  activeSession?.id === sess.id && activeTab === "chat"
+                    ? "liquid-gloss-active" 
+                    : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                <div className="overflow-hidden flex-1 pr-2">
+                  <p className="text-xs font-semibold truncate leading-tight">{sess.title}</p>
+                  {sess.workflow_context && (
+                    <span className="text-[8px] text-gray-500 font-bold block truncate mt-0.5 uppercase tracking-wider">
+                      {sess.workflow_context.split("_").join(" ")}
+                    </span>
+                  )}
+                </div>
+                
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteChatSession(sess.id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition-all shrink-0"
+                  title="Archive/Delete Chat"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Profile Popover Section */}
+      <div className="p-4 border-t border-white/5 relative z-40 bg-[#080d16]/50">
+        {isProfileMenuOpen && (
+          <div className="absolute bottom-16 left-4 right-4 bg-[#0d1427] border border-white/10 rounded-2xl shadow-2xl p-2 py-3 space-y-1.5 z-50 animate-fade-in text-left select-none">
+            <div className="px-3 py-1">
+              <p className="text-xs font-bold text-white truncate">{activeUser?.displayName}</p>
+              <p className="text-[10px] text-gray-500 truncate mt-0.5">{activeUser?.email}</p>
+            </div>
+            <div className="border-t border-white/5 my-1" />
+            
+            {hasRole(["AIPlatform.Admin", "AIPlatform.Developer", "AIPlatform.Auditor"]) && (
+              <>
+                {hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) && (
+                  <button 
+                    onClick={() => {
+                      setActiveTab("audit");
+                      setIsProfileMenuOpen(false);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-white/5 rounded-xl text-left transition-all cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-gray-400" />
+                    Audit Logs
+                  </button>
+                )}
+
+                <button 
+                  onClick={() => {
+                    setActiveTab("settings");
+                    setIsProfileMenuOpen(false);
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-white/5 rounded-xl text-left transition-all cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 text-gray-400" />
+                  System Settings
+                </button>
+                <div className="border-t border-white/5 my-1" />
+              </>
+            )}
+            
+            <button 
+              onClick={() => {
+                setIsProfileMenuOpen(false);
+                handleSignOut();
+              }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl text-left transition-all cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-400" />
+              Sign Out
+            </button>
+          </div>
+        )}
+
+        <button 
+          onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+          className="w-full flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer"
+        >
+          <div className="flex items-center gap-2.5 overflow-hidden">
+            <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
+              <User className="w-4 h-4 text-gray-300" />
+            </div>
+            <div className="text-left overflow-hidden">
+              <p className="text-xs font-bold text-white truncate">{activeUser?.displayName}</p>
+              <span className="text-[9px] text-gray-500 truncate block">Microsoft ID Active</span>
+            </div>
+          </div>
+          <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-all ${isProfileMenuOpen ? "rotate-180" : ""}`} />
+        </button>
+      </div>
+    </>
+  );
+
   // Render MSAL Interaction Status Loading
   if (inProgress !== InteractionStatus.None) {
     return (
       <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(99,102,241,0.08),transparent_50%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.02),transparent_50%)]" />
         <div className="relative z-10 text-center space-y-4">
-          <RefreshCw className="w-10 h-10 text-indigo-400 animate-spin mx-auto" />
+          <RefreshCw className="w-10 h-10 text-gray-400 animate-spin mx-auto" />
           <p className="text-sm font-semibold tracking-wide text-gray-300">Completing Microsoft sign-in...</p>
         </div>
       </div>
@@ -840,7 +1075,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gray-500/5 rounded-full blur-[120px] pointer-events-none" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gray-500/5 rounded-full blur-[120px] pointer-events-none" />
 
-        {/* Liquid Gloss Login Card */}
+        {/* Liquid Glass Login Card */}
         <div className="relative z-10 max-w-md w-full liquid-gloss rounded-3xl p-8 text-center space-y-6">
           <div className="mx-auto w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
             <Bot className="w-8 h-8 text-gray-300" />
@@ -938,204 +1173,24 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   return (
     <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden">
       
-      {/* COMBINED INTEGRATED SIDEBAR PANEL (Point 3 Overhaul) */}
+      {/* MOBILE RESPONSIVE DRAWER BACKDROP & MENU */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 z-50 flex md:hidden animate-fade-in">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
+          <aside className="relative w-72 h-full liquid-glass rounded-none border-t-0 border-b-0 border-l-0 border-r border-white/10 flex flex-col justify-between">
+            {renderSidebarContent()}
+          </aside>
+        </div>
+      )}
+
+      {/* DESKTOP COMBINED INTEGRATED SIDEBAR PANEL */}
       {!isSidebarCollapsed && (
-        <aside className="w-72 liquid-glass rounded-none border-t-0 border-b-0 border-l-0 border-r border-white/10 flex flex-col justify-between select-none shrink-0 relative z-30 animate-fade-in">
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Logo & Header */}
-            <div className="p-5 border-b border-white/10 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-white/5 border border-white/10 rounded-xl">
-                  <Bot className="w-5 h-5 text-gray-300" />
-                </div>
-                <div>
-                  <h1 className="font-extrabold text-sm leading-tight tracking-wide text-white">AI Platform</h1>
-                  <span className="text-[9px] text-gray-500 font-extrabold tracking-widest uppercase">Console</span>
-                </div>
-              </div>
-
-              {/* Sidebar collapse button */}
-              <button 
-                onClick={() => setIsSidebarCollapsed(true)}
-                className="p-1.5 text-gray-500 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
-                title="Collapse Sidebar"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Quick Actions & Navigation */}
-            <div className="p-4 border-b border-white/5 space-y-3">
-              <button 
-                onClick={() => {
-                  createNewChat();
-                  setActiveTab("chat");
-                }}
-                className="w-full py-2.5 liquid-gloss-btn rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New Chat
-              </button>
-
-              {/* Sidebar Nav buttons with .liquid-gloss-active state */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => {
-                    setSelectedWorkflow(null);
-                    setWorkflowOutcome(null);
-                    setWorkflowInputs({});
-                    setActiveTab("workflows");
-                  }}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "workflows" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  Workflows
-                </button>
-
-                <button 
-                  onClick={() => setActiveTab("tasks")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "tasks" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
-                >
-                  <ClipboardList className="w-3.5 h-3.5" />
-                  Tasks Tracker
-                </button>
-
-                <button 
-                  onClick={() => setActiveTab("artifacts")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "artifacts" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
-                >
-                  <FileText className="w-3.5 h-3.5" />
-                  Documents Vault
-                </button>
-
-                <button 
-                  onClick={() => setActiveTab("connected-accounts")}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border ${activeTab === "connected-accounts" ? "liquid-gloss-active" : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"}`}
-                >
-                  <Database className="w-3.5 h-3.5" />
-                  Connected Accounts
-                </button>
-              </div>
-            </div>
-
-            {/* Combined Chat List directly in the main sidebar (Point 3 Overhaul) */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-1">
-              <span className="px-3 py-1 block text-[10px] font-bold text-gray-500 uppercase tracking-widest">Conversations</span>
-              {isSessionsLoading ? (
-                <div className="text-center py-6 text-xs text-gray-500">Loading sessions...</div>
-              ) : chatSessions.length === 0 ? (
-                <div className="text-center py-8 text-xs text-gray-600 font-medium">No recent conversations.</div>
-              ) : (
-                chatSessions.map(sess => (
-                  <div 
-                    key={sess.id}
-                    onClick={() => {
-                      setActiveSession(sess);
-                      setActiveTab("chat");
-                    }}
-                    className={`group p-2.5 rounded-xl cursor-pointer transition-all flex items-center justify-between border ${
-                      activeSession?.id === sess.id && activeTab === "chat"
-                        ? "liquid-gloss-active" 
-                        : "border-transparent text-gray-400 hover:bg-white/5 hover:text-white"
-                    }`}
-                  >
-                    <div className="overflow-hidden flex-1 pr-2">
-                      <p className="text-xs font-semibold truncate leading-tight">{sess.title}</p>
-                      {sess.workflow_context && (
-                        <span className="text-[8px] text-gray-500 font-bold block truncate mt-0.5 uppercase tracking-wider">
-                          {sess.workflow_context.split("_").join(" ")}
-                        </span>
-                      )}
-                    </div>
-                    
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteChatSession(sess.id);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition-all shrink-0"
-                      title="Archive/Delete Chat"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          {/* Profile Popover Section */}
-          <div className="p-4 border-t border-white/5 relative z-40 bg-[#080d16]/50">
-            {isProfileMenuOpen && (
-              <div className="absolute bottom-16 left-4 right-4 bg-[#0d1427] border border-white/10 rounded-2xl shadow-2xl p-2 py-3 space-y-1.5 z-50 animate-fade-in text-left select-none">
-                <div className="px-3 py-1">
-                  <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
-                  <p className="text-[10px] text-gray-500 truncate mt-0.5">{activeUser.email}</p>
-                </div>
-                <div className="border-t border-white/5 my-1" />
-                
-                {hasRole(["AIPlatform.Admin", "AIPlatform.Developer", "AIPlatform.Auditor"]) && (
-                  <>
-                    {hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) && (
-                      <button 
-                        onClick={() => {
-                          setActiveTab("audit");
-                          setIsProfileMenuOpen(false);
-                        }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-white/5 rounded-xl text-left transition-all cursor-pointer"
-                      >
-                        <ShieldAlert className="w-3.5 h-3.5 text-gray-400" />
-                        Audit Logs
-                      </button>
-                    )}
-
-                    <button 
-                      onClick={() => {
-                        setActiveTab("settings");
-                        setIsProfileMenuOpen(false);
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-white/5 rounded-xl text-left transition-all cursor-pointer"
-                    >
-                      <Settings className="w-3.5 h-3.5 text-gray-400" />
-                      System Settings
-                    </button>
-                    <div className="border-t border-white/5 my-1" />
-                  </>
-                )}
-                
-                <button 
-                  onClick={() => {
-                    setIsProfileMenuOpen(false);
-                    handleSignOut();
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl text-left transition-all cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5 text-rose-400" />
-                  Sign Out
-                </button>
-              </div>
-            )}
-
-            <button 
-              onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-              className="w-full flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all cursor-pointer"
-            >
-              <div className="flex items-center gap-2.5 overflow-hidden">
-                <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0">
-                  <User className="w-4 h-4 text-gray-300" />
-                </div>
-                <div className="text-left overflow-hidden">
-                  <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
-                  <span className="text-[9px] text-gray-500 truncate block">Microsoft ID Active</span>
-                </div>
-              </div>
-              <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-all ${isProfileMenuOpen ? "rotate-180" : ""}`} />
-            </button>
-          </div>
+        <aside className="hidden md:flex w-72 liquid-glass rounded-none border-t-0 border-b-0 border-l-0 border-r border-white/10 flex flex-col justify-between select-none shrink-0 relative z-30 animate-fade-in">
+          {renderSidebarContent()}
         </aside>
       )}
 
-      {/* COLLAPSED FLOATING TRIGGER BUTTON (Point 3 Overhaul) */}
+      {/* COLLAPSED FLOATING TRIGGER BUTTON */}
       {isSidebarCollapsed && (
         <div className="absolute top-4 left-4 z-40">
           <button 
@@ -1175,14 +1230,24 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         <section className="flex-1 overflow-y-auto p-8 bg-[#050811] relative z-0">
           
           {/* CHAT ASSISTANT VIEW */}
-          {activeTab === "chat" && activeSession && (
-            <div className="h-full flex flex-col justify-between max-w-4xl mx-auto liquid-glass rounded-3xl overflow-hidden shadow-2xl">
+          {activeTab === "chat" && (
+            <div className="h-full flex flex-col justify-between max-w-4xl mx-auto liquid-glass rounded-3xl overflow-hidden shadow-2xl animate-fade-in">
               
+              {/* Message Flow */}
               <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {isMessagesLoading ? (
+                {!activeSession ? (
+                  /* Elegant placeholder greeting, similar to ChatGPT/Claude */
+                  <div className="text-center py-24 select-none space-y-3 animate-fade-in">
+                    <div className="mx-auto w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mb-2">
+                      <Bot className="w-7 h-7 text-gray-300" />
+                    </div>
+                    <h3 className="text-xl font-extrabold text-white">How can I assist you today, {activeUser.displayName.split(" ")[0]}?</h3>
+                    <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">Ask any business operational questions, Timesheet audits, or Ledger checks. I am fully integrated into the Odoo ERP securely.</p>
+                  </div>
+                ) : isMessagesLoading ? (
                   <div className="text-center py-20 text-gray-400">Retrieving chat messages...</div>
                 ) : chatMessages.length === 0 ? (
-                  <div className="text-center py-20 text-gray-500 select-none space-y-2">
+                  <div className="text-center py-20 text-gray-500 select-none space-y-2 animate-fade-in">
                     <Bot className="w-10 h-10 text-gray-700 mx-auto mb-2" />
                     <p className="font-semibold text-white">This conversation has no messages yet.</p>
                     <p className="text-xs text-gray-500 max-w-xs mx-auto">Ask the AI Platform assistant to audit credit notes, check attendance exceptions, or examine Odoo accounts!</p>
@@ -1282,7 +1347,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     type="text"
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    placeholder={activeSession.workflow_context ? `Ask Odoo about ${BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}...` : "Ask AI Assistant anything..."}
+                    placeholder={activeSession?.workflow_context ? `Ask Odoo about ${BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}...` : "Ask AI Assistant anything..."}
                     disabled={isChatSending}
                     className="flex-1 px-4 py-3 bg-transparent border border-white/10 rounded-xl focus:outline-none focus:border-white/35 text-xs placeholder-gray-500 text-white"
                   />
@@ -1304,7 +1369,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   <button 
                     type="submit"
                     disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
-                    className="p-3 px-5 liquid-gloss-btn rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                    className="p-3 px-5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
                   >
                     Send
                     <CornerDownLeft className="w-3.5 h-3.5" />
@@ -1327,9 +1392,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* WORKFLOWS DECK VIEW (Redesigned with Liquid Gloss!) */}
+          {/* WORKFLOWS DECK VIEW */}
           {activeTab === "workflows" && !selectedWorkflow && (
-            <div className="max-w-6xl mx-auto space-y-8 select-none">
+            <div className="max-w-6xl mx-auto space-y-8 select-none animate-fade-in">
               <div className="p-8 liquid-glass rounded-3xl bg-gradient-to-r from-white/5 to-transparent flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-white mb-2">Automated Business Workflows</h2>
@@ -1376,7 +1441,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
           {/* GUIDED WORKFLOW SCREEN */}
           {activeTab === "workflows" && selectedWorkflow && (
-            <div className="max-w-2xl mx-auto space-y-6">
+            <div className="max-w-2xl mx-auto space-y-6 animate-fade-in">
               
               <button 
                 onClick={() => {
@@ -1426,7 +1491,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 <div className="flex gap-4 pt-4 border-t border-white/5">
                   <button 
                     onClick={() => handleLaunchContextualChat(selectedWorkflow)}
-                    className="flex-1 py-3 liquid-gloss-btn rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Bot className="w-4 h-4 text-gray-300" />
                     Ask AI Assistant
@@ -1435,7 +1500,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   <button 
                     onClick={handleRunWorkflow}
                     disabled={isWorkflowRunning}
-                    className="flex-1 py-3 liquid-gloss-btn rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-xs font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     {isWorkflowRunning ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
                     {isWorkflowRunning ? "Executing..." : "Execute Workflow"}
@@ -1463,9 +1528,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* TASKS VIEW (Liquid Gloss Redesign!) */}
+          {/* TASKS VIEW */}
           {activeTab === "tasks" && (
-            <div className="max-w-6xl mx-auto space-y-6">
+            <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
               <div className="flex justify-between items-center select-none">
                 <div>
                   <h2 className="text-xl font-bold text-white">Tasks Tracker</h2>
@@ -1483,13 +1548,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {isJobsLoading ? (
                 <div className="text-center py-20 text-gray-400">Loading tasks...</div>
               ) : jobs.length === 0 ? (
-                <div className="p-8 border border-white/10 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none">
+                <div className="p-8 border border-white/10 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none animate-fade-in">
                   <ClipboardList className="w-10 h-10 text-gray-600 mb-3 mx-auto" />
                   <p className="font-semibold text-gray-300">No active tasks found</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mt-1">Biometric clock-in exception audits and claim mismatches appear as tasks here.</p>
                 </div>
               ) : (
-                <div className="grid gap-4 select-text">
+                <div className="grid gap-4 select-text animate-fade-in">
                   {jobs.map((job) => (
                     <div key={job.id} className="p-5 liquid-glass rounded-2xl flex items-center justify-between">
                       <div className="flex items-center gap-4">
@@ -1520,9 +1585,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* DOCUMENTS VIEW (Liquid Gloss Redesign!) */}
+          {/* DOCUMENTS VIEW */}
           {activeTab === "artifacts" && (
-            <div className="max-w-6xl mx-auto space-y-6">
+            <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
               <div className="flex justify-between items-center select-none">
                 <div>
                   <h2 className="text-xl font-bold text-white">Documents Vault</h2>
@@ -1540,13 +1605,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {isArtifactsLoading ? (
                 <div className="text-center py-20 text-gray-400">Loading documents...</div>
               ) : artifacts.length === 0 ? (
-                <div className="p-8 border border-white/10 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none">
+                <div className="p-8 border border-white/10 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none animate-fade-in">
                   <FileText className="w-10 h-10 text-gray-600 mb-3 mx-auto" />
                   <p className="font-semibold text-gray-300">No documents found</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mt-1">Executed attendance and pricing review workflows generate Excel and PDF audit summaries.</p>
                 </div>
               ) : (
-                <div className="grid md:grid-cols-3 gap-6 select-text">
+                <div className="grid md:grid-cols-3 gap-6 select-text animate-fade-in">
                   {artifacts.map((art) => (
                     <div key={art.id} className="p-5 liquid-glass rounded-2xl flex flex-col justify-between">
                       <div>
@@ -1577,9 +1642,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             </div>
           )}
 
-          {/* CONNECTED ACCOUNTS VIEW (Liquid Gloss Redesign!) */}
+          {/* CONNECTED ACCOUNTS VIEW */}
           {activeTab === "connected-accounts" && (
-            <div className="max-w-5xl mx-auto space-y-8 select-none">
+            <div className="max-w-5xl mx-auto space-y-8 select-none animate-fade-in">
               <div className="p-8 liquid-glass rounded-3xl bg-gradient-to-r from-white/5 to-transparent flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-white mb-2">Connected Accounts</h2>
@@ -1591,7 +1656,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               <div className="grid md:grid-cols-2 gap-6">
                 
                 {/* ODOO ACCOUNT CARD */}
-                <div className="p-6 liquid-glass rounded-2xl bg-[#0a0f1d] flex flex-col justify-between">
+                <div className="p-6 liquid-glass rounded-2xl bg-transparent flex flex-col justify-between">
                   <div>
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-3">
@@ -1605,7 +1670,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                       </div>
 
                       {isStatusLoading ? (
-                        <span className="text-xs bg-gray-850 text-gray-400 px-3 py-1 rounded-full font-medium flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Checking</span>
+                        <span className="text-xs bg-gray-800 text-gray-400 px-3 py-1 rounded-full font-medium flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Checking</span>
                       ) : odooStatus.status === "connected" ? (
                         <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-3 py-1 rounded-full font-medium flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" /> Connected</span>
                       ) : odooStatus.status === "error" ? (
@@ -1637,14 +1702,14 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                         <button 
                           onClick={handleTestOdoo}
                           disabled={isTesting}
-                          className="px-4 py-2 liquid-gloss-btn rounded-xl text-xs font-semibold tracking-wide transition-all flex items-center gap-1.5 cursor-pointer"
+                          className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-xs font-semibold tracking-wide transition-all flex items-center gap-1.5 cursor-pointer"
                         >
                           <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? "animate-spin" : ""}`} />
                           {isTesting ? "Testing..." : "Test Connection"}
                         </button>
                         <button 
                           onClick={() => setIsRotateOpen(true)}
-                          className="px-4 py-2 liquid-gloss-btn rounded-xl text-xs font-semibold tracking-wide transition-all flex items-center gap-1.5 cursor-pointer"
+                          className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-xs font-semibold tracking-wide transition-all flex items-center gap-1.5 cursor-pointer"
                         >
                           <Key className="w-3.5 h-3.5" />
                           Rotate Key
@@ -1660,7 +1725,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     ) : (
                       <button 
                         onClick={() => setIsConnectOpen(true)}
-                        className="w-full py-3 liquid-gloss-btn rounded-xl text-sm font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
+                        className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-sm font-bold tracking-wide transition-all flex items-center justify-center gap-2 cursor-pointer"
                       >
                         <Plus className="w-4 h-4" />
                         Connect Odoo Account
@@ -1690,7 +1755,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {/* Odoo Connect Modal Overlay */}
               {isConnectOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-                  <div className="bg-[#0a0f1d] border border-white/10 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
+                  <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
                     <div className="p-6 border-b border-white/10 flex justify-between items-center select-none">
                       <h3 className="font-bold text-lg text-white">Connect Odoo Enterprise</h3>
                       <button onClick={() => setIsConnectOpen(false)} className="text-gray-400 hover:text-white">✕</button>
@@ -1749,7 +1814,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                         <button 
                           type="submit"
                           disabled={isConnecting}
-                          className="flex-1 py-3 liquid-gloss-btn rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
+                          className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
                         >
                           {isConnecting ? "Connecting..." : "Verify & Save"}
                         </button>
@@ -1762,7 +1827,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {/* Odoo Rotate Key Modal Overlay */}
               {isRotateOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-                  <div className="bg-[#0a0f1d] border border-white/10 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+                  <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
                     <div className="p-6 border-b border-white/10 flex justify-between items-center select-none">
                       <h3 className="font-bold text-lg text-white">Rotate API Key</h3>
                       <button onClick={() => setIsRotateOpen(false)} className="text-gray-400 hover:text-white">✕</button>
@@ -1791,7 +1856,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                         <button 
                           type="submit"
                           disabled={isConnecting}
-                          className="flex-1 py-3 liquid-gloss-btn rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
+                          className="flex-1 py-3 bg-white/5 hover:bg-white/10 border border-white/15 text-white rounded-xl text-sm font-bold tracking-wide transition-all cursor-pointer"
                         >
                           {isConnecting ? "Updating..." : "Rotate Key"}
                         </button>
@@ -1805,7 +1870,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
           {/* AUDIT LOG TAB */}
           {activeTab === "audit" && hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) && (
-            <div className="max-w-6xl mx-auto space-y-6">
+            <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
               <div className="flex justify-between items-center select-none">
                 <div>
                   <h2 className="text-xl font-bold text-white">Audit Log Viewer</h2>
@@ -1826,7 +1891,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   <button 
                     onClick={fetchAuditLogs} 
                     disabled={isAuditLoading}
-                    className="p-2 bg-gray-800 hover:bg-gray-700 rounded-xl transition-all cursor-pointer"
+                    className="p-2 bg-gray-800/40 border border-white/5 hover:bg-gray-800/85 rounded-xl transition-all cursor-pointer"
                   >
                     <RefreshCw className={`w-4 h-4 text-white ${isAuditLoading ? "animate-spin" : ""}`} />
                   </button>
@@ -1836,7 +1901,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {isAuditLoading ? (
                 <div className="text-center py-20 text-gray-400 select-none">Loading logs...</div>
               ) : auditLogs.length === 0 ? (
-                <div className="p-8 border border-[#1e293b]/50 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none">
+                <div className="p-8 border border-[#1e293b]/50 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none animate-fade-in">
                   <Shield className="w-10 h-10 text-gray-600 mb-3 mx-auto" />
                   <p className="font-semibold text-gray-300">No audit events generated</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mt-1">Audit events are captured automatically for Odoo connections and proxy endpoints.</p>
@@ -1936,7 +2001,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
           {/* SETTINGS / SYSTEM CONFIG VIEW */}
           {activeTab === "settings" && hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) && (
-            <div className="max-w-4xl mx-auto space-y-8 select-text">
+            <div className="max-w-4xl mx-auto space-y-8 select-text animate-fade-in">
               <div className="p-6 border border-white/10 rounded-2xl bg-[#0a0f1d] space-y-4">
                 <h3 className="font-bold text-lg text-white select-none">Active Profile</h3>
                 
