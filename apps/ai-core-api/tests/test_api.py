@@ -4,6 +4,14 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from app.main import app
 from app.core.database import Base, get_db
 
+# Register UUID type support for SQLite DDL compiler (models use PostgreSQL UUID)
+from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
+
+def visit_uuid(self, type_, **kw):
+    return "CHAR(36)"
+
+SQLiteTypeCompiler.visit_UUID = visit_uuid
+
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(TEST_DATABASE_URL, echo=False, future=True)
