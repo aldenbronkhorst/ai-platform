@@ -18,7 +18,10 @@ bearer_scheme = HTTPBearer(auto_error=False)
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
 CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208")
 JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
-ISSUER = f"https://login.microsoftonline.com/{TENANT_ID}/v2.0"
+ISSUERS = [
+    f"https://login.microsoftonline.com/{TENANT_ID}/v2.0",
+    f"https://sts.windows.net/{TENANT_ID}/"
+]
 
 # PyJWKClient manages caching of public keys natively
 try:
@@ -76,7 +79,7 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
             signing_key.key,
             algorithms=["RS256"],
             audience=audience_candidates,
-            issuer=ISSUER
+            issuer=ISSUERS
         )
 
         # Extract claims
