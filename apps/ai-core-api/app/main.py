@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import health, audit, artifact, context, job, task, tool
+from app.routers import health, audit, artifact, context, job, task, tool, odoo
 
 app = FastAPI(
     title="AI Platform Core API",
@@ -14,6 +14,7 @@ app.include_router(context.router)
 app.include_router(job.router)
 app.include_router(task.router)
 app.include_router(tool.router)
+app.include_router(odoo.router, prefix="/tools/odoo", tags=["Odoo Tools"])
 
 
 @app.get("/")
