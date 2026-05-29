@@ -50,7 +50,6 @@ export default function App() {
 
   // Tab State
   const [activeTab, setActiveTab] = useState<string>("chat");
-  const [activeEnvironment, setActiveEnvironment] = useState<string>("production");
 
   // Local Mock Auth States (local-only)
   const [localMockAuthenticated, setLocalMockAuthenticated] = useState<boolean>(false);
@@ -371,16 +370,6 @@ export default function App() {
     }
   };
 
-  const cycleEnvironment = () => {
-    if (activeEnvironment === "production") {
-      setActiveEnvironment("staging");
-    } else if (activeEnvironment === "staging") {
-      setActiveEnvironment("development");
-    } else {
-      setActiveEnvironment("production");
-    }
-  };
-
   // ENTRA LOGIN SCREEN FOR PRODUCTION
   if (!activeUser) {
     return (
@@ -536,16 +525,10 @@ export default function App() {
 
           <div className="flex items-center gap-4">
             {/* Env picker */}
-            <button 
-              onClick={cycleEnvironment}
-              className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/20 hover:bg-gray-800/40 border border-gray-800 rounded-lg cursor-pointer transition-all"
-              title="Click to cycle environments"
-            >
-              <span className={`w-2 h-2 rounded-full ${
-                activeEnvironment === "production" ? "bg-emerald-500" : activeEnvironment === "staging" ? "bg-amber-500" : "bg-indigo-500"
-              }`} />
-              <span className="text-xs font-semibold text-white uppercase">{activeEnvironment}</span>
-            </button>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/20 border border-gray-800 rounded-lg select-none">
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-xs font-semibold text-white uppercase">PRODUCTION</span>
+            </div>
 
             {/* Profile logout */}
             <button 

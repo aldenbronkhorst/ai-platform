@@ -14,7 +14,7 @@ export const msalConfig: Configuration = {
 
 // Add scopes here for active directory token acquisition
 export const loginRequest: PopupRequest = {
-  scopes: ["User.Read"]
+  scopes: ["api://9067d9d9-b0bf-4d56-be8f-8d5bc3bc06b5/access_as_user"]
 };
 
 // Graph API endpoint config
