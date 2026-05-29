@@ -4,7 +4,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.core.security import api_key_auth
 from app.core.database import get_db
@@ -33,6 +33,8 @@ class ProviderUpdate(BaseModel):
     enabled: Optional[str] = None
 
 class ProviderResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     name: str
     provider_type: str
@@ -60,6 +62,8 @@ class ModelUpdate(BaseModel):
     enabled: Optional[str] = None
 
 class ModelResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     provider_id: UUID
     display_name: str
@@ -92,6 +96,8 @@ class RouteUpdate(BaseModel):
     enabled: Optional[str] = None
 
 class RouteResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     task_type: str
     primary_model_id: UUID
@@ -108,6 +114,8 @@ class TestConsoleRequest(BaseModel):
     prompt: str = "Say hello and confirm the model route is working."
 
 class TestConsoleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     success: bool
     response: Optional[str] = None
     model_provider: Optional[str] = None
@@ -119,6 +127,8 @@ class TestConsoleResponse(BaseModel):
     error: Optional[str] = None
 
 class UsageLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     timestamp: Optional[datetime]
     task_type: Optional[str]
@@ -133,6 +143,8 @@ class UsageLogResponse(BaseModel):
     error_message: Optional[str]
 
 class ConfigSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     providers: List[ProviderResponse]
     models: List[ModelResponse]
     routes: List[RouteResponse]
