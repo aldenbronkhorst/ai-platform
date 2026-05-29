@@ -32,7 +32,8 @@ import {
   ArrowLeft,
   ClipboardList,
   Compass,
-  Play
+  Play,
+  ChevronDown
 } from "lucide-react";
 
 // API base URL pointing to the production APIM Gateway (which routes to AI Core API)
@@ -186,6 +187,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   // Tab State (Redirected to Workflows first!)
   const [activeTab, setActiveTab] = useState<string>("workflows");
+
+  // Profile overlay menu visibility state (bottom-left)
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState<boolean>(false);
 
   // MSAL / Entra ID Auth Error state
   const [authError, setAuthError] = useState<string | null>(null);
@@ -836,11 +840,59 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           </nav>
         </div>
 
-        {/* Minimal Footer */}
-        <div className="p-4 border-t border-[#1e293b] select-none text-xs text-gray-500 space-y-1">
-          <p className="flex items-center gap-1.5"><Shield className="w-3.5 h-3.5 text-emerald-400" /> Microsoft ID Active</p>
-          <p className="truncate font-mono text-[10px]">{activeUser.email}</p>
-          <p className="font-mono text-[10px]">v1.0.0</p>
+        {/* Minimal Footer & Floating Profile Menu */}
+        <div className="p-4 border-t border-[#1e293b] relative">
+          {/* Floating Profile Menu */}
+          {isProfileMenuOpen && (
+            <div className="absolute bottom-16 left-4 right-4 bg-[#0d1427] border border-[#1e293b] rounded-xl shadow-2xl p-2 py-3 space-y-2 z-50 animate-fade-in text-left">
+              <div className="px-3 py-1">
+                <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
+                <p className="text-[10px] text-gray-500 truncate mt-0.5">{activeUser.email}</p>
+              </div>
+              <div className="border-t border-[#1e293b]/50 my-1" />
+              
+              {hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) && (
+                <button 
+                  onClick={() => {
+                    setActiveTab("settings");
+                    setIsProfileMenuOpen(false);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-gray-400 hover:text-white hover:bg-gray-800/40 rounded-lg text-left transition-all cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 text-indigo-400" />
+                  System Settings
+                </button>
+              )}
+              
+              <button 
+                onClick={() => {
+                  setIsProfileMenuOpen(false);
+                  handleSignOut();
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg text-left transition-all cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                Sign Out
+              </button>
+            </div>
+          )}
+
+          {/* Profile Trigger Button */}
+          <button 
+            onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
+            className="w-full flex items-center justify-between p-2 rounded-xl bg-gray-800/10 hover:bg-gray-800/20 border border-gray-800/40 transition-all cursor-pointer"
+          >
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <div className="w-8 h-8 rounded-lg bg-indigo-600/15 border border-indigo-500/25 flex items-center justify-center shrink-0">
+                <User className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-left overflow-hidden">
+                <p className="text-xs font-bold text-white truncate">{activeUser.displayName}</p>
+                <span className="text-[10px] text-gray-500 truncate block">Microsoft ID Active</span>
+              </div>
+            </div>
+            <ChevronDown className={`w-3.5 h-3.5 text-gray-500 transition-all ${isProfileMenuOpen ? "rotate-180" : ""}`} />
+          </button>
         </div>
       </aside>
 
@@ -864,22 +916,17 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2.5 p-2 px-3 rounded-xl bg-gray-800/10 border border-gray-800/50 text-sm">
-              <User className="w-4 h-4 text-indigo-400" />
-              <span className="font-semibold text-white truncate max-w-[150px]">{activeUser.displayName}</span>
-              {odooStatus.status === "connected" && (
-                <span className="w-2 h-2 rounded-full bg-emerald-500" title="Odoo ERP Link Active" />
-              )}
-            </div>
-
-            {/* Profile signout */}
-            <button 
-              onClick={handleSignOut}
-              className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800/50 transition-all cursor-pointer"
-              title="Logout"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            {odooStatus.status === "connected" ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/25 rounded-full text-xs font-bold text-emerald-400 select-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Odoo ERP Link Active
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/30 border border-gray-800 rounded-full text-xs font-bold text-gray-500 select-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-gray-600" />
+                Odoo ERP Disconnected
+              </div>
+            )}
           </div>
         </header>
 
