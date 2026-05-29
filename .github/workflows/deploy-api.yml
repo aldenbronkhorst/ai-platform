@@ -46,7 +46,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ env.API_PATH }}
-          pytest tests/test_odoo.py -v
+          pytest tests/test_odoo.py tests/test_connected_accounts.py -v
 
   test-connector:
     runs-on: ubuntu-latest

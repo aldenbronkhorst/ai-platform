@@ -1,10 +1,13 @@
 import os
+import httpx
+import uuid
 from datetime import datetime
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
+from typing import Optional, List
 
 from app.core.security import api_key_auth
 from app.core.database import get_db
@@ -19,76 +22,166 @@ ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 
 
 class OdooConnectRequest(BaseModel):
-    url: str = Field(..., description="Odoo instance URL")
-    db: str = Field(..., description="Odoo database name")
-    username: str = Field(..., description="Odoo username")
-    api_key: str = Field(..., description="Odoo API key or password")
+    odoo_url: str = Field(..., description="Odoo instance URL")
+    odoo_db: str = Field(..., description="Odoo database name")
+    odoo_username: str = Field(..., description="Odoo username")
+    odoo_api_key: str = Field(..., description="Odoo API key or password")
 
 
-class OdooConnectResponse(BaseModel):
+class OdooRotateRequest(BaseModel):
+    odoo_api_key: str = Field(..., description="New Odoo API key or password")
+
+
+class ConnectedAccountResponse(BaseModel):
+    id: UUID
+    user_id: UUID
+    provider: str
+    provider_username: Optional[str]
     status: str
-    account_id: str | None = None
-    message: str
+    last_verified_at: Optional[datetime]
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    disconnected_at: Optional[datetime]
+    target_environment: str
 
 
-@router.post("/odoo", response_model=OdooConnectResponse)
-async def connect_odoo(
-    req: OdooConnectRequest,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    """Connect a user's Odoo account. Validates credentials and stores API key in Key Vault."""
-    user_id = auth.get("user_id")
+class OdooStatusResponse(BaseModel):
+    status: str
+    provider_username: Optional[str] = None
+    last_verified_at: Optional[datetime] = None
+    target_environment: Optional[str] = None
+    account_id: Optional[UUID] = None
 
-    # 1. Validate credentials via Odoo Connector
-    import httpx
-    headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY, "Content-Type": "application/json"}
+
+async def _verify_odoo_credentials_via_connector(url: str, db: str, username: str, api_key: str) -> None:
+    """Uses the Odoo Connector API to perform a safe read-only call to verify credentials."""
+    if not ODOO_CONNECTOR_URL:
+        raise HTTPException(
+            status_code=500,
+            detail="Odoo Connector URL is not configured."
+        )
+
+    headers = {
+        "X-Internal-API-Key": ODOO_CONNECTOR_KEY,
+        "Content-Type": "application/json"
+    }
     payload = {
         "credentials": {
-            "url": req.url,
-            "db": req.db,
-            "username": req.username,
-            "api_key": req.api_key,
-        }
+            "url": url,
+            "db": db,
+            "username": username,
+            "api_key": api_key,
+            "transport": "auto"
+        },
+        "model": "res.partner",
+        "domain": [],
+        "limit": 1
     }
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{ODOO_CONNECTOR_URL.rstrip('/')}/execute-kw/",
-                json={**payload, "model": "res.users", "method": "search", "args": [[]]},
+                f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
+                json=payload,
                 headers=headers,
             )
         if response.status_code >= 400:
-            return OdooConnectResponse(
-                status="error",
-                message=f"Odoo authentication failed: {response.text}",
+            try:
+                err_detail = response.json()
+            except Exception:
+                err_detail = response.text
+            raise HTTPException(
+                status_code=400,
+                detail=f"Odoo verification failed: {err_detail}"
             )
-    except Exception as e:
-        return OdooConnectResponse(
-            status="error",
-            message=f"Could not reach Odoo Connector: {e}",
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not connect to Odoo Connector: {e}"
         )
 
-    # 2. Store API key in Key Vault
-    secret_name = f"odoo-api-key-{str(user_id).replace('-', '')}"
+
+def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
+    """Stores the secret in Azure Key Vault if Key Vault is configured."""
+    kv_uri = os.environ.get("KEY_VAULT_URI", "")
+    if not kv_uri:
+        # In non-production or local testing without Key Vault, fallback safely
+        return
+
     try:
         from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
-        kv_uri = os.environ.get("KEY_VAULT_URI", "")
-        if kv_uri:
-            credential = DefaultAzureCredential()
-            kv_client = SecretClient(vault_url=kv_uri, credential=credential)
-            kv_client.set_secret(secret_name, req.api_key)
-        else:
-            secret_name = ""
+        credential = DefaultAzureCredential()
+        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
+        kv_client.set_secret(secret_name, secret_value)
     except Exception as e:
-        return OdooConnectResponse(
-            status="error",
-            message=f"Failed to store credentials in Key Vault: {e}",
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to store secret in Key Vault: {e}"
         )
 
-    # 3. Upsert connected account record
+
+def _delete_key_vault_secret(secret_name: str) -> None:
+    """Deletes the secret in Azure Key Vault if Key Vault is configured."""
+    kv_uri = os.environ.get("KEY_VAULT_URI", "")
+    if not kv_uri:
+        return
+
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+        credential = DefaultAzureCredential()
+        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
+        # Delete secret
+        poller = kv_client.begin_delete_secret(secret_name)
+        poller.wait()
+    except Exception as e:
+        # Log or raise but let DB transaction proceed. For safety we raise.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete secret in Key Vault: {e}"
+        )
+
+
+async def _retrieve_key_vault_secret(secret_name: str) -> str:
+    """Retrieves the secret from Azure Key Vault."""
+    kv_uri = os.environ.get("KEY_VAULT_URI", "")
+    if not kv_uri:
+        # Safe fallback for local/debug env if KEY_VAULT_URI is missing
+        return "mock-local-secret"
+
+    try:
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+        credential = DefaultAzureCredential()
+        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
+        secret = kv_client.get_secret(secret_name)
+        return secret.value or ""
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve secret from Key Vault: {e}"
+        )
+
+
+@router.post("/odoo/connect", response_model=ConnectedAccountResponse)
+async def connect_odoo(
+    req: OdooConnectRequest,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Saves/creates Odoo connection. Validates credentials first, then saves API key to Key Vault."""
+    user_id = auth.get("user_id")
+
+    # 1. Validate Odoo credentials using a safe read-only call
+    await _verify_odoo_credentials_via_connector(
+        url=req.odoo_url,
+        db=req.odoo_db,
+        username=req.odoo_username,
+        api_key=req.odoo_api_key
+    )
+
+    # 2. Check if a connection already exists
     result = await db.execute(
         select(AIConnectedAccount).where(
             AIConnectedAccount.user_id == str(user_id),
@@ -98,39 +191,299 @@ async def connect_odoo(
     account = result.scalar_one_or_none()
 
     if account:
-        account.provider_username = req.username
+        connected_account_id = account.id
+        secret_name = account.secret_reference or f"connected-account-{str(connected_account_id)}-secret"
+    else:
+        connected_account_id = uuid.uuid4()
+        secret_name = f"connected-account-{str(connected_account_id)}-secret"
+
+    # 3. Store the Odoo API key in Key Vault under opaque secret reference
+    _store_key_vault_secret(secret_name, req.odoo_api_key)
+
+    # 4. Create/update the database record
+    if account:
+        account.provider_username = req.odoo_username
         account.secret_reference = secret_name
-        account.status = "active"
+        account.status = "connected"
         account.last_verified_at = datetime.utcnow()
+        account.disconnected_at = None
+        account.updated_at = datetime.utcnow()
     else:
         account = AIConnectedAccount(
+            id=connected_account_id,
             user_id=user_id,
             provider="odoo",
-            provider_username=req.username,
+            provider_username=req.odoo_username,
             secret_reference=secret_name,
-            status="active",
+            status="connected",
             last_verified_at=datetime.utcnow(),
+            target_environment="production",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
         )
         db.add(account)
 
     await db.commit()
     await db.refresh(account)
 
-    # 4. Audit
+    # 5. Log audit event
     audit_svc = AuditService(db)
     await audit_svc.log_event(AIAuditEventCreate(
-        action_type="create",
-        target_system="ai-platform",
+        action_type="connect",
+        target_system="odoo",
         target_model="ai_connected_accounts",
         target_record_id=str(account.id),
         actor_user_id=user_id,
-        input_summary=f"Connected Odoo account for user {user_id}",
+        input_summary=f"Connected Odoo account '{req.odoo_username}' for user {user_id}",
         risk_level="medium",
         status="success",
     ))
+    await db.commit()
 
-    return OdooConnectResponse(
-        status="success",
-        account_id=str(account.id),
-        message="Odoo account connected successfully.",
+    return account
+
+
+@router.get("", response_model=List[ConnectedAccountResponse])
+async def get_connected_accounts(
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Returns list of all connected accounts for the authenticated user."""
+    user_id = auth.get("user_id")
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id)
+        )
     )
+    return result.scalars().all()
+
+
+@router.get("/odoo/status", response_model=OdooStatusResponse)
+async def get_odoo_status(
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Returns status of the Odoo connection for the authenticated user."""
+    user_id = auth.get("user_id")
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.provider == "odoo",
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if not account:
+        return OdooStatusResponse(status="not_connected")
+
+    return OdooStatusResponse(
+        status=account.status,
+        provider_username=account.provider_username,
+        last_verified_at=account.last_verified_at,
+        target_environment=account.target_environment,
+        account_id=account.id
+    )
+
+
+@router.post("/odoo/test", response_model=OdooStatusResponse)
+async def test_odoo_connection(
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Performs a test of the user's Odoo credentials using Odoo Connector."""
+    user_id = auth.get("user_id")
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.provider == "odoo",
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="Odoo connected account not found."
+        )
+
+    # 1. Resolve company facts
+    url_result = await db.execute(select(AIConnectedAccount.provider_username).where(AIConnectedAccount.id == account.id))
+    # We retrieve odoo_url and odoo_primary_db
+    from app.models.models import AICompanyFact
+    url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+    db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+    url_fact = url_fact_res.scalar_one_or_none()
+    db_fact = db_fact_res.scalar_one_or_none()
+
+    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+
+    if not odoo_url or not odoo_db:
+        raise HTTPException(
+            status_code=500,
+            detail="Odoo URL or DB name not configured in company facts."
+        )
+
+    # 2. Retrieve credentials from Key Vault
+    api_key = await _retrieve_key_vault_secret(account.secret_reference)
+
+    # 3. Call verification helper
+    test_status = "connected"
+    try:
+        await _verify_odoo_credentials_via_connector(
+            url=odoo_url,
+            db=odoo_db,
+            username=account.provider_username,
+            api_key=api_key
+        )
+        account.status = "connected"
+        account.last_verified_at = datetime.utcnow()
+    except Exception as e:
+        test_status = "error"
+        account.status = "error"
+        # We still update verified/last verified timestamp to reflect test run
+        account.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(account)
+
+    # 4. Log audit event
+    audit_svc = AuditService(db)
+    await audit_svc.log_event(AIAuditEventCreate(
+        action_type="test_connection",
+        target_system="odoo",
+        target_model="ai_connected_accounts",
+        target_record_id=str(account.id),
+        actor_user_id=user_id,
+        input_summary=f"Tested Odoo connection for user {user_id}. Result: {test_status}",
+        risk_level="low",
+        status="success" if test_status == "connected" else "error",
+    ))
+    await db.commit()
+
+    return OdooStatusResponse(
+        status=account.status,
+        provider_username=account.provider_username,
+        last_verified_at=account.last_verified_at,
+        target_environment=account.target_environment,
+        account_id=account.id
+    )
+
+
+@router.post("/odoo/rotate", response_model=ConnectedAccountResponse)
+async def rotate_odoo_credentials(
+    req: OdooRotateRequest,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Rotates/updates the Odoo API key/password in Key Vault."""
+    user_id = auth.get("user_id")
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.provider == "odoo",
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="Odoo connected account not found. Please connect first."
+        )
+
+    # Resolve company facts to perform validation
+    from app.models.models import AICompanyFact
+    url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+    db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+    url_fact = url_fact_res.scalar_one_or_none()
+    db_fact = db_fact_res.scalar_one_or_none()
+
+    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+
+    # Validate the new credentials
+    await _verify_odoo_credentials_via_connector(
+        url=odoo_url,
+        db=odoo_db,
+        username=account.provider_username,
+        api_key=req.odoo_api_key
+    )
+
+    # Store in Key Vault
+    _store_key_vault_secret(account.secret_reference, req.odoo_api_key)
+
+    # Update metadata
+    account.status = "connected"
+    account.last_verified_at = datetime.utcnow()
+    account.updated_at = datetime.utcnow()
+    account.disconnected_at = None
+
+    await db.commit()
+    await db.refresh(account)
+
+    # Log audit
+    audit_svc = AuditService(db)
+    await audit_svc.log_event(AIAuditEventCreate(
+        action_type="rotate_credentials",
+        target_system="odoo",
+        target_model="ai_connected_accounts",
+        target_record_id=str(account.id),
+        actor_user_id=user_id,
+        input_summary=f"Rotated Odoo credentials for user {user_id}",
+        risk_level="medium",
+        status="success",
+    ))
+    await db.commit()
+
+    return account
+
+
+@router.post("/odoo/disconnect", response_model=ConnectedAccountResponse)
+async def disconnect_odoo(
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Disconnects Odoo. Sets status to 'disconnected' and removes Key Vault secret."""
+    user_id = auth.get("user_id")
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.provider == "odoo",
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if not account:
+        raise HTTPException(
+            status_code=404,
+            detail="Odoo connected account not found."
+        )
+
+    # 1. Delete Key Vault secret for security
+    if account.secret_reference:
+        _delete_key_vault_secret(account.secret_reference)
+
+    # 2. Update DB metadata
+    account.status = "disconnected"
+    account.disconnected_at = datetime.utcnow()
+    account.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(account)
+
+    # 3. Log audit
+    audit_svc = AuditService(db)
+    await audit_svc.log_event(AIAuditEventCreate(
+        action_type="disconnect",
+        target_system="odoo",
+        target_model="ai_connected_accounts",
+        target_record_id=str(account.id),
+        actor_user_id=user_id,
+        input_summary=f"Disconnected Odoo account for user {user_id}",
+        risk_level="medium",
+        status="success",
+    ))
+    await db.commit()
+
+    return account
