@@ -6,6 +6,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AI Platform | Lots Lots More</title>
     <meta name="description" content="AI Platform and Operations Hub for Lots Lots More" />
+    <script>
+      (function() {
+        var t = localStorage.getItem('ai-platform-theme');
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.setAttribute('data-theme', t);
+        } else {
+          var d = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme', d);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

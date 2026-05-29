@@ -32,7 +32,6 @@ import {
   Compass,
   Play,
   ChevronDown,
-  Paperclip,
   Mic,
   MicOff,
   CornerDownLeft,
@@ -982,9 +981,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       </div>
 
       {/* Profile Popover Section */}
-      <div className="p-4 border-t border-white/5 relative z-40 bg-[#080d16]/50">
+      <div className="p-4 border-t border-default relative z-40 bg-sidebar">
         {isProfileMenuOpen && (
-          <div className="absolute bottom-16 left-4 right-4 bg-[#0d1427] border border-white/10 rounded-2xl shadow-2xl p-2 py-3 space-y-1.5 z-50 animate-fade-in text-left select-none">
+          <div className="absolute bottom-16 left-4 right-4 bg-raised border border-default rounded-2xl shadow-2xl p-2 py-3 space-y-1.5 z-50 animate-fade-in text-left select-none">
             <div className="px-3 py-1">
               <p className="text-xs font-bold text-white truncate">{activeUser?.displayName}</p>
               <p className="text-[10px] text-gray-500 truncate mt-0.5">{activeUser?.email}</p>
@@ -1057,7 +1056,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   // Render MSAL Interaction Status Loading
   if (inProgress !== InteractionStatus.None) {
     return (
-      <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative">
+      <div className="flex h-screen bg-canvas text-default font-sans antialiased overflow-hidden items-center justify-center relative">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.02),transparent_50%)]" />
         <div className="relative z-10 text-center space-y-4">
           <RefreshCw className="w-10 h-10 text-gray-400 animate-spin mx-auto" />
@@ -1070,7 +1069,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   // --- UNAUTHENTICATED LOGIN SCREEN ---
   if (!activeUser) {
     return (
-      <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden items-center justify-center relative px-4">
+      <div className="flex h-screen bg-canvas text-default font-sans antialiased overflow-hidden items-center justify-center relative px-4">
         {/* Glow effect */}
         <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-gray-500/5 rounded-full blur-[120px] pointer-events-none" />
         <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-gray-500/5 rounded-full blur-[120px] pointer-events-none" />
@@ -1150,7 +1149,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
           {/* Local Diagnostics */}
           {showDiagnostics && ENABLE_LOCAL_MOCK && (
-            <div className="border border-white/10 p-4 bg-gray-950/50 rounded-2xl text-left font-mono text-[10px] text-gray-400 space-y-1 select-text">
+            <div className="border border-default p-4 bg-subtle rounded-2xl text-left font-mono text-[10px] text-muted space-y-1 select-text">
               <p className="text-gray-500 font-bold border-b border-white/5 pb-1 mb-1.5 flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security Diagnostics</p>
               <p><span className="text-gray-500">inProgress:</span> {inProgress}</p>
               <p><span className="text-gray-500">accounts.length:</span> {accounts.length}</p>
@@ -1171,7 +1170,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   }
 
   return (
-    <div className="flex h-screen bg-[#050811] text-[#f3f4f6] font-sans antialiased overflow-hidden">
+    <div className="flex h-screen bg-canvas text-default font-sans antialiased overflow-hidden">
       
       {/* MOBILE RESPONSIVE DRAWER BACKDROP & MENU */}
       {isMobileMenuOpen && (
@@ -1195,7 +1194,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         <div className="absolute top-4 left-4 z-40">
           <button 
             onClick={() => setIsSidebarCollapsed(false)}
-            className="p-3 bg-[#0a0f1d] border border-white/10 text-gray-400 hover:text-white rounded-xl transition-all cursor-pointer shadow-lg"
+            className="p-3 bg-sidebar border border-default text-muted hover:text-default rounded-xl transition-all cursor-pointer shadow-lg"
             title="Expand Sidebar"
           >
             <Menu className="w-4 h-4" />
@@ -1207,7 +1206,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       <main className="flex-1 flex flex-col overflow-hidden relative">
         
         {/* HEADER */}
-        <header className={`h-16 bg-[#0a0f1d]/50 border-b border-white/5 px-8 flex justify-between items-center select-none shrink-0 relative z-10 transition-all ${isSidebarCollapsed ? "pl-16" : ""}`}>
+        <header className={`h-16 bg-subtle border-b border-default px-8 flex justify-between items-center select-none shrink-0 relative z-10 transition-all ${isSidebarCollapsed ? "pl-16" : ""}`}>
           <div className="flex items-center gap-3">
             <span className="text-xs uppercase tracking-widest text-gray-400 font-extrabold">{activeTab}</span>
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
@@ -1227,7 +1226,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         </header>
 
         {/* COMPONENT VIEWS */}
-        <section className="flex-1 overflow-y-auto p-8 bg-[#050811] relative z-0">
+        <section className="flex-1 overflow-y-auto p-8 bg-canvas relative z-0">
           
           {/* CHAT ASSISTANT VIEW */}
           {activeTab === "chat" && (
@@ -1300,93 +1299,95 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 )}
               </div>
 
-              {/* Chat Input / Composer */}
-              <div className="p-4 border-t border-white/5 bg-[#0a0f1d]/60 flex flex-col gap-3 select-none">
-                
-                {/* File chips attachment container */}
-                {attachedFiles.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pb-1.5 border-b border-white/5">
-                    {attachedFiles.map((chip, idx) => (
-                      <div key={idx} className="flex items-center gap-1.5 px-3 py-1 bg-white/5 border border-white/10 rounded-full text-xs text-white font-semibold animate-fade-in">
-                        <FileText className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate max-w-[120px]">{chip.file.name}</span>
-                        {chip.uploading ? (
-                          <RefreshCw className="w-3 h-3 animate-spin shrink-0 ml-1 text-gray-400" />
-                        ) : (
-                          <button 
-                            type="button"
-                            onClick={() => chip.id && handleRemoveFile(chip.id)}
-                            className="text-gray-400 hover:text-white ml-1 text-xs shrink-0 cursor-pointer"
-                          >
-                            ✕
-                          </button>
-                        )}
+              {/* Chat Input / Unified Composer Bubble */}
+              <div className="border-t border-default select-none">
+                <div className="p-4">
+                  <div className="bg-surface border border-default rounded-2xl shadow-sm transition-all focus-within:border-soft focus-within:shadow-md">
+                    {/* File chips inside the bubble */}
+                    {attachedFiles.length > 0 && (
+                      <div className="flex flex-wrap gap-2 p-3 pb-0">
+                        {attachedFiles.map((chip, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 px-3 py-1 bg-subtle border border-default rounded-full text-xs text-default font-semibold animate-fade-in">
+                            <FileText className="w-3.5 h-3.5 shrink-0 text-muted" />
+                            <span className="truncate max-w-[120px]">{chip.file.name}</span>
+                            {chip.uploading ? (
+                              <RefreshCw className="w-3 h-3 animate-spin shrink-0 ml-1 text-soft" />
+                            ) : (
+                              <button 
+                                type="button"
+                                onClick={() => chip.id && handleRemoveFile(chip.id)}
+                                className="text-soft hover:text-default ml-1 text-xs shrink-0 cursor-pointer"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
+
+                    <form onSubmit={handleSendMessage} className="flex items-center gap-1 p-1.5">
+                      <input 
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleFileUpload}
+                        className="hidden"
+                        multiple
+                      />
+                      <button 
+                        type="button"
+                        onClick={handleTriggerUpload}
+                        className="p-2 rounded-lg text-soft hover-text-default hover-bg-subtle transition-all shrink-0 cursor-pointer"
+                        title="Attach files or actions"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </button>
+
+                      <input 
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        placeholder={activeSession?.workflow_context ? `Ask Odoo about ${BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}...` : "Ask AI Assistant anything..."}
+                        disabled={isChatSending}
+                        className="flex-1 bg-transparent border-0 focus:outline-none focus:ring-0 text-sm text-default placeholder-soft px-1 py-2"
+                      />
+
+                      {/* Microphone Button */}
+                      <button 
+                        type="button"
+                        onClick={handleToggleVoice}
+                        className={`p-2 rounded-lg transition-all shrink-0 cursor-pointer ${
+                          voiceState === "listening" 
+                            ? "bg-rose-500/15 text-rose-400 animate-pulse" 
+                            : "text-soft hover-text-default hover-bg-subtle"
+                        }`}
+                        title={voiceState === "unsupported" ? "Voice input unsupported" : "Speak voice message"}
+                      >
+                        {voiceState === "listening" ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                      </button>
+
+                      <button 
+                        type="submit"
+                        disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
+                        className="p-2 rounded-lg bg-raised hover-bg-subtle text-default transition-all shrink-0 cursor-pointer border border-default"
+                      >
+                        <CornerDownLeft className="w-4 h-4" />
+                      </button>
+                    </form>
                   </div>
-                )}
 
-                <form onSubmit={handleSendMessage} className="flex gap-3 items-center">
-                  <input 
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    multiple
-                  />
-                  <button 
-                    type="button"
-                    onClick={handleTriggerUpload}
-                    className="p-3 bg-white/5 border border-white/10 text-gray-400 hover:text-white rounded-xl hover:bg-white/10 transition-all cursor-pointer"
-                    title="Upload secure business documents"
-                  >
-                    <Paperclip className="w-4 h-4" />
-                  </button>
-
-                  <input 
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder={activeSession?.workflow_context ? `Ask Odoo about ${BUSINESS_WORKFLOWS.find(w=>w.id===activeSession.workflow_context)?.title}...` : "Ask AI Assistant anything..."}
-                    disabled={isChatSending}
-                    className="flex-1 px-4 py-3 bg-transparent border border-white/10 rounded-xl focus:outline-none focus:border-white/35 text-xs placeholder-gray-500 text-white"
-                  />
-
-                  {/* Microphone Button */}
-                  <button 
-                    type="button"
-                    onClick={handleToggleVoice}
-                    className={`p-3 border rounded-xl transition-all cursor-pointer relative ${
-                      voiceState === "listening" 
-                        ? "bg-rose-500/15 border-rose-500/40 text-rose-400 animate-pulse" 
-                        : "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:bg-white/10"
-                    }`}
-                    title={voiceState === "unsupported" ? "Voice input unsupported" : "Speak voice message"}
-                  >
-                    {voiceState === "listening" ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
-                  </button>
-
-                  <button 
-                    type="submit"
-                    disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
-                    className="p-3 px-5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    Send
-                    <CornerDownLeft className="w-3.5 h-3.5" />
-                  </button>
-                </form>
-
-                <div className="flex items-center justify-between px-2 text-[10px] text-gray-500 select-none">
-                  {voiceState === "listening" ? (
-                    <span className="text-rose-400 font-semibold flex items-center gap-1 animate-pulse"><Mic className="w-3.5 h-3.5" /> Speak now... browser transcriber listening</span>
-                  ) : voiceState === "processing" ? (
-                    <span className="text-gray-400 font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing voice transcript...</span>
-                  ) : voiceState === "denied" ? (
-                    <span className="text-rose-400 font-semibold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> Mic permission denied</span>
-                  ) : (
-                    <span>Supports voice recording & multi-file uploads securely</span>
-                  )}
-                  <span>All documents are encrypted in Microsoft Azure Storage</span>
+                  <div className="flex items-center justify-between px-2 pt-2 text-[10px] text-soft select-none">
+                    {voiceState === "listening" ? (
+                      <span className="text-rose-400 font-semibold flex items-center gap-1 animate-pulse"><Mic className="w-3.5 h-3.5" /> Speak now...</span>
+                    ) : voiceState === "processing" ? (
+                      <span className="text-muted font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Processing voice...</span>
+                    ) : voiceState === "denied" ? (
+                      <span className="text-rose-400 font-semibold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> Mic denied</span>
+                    ) : (
+                      <span>Type, attach, or use voice</span>
+                    )}
+                    <span>All data encrypted</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1407,7 +1408,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {["finance", "hr", "operations"].map((cat) => (
                 <div key={cat} className="space-y-4">
                   <h3 className="text-xs uppercase tracking-widest text-gray-500 font-bold flex items-center gap-2">
-                    {cat === "finance" ? <DollarSign className="w-4 h-4 text-emerald-400" /> : cat === "hr" ? <Users className="w-4 h-4 text-sky-400" /> : <Layers className="w-4 h-4 text-amber-400" />}
+                    {cat === "finance" ? <DollarSign className="w-4 h-4 text-emerald-400" /> : cat === "hr" ? <Users className="w-4 h-4 text-zinc-400" /> : <Layers className="w-4 h-4 text-amber-400" />}
                     {cat === "finance" ? "Finance Ledger Operations" : cat === "hr" ? "HR & Timesheet Management" : "Backlog & Operations"}
                   </h3>
                   
@@ -1470,9 +1471,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                           onChange={(e) => setWorkflowInputs(prev => ({ ...prev, [input.name]: e.target.value }))}
                           className="w-full px-4 py-3 bg-transparent border border-white/10 rounded-xl focus:outline-none focus:border-white/35 text-xs text-white"
                         >
-                          <option value="" className="bg-[#050811]">Choose Options...</option>
+                          <option value="" className="bg-canvas">Choose Options...</option>
                           {input.options?.map(opt => (
-                            <option key={opt} value={opt} className="bg-[#050811]">{opt}</option>
+                            <option key={opt} value={opt} className="bg-canvas">{opt}</option>
                           ))}
                         </select>
                       ) : (
@@ -1516,7 +1517,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                     <p className="opacity-90">{workflowOutcome.message}</p>
                     
                     {workflowOutcome.success && (
-                      <div className="mt-3 p-3 bg-gray-950/40 border border-[#1e293b] rounded-xl text-xs space-y-1.5 font-mono select-text text-gray-300">
+                      <div className="mt-3 p-3 bg-subtle border border-default rounded-xl text-xs space-y-1.5 font-mono select-text text-default">
                         <p><span className="text-gray-500">Platform Job Reference:</span> {workflowOutcome.jobId || "None Created"}</p>
                         <p><span className="text-gray-500">Secure Document Artifact:</span> {workflowOutcome.artifactId || "None Generated"}</p>
                       </div>
@@ -1755,8 +1756,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {/* Odoo Connect Modal Overlay */}
               {isConnectOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-                  <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
-                    <div className="p-6 border-b border-white/10 flex justify-between items-center select-none">
+                  <div className="bg-surface border border-default rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl">
+                    <div className="p-6 border-b border-default flex justify-between items-center select-none">
                       <h3 className="font-bold text-lg text-white">Connect Odoo Enterprise</h3>
                       <button onClick={() => setIsConnectOpen(false)} className="text-gray-400 hover:text-white">✕</button>
                     </div>
@@ -1827,8 +1828,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {/* Odoo Rotate Key Modal Overlay */}
               {isRotateOpen && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
-                  <div className="bg-[#121214] border border-white/10 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
-                    <div className="p-6 border-b border-white/10 flex justify-between items-center select-none">
+                  <div className="bg-surface border border-default rounded-2xl max-w-md w-full overflow-hidden shadow-2xl">
+                    <div className="p-6 border-b border-default flex justify-between items-center select-none">
                       <h3 className="font-bold text-lg text-white">Rotate API Key</h3>
                       <button onClick={() => setIsRotateOpen(false)} className="text-gray-400 hover:text-white">✕</button>
                     </div>
@@ -1901,7 +1902,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
               {isAuditLoading ? (
                 <div className="text-center py-20 text-gray-400 select-none">Loading logs...</div>
               ) : auditLogs.length === 0 ? (
-                <div className="p-8 border border-[#1e293b]/50 border-dashed rounded-2xl bg-transparent text-center py-16 text-gray-400 select-none animate-fade-in">
+                <div className="p-8 border border-default border-dashed rounded-2xl bg-transparent text-center py-16 text-muted select-none animate-fade-in">
                   <Shield className="w-10 h-10 text-gray-600 mb-3 mx-auto" />
                   <p className="font-semibold text-gray-300">No audit events generated</p>
                   <p className="text-xs text-gray-500 max-w-sm mx-auto mt-1">Audit events are captured automatically for Odoo connections and proxy endpoints.</p>
@@ -1910,7 +1911,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 <div className="grid lg:grid-cols-3 gap-6 items-start">
                   
                   {/* Table View */}
-                  <div className="lg:col-span-2 border border-[#1e293b] rounded-2xl bg-[#0a0f1d] overflow-hidden select-text">
+                  <div className="lg:col-span-2 border border-default rounded-2xl bg-subtle overflow-hidden select-text">
                     <table className="w-full text-left border-collapse text-xs">
                       <thead>
                         <tr className="bg-gray-800/30 border-b border-white/10 text-gray-400 font-bold uppercase tracking-wider select-none">
@@ -1950,8 +1951,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   </div>
 
                   {/* Inspector Panel */}
-                  <div className="border border-white/10 rounded-2xl bg-[#0a0f1d] p-5 space-y-4 select-text">
-                    <div className="flex justify-between items-center select-none border-b border-white/10 pb-3">
+                  <div className="border border-default rounded-2xl bg-subtle p-5 space-y-4 select-text">
+                    <div className="flex justify-between items-center select-none border-b border-default pb-3">
                       <h3 className="font-bold text-sm text-white">Event Inspector</h3>
                       <span className="text-xs text-gray-500 font-mono">Detail View</span>
                     </div>
@@ -1979,9 +1980,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                           <span className="col-span-2 text-white capitalize">{inspectLog.identity_mode}</span>
                         </div>
                         
-                        <div className="pt-2 border-t border-[#1e293b]/50">
+                        <div className="pt-2 border-t border-default">
                           <span className="text-gray-500 block mb-1">Raw Payload Details:</span>
-                          <pre className="p-3 bg-[#070b15] border border-gray-800 rounded-lg overflow-x-auto text-[10px] font-mono text-gray-300 max-h-48 overflow-y-auto">
+                          <pre className="p-3 bg-subtle border border-default rounded-lg overflow-x-auto text-[10px] font-mono text-gray-300 max-h-48 overflow-y-auto">
                             {JSON.stringify(inspectLog, null, 2)}
                           </pre>
                         </div>
@@ -2002,10 +2003,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           {/* SETTINGS / SYSTEM CONFIG VIEW */}
           {activeTab === "settings" && hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) && (
             <div className="max-w-4xl mx-auto space-y-8 select-text animate-fade-in">
-              <div className="p-6 border border-white/10 rounded-2xl bg-[#0a0f1d] space-y-4">
-                <h3 className="font-bold text-lg text-white select-none">Active Profile</h3>
+              <div className="p-6 border border-default rounded-2xl bg-subtle space-y-4">
+                <h3 className="font-bold text-lg text-default select-none">Active Profile</h3>
                 
-                <div className="grid grid-cols-4 gap-4 items-center p-4 border border-white/5 rounded-xl bg-[#070b15] text-sm">
+                <div className="grid grid-cols-4 gap-4 items-center p-4 border border-default rounded-xl bg-subtle text-sm">
                   <div className="w-12 h-12 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
                     <User className="w-6 h-6 text-gray-300" />
                   </div>
@@ -2017,8 +2018,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                 </div>
               </div>
 
-              <div className="p-6 border border-white/10 rounded-2xl bg-[#0a0f1d] space-y-4">
-                <h3 className="font-bold text-lg text-white select-none">Platform Configurations</h3>
+              <div className="p-6 border border-default rounded-2xl bg-subtle space-y-4">
+                <h3 className="font-bold text-lg text-default select-none">Platform Configurations</h3>
                 
                 <div className="space-y-4 text-sm font-medium">
                   <div className="flex justify-between p-3 border-b border-white/5">

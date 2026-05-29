@@ -4,6 +4,7 @@ import { PublicClientApplication, EventType } from "@azure/msal-browser";
 import type { AuthenticationResult } from "@azure/msal-browser";
 import { MsalProvider } from "@azure/msal-react";
 import { msalConfig } from "./authConfig";
+import { ThemeProvider } from "./theme";
 import "./index.css";
 import App from "./App.tsx";
 
@@ -39,9 +40,11 @@ msalInstance.initialize().then(async () => {
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <MsalProvider instance={msalInstance}>
-        <App startupAuthError={startupAuthError} />
-      </MsalProvider>
+      <ThemeProvider>
+        <MsalProvider instance={msalInstance}>
+          <App startupAuthError={startupAuthError} />
+        </MsalProvider>
+      </ThemeProvider>
     </StrictMode>
   );
 }).catch(err => {
