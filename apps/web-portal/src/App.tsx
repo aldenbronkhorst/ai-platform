@@ -39,6 +39,7 @@ import {
   ChevronLeft,
   Menu
 } from "lucide-react";
+import { AiConfigView } from "./AiConfigView";
 
 const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
 
@@ -2002,41 +2003,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
           {/* SETTINGS / SYSTEM CONFIG VIEW */}
           {activeTab === "settings" && hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) && (
-            <div className="max-w-4xl mx-auto space-y-8 select-text animate-fade-in">
-              <div className="p-6 border border-default rounded-2xl bg-subtle space-y-4">
-                <h3 className="font-bold text-lg text-default select-none">Active Profile</h3>
-                
-                <div className="grid grid-cols-4 gap-4 items-center p-4 border border-default rounded-xl bg-subtle text-sm">
-                  <div className="w-12 h-12 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center">
-                    <User className="w-6 h-6 text-gray-300" />
-                  </div>
-                  <div className="col-span-3">
-                    <p className="font-semibold text-white">{activeUser.displayName}</p>
-                    <p className="text-xs text-gray-500 font-mono mt-0.5">Email: {activeUser.email}</p>
-                    <p className="text-xs text-gray-500 font-mono">Assigned Roles: {activeUser.roles.join(", ")}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-6 border border-default rounded-2xl bg-subtle space-y-4">
-                <h3 className="font-bold text-lg text-default select-none">Platform Configurations</h3>
-                
-                <div className="space-y-4 text-sm font-medium">
-                  <div className="flex justify-between p-3 border-b border-white/5">
-                    <span className="text-gray-400">Database Engine</span>
-                    <span className="text-white font-mono">PostgreSQL 16 (Azure Flexible Server)</span>
-                  </div>
-                  <div className="flex justify-between p-3 border-b border-white/5">
-                    <span className="text-gray-400">Secrets Vault</span>
-                    <span className="text-white font-mono">Azure Key Vault (RBAC-Gated)</span>
-                  </div>
-                  <div className="flex justify-between p-3 border-b border-white/5">
-                    <span className="text-gray-400">Odoo Core Engine</span>
-                    <span className="text-white font-mono">v1.0.0 (FastAPI Core Proxy)</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <AiConfigView accessToken={accessToken} activeUser={activeUser} />
           )}
 
         </section>

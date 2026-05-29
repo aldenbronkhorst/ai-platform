@@ -44,6 +44,8 @@ class ChatMessageResponse(BaseModel):
     content: str
     created_at: datetime
     model_name: Optional[str] = None
+    model_provider: Optional[str] = None
+    token_usage_json: Optional[Any] = None
     tool_call_json: Optional[Any] = None
     metadata_json: Optional[Any] = None
 
@@ -245,41 +247,57 @@ async def post_chat_message(
         )
         db.add(chat_art)
 
-    # 3. Simulate Platform Assistant operational response
-    # If the message references Odoo, we mock a safe Odoo read-only verification call
-    is_odoo_query = "odoo" in req.content.lower() or "partner" in req.content.lower() or "read" in req.content.lower()
-    
-    assistant_content = ""
-    tool_call_info = None
-    metadata_info = {}
+    # 3. Call Model Router with conversation history
+    history_result = await db.execute(
+        select(AIChatMessage).where(
+            AIChatMessage.chat_session_id == session_id
+        ).order_by(AIChatMessage.created_at.asc())
+    )
+    previous_messages = history_result.scalars().all()
+    messages = [{"role": m.role, "content": m.content} for m in previous_messages if m.id != user_msg.id]
+    messages.append({"role": "user", "content": req.content})
 
-    if isOdooQuery:
-        # Check if the user has an active Odoo connected account
-        acct_res = await db.execute(
-            select(AIConnectedAccount).where(
-                AIConnectedAccount.user_id == str(user_id),
-                AIConnectedAccount.provider == "odoo",
-                AIConnectedAccount.status == "connected"
-            )
+    router_result = None
+    router_error = None
+    try:
+        from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
+        router_result = await execute_chat(
+            db=db,
+            messages=messages,
+            task_type="general_chat",
+            chat_session_id=session_id,
+            user_id=user_id,
         )
-        account = acct_res.scalar_one_or_none()
-        
-        if account:
-            # Emulate structured business action
-            assistant_content = "I checked Odoo and found 3 matching customer records for your query. I have securely verified the customer account balances and compiled the results."
-            metadata_info = {
-                "technical_details": {
-                    "api_called": "POST /records/search-read",
-                    "target_model": "res.partner",
-                    "gated_operation_mode": "read-only",
-                    "records_found": 3,
-                    "connected_account_id": str(account.id)
-                }
+    except RouteNotFoundError as e:
+        router_error = str(e)
+    except ProviderCallError as e:
+        router_error = str(e)
+    except Exception as e:
+        router_error = f"Model router error: {str(e)}"
+
+    if router_result:
+        assistant_content = router_result["content"]
+        model_provider = router_result.get("model_provider", "unknown")
+        model_name = router_result.get("model_name", "unknown")
+        token_usage = {
+            "prompt_tokens": router_result.get("prompt_tokens", 0),
+            "completion_tokens": router_result.get("completion_tokens", 0),
+            "total_tokens": router_result.get("total_tokens", 0),
+        }
+        metadata_info = {
+            "technical_details": {
+                "model_provider": model_provider,
+                "model_name": model_name,
+                "latency_ms": router_result.get("latency_ms", 0),
+                "token_usage": token_usage,
             }
-        else:
-            assistant_content = "I checked your integrations but noticed Odoo is not connected. To proceed, please connect your Odoo Enterprise account under Connected Accounts."
+        }
     else:
-        assistant_content = f"I received your inquiry regarding '{req.content}'. I am ready to run any business workflows, timesheet reviews, or ledger checks you require."
+        assistant_content = router_error or "Failed to get AI response."
+        model_provider = None
+        model_name = None
+        token_usage = None
+        metadata_info = {"technical_details": {"error": router_error}} if router_error else None
 
     # 4. Save Assistant Message
     assistant_msg = AIChatMessage(
@@ -288,9 +306,10 @@ async def post_chat_message(
         user_id=user_id,
         role="assistant",
         content=assistant_content,
-        model_provider="azure-openai",
-        model_name="gpt-4o",
-        metadata_json=metadata_info if metadata_info else None,
+        model_provider=model_provider,
+        model_name=model_name,
+        token_usage_json=token_usage,
+        metadata_json=metadata_info,
         created_at=datetime.utcnow()
     )
     db.add(assistant_msg)

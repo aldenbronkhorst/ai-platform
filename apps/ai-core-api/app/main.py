@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import health, audit, artifact, context, job, task, tool, odoo, connected_accounts, chat
+from app.routers import health, audit, artifact, context, job, task, tool, odoo, connected_accounts, chat, ai_config
 
 app = FastAPI(
     title="AI Platform Core API",
@@ -33,6 +33,7 @@ app.include_router(tool.router)
 app.include_router(odoo.router, prefix="/tools/odoo", tags=["Odoo Tools"])
 app.include_router(connected_accounts.router)
 app.include_router(chat.router)
+app.include_router(ai_config.router)
 
 
 @app.get("/")

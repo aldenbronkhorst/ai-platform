@@ -215,3 +215,66 @@ class AIChatJob(Base, AuditMixin):
     job_id = Column(UUID(as_uuid=True), ForeignKey("ai_jobs.id"), nullable=False, index=True)
     linked_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True, index=True)
 
+
+class AIProvider(Base, AuditMixin):
+    __tablename__ = "ai_providers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    provider_type = Column(String(50), nullable=False)
+    base_url = Column(String(500), nullable=False)
+    auth_type = Column(String(30), default="key_vault_secret", nullable=False)
+    secret_reference = Column(String(500), nullable=True)
+    enabled = Column(String(10), default="true", nullable=False)
+    capabilities = Column(JSON, nullable=True)
+
+
+class AIModel(Base, AuditMixin):
+    __tablename__ = "ai_models"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider_id = Column(UUID(as_uuid=True), ForeignKey("ai_providers.id"), nullable=False, index=True)
+    display_name = Column(String(255), nullable=False)
+    model_name = Column(String(255), nullable=False)
+    deployment_name = Column(String(255), nullable=False)
+    model_family = Column(String(100), nullable=True)
+    model_version = Column(String(100), nullable=True)
+    supports_tools = Column(String(10), default="false", nullable=False)
+    supports_json_schema = Column(String(10), default="false", nullable=False)
+    context_window = Column(Integer, nullable=True)
+    enabled = Column(String(10), default="true", nullable=False)
+    config_json = Column(JSON, nullable=True)
+
+
+class AIRoute(Base, AuditMixin):
+    __tablename__ = "ai_routes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    task_type = Column(String(100), unique=True, nullable=False, index=True)
+    primary_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=False)
+    fallback_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=True)
+    temperature = Column(Numeric(4, 2), default=0.3, nullable=False)
+    max_tokens = Column(Integer, default=2000, nullable=False)
+    system_prompt = Column(Text, nullable=True)
+    enabled = Column(String(10), default="true", nullable=False)
+
+
+class AIUsageLog(Base):
+    __tablename__ = "ai_usage_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    provider_id = Column(UUID(as_uuid=True), ForeignKey("ai_providers.id"), nullable=True)
+    model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=True)
+    route_id = Column(UUID(as_uuid=True), ForeignKey("ai_routes.id"), nullable=True)
+    task_type = Column(String(100), nullable=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
+    prompt_tokens = Column(Integer, default=0, nullable=False)
+    completion_tokens = Column(Integer, default=0, nullable=False)
+    total_tokens = Column(Integer, default=0, nullable=False)
+    latency_ms = Column(Integer, nullable=True)
+    cost_estimate = Column(Numeric(12, 6), nullable=True)
+    status = Column(String(20), default="success", nullable=False)
+    error_message = Column(Text, nullable=True)
+
