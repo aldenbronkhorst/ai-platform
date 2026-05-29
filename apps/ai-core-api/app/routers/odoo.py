@@ -53,8 +53,31 @@ def _get_connector_url(path: str) -> str:
     return f"{base}{path}"
 
 
+async def _log_audit(
+    db: AsyncSession,
+    auth: dict,
+    action_type: str,
+    target_model: str,
+    status: str,
+    details: dict,
+) -> None:
+    try:
+        audit_svc = AuditService(db)
+        await audit_svc.log_event(AIAuditEventCreate(
+            action_type=action_type,
+            target_system="odoo",
+            target_model=target_model,
+            target_record_id=None,
+            actor_user_id=auth.get("user_id"),
+            details=details,
+            status=status,
+        ))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+
+
 async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID) -> dict[str, str]:
-    """Resolve the user's Odoo connected account and retrieve credentials from Key Vault."""
     result = await db.execute(
         select(AIConnectedAccount).where(
             AIConnectedAccount.user_id == str(user_id),
@@ -70,7 +93,6 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID) -> dict[str
             detail="No Odoo connected account found. Please connect your Odoo account first.",
         )
 
-    # Retrieve the actual API key from Key Vault using the secret_reference
     api_key = ""
     if account.secret_reference and os.environ.get("KEY_VAULT_URI"):
         try:
@@ -92,13 +114,8 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID) -> dict[str
             detail="Odoo connected account has no valid credentials. Please reconnect.",
         )
 
-    # Get Odoo URL and DB from company facts
-    url_result = await db.execute(
-        select(AICompanyFact).where(AICompanyFact.key == "odoo_url")
-    )
-    db_result = await db.execute(
-        select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db")
-    )
+    url_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+    db_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
     url_fact = url_result.scalar_one_or_none()
     db_fact = db_result.scalar_one_or_none()
 
@@ -121,7 +138,6 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID) -> dict[str
 
 
 async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) -> None:
-    """Check policy rules before allowing Odoo operations."""
     result = await db.execute(
         select(AIRule).where(
             AIRule.status == "active",
@@ -133,7 +149,6 @@ async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) 
     for rule in rules:
         body_lower = (rule.body or "").lower()
 
-        # Block raw chatter dumps
         if action == "message_create" and "chatter" in body_lower:
             if "raw" in body_lower or "csv" in body_lower or "json" in body_lower or "table" in body_lower:
                 body_text = details.get("body", "")
@@ -143,7 +158,6 @@ async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) 
                         detail=f"Policy blocked: {rule.title}. Chatter messages must be short summaries. Raw data dumps are not allowed.",
                     )
 
-        # Block intermediate artifacts attached to Odoo
         if action == "attachment_create" and "artifact" in body_lower:
             filename = details.get("filename", "").lower()
             if any(x in filename for x in [".csv", ".json", ".debug", ".tmp", ".ocr", ".parsed"]):
@@ -152,7 +166,6 @@ async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) 
                     detail=f"Policy blocked: {rule.title}. Intermediate/debug files must be stored in AI Platform Blob storage, not attached to Odoo.",
                 )
 
-        # Gate dangerous operations
         if action == "execute" and "execute_kw" in body_lower:
             method = details.get("method", "")
             if method == "unlink":
@@ -166,10 +179,7 @@ async def _call_connector(
     method: str,
     path: str,
     payload: dict,
-    db: AsyncSession,
-    auth: dict,
 ) -> dict[str, Any]:
-    """Call the Odoo Connector API with the given payload."""
     url = _get_connector_url(path)
     headers = _get_connector_headers()
 
@@ -178,22 +188,6 @@ async def _call_connector(
             response = await client.get(url, headers=headers)
         else:
             response = await client.post(url, json=payload, headers=headers)
-
-    # Audit log
-    audit_svc = AuditService(db)
-    await audit_svc.log_event(AIAuditEventCreate(
-        action_type="odoo_proxy",
-        target_system="odoo",
-        target_model=payload.get("model", "unknown"),
-        target_record_id=None,
-        actor_user_id=auth.get("user_id"),
-        details={
-            "path": path,
-            "method": method,
-            "status": response.status_code,
-            "model": payload.get("model"),
-        },
-    ))
 
     if response.status_code >= 400:
         try:
@@ -211,13 +205,20 @@ async def odoo_schema(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {"credentials": credentials, "query": req.model or ""}
-    if req.model:
-        payload["model"] = req.model
-        payload["fields"] = req.fields
-        return await _call_connector("POST", "/schema/fields", payload, db, auth)
-    return await _call_connector("POST", "/schema/models", payload, db, auth)
+    try:
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {"credentials": credentials, "query": req.model or ""}
+        if req.model:
+            payload["model"] = req.model
+            payload["fields"] = req.fields
+            result = await _call_connector("POST", "/schema/fields", payload)
+        else:
+            result = await _call_connector("POST", "/schema/models", payload)
+        await _log_audit(db, auth, "odoo_proxy", req.model or "ir.model", "success", {"path": "/schema", "model": req.model})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", req.model or "ir.model", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/search-read")
@@ -226,17 +227,23 @@ async def odoo_search_read(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "domain": req.domain,
-        "fields": req.fields,
-        "limit": req.limit,
-        "offset": req.offset,
-        "order": req.order,
-    }
-    return await _call_connector("POST", "/records/search-read", payload, db, auth)
+    try:
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "domain": req.domain,
+            "fields": req.fields,
+            "limit": req.limit,
+            "offset": req.offset,
+            "order": req.order,
+        }
+        result = await _call_connector("POST", "/records/search-read", payload)
+        await _log_audit(db, auth, "odoo_proxy", req.model or "", "success", {"path": "/records/search-read", "model": req.model})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", req.model or "", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/execute")
@@ -245,17 +252,23 @@ async def odoo_execute(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    await _check_policy(db, "execute", {"method": req.method, "model": req.model})
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "method": req.method,
-        "args": req.args,
-        "kwargs": req.kwargs,
-        "dry_run": req.dry_run,
-    }
-    return await _call_connector("POST", "/execute-kw/", payload, db, auth)
+    try:
+        await _check_policy(db, "execute", {"method": req.method, "model": req.model})
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "method": req.method,
+            "args": req.args,
+            "kwargs": req.kwargs,
+            "dry_run": req.dry_run,
+        }
+        result = await _call_connector("POST", "/execute-kw/", payload)
+        await _log_audit(db, auth, "odoo_proxy", req.model or "", "success", {"path": "/execute-kw", "model": req.model, "method": req.method})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", req.model or "", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/attachments/list")
@@ -264,14 +277,20 @@ async def odoo_attachments_list(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "record_id": req.record_id,
-        "limit": req.limit,
-    }
-    return await _call_connector("POST", "/attachments/list", payload, db, auth)
+    try:
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "record_id": req.record_id,
+            "limit": req.limit,
+        }
+        result = await _call_connector("POST", "/attachments/list", payload)
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "success", {"path": "/attachments/list"})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/attachments/get")
@@ -280,13 +299,19 @@ async def odoo_attachments_get(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "attachment_id": req.attachment_id,
-        "mode": "metadata",
-    }
-    return await _call_connector("POST", "/attachments/get", payload, db, auth)
+    try:
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "attachment_id": req.attachment_id,
+            "mode": "metadata",
+        }
+        result = await _call_connector("POST", "/attachments/get", payload)
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "success", {"path": "/attachments/get"})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/attachments/create")
@@ -295,17 +320,23 @@ async def odoo_attachments_create(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    await _check_policy(db, "attachment_create", {"filename": req.filename or ""})
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "record_id": req.record_id,
-        "filename": req.filename,
-        "content_base64": req.content_base64,
-        "mimetype": req.mimetype,
-    }
-    return await _call_connector("POST", "/attachments/create", payload, db, auth)
+    try:
+        await _check_policy(db, "attachment_create", {"filename": req.filename or ""})
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "record_id": req.record_id,
+            "filename": req.filename,
+            "content_base64": req.content_base64,
+            "mimetype": req.mimetype,
+        }
+        result = await _call_connector("POST", "/attachments/create", payload)
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "success", {"path": "/attachments/create"})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", "ir.attachment", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/messages/list")
@@ -314,14 +345,20 @@ async def odoo_messages_list(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "record_id": req.record_id,
-        "limit": req.limit,
-    }
-    return await _call_connector("POST", "/messages/list", payload, db, auth)
+    try:
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "record_id": req.record_id,
+            "limit": req.limit,
+        }
+        result = await _call_connector("POST", "/messages/list", payload)
+        await _log_audit(db, auth, "odoo_proxy", "mail.message", "success", {"path": "/messages/list"})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", "mail.message", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
 
 
 @router.post("/messages/create")
@@ -330,12 +367,18 @@ async def odoo_messages_create(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    await _check_policy(db, "message_create", {"body": req.body or ""})
-    credentials = await _resolve_odoo_credentials(db, auth["user_id"])
-    payload = {
-        "credentials": credentials,
-        "model": req.model,
-        "record_id": req.record_id,
-        "body": req.body,
-    }
-    return await _call_connector("POST", "/messages/create", payload, db, auth)
+    try:
+        await _check_policy(db, "message_create", {"body": req.body or ""})
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"])
+        payload = {
+            "credentials": credentials,
+            "model": req.model,
+            "record_id": req.record_id,
+            "body": req.body,
+        }
+        result = await _call_connector("POST", "/messages/create", payload)
+        await _log_audit(db, auth, "odoo_proxy", "mail.message", "success", {"path": "/messages/create"})
+        return result
+    except HTTPException as e:
+        await _log_audit(db, auth, "odoo_proxy", "mail.message", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
+        raise
