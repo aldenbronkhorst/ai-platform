@@ -68,7 +68,7 @@ def test_portal_html_metatags():
         content = f.read()
         
         # 1. Correct title
-        assert "<title>AI Platform | Lots Lots More</title>" in content
+        assert "<title>AI Platform</title>" in content
         
         # 2. No generic "web-portal" title
         assert "<title>web-portal</title>" not in content
