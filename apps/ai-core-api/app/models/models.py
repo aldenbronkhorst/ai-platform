@@ -31,10 +31,14 @@ class AIConnectedAccount(Base, AuditMixin):
     provider = Column(String(50), nullable=False)  # microsoft, odoo, github, azure
     provider_user_id = Column(String(255), nullable=True)
     provider_username = Column(String(255), nullable=True)
+    provider_display_name = Column(String(255), nullable=True)
     scopes = Column(Text, nullable=True)
     status = Column(String(20), default="active", nullable=False)
     secret_reference = Column(String(500), nullable=True)  # Key Vault secret name
+    target_environment = Column(String(50), default="production", nullable=True)
+    permission_summary = Column(Text, nullable=True)
     last_verified_at = Column(DateTime(timezone=True), nullable=True)
+    disconnected_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class AICompanyFact(Base, AuditMixin):
