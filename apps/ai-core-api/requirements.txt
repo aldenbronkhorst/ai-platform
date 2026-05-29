@@ -4,7 +4,7 @@ asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.25
 alembic==1.13.1
 psycopg2-binary==2.9.9
-pydantic==2.5.3
+pydantic==2.13.4
 pydantic-settings==2.1.0
 azure-identity==1.15.0
 azure-keyvault-secrets==4.7.0
