@@ -12,7 +12,9 @@ from app.core.security import api_key_auth
 from app.core.database import get_db
 from app.models.models import AIConnectedAccount, AIRule, AICompanyFact
 from app.services.audit import AuditService
-from app.schemas.schemas import AIAuditEventCreate
+from app.services.job import JobService
+from app.services.artifact import ArtifactService
+from app.schemas.schemas import AIAuditEventCreate, AIJobCreate, AIArtifactCreate
 
 router = APIRouter()
 
@@ -42,6 +44,8 @@ class OdooToolRequest(BaseModel):
     dry_run: bool = False
     target_environment: Optional[str] = None
     operation_mode: Optional[str] = None
+    create_job: bool = False
+    job_title: Optional[str] = None
 
 
 def _get_connector_headers():
@@ -135,6 +139,47 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID) -> dict[str
         "api_key": api_key,
         "transport": "auto",
     }
+
+
+async def _create_odoo_job(
+    db: AsyncSession,
+    auth: dict,
+    req: OdooToolRequest,
+    result: dict,
+) -> dict:
+    try:
+        job_svc = JobService(db)
+        job = await job_svc.create(
+            AIJobCreate(
+                workflow_type="odoo",
+                title=req.job_title or f"Odoo {req.model}",
+                linked_system="odoo",
+                linked_model=req.model,
+                linked_record_id=str(req.record_id) if req.record_id else None,
+            ),
+            requested_by_user_id=auth.get("user_id"),
+        )
+
+        artifact_svc = ArtifactService(db)
+        artifact = await artifact_svc.upload_json(
+            AIArtifactCreate(
+                job_id=job.id,
+                artifact_type="odoo-result",
+                filename=f"odoo-{req.model or 'result'}.json",
+                mime_type="application/json",
+                source_tool="odoo",
+                stage="final",
+            ),
+            result,
+            created_by_user_id=auth.get("user_id"),
+        )
+
+        await job_svc.update_status(job.id, "completed", summary=f"Artifact {artifact.id} created")
+        await db.commit()
+        return {"job_id": str(job.id), "artifact_id": str(artifact.id)}
+    except Exception:
+        await db.rollback()
+        return {}
 
 
 async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) -> None:
@@ -240,6 +285,9 @@ async def odoo_search_read(
         }
         result = await _call_connector("POST", "/records/search-read", payload)
         await _log_audit(db, auth, "odoo_proxy", req.model or "", "success", {"path": "/records/search-read", "model": req.model})
+        if req.create_job:
+            job_meta = await _create_odoo_job(db, auth, req, result)
+            result["_job"] = job_meta
         return result
     except HTTPException as e:
         await _log_audit(db, auth, "odoo_proxy", req.model or "", "blocked" if e.status_code == 403 else "error", {"error": e.detail})
