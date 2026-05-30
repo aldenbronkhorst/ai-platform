@@ -1,7 +1,7 @@
 import os
 import uuid
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 from datetime import datetime
 
@@ -352,12 +352,161 @@ class TestConnectorContext:
                     "prompt_tokens": 5,
                     "completion_tokens": 2,
                     "total_tokens": 7,
-                    "latency_ms": 50,
-                })
+                     "latency_ms": 50,
+                 })
+             ))
+         ):
+             result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
+             assert result["content"] == "OK"
+
+    @pytest.mark.asyncio
+    @patch("app.services.search_service.SearchService")
+    async def test_execute_chat_injects_search_results(self, mock_search_svc_cls):
+        """Active search results from Azure Search must appear in '## Relevant Reference Materials'."""
+        from app.services.model_router import execute_chat
+        from app.models.models import AIProvider, AIModel, AIRoute
+
+        db = MockSession(has_config=False)
+
+        # Setup mock SearchService
+        mock_svc = MagicMock()
+        mock_svc.enabled = True
+        mock_svc.search_memories = AsyncMock(return_value=[
+            {
+                "id": "doc123",
+                "title": "Printer SOP",
+                "chunk_text": "Select tray 2 and downstairs printer",
+                "type": "procedure",
+                "score": 0.95
+            }
+        ])
+        mock_search_svc_cls.return_value = mock_svc
+
+        provider = AIProvider(
+            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
+            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            secret_reference="mock-key", enabled="true",
+        )
+        model = AIModel(
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
+            model_family="Kimi", model_version="2026-04-20",
+            supports_tools="true", supports_json_schema="false",
+            context_window=262144, enabled="true",
+        )
+        route = AIRoute(
+            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            temperature=0.3, max_tokens=2000, enabled="true",
+            system_prompt="You are the AI Platform.",
+        )
+
+        async def mock_get_enabled_route(*args, **kwargs):
+            return (route, model, provider)
+
+        mock_chat_completion = AsyncMock(return_value={
+            "content": "I see the printer SOP details.",
+            "finish_reason": "stop",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 50,
+        })
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.get_enabled_route',
+            new=mock_get_enabled_route,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=mock_chat_completion
             ))
         ):
-            result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
-            assert result["content"] == "OK"
+            result = await execute_chat(db, [{"role": "user", "content": "how to print downstairs"}], user_id=uuid.uuid4())
+            assert result["content"] == "I see the printer SOP details."
+            
+            # Verify system prompt has search injection
+            called_messages = mock_chat_completion.call_args[1]["messages"]
+            system_prompt_content = called_messages[0]["content"]
+            assert "## Relevant Reference Materials" in system_prompt_content
+            assert "- [procedure] Printer SOP" in system_prompt_content
+            assert "Details: Select tray 2 and downstairs printer" in system_prompt_content
+
+            # Verify response contains injected search metadata
+            assert "search_results_injected" in result["context"]
+            assert len(result["context"]["search_results_injected"]) == 1
+            assert result["context"]["search_results_injected"][0]["id"] == "doc123"
+
+    @pytest.mark.asyncio
+    @patch("app.services.search_service.SearchService")
+    async def test_execute_chat_search_disabled_does_not_inject(self, mock_search_svc_cls):
+        """When search service is disabled, no search results are injected and context metadata is empty."""
+        from app.services.model_router import execute_chat
+        from app.models.models import AIProvider, AIModel, AIRoute
+
+        db = MockSession(has_config=False)
+
+        # Setup disabled mock SearchService
+        mock_svc = MagicMock()
+        mock_svc.enabled = False
+        mock_search_svc_cls.return_value = mock_svc
+
+        provider = AIProvider(
+            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
+            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            secret_reference="mock-key", enabled="true",
+        )
+        model = AIModel(
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
+            model_family="Kimi", model_version="2026-04-20",
+            supports_tools="true", supports_json_schema="false",
+            context_window=262144, enabled="true",
+        )
+        route = AIRoute(
+            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            temperature=0.3, max_tokens=2000, enabled="true",
+            system_prompt="You are the AI Platform.",
+        )
+
+        async def mock_get_enabled_route(*args, **kwargs):
+            return (route, model, provider)
+
+        mock_chat_completion = AsyncMock(return_value={
+            "content": "Hi",
+            "finish_reason": "stop",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 50,
+        })
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.get_enabled_route',
+            new=mock_get_enabled_route,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=mock_chat_completion
+            ))
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "how to print downstairs"}], user_id=uuid.uuid4())
+            
+            # Verify system prompt does not have search injection
+            called_messages = mock_chat_completion.call_args[1]["messages"]
+            system_prompt_content = called_messages[0]["content"]
+            assert "## Relevant Reference Materials" not in system_prompt_content
+
+            # Verify response does not contain injected search metadata
+            assert "search_results_injected" in result["context"]
+            assert len(result["context"]["search_results_injected"]) == 0
 
 
 # ── Seed Script Tests ──

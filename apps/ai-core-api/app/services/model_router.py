@@ -447,9 +447,43 @@ async def execute_chat(
         except Exception as mem_exc:
             logger.warning("Failed to inject memories: %s", mem_exc)
 
+        # Search Azure AI Search for relevant SOPs, procedures, and long documents
+        chunks_to_inject: list[dict[str, Any]] = []
+        try:
+            from app.services.search_service import SearchService
+            search_svc = SearchService()
+            if search_svc.enabled and messages:
+                user_query = messages[-1]["content"]
+                # Query Azure AI Search with filters
+                injected_search_results = await search_svc.search_memories(
+                    query=user_query,
+                    user_id=user_id,
+                    status="active"
+                )
+
+                # Check feature flag and limit max injected chunks
+                from app.core.config import get_settings
+                max_chunks = get_settings().azure_search_max_injected_chunks
+                chunks_to_inject = injected_search_results[:max_chunks]
+
+                if chunks_to_inject:
+                    search_blocks = []
+                    for hit in chunks_to_inject:
+                        source_type = hit.get("type") or hit.get("source_type") or "reference"
+                        title = hit.get("title") or "Untitled Document"
+                        chunk_text = hit.get("chunk_text") or hit.get("summary") or ""
+                        block = f"- [{source_type}] {title}"
+                        if chunk_text:
+                            block += f"\n  Details: {chunk_text[:350]}"
+                        search_blocks.append(block)
+
+                    system_prompt += "\n\n## Relevant Reference Materials\n" + "\n".join(search_blocks)
+        except Exception as search_exc:
+            logger.warning("Failed to retrieve or inject search results: %s", search_exc)
+
         logger.info(
-            "Context injected | rules=%d facts=%d memories=%d user_id=%s currency=%s",
-            len(injected_rules), len(injected_facts), len(injected_memories), user_id, odoo_currency_str or "none",
+            "Context injected | rules=%d facts=%d memories=%d search_results=%d user_id=%s currency=%s",
+            len(injected_rules), len(injected_facts), len(injected_memories), len(chunks_to_inject), user_id, odoo_currency_str or "none",
         )
     except Exception as exc:
         logger.warning("Failed to inject context: %s", exc)
@@ -646,6 +680,15 @@ async def execute_chat(
         "rules_injected": [{"id": str(r.id), "title": r.title, "priority": r.priority} for r in injected_rules] if injected_rules else [],
         "facts_injected": [{"key": f.key, "value": f.value} for f in injected_facts] if injected_facts else [],
         "memories_injected": [{"id": str(m.id), "title": m.title, "type": m.type} for m in injected_memories] if injected_memories else [],
+        "search_results_injected": [
+            {
+                "id": hit.get("id"),
+                "title": hit.get("title"),
+                "type": hit.get("type"),
+                "score": hit.get("score")
+            }
+            for hit in chunks_to_inject
+        ] if chunks_to_inject else [],
         "currency_source": currency_source,
     }
 

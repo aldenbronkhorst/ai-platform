@@ -111,6 +111,13 @@ async def create_memory(
     ))
     await db.commit()
     await db.refresh(memory)
+    if memory.status == "active":
+        try:
+            from app.services.search_service import SearchService
+            search_svc = SearchService()
+            await search_svc.index_memory_record(memory)
+        except Exception as e:
+            logger.warning("Failed to index created memory in search service: %s", e)
     logger.info("Memory created | id=%s type=%s risk=%s", memory.id, memory.type, memory.risk_level)
     return memory
 
@@ -165,6 +172,15 @@ async def update_memory(
     ))
     await db.commit()
     await db.refresh(memory)
+    try:
+        from app.services.search_service import SearchService
+        search_svc = SearchService()
+        if memory.status == "active":
+            await search_svc.index_memory_record(memory)
+        elif memory.status in ("archived", "rejected"):
+            await search_svc.delete_memory_record(memory.id)
+    except Exception as e:
+        logger.warning("Failed to sync updated memory with search index: %s", e)
     logger.info("Memory updated | id=%s changes=%s", memory.id, changed)
     return memory
 
@@ -200,6 +216,12 @@ async def approve_memory(
     ))
     await db.commit()
     await db.refresh(memory)
+    try:
+        from app.services.search_service import SearchService
+        search_svc = SearchService()
+        await search_svc.index_memory_record(memory)
+    except Exception as e:
+        logger.warning("Failed to index approved memory into search index: %s", e)
     logger.info("Memory approved | id=%s title=%s", memory.id, memory.title)
     return memory
 
@@ -231,6 +253,12 @@ async def archive_memory(
         status="success",
     ))
     await db.commit()
+    try:
+        from app.services.search_service import SearchService
+        search_svc = SearchService()
+        await search_svc.delete_memory_record(memory_id)
+    except Exception as e:
+        logger.warning("Failed to delete archived memory from search index: %s", e)
     logger.info("Memory archived | id=%s title=%s", memory.id, memory.title)
 
 
@@ -291,4 +319,11 @@ async def save_memory_candidate(
     )
     await db.commit()
     await db.refresh(memory)
+    if memory.status == "active":
+        try:
+            from app.services.search_service import SearchService
+            search_svc = SearchService()
+            await search_svc.index_memory_record(memory)
+        except Exception as e:
+            logger.warning("Failed to index candidate memory into search index: %s", e)
     return memory

@@ -109,6 +109,12 @@ async def process_memory_extraction_message(
             if memory:
                 saved_count += 1
                 logger.info("Auto-saved memory: %s (id=%s)", memory.title, memory.id)
+                try:
+                    from app.services.search_service import SearchService
+                    search_svc = SearchService()
+                    await search_svc.index_memory_record(memory)
+                except Exception as e:
+                    logger.warning("Failed to index auto-saved memory in search index: %s", e)
         else:
             # Flag for admin review (store as draft with pending review)
             memory = await svc.save_candidate(candidate, conversation_id=conversation_id, user_id=user_id)
