@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import async_session_maker
+from app.core.database import AsyncSessionLocal
 from app.services.service_bus import receive_messages_async, QUEUE_MEMORY_EXTRACTION
 from app.services.memory_worker import process_memory_extraction_message
 from app.services.audit import AuditService
@@ -42,7 +42,7 @@ signal.signal(signal.SIGINT, _handle_signal)
 @asynccontextmanager
 async def _db_session():
     """Yield a DB session and handle commit/rollback."""
-    async with async_session_maker() as session:
+    async with AsyncSessionLocal() as session:
         try:
             yield session
             await session.commit()
