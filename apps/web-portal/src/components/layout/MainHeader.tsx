@@ -19,6 +19,7 @@ export function MainHeader({
     "connected-accounts": "Connected Accounts",
     audit: "Audit Logs",
     settings: "Settings",
+    admin: "Admin",
   };
 
   const label = tabLabels[activeTab] || activeTab;

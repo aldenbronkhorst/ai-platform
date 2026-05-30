@@ -24,6 +24,7 @@ interface AIRule {
   status: string;
   priority: number;
   scope_type: string | null;
+  scope_value: string | null;
 }
 
 const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";

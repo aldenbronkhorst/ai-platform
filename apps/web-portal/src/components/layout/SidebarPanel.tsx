@@ -79,15 +79,15 @@ export function SidebarPanel({
     return () => ac.abort();
   }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
 
-  const navItems = [
-    { tab: "workflows" as const, icon: Layers, label: "Workflows" },
-    { tab: "tasks" as const, icon: ClipboardList, label: "Tasks Tracker" },
-    { tab: "artifacts" as const, icon: FileText, label: "Documents Vault" },
-    { tab: "connected-accounts" as const, icon: Database, label: "Connected Accounts" },
+  const navItems: { tab: ActiveTab; icon: any; label: string }[] = [
+    { tab: "workflows", icon: Layers, label: "Workflows" },
+    { tab: "tasks", icon: ClipboardList, label: "Tasks Tracker" },
+    { tab: "artifacts", icon: FileText, label: "Documents Vault" },
+    { tab: "connected-accounts", icon: Database, label: "Connected Accounts" },
   ];
 
   if (hasRole(["AIPlatform.Admin", "AIPlatform.Developer"])) {
-    navItems.push({ tab: "admin" as const, icon: ShieldAlert, label: "Admin" });
+    navItems.push({ tab: "admin", icon: ShieldAlert, label: "Admin" });
   }
 
   if (isSidebarCollapsed) {

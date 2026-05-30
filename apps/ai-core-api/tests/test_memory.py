@@ -100,7 +100,8 @@ def client(mock_db):
 # ── MemoryCandidateService unit tests ──
 
 class TestMemoryCandidateService:
-    def test_explicit_remember_this(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_explicit_remember_this(self, mock_db):
         from app.services.memory import MemoryCandidateService
         from app.models.models import AIChatMessage
 
@@ -113,14 +114,15 @@ class TestMemoryCandidateService:
             created_at=datetime.utcnow(),
         )
         svc = MemoryCandidateService(mock_db)
-        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
         assert len(candidates) == 1
         c = candidates[0]
         assert c.type == "system_behavior"
         assert c.risk_level == "medium"
         assert c.save_mode == "confirm"
 
-    def test_correction_detected(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_correction_detected(self, mock_db):
         from app.services.memory import MemoryCandidateService
 
         msg = AIChatMessage(
@@ -132,13 +134,14 @@ class TestMemoryCandidateService:
             created_at=datetime.utcnow(),
         )
         svc = MemoryCandidateService(mock_db)
-        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
         assert len(candidates) == 1
         c = candidates[0]
         assert c.type == "correction"
         assert c.risk_level == "medium"
 
-    def test_resolved_case_detected(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_resolved_case_detected(self, mock_db):
         from app.services.memory import MemoryCandidateService
 
         msg = AIChatMessage(
@@ -150,14 +153,15 @@ class TestMemoryCandidateService:
             created_at=datetime.utcnow(),
         )
         svc = MemoryCandidateService(mock_db)
-        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
         assert len(candidates) >= 1
         c = candidates[0]
         assert c.type == "resolved_case"
         assert c.risk_level == "low"
         assert c.save_mode == "auto"
 
-    def test_no_candidate_for_normal_chat(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_no_candidate_for_normal_chat(self, mock_db):
         from app.services.memory import MemoryCandidateService
 
         msg = AIChatMessage(
@@ -169,14 +173,14 @@ class TestMemoryCandidateService:
             created_at=datetime.utcnow(),
         )
         svc = MemoryCandidateService(mock_db)
-        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
         assert len(candidates) == 0
 
-    def test_duplicate_check(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_duplicate_check(self, mock_db):
         from app.services.memory import MemoryCandidateService
         from app.schemas.schemas import MemoryCandidate
 
-        # Add an existing memory
         existing = AIMemory(
             id=uuid.uuid4(),
             type="system_behavior",
@@ -199,11 +203,11 @@ class TestMemoryCandidateService:
             save_mode="confirm",
         )
         svc = MemoryCandidateService(mock_db)
-        import asyncio
-        is_dup = asyncio.run(svc.check_duplicate(candidate))
+        is_dup = await svc.check_duplicate(candidate)
         assert is_dup is True
 
-    def test_save_candidate_auto_active(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_save_candidate_auto_active(self, mock_db):
         from app.services.memory import MemoryCandidateService
         from app.schemas.schemas import MemoryCandidate
 
@@ -216,12 +220,12 @@ class TestMemoryCandidateService:
             save_mode="auto",
         )
         svc = MemoryCandidateService(mock_db)
-        import asyncio
-        memory = asyncio.run(svc.save_candidate(candidate, user_id=uuid.uuid4()))
+        memory = await svc.save_candidate(candidate, user_id=uuid.uuid4())
         assert memory.status == "active"
         assert memory.type == "resolved_case"
 
-    def test_save_candidate_draft(self, mock_db):
+    @pytest.mark.asyncio
+    async def test_save_candidate_draft(self, mock_db):
         from app.services.memory import MemoryCandidateService
         from app.schemas.schemas import MemoryCandidate
 
@@ -234,8 +238,7 @@ class TestMemoryCandidateService:
             save_mode="confirm",
         )
         svc = MemoryCandidateService(mock_db)
-        import asyncio
-        memory = asyncio.run(svc.save_candidate(candidate, user_id=uuid.uuid4()))
+        memory = await svc.save_candidate(candidate, user_id=uuid.uuid4())
         assert memory.status == "draft"
         assert memory.type == "system_behavior"
 
@@ -243,56 +246,55 @@ class TestMemoryCandidateService:
 # ── ReviewerAgent unit tests ──
 
 class TestReviewerAgent:
-    def test_blank_response_rejected(self):
+    @pytest.mark.asyncio
+    async def test_blank_response_rejected(self):
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
 
         agent = ReviewerAgent()
-        import asyncio
-        result = asyncio.run(agent.review(ReviewRequest(
+        result = await agent.review(ReviewRequest(
             content="",
             user_question="What is revenue?",
-        )))
+        ))
         assert result.approved is False
         assert "blank" in " ".join(result.issues).lower()
 
-    def test_currency_check_passes(self):
+    @pytest.mark.asyncio
+    async def test_currency_check_passes(self):
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
 
         agent = ReviewerAgent()
-        import asyncio
-        result = asyncio.run(agent.review(ReviewRequest(
+        result = await agent.review(ReviewRequest(
             content="Revenue this month is R 50,000.00",
             user_question="What is revenue?",
-        )))
+        ))
         assert result.approved is True
         assert len(result.issues) == 0
 
-    def test_dollar_assumption_caught(self):
+    @pytest.mark.asyncio
+    async def test_dollar_assumption_caught(self):
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
 
         agent = ReviewerAgent()
-        import asyncio
-        result = asyncio.run(agent.review(ReviewRequest(
+        result = await agent.review(ReviewRequest(
             content="Revenue this month is $50,000.00",
             user_question="What is the revenue? I need it in ZAR.",
-        )))
-        # Finance question with $ should flag
+        ))
         assert result.approved is False
         assert len(result.issues) > 0
 
-    def test_non_finance_question_passes(self):
+    @pytest.mark.asyncio
+    async def test_non_finance_question_passes(self):
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
 
         agent = ReviewerAgent()
-        import asyncio
-        result = asyncio.run(agent.review(ReviewRequest(
+        result = await agent.review(ReviewRequest(
             content="The weather is sunny today.",
             user_question="What is the weather?",
-        )))
+        ))
         assert result.approved is True
 
 
