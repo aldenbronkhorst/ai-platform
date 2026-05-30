@@ -242,15 +242,21 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
         botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === newPendingId ? botMsg : m));
+        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
         fetchChatSessions();
+
+        // Non-blocking memory extraction
+        fetch(`${APIM_BASE_URL}/memories/extract?conversation_id=${currentSess.id}`, {
+          method: "POST",
+          headers: getHeaders(),
+        }).catch(() => {});
       } else {
         const body = await res.json().catch(() => null);
         const respRequestId = res.headers.get("X-Request-ID") || requestId;
         if (body && body.detail) {
           const d = body.detail;
           setChatMessages(prev => prev.map(m =>
-            m.id === newPendingId
+            m.id === pendingMsgId
               ? {
                   ...m,
                   status: "failed" as const,
@@ -266,7 +272,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           ));
         } else {
           setChatMessages(prev => prev.map(m =>
-            m.id === newPendingId
+            m.id === pendingMsgId
               ? {
                   ...m,
                   status: "failed" as const,
@@ -285,7 +291,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } catch (err: any) {
       const isTimeout = err?.name === "AbortError";
       setChatMessages(prev => prev.map(m =>
-        m.id === newPendingId
+        m.id === pendingMsgId
           ? {
               ...m,
               status: "failed" as const,
