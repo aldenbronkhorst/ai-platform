@@ -17,8 +17,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("ai_connected_accounts", sa.Column("odoo_url", sa.String(500), nullable=True))
-    op.add_column("ai_connected_accounts", sa.Column("odoo_db", sa.String(255), nullable=True))
+    from sqlalchemy import inspect
+    conn = op.get_bind()
+    inspector = inspect(conn)
+    cols = {c['name'] for c in inspector.get_columns('ai_connected_accounts')}
+    if 'odoo_url' not in cols:
+        op.add_column("ai_connected_accounts", sa.Column("odoo_url", sa.String(500), nullable=True))
+    if 'odoo_db' not in cols:
+        op.add_column("ai_connected_accounts", sa.Column("odoo_db", sa.String(255), nullable=True))
 
 
 def downgrade() -> None:
