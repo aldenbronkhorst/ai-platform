@@ -11,7 +11,7 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool
+from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory
 from app.services.model_router import (
     RouteNotFoundError,
     ROUTE_NOT_CONFIGURED_MESSAGE,
@@ -190,6 +190,152 @@ class TestConnectorContext:
         ):
             result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
             assert result["content"] == "Hello! I am the AI Platform."
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_injects_active_memories(self):
+        """Active AIMemory records for the user must appear in '## Learned from Past Interactions'."""
+        from app.services.model_router import execute_chat
+        from app.models.models import AIProvider, AIModel, AIRoute
+
+        test_user_id = uuid.uuid4()
+        db = MockSession(has_config=False)
+
+        # Real model objects for get_enabled_route
+        provider = AIProvider(
+            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
+            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            secret_reference="mock-key", enabled="true",
+        )
+        model = AIModel(
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
+            model_family="Kimi", model_version="2026-04-20",
+            supports_tools="true", supports_json_schema="false",
+            context_window=262144, enabled="true",
+        )
+        route = AIRoute(
+            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            temperature=0.3, max_tokens=2000, enabled="true",
+            system_prompt="You are the AI Platform.",
+        )
+
+        async def mock_get_enabled_route(*args, **kwargs):
+            return (route, model, provider)
+
+        class MemoryQueryResult:
+            @property
+            def scalars(self):
+                def all():
+                    return [
+                        AIMemory(
+                            id=uuid.uuid4(),
+                            type="preference",
+                            title="Prefers brief answers",
+                            summary="User prefers concise responses with bullet points",
+                            body="Always summarize the key points first, then expand if needed",
+                            status="active",
+                            created_by_user_id=test_user_id,
+                            priority=10,
+                        ),
+                        AIMemory(
+                            id=uuid.uuid4(),
+                            type="resolved_case",
+                            title="Invoice approval workflow",
+                            summary="Invoices under $1000 can be auto-approved",
+                            status="active",
+                            created_by_user_id=test_user_id,
+                            priority=50,
+                        ),
+                    ]
+                return all
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            stmt_str = str(stmt)
+            if "ai_memories" in stmt_str:
+                return MemoryQueryResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.get_enabled_route',
+            new=mock_get_enabled_route,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=AsyncMock(return_value={
+                    "content": "Here is your answer with memories considered.",
+                    "finish_reason": "stop",
+                    "prompt_tokens": 20,
+                    "completion_tokens": 10,
+                    "total_tokens": 30,
+                    "latency_ms": 150,
+                })
+            ))
+        ):
+            result = await execute_chat(
+                db, [{"role": "user", "content": "help me with invoices"}],
+                user_id=test_user_id,
+            )
+            assert result["content"] == "Here is your answer with memories considered."
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_no_memories_when_none_exist(self):
+        """When no active memories exist, no '## Learned from Past Interactions' section is added."""
+        from app.services.model_router import execute_chat
+        from app.models.models import AIProvider, AIModel, AIRoute
+
+        db = MockSession(has_config=False)
+
+        provider = AIProvider(
+            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
+            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            secret_reference="mock-key", enabled="true",
+        )
+        model = AIModel(
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
+            model_family="Kimi", model_version="2026-04-20",
+            supports_tools="true", supports_json_schema="false",
+            context_window=262144, enabled="true",
+        )
+        route = AIRoute(
+            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            temperature=0.3, max_tokens=2000, enabled="true",
+            system_prompt="You are the AI Platform.",
+        )
+
+        async def mock_get_enabled_route(*args, **kwargs):
+            return (route, model, provider)
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.get_enabled_route',
+            new=mock_get_enabled_route,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=AsyncMock(return_value={
+                    "content": "OK",
+                    "finish_reason": "stop",
+                    "prompt_tokens": 5,
+                    "completion_tokens": 2,
+                    "total_tokens": 7,
+                    "latency_ms": 50,
+                })
+            ))
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
+            assert result["content"] == "OK"
 
 
 # ── Seed Script Tests ──

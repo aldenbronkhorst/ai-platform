@@ -13,6 +13,7 @@ import httpx
 
 from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AICompanyFact,
+    AIMemory,
 )
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
@@ -410,9 +411,35 @@ async def execute_chat(
                 odoo_currency_str = f"{company} uses {code} ({symbol})"
                 system_prompt += f"\n\n## Connected Odoo Currency\n{odoo_currency_str}"
 
+        # Inject active memories (learned preferences, patterns, resolved cases)
+        injected_memories: list[Any] = []
+        try:
+            if user_id:
+                mem_result = await db.execute(
+                    select(AIMemory).where(
+                        AIMemory.created_by_user_id == user_id,
+                        AIMemory.status == "active",
+                    )
+                    .order_by(AIMemory.priority.asc(), AIMemory.last_used_at.desc().nullslast())
+                    .limit(30)
+                )
+                injected_memories = mem_result.scalars().all()
+                if injected_memories:
+                    mem_blocks: list[str] = []
+                    for m in injected_memories:
+                        formatted = f"- [{m.type}] {m.title}"
+                        if m.summary:
+                            formatted += f": {m.summary}"
+                        if m.body:
+                            formatted += f"\n  Detail: {m.body[:300]}"
+                        mem_blocks.append(formatted)
+                    system_prompt += "\n\n## Learned from Past Interactions\n" + "\n".join(mem_blocks)
+        except Exception as mem_exc:
+            logger.warning("Failed to inject memories: %s", mem_exc)
+
         logger.info(
-            "Context injected | rules=%d facts=%d user_id=%s currency=%s",
-            len(injected_rules), len(injected_facts), user_id, odoo_currency_str or "none",
+            "Context injected | rules=%d facts=%d memories=%d user_id=%s currency=%s",
+            len(injected_rules), len(injected_facts), len(injected_memories), user_id, odoo_currency_str or "none",
         )
     except Exception as exc:
         logger.warning("Failed to inject context: %s", exc)
