@@ -308,6 +308,71 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
+  const handleCopyMessage = (content: string) => {
+    navigator.clipboard.writeText(content).catch(() => {});
+  };
+
+  const handleEditResend = async (originalMessageId: string, newContent: string) => {
+    if (!activeSession || !newContent.trim()) return;
+
+    const currentSess = activeSession;
+
+    // Truncate all messages after the edited message
+    const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
+    if (editIndex === -1) return;
+
+    const beforeEdit = chatMessages.slice(0, editIndex);
+
+    // Update the edited user message and truncate
+    const updatedUserMsg: ChatMessage = {
+      ...chatMessages[editIndex],
+      content: newContent,
+    };
+
+    const pendingMsgId = Math.random().toString();
+    const pendingAssistantMsg: ChatMessage = {
+      id: pendingMsgId,
+      chat_session_id: currentSess.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+    };
+
+    setChatMessages([...beforeEdit, updatedUserMsg, pendingAssistantMsg]);
+
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({
+          content: newContent,
+          artifact_ids: [],
+          workflow_context: currentSess.workflow_context,
+        }),
+      });
+      if (res.ok) {
+        const botMsg: ChatMessage = await res.json();
+        botMsg.status = "completed";
+        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
+        fetchChatSessions();
+      } else {
+        const errorText = await res.text().catch(() => "");
+        setChatMessages(prev => prev.map(m =>
+          m.id === pendingMsgId
+            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
+            : m
+        ));
+      }
+    } catch (err) {
+      setChatMessages(prev => prev.map(m =>
+        m.id === pendingMsgId
+          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          : m
+      ));
+    }
+  };
+
   const handleSuggestionClick = (prompt: string) => {
     setChatInput(prompt);
     if (!activeSession) {
@@ -428,6 +493,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             onToggleVoice={handleToggleVoice}
             onRetryMessage={handleRetryMessage}
             onSuggestionClick={handleSuggestionClick}
+            onCopyMessage={handleCopyMessage}
+            onEditResend={handleEditResend}
           />
         );
       case "workflows":

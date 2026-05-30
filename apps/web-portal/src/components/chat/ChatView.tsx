@@ -22,6 +22,8 @@ interface ChatViewProps {
   onToggleVoice: () => void;
   onRetryMessage: (messageId: string) => void;
   onSuggestionClick: (prompt: string) => void;
+  onCopyMessage: (content: string) => void;
+  onEditResend: (originalMessageId: string, newContent: string) => void;
   placeholder?: string;
 }
 
@@ -42,11 +44,15 @@ export function ChatView({
   onToggleVoice,
   onRetryMessage,
   onSuggestionClick,
+  onCopyMessage,
+  onEditResend,
   placeholder,
 }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [isEditSaving, setIsEditSaving] = useState(false);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -65,6 +71,14 @@ export function ChatView({
       scrollToBottom();
     }
   }, [chatMessages, isUserScrolledUp, scrollToBottom]);
+
+  const handleEditSave = useCallback(async (newContent: string) => {
+    if (!editingMessageId || !newContent.trim()) return;
+    setIsEditSaving(true);
+    setEditingMessageId(null);
+    await onEditResend(editingMessageId, newContent);
+    setIsEditSaving(false);
+  }, [editingMessageId, onEditResend]);
 
   if (isMessagesLoading) {
     return (
@@ -117,6 +131,12 @@ export function ChatView({
             key={msg.id}
             message={msg}
             onRetry={() => onRetryMessage(msg.id)}
+            onCopy={onCopyMessage}
+            onEdit={setEditingMessageId}
+            isEditing={editingMessageId === msg.id}
+            onEditSave={handleEditSave}
+            onEditCancel={() => setEditingMessageId(null)}
+            isEditSaving={isEditSaving}
           />
         ))}
         <div ref={messagesEndRef} />

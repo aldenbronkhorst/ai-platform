@@ -3,18 +3,60 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 import { TechnicalDetails } from "./TechnicalDetails";
 import { PendingAssistant } from "./PendingAssistant";
 import { FailedMessage } from "./FailedMessage";
+import { MessageActions } from "./MessageActions";
+import { EditMessage } from "./EditMessage";
 
 interface MessageBubbleProps {
   message: ChatMessage;
   onRetry: () => void;
+  onCopy?: (content: string) => void;
+  onEdit?: (messageId: string) => void;
+  isEditing?: boolean;
+  editedContent?: string;
+  onEditedContentChange?: (content: string) => void;
+  onEditSave?: (newContent: string) => void;
+  onEditCancel?: () => void;
+  isEditSaving?: boolean;
 }
 
-export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  onRetry,
+  onCopy,
+  onEdit,
+  isEditing,
+  onEditSave,
+  onEditCancel,
+  isEditSaving,
+}: MessageBubbleProps) {
   if (message.role === "user") {
+    if (isEditing) {
+      return (
+        <div className="flex justify-end">
+          <EditMessage
+            initialContent={message.content}
+            onSave={(c) => onEditSave?.(c)}
+            onCancel={() => onEditCancel?.()}
+            isSaving={isEditSaving}
+          />
+        </div>
+      );
+    }
+
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[70%] p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap rounded-tr-none shadow-sm">
-          {message.content}
+      <div className="group flex justify-end">
+        <div className="relative">
+          <div className="max-w-[70%] p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap rounded-tr-none shadow-sm">
+            {message.content}
+          </div>
+          <div className="flex justify-end mt-1 mr-1">
+            <MessageActions
+              role="user"
+              content={message.content}
+              onCopy={() => onCopy?.(message.content)}
+              onEdit={() => onEdit?.(message.id)}
+            />
+          </div>
         </div>
       </div>
     );
@@ -32,9 +74,17 @@ export function MessageBubble({ message, onRetry }: MessageBubbleProps) {
   const technicalDetails = metadata?.technical_details;
 
   return (
-    <div className="max-w-[80%]">
+    <div className="group max-w-[80%]">
       <div className="text-sm leading-relaxed">
         <MarkdownRenderer content={message.content} />
+      </div>
+
+      <div className="mt-1">
+        <MessageActions
+          role="assistant"
+          content={message.content}
+          onCopy={() => onCopy?.(message.content)}
+        />
       </div>
 
       {technicalDetails && (
