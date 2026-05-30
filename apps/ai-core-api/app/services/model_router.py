@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 from uuid import UUID
@@ -152,17 +153,32 @@ async def _get_available_tools(db: AsyncSession, user_id: Optional[UUID]) -> lis
     return result.scalars().all()
 
 
+def _normalize_tool_name(name: str) -> str:
+    """Replace invalid chars with underscores, cap at 64 chars."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:64]
+
+
+TOOL_NAME_MAP: dict[str, str] = {}
+
+
 def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
-    """Convert AITool records to OpenAI-compatible tool definitions."""
+    """Convert AITool records to OpenAI-compatible tool definitions.
+    Normalizes names to comply with the API's allowed character set.
+    """
+    global TOOL_NAME_MAP
     definitions = []
     for tool in tools:
         schema = tool.input_schema
         if not schema:
             continue
+        normalized = _normalize_tool_name(tool.name)
+        TOOL_NAME_MAP[normalized] = tool.name
+        if normalized != tool.name:
+            logger.info("Normalized tool name '%s' to '%s'", tool.name, normalized)
         definitions.append({
             "type": "function",
             "function": {
-                "name": tool.name,
+                "name": normalized,
                 "description": tool.description or "",
                 "parameters": schema,
             },

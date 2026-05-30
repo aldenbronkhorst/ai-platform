@@ -395,17 +395,20 @@ class TestGreetingIdentity:
 
 class TestToolDefinitions:
     def test_build_tool_definitions_empty(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
         assert _build_tool_definitions([]) == []
 
     def test_build_tool_definitions_skips_missing_schema(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
         tool = AITool(name="odoo_search_read", display_name="Odoo Search Read",
                        description="Search Odoo", target_system="odoo", input_schema=None)
         assert _build_tool_definitions([tool]) == []
 
     def test_build_tool_definitions_valid(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
         tool = AITool(
             name="odoo_search_read", display_name="Odoo Search Read",
             description="Search and read Odoo records",
@@ -417,6 +420,43 @@ class TestToolDefinitions:
         assert defs[0]["type"] == "function"
         assert defs[0]["function"]["name"] == "odoo_search_read"
         assert "parameters" in defs[0]["function"]
+
+    def test_build_tool_definitions_normalizes_dotted_names(self):
+        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
+        tool = AITool(
+            name="odoo.search_read", display_name="Odoo Search Read",
+            description="Search and read Odoo records",
+            target_system="odoo",
+            input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
+        )
+        defs = _build_tool_definitions([tool])
+        assert len(defs) == 1
+        assert defs[0]["function"]["name"] == "odoo_search_read"
+        assert "." not in defs[0]["function"]["name"]
+        assert TOOL_NAME_MAP.get("odoo_search_read") == "odoo.search_read"
+
+    def test_normalize_tool_name(self):
+        from app.services.model_router import _normalize_tool_name
+        assert _normalize_tool_name("odoo.search_read") == "odoo_search_read"
+        assert _normalize_tool_name("odoo.attach_artifact") == "odoo_attach_artifact"
+        assert _normalize_tool_name("already_normal") == "already_normal"
+        assert _normalize_tool_name("no-changes_needed") == "no-changes_needed"
+        assert len(_normalize_tool_name("a" * 100)) == 64
+
+    def test_build_tool_definitions_strips_invalid_chars(self):
+        from app.services.model_router import _build_tool_definitions
+        from app.services.model_router import TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
+        tool = AITool(
+            name="odoo#attach@artifact!", display_name="Odoo Attach",
+            description="Attach artifact",
+            target_system="odoo",
+            input_schema={"type": "object", "properties": {"file": {"type": "string"}}, "required": ["file"]},
+        )
+        defs = _build_tool_definitions([tool])
+        assert len(defs) == 1
+        assert defs[0]["function"]["name"] == "odoo_attach_artifact_"
 
 
 class TestToolExecution:

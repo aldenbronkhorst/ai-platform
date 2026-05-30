@@ -27,15 +27,15 @@ export function MainHeader({
     : undefined;
 
   return (
-    <div className={`pt-5 pb-3 px-6 ${isSidebarCollapsed ? "pl-16" : ""}`}>
-      <div className="h-9 inline-flex items-center gap-2 px-4 rounded-xl bg-sidebar border border-default select-none shadow-sm">
-        <span className="text-xs font-extrabold text-default tracking-wide">
+    <div className={`${isSidebarCollapsed ? "pt-0" : "pt-4"} px-6 ${isSidebarCollapsed ? "pl-16" : ""}`}>
+      <div className="h-11 inline-flex items-center gap-2 px-5 rounded-2xl bg-sidebar border border-default select-none shadow-sm">
+        <span className="text-sm font-extrabold text-default tracking-wide">
           {label}
         </span>
         {subtitle && (
           <>
             <span className="w-1 h-1 rounded-full bg-border-subtle" />
-            <span className="text-[11px] text-muted font-medium truncate max-w-[180px]">
+            <span className="text-xs text-muted font-medium truncate max-w-[200px]">
               {subtitle}
             </span>
           </>
