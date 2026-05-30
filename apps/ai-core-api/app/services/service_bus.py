@@ -112,10 +112,11 @@ async def receive_messages_async(
     receiver: Optional[AsyncServiceBusReceiver] = None
     try:
         receiver = client.get_queue_receiver(queue_name)
-        async for msg in receiver.receive_messages(
+        messages = await receiver.receive_messages(
             max_message_count=max_messages,
             max_wait_time=max_wait_time,
-        ):
+        )
+        async for msg in messages:
             try:
                 body = json.loads(str(msg))
             except (json.JSONDecodeError, TypeError):
