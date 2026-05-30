@@ -108,18 +108,14 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
                 "api_key": api_key,
                 "transport": "auto",
             },
-            "identity_mode": "user-delegated",
             "model": "res.company",
-            "method": "search_read",
-            "args": [[]],
-            "kwargs": {
-                "fields": ["id", "name", "currency_id"],
-                "limit": 1,
-            },
+            "domain": [],
+            "fields": ["id", "name", "currency_id"],
+            "limit": 1,
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{ODOO_CONNECTOR_URL.rstrip('/')}/execute-kw/",
+                f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
                 json=payload,
                 headers=headers,
             )
@@ -128,7 +124,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             return {}
 
         data = response.json()
-        records = data.get("result") if isinstance(data, dict) else data
+        records = data.get("records") if isinstance(data, dict) else data
         if isinstance(records, list) and len(records) > 0:
             company = records[0]
             company_id = company.get("id")
