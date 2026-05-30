@@ -7,9 +7,7 @@ interface TechnicalDetailsProps {
 
 export function TechnicalDetails({ data }: TechnicalDetailsProps) {
   const [isOpen, setIsOpen] = useState(false);
-  if (!data) return null;
-
-  const sections = buildSections(data);
+  if (!hasMeaningfulContent(data)) return null;
 
   return (
     <div className="mt-3 pt-3 border-t border-default">
@@ -23,47 +21,46 @@ export function TechnicalDetails({ data }: TechnicalDetailsProps) {
 
       {isOpen && (
         <div className="mt-2 space-y-3">
-          {sections.map((section, i) => (
-            <div key={i} className="p-3 rounded-xl bg-canvas border border-subtle">
-              <p className="text-[10px] font-bold text-muted uppercase tracking-wider mb-2">
-                {section.label}
-              </p>
-              <pre className="text-[11px] font-mono text-muted whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">
-                {section.content}
-              </pre>
-            </div>
-          ))}
+          {data.tools_used && (
+            <Section label="Tools used" content={data.tools_used} />
+          )}
+          {data.actions_taken && (
+            <Section label="Actions taken" content={data.actions_taken} />
+          )}
+          {data.documents_created && (
+            <Section label="Documents created" content={data.documents_created} />
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function buildSections(data: any): { label: string; content: string }[] {
-  const sections: { label: string; content: string }[] = [];
-  if (!data) return sections;
+function Section({ label, content }: { label: string; content: unknown }) {
+  const text = Array.isArray(content) ? content.join(", ") : String(content);
+  return (
+    <div className="p-3 rounded-xl bg-canvas border border-subtle">
+      <p className="text-[10px] font-bold text-muted uppercase tracking-wider mb-2">
+        {label}
+      </p>
+      <pre className="text-[11px] font-mono text-muted whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">
+        {text}
+      </pre>
+    </div>
+  );
+}
 
-  if (data.actions_taken) {
-    sections.push({ label: "Actions taken", content: data.actions_taken });
-  }
-  if (data.tools_used) {
-    const tools = Array.isArray(data.tools_used) ? data.tools_used.join(", ") : String(data.tools_used);
-    sections.push({ label: "Tools used", content: tools });
-  }
-  if (data.documents_created) {
-    const docs = Array.isArray(data.documents_created) ? data.documents_created.join(", ") : String(data.documents_created);
-    sections.push({ label: "Documents created", content: docs });
-  }
-
-  const rest: Record<string, any> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (!["actions_taken", "tools_used", "documents_created"].includes(k)) {
-      rest[k] = v;
-    }
-  }
-  if (Object.keys(rest).length > 0) {
-    sections.push({ label: "Technical log", content: JSON.stringify(rest, null, 2) });
-  }
-
-  return sections;
+function hasMeaningfulContent(data: any): boolean {
+  if (!data || typeof data !== "object") return false;
+  if (Object.keys(data).length === 0) return false;
+  const toolCall = data.tools_used && (
+    (Array.isArray(data.tools_used) && data.tools_used.length > 0) ||
+    (typeof data.tools_used === "string" && data.tools_used.trim())
+  );
+  const action = data.actions_taken && typeof data.actions_taken === "string" && data.actions_taken.trim().length > 0;
+  const doc = data.documents_created && (
+    (Array.isArray(data.documents_created) && data.documents_created.length > 0) ||
+    (typeof data.documents_created === "string" && data.documents_created.trim())
+  );
+  return !!(toolCall || action || doc);
 }

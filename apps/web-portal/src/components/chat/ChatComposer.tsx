@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useCallback, useEffect } from "react";
 import { Plus, Mic, MicOff, CornerDownLeft, FileText, RefreshCw } from "lucide-react";
 import type { AttachedFile, VoiceState } from "../../types";
 
@@ -30,11 +30,31 @@ export function ChatComposer({
   onToggleVoice,
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleTriggerUpload = () => {
     fileInputRef.current?.click();
     onTriggerUpload();
   };
+
+  const formRef = useRef<HTMLFormElement>(null);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      if (!isChatSending && (chatInput.trim() || attachedFiles.length > 0)) {
+        formRef.current?.requestSubmit();
+      }
+    }
+  }, [isChatSending, chatInput, attachedFiles]);
+
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const newHeight = Math.min(ta.scrollHeight, 160);
+    ta.style.height = `${newHeight}px`;
+  }, [chatInput]);
 
   return (
     <div className="px-4 pb-4 select-none">
@@ -64,7 +84,7 @@ export function ChatComposer({
           </div>
         )}
 
-        <form onSubmit={onSend} className="flex items-center gap-1 p-1.5">
+        <form ref={formRef} onSubmit={onSend} className="flex items-end gap-1 p-1.5">
           <input
             type="file"
             ref={fileInputRef}
@@ -76,25 +96,27 @@ export function ChatComposer({
           <button
             type="button"
             onClick={handleTriggerUpload}
-            className="p-2 rounded-lg text-muted hover-text-default hover-bg-surface transition-all shrink-0"
+            className="p-2 rounded-lg text-muted hover-text-default hover-bg-surface transition-all shrink-0 self-end"
             title="Attach files"
           >
             <Plus className="w-5 h-5" />
           </button>
 
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
             value={chatInput}
             onChange={(e) => onInputChange(e.target.value)}
+            onKeyDown={handleKeyDown}
             placeholder={placeholder}
             disabled={isChatSending}
-            className="flex-1 bg-transparent border-0 focus:outline-none focus:ring-0 text-sm text-default placeholder-soft px-1 py-2"
+            rows={1}
+            className="flex-1 bg-transparent border-0 focus:outline-none focus:ring-0 text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-[160px] leading-relaxed"
           />
 
           <button
             type="button"
             onClick={onToggleVoice}
-            className={`p-2 rounded-lg transition-all shrink-0 ${
+            className={`p-2 rounded-lg transition-all shrink-0 self-end ${
               voiceState === "listening"
                 ? "bg-[var(--color-danger)]/15 text-[var(--color-danger)] animate-pulse"
                 : "text-muted hover-text-default hover-bg-surface"
@@ -111,7 +133,7 @@ export function ChatComposer({
           <button
             type="submit"
             disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
-            className="p-2 rounded-lg bg-raised hover-bg-surface text-default transition-all shrink-0 border border-default"
+            className="p-2 rounded-lg bg-raised hover-bg-surface text-default transition-all shrink-0 self-end border border-default"
           >
             <CornerDownLeft className="w-4 h-4" />
           </button>
