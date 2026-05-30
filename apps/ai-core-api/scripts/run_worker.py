@@ -93,6 +93,7 @@ async def _run_worker_loop():
 
     while not _shutdown_requested:
         try:
+            msg_count = 0
             async for body, raw_msg in receive_messages_async(
                 queue_name=QUEUE_MEMORY_EXTRACTION,
                 max_messages=5,
@@ -100,14 +101,20 @@ async def _run_worker_loop():
             ):
                 if _shutdown_requested:
                     break
+                msg_count += 1
+                logger.info("Received message %d from queue", msg_count)
 
                 success = await _process_single_message(body, raw_msg)
 
                 if success:
                     await raw_msg.complete()
+                    logger.info("Message completed")
                 else:
-                    # Let Service Bus retry (abandon increments delivery count)
                     await raw_msg.abandon()
+                    logger.info("Message abandoned")
+
+            if msg_count == 0:
+                logger.debug("No messages received in this cycle")
 
         except Exception:
             logger.exception("Worker loop error, restarting in 5s...")
