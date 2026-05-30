@@ -105,45 +105,34 @@ async def receive_messages_async(
     Yields (parsed_body, raw_message) tuples. Caller must call
     `raw_message.complete()` after processing.
     """
-    # Use sync client in executor for stability
-    import concurrent.futures
-    loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor() as pool:
-        def _receive():
-            client = _build_client(async_mode=False)
-            if not client:
-                logger.warning("Service Bus not configured, cannot receive from %s", queue_name)
-                return []
-            receiver = None
-            try:
-                receiver = client.get_queue_receiver(queue_name)
-                logger.info("Receiving messages from %s | max=%d wait=%.1fs", queue_name, max_messages, max_wait_time)
-                messages = receiver.receive_messages(
-                    max_message_count=max_messages,
-                    max_wait_time=max_wait_time,
-                )
-                logger.info("Received %d messages from %s", len(messages), queue_name)
-                result = []
-                for msg in messages:
-                    try:
-                        body = json.loads(str(msg))
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Invalid message body: %s", msg)
-                        receiver.dead_letter(msg)
-                        continue
-                    result.append((body, msg))
-                return result
-            except Exception:
-                logger.exception("Error receiving messages from %s", queue_name)
-                return []
-            finally:
-                if receiver:
-                    receiver.close()
-                client.close()
+    client = _build_client(async_mode=True)
+    if not client:
+        logger.warning("Service Bus not configured, cannot receive from %s", queue_name)
+        return
 
-        items = await loop.run_in_executor(pool, _receive)
-        for body, msg in items:
+    receiver: Optional[AsyncServiceBusReceiver] = None
+    try:
+        receiver = client.get_queue_receiver(queue_name)
+        logger.info("Receiving messages from %s | max=%d wait=%.1fs", queue_name, max_messages, max_wait_time)
+        messages = await receiver.receive_messages(
+            max_message_count=max_messages,
+            max_wait_time=max_wait_time,
+        )
+        logger.info("Received %d messages from %s", len(messages), queue_name)
+        for msg in messages:
+            try:
+                body = json.loads(str(msg))
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Invalid message body: %s", msg)
+                await receiver.dead_letter(msg)
+                continue
             yield body, msg
+    except Exception:
+        logger.exception("Error receiving messages from %s", queue_name)
+    finally:
+        if receiver:
+            await receiver.close()
+        await client.close()
 
 
 # ── Message Schemas ──
