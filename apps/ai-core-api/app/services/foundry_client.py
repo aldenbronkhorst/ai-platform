@@ -1,11 +1,45 @@
 import os
 import time
+import re
 import httpx
 from typing import Optional, Any
 from azure.identity import DefaultAzureCredential
 
 AZURE_AI_INFERENCE_API_VERSION = "2024-05-01-preview"
 COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default"
+
+
+QUOTA_RATE_LIMIT_PATTERNS = [
+    re.compile(r"rate\s*limit", re.IGNORECASE),
+    re.compile(r"quota", re.IGNORECASE),
+    re.compile(r"requests?\s*limit", re.IGNORECASE),
+    re.compile(r"too\s*many\s*requests", re.IGNORECASE),
+    re.compile(r"capacity", re.IGNORECASE),
+    re.compile(r"throttl", re.IGNORECASE),
+    re.compile(r"429", re.IGNORECASE),
+]
+
+
+def _classify_error(status_code: int, message: str) -> str:
+    if status_code == 429:
+        return "rate_limit_exceeded"
+    if status_code == 401:
+        return "authentication_error"
+    if status_code == 404:
+        return "model_not_found"
+    if status_code == 403:
+        for pat in QUOTA_RATE_LIMIT_PATTERNS:
+            if pat.search(message):
+                return "quota_exceeded"
+        return "authorization_error"
+    if status_code >= 500:
+        return "server_error"
+    for pat in QUOTA_RATE_LIMIT_PATTERNS:
+        if pat.search(message):
+            return "rate_limit_exceeded"
+    if status_code == 400:
+        return "bad_request"
+    return "unknown"
 
 
 class FoundryClient:
@@ -63,15 +97,20 @@ class FoundryClient:
         elapsed = int((time.monotonic() - start) * 1000)
 
         if response.status_code != 200:
-            detail = response.text
+            raw_text = response.text
             try:
-                detail = response.json().get("error", {}).get("message", response.text)
+                body = response.json()
+                detail = body.get("error", {}).get("message", raw_text)
             except Exception:
-                pass
+                body = {}
+                detail = raw_text
+            error_type = _classify_error(response.status_code, detail)
             return {
                 "error": True,
+                "error_type": error_type,
                 "status_code": response.status_code,
                 "message": detail,
+                "raw_response": raw_text,
                 "latency_ms": elapsed,
             }
 

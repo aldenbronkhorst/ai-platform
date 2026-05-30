@@ -449,8 +449,64 @@ async def execute_chat(
     await db.flush()
 
     if result.get("error"):
+        error_type = result.get("error_type", "unknown")
+        raw_message = result.get("message", "Provider returned an error")
+        status_code = result.get("status_code", 0)
+
+        # Structured logging for developer debugging
+        logger.error(
+            "Provider call failed | provider=%s model=%s deployment=%s "
+            "error_type=%s status_code=%s raw_message=%s "
+            "user_id=%s chat_session_id=%s tools_enabled=%s",
+            provider.name,
+            model_obj.display_name,
+            model_obj.deployment_name,
+            error_type,
+            status_code,
+            raw_message,
+            user_id,
+            chat_session_id,
+            bool(tool_definitions),
+        )
+
+        user_facing = {
+            "rate_limit_exceeded": (
+                "The AI service is temporarily unavailable because the model "
+                "quota or rate limit has been reached. "
+                "Please try again shortly, or contact support if this continues."
+            ),
+            "quota_exceeded": (
+                "The AI service is temporarily unavailable because the model "
+                "quota or rate limit has been reached. "
+                "Please try again shortly, or contact support if this continues."
+            ),
+            "authentication_error": (
+                "The AI service is unavailable due to an authentication issue. "
+                "Please contact support."
+            ),
+            "authorization_error": (
+                "The AI service is unavailable due to an authorization issue. "
+                "Please contact support."
+            ),
+            "model_not_found": (
+                "The configured AI model could not be found. "
+                "Please contact support."
+            ),
+            "server_error": (
+                "The AI service is temporarily unavailable. "
+                "Please try again shortly, or contact support if this continues."
+            ),
+            "bad_request": (
+                "The AI service received an invalid request. "
+                "Please try again, or contact support if this continues."
+            ),
+        }.get(error_type, (
+            "The AI service is temporarily unavailable. "
+            "Please try again shortly, or contact support if this continues."
+        ))
+
         raise ProviderCallError(
-            result.get("message", "Provider returned an error"),
+            user_facing,
             provider.name,
             model_obj.display_name,
         )

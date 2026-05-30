@@ -459,6 +459,209 @@ class TestToolDefinitions:
         assert defs[0]["function"]["name"] == "odoo_attach_artifact_"
 
 
+# ── Rate-Limit / Quota Error Handling Tests ──
+
+class TestProviderErrorHandling:
+    """Provider errors must produce user-friendly messages, not raw provider text."""
+
+    _mock_route = None
+    _mock_model = None
+    _mock_provider = None
+
+    @pytest.fixture(autouse=True)
+    def _setup_mocks(self):
+        """Set up mock route/model/provider to avoid relying on MockSession's
+        broken multi-query support."""
+        from app.models.models import AIProvider, AIModel, AIRoute
+        provider = AIProvider(
+            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
+            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            secret_reference="mock-key", enabled="true",
+        )
+        model = AIModel(
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
+            model_family="Kimi", model_version="2026-04-20",
+            supports_tools="true", supports_json_schema="false",
+            context_window=262144, enabled="true",
+        )
+        route = AIRoute(
+            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            temperature=0.3, max_tokens=2000, enabled="true",
+            system_prompt="You are the AI Platform.",
+        )
+        type(self)._mock_provider = provider
+        type(self)._mock_model = model
+        type(self)._mock_route = route
+
+    async def _run_execute_chat(self, chat_completion_return: dict):
+        from app.services.model_router import execute_chat, get_enabled_route
+        db = MockSession(has_config=True)
+
+        # Mock get_enabled_route to return our properly constructed objects
+        async def mock_get_enabled_route(*args, **kwargs):
+            return (self._mock_route, self._mock_model, self._mock_provider)
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.get_enabled_route',
+            new=mock_get_enabled_route,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=AsyncMock(return_value=chat_completion_return)
+            ))
+        ):
+            return await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_rate_limit_error(self):
+        """A rate-limit error from the provider must raise ProviderCallError
+        with a user-friendly message and NOT expose the raw error."""
+        from app.services.model_router import ProviderCallError
+
+        with pytest.raises(ProviderCallError) as exc_info:
+            await self._run_execute_chat({
+                "error": True,
+                "error_type": "rate_limit_exceeded",
+                "status_code": 429,
+                "message": "Rate limit exceeded. Quota request exceeds the requests limit. Requested requests: 0.",
+                "raw_response": '{"error": {"message": "Rate limit exceeded..."}}',
+                "latency_ms": 50,
+            })
+
+        # The user-facing message must NOT contain the raw provider error text
+        assert "Rate limit" not in str(exc_info.value)
+        assert "quota or rate limit" in str(exc_info.value)
+        assert "model" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_quota_error_via_403(self):
+        """A quota error with 403 status must still produce a user-friendly message."""
+        from app.services.model_router import ProviderCallError
+
+        with pytest.raises(ProviderCallError) as exc_info:
+            await self._run_execute_chat({
+                "error": True,
+                "error_type": "quota_exceeded",
+                "status_code": 403,
+                "message": "Quota exceeded for this deployment.",
+                "raw_response": '{"error": {"message": "Quota exceeded..."}}',
+                "latency_ms": 50,
+            })
+
+        assert "quota or rate limit" in str(exc_info.value)
+        assert "Quota exceeded" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_server_error(self):
+        """A 5xx error must produce a generic user-friendly message."""
+        from app.services.model_router import ProviderCallError
+
+        with pytest.raises(ProviderCallError) as exc_info:
+            await self._run_execute_chat({
+                "error": True,
+                "error_type": "server_error",
+                "status_code": 502,
+                "message": "Bad gateway from upstream",
+                "raw_response": '{"error": {"message": "Bad gateway"}}',
+                "latency_ms": 50,
+            })
+
+        assert "temporarily unavailable" in str(exc_info.value)
+        assert "Bad gateway" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_auth_error(self):
+        from app.services.model_router import ProviderCallError
+
+        with pytest.raises(ProviderCallError) as exc_info:
+            await self._run_execute_chat({
+                "error": True,
+                "error_type": "authentication_error",
+                "status_code": 401,
+                "message": "Unauthorized. Check your API key.",
+                "raw_response": '{"error": {"message": "Unauthorized"}}',
+                "latency_ms": 50,
+            })
+
+        assert "authentication" in str(exc_info.value)
+        assert "Unauthorized" not in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_chat_endpoint_returns_friendly_quota_error(self):
+        """The post_chat_message endpoint must return a user-friendly message
+        when the provider returns a quota error — NOT the raw provider text."""
+        import app.services.model_router as mr_module
+        from app.models.models import AIChatSession
+
+        async def mock_get_db_with_session():
+            """Yield a MockSession whose first execute call returns a real
+            AIChatSession (instead of an AIRoute) so chat.py's session check
+            and .title access work correctly."""
+            session = AIChatSession(
+                id=uuid.uuid4(),
+                user_id="e4807f22-97c8-4778-87a2-160f56d25247",
+                title="New Chat",
+                status="active",
+                last_message_at=datetime.utcnow(),
+            )
+            # Wrap the MockSession to return a real AIChatSession for the
+            # initial session-lookup query, and fall back to the configured
+            # mock behavior for everything else.
+            class ChatSessionAwareMock:
+                def __init__(self):
+                    self.added = []
+
+                async def execute(self, stmt, *args, **kwargs):
+                    stmt_str = str(stmt)
+                    result = AsyncMock()
+                    if "ai_chat_sessions" in stmt_str:
+                        result.scalar_one_or_none = lambda: session
+                    else:
+                        result.scalar_one_or_none = lambda: None
+                        result.scalars = lambda: AsyncMock(all=lambda: [])
+                    return result
+
+                async def flush(self): pass
+                async def commit(self): pass
+                async def close(self): pass
+                async def refresh(self, obj): pass
+                def add(self, obj): self.added.append(obj)
+
+            yield ChatSessionAwareMock()
+
+        async def mock_execute_quota_error(*args, **kwargs):
+            raise mr_module.ProviderCallError(
+                "The AI service is temporarily unavailable because the model "
+                "quota or rate limit has been reached. "
+                "Please try again shortly, or contact support if this continues.",
+                "Microsoft Foundry",
+                "Kimi K2.6",
+            )
+
+        with patch.object(mr_module, 'execute_chat', mock_execute_quota_error):
+            app.dependency_overrides[get_db] = mock_get_db_with_session
+            client = TestClient(app)
+            response = client.post(
+                "/chat/sessions/00000000-0000-0000-0000-000000000001/messages",
+                json={"content": "what's the latest bill?"},
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            # The assistant content must be the friendly message, not the raw error
+            assert "quota or rate limit" in data.get("content", "")
+            assert "Rate limit exceeded" not in data.get("content", "")
+            # The error should be tracked in metadata
+            meta = data.get("metadata_json") or {}
+            tech = meta.get("technical_details") or {}
+            assert "error" in tech
+
+
 class TestToolExecution:
     @pytest.mark.asyncio
     async def test_get_available_tools_no_user(self):
