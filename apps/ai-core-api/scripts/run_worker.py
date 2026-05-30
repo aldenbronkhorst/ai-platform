@@ -107,10 +107,16 @@ async def _run_worker_loop():
                 success = await _process_single_message(body, raw_msg)
 
                 if success:
-                    await raw_msg.complete()
+                    if asyncio.iscoroutinefunction(raw_msg.complete):
+                        await raw_msg.complete()
+                    else:
+                        raw_msg.complete()
                     logger.info("Message completed")
                 else:
-                    await raw_msg.abandon()
+                    if asyncio.iscoroutinefunction(raw_msg.abandon):
+                        await raw_msg.abandon()
+                    else:
+                        raw_msg.abandon()
                     logger.info("Message abandoned")
 
             if msg_count == 0:
