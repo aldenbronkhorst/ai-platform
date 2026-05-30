@@ -38,7 +38,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ env.API_PATH }}
-          pytest tests/test_odoo.py tests/test_connected_accounts.py tests/test_chat_v2.py -v
+          pytest tests/test_odoo.py tests/test_connected_accounts.py tests/test_chat_v2.py tests/test_memory.py tests/test_model_router.py -v
 
   test-connector:
     runs-on: ubuntu-latest
@@ -59,7 +59,7 @@ jobs:
       - name: Run tests
         run: |
           cd ${{ env.CONNECTOR_PATH }}
-          PYTHONPATH=. pytest tests/test_integration.py -v
+          PYTHONPATH=. pytest tests/ -v
 
   test-portal:
     runs-on: ubuntu-latest
