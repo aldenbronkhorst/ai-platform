@@ -153,7 +153,7 @@ export function ChatView({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto space-y-4 px-2 py-4 scroll-smooth"
+        className="flex-1 overflow-y-auto space-y-4 px-2 py-4"
       >
         {chatMessages.map((msg) => (
           <MessageBubble
