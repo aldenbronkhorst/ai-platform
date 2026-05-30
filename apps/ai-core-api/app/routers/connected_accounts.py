@@ -112,6 +112,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             "domain": [],
             "fields": ["id", "name", "currency_id"],
             "limit": 1,
+            "include_ids": True,
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
