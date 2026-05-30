@@ -64,6 +64,7 @@ export function AppShell({
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           <MainHeader
             activeTab={activeTab}
+            activeSession={activeSession}
             isSidebarCollapsed={isSidebarCollapsed}
           />
           <section className="flex-1 overflow-y-auto">
