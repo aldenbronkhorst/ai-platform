@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
+import { useRef, useState, useCallback, useLayoutEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import type { ChatMessage, ChatSession, AttachedFile, VoiceState } from "../../types";
 import { ChatComposer } from "./ChatComposer";
@@ -62,6 +62,11 @@ export function ChatView({
     if (!el) return;
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     setIsUserScrolledUp(!isNearBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    setIsUserScrolledUp(false);
   }, []);
 
   // useLayoutEffect fires synchronously before paint — no visible jump
