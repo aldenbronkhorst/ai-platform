@@ -40,7 +40,7 @@ ODOO_CENTRIC_PHRASES = [
 def _contains_odoo_centric_wording(text: str) -> bool:
     lower = text.lower()
     for phrase in ODOO_CENTRIC_PHRASES:
-        if phrase in lower:
+        if phrase.lower() in lower:
             return True
     return False
 

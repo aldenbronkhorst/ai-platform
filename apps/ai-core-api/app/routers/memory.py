@@ -90,6 +90,9 @@ async def create_memory(
         risk_level=req.risk_level,
         status=req.status,
         priority=req.priority,
+        success_count=0,
+        failure_count=0,
+        version=1,
         created_by_user_id=user_id,
         metadata_json=req.metadata_json,
     )

@@ -11,16 +11,25 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 from app.main import app
 from app.core.database import get_db
 
-async def mock_get_db():
-    session = AsyncMock()
-    result_mock = AsyncMock()
-    result_mock.scalar_one_or_none = lambda self=None: None
-    result_mock.scalars = lambda self=None: result_mock
-    result_mock.all = lambda self=None: []
-    session.execute = AsyncMock(return_value=result_mock)
-    yield session
 
-app.dependency_overrides[get_db] = mock_get_db
+@pytest.fixture(autouse=True)
+def _mock_db():
+    """Ensure clean dependency override before each test."""
+    app.dependency_overrides.clear()
+    async def mock_get_db():
+        session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = lambda self=None: None
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        session.execute = AsyncMock(return_value=result_mock)
+        session.refresh = AsyncMock()
+        yield session
+
+    app.dependency_overrides[get_db] = mock_get_db
+    yield
+    app.dependency_overrides.clear()
+
 
 client = TestClient(app)
 

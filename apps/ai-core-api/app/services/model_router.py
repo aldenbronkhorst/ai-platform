@@ -122,6 +122,16 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
 
 KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure", "microsoft_365", "azure_devops"]
 
+CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
+    "odoo": "Odoo",
+    "github": "GitHub",
+    "azure": "Azure",
+    "microsoft_365": "Microsoft 365",
+    "azure_devops": "Azure DevOps",
+    "slack": "Slack",
+    "teams": "Microsoft Teams",
+}
+
 TOOL_CONNECTOR_MAP = {
     "odoo": {
         "connector_url_env": "ODOO_CONNECTOR_URL",
@@ -316,7 +326,7 @@ async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> s
             conn_map[acct.provider] = status
 
     for conn_type in KNOWN_CONNECTOR_TYPES:
-        display_name = conn_type.replace("_", " ").title()
+        display_name = CONNECTOR_DISPLAY_NAMES.get(conn_type, conn_type.replace("_", " ").title())
         if conn_type in conn_map:
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"

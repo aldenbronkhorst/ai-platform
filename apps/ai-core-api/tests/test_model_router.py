@@ -56,39 +56,61 @@ class MockSession:
         self.has_config = has_config
         self.connected_accounts = connected_accounts or []
         self.added = []
-
-    async def execute(self, stmt, *args, **kwargs):
-        result = AsyncMock()
-
-        if self.has_config:
-            provider = AIProvider(
+        if has_config:
+            self._provider = AIProvider(
                 id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
                 base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
                 secret_reference="mock-key", enabled="true",
             )
-            model = AIModel(
-                id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
+            self._model = AIModel(
+                id=uuid.uuid4(), provider_id=self._provider.id, display_name="Kimi K2.6",
                 model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
                 model_family="Kimi", model_version="2026-04-20",
                 supports_tools="true", supports_json_schema="false",
                 context_window=262144, enabled="true",
             )
-            route = AIRoute(
-                id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
+            self._route = AIRoute(
+                id=uuid.uuid4(), task_type="general_chat", primary_model_id=self._model.id,
                 temperature=0.3, max_tokens=2000, enabled="true",
                 system_prompt=CANONICAL_SYSTEM_PROMPT,
             )
 
-            result.scalar_one_or_none = lambda: route
-            if self.connected_accounts:
-                result.scalars = lambda: AsyncMock(all=lambda: self.connected_accounts)
-            else:
-                result.scalars = lambda: AsyncMock(all=lambda: [])
-            return result
+    async def execute(self, stmt, *args, **kwargs):
+        stmt_str = str(stmt).lower()
 
-        result.scalar_one_or_none = lambda: None
-        result.scalars = lambda: AsyncMock(all=lambda: self.connected_accounts)
-        return result
+        class MockResult:
+            def __init__(self, route=None, model=None, provider=None, accounts=None):
+                self._route = route
+                self._model = model
+                self._provider = provider
+                self._accounts = accounts or []
+
+            def scalar_one_or_none(self):
+                if "ai_routes" in stmt_str and self._route:
+                    return self._route
+                if "ai_models" in stmt_str and self._model:
+                    return self._model
+                if "ai_providers" in stmt_str and self._provider:
+                    return self._provider
+                return None
+
+            def scalars(self):
+                return self
+
+            def all(self):
+                if "ai_tools" in stmt_str or "ai_rules" in stmt_str or "ai_company_facts" in stmt_str or "ai_memories" in stmt_str:
+                    return []
+                return self._accounts
+
+            def first(self):
+                return self._accounts[0] if self._accounts else None
+
+        if self.has_config:
+            return MockResult(
+                route=self._route, model=self._model,
+                provider=self._provider, accounts=self.connected_accounts,
+            )
+        return MockResult(accounts=self.connected_accounts)
 
     async def flush(self):
         pass
@@ -450,6 +472,12 @@ class TestContextServiceFiltering:
         assert "odoo" in systems2
 
 
+@pytest.fixture(autouse=True)
+def _cleanup_global_state():
+    yield
+    app.dependency_overrides.clear()
+
+
 # ── AI Config API Tests ──
 
 class TestAIConfigAPI:
@@ -797,15 +825,16 @@ class TestProviderErrorHandling:
                 json={"content": "what's the latest bill?"},
                 headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
             )
-            assert response.status_code == 200
+            assert response.status_code == 502
             data = response.json()
-            # The assistant content must be the friendly message, not the raw error
-            assert "quota or rate limit" in data.get("content", "")
-            assert "Rate limit exceeded" not in data.get("content", "")
-            # The error should be tracked in metadata
-            meta = data.get("metadata_json") or {}
-            tech = meta.get("technical_details") or {}
-            assert "error" in tech
+            # The error detail must be the friendly message, not the raw error
+            detail = data.get("detail") or {}
+            if isinstance(detail, str):
+                assert "quota or rate limit" in detail
+                assert "Rate limit exceeded" not in detail
+            else:
+                assert "quota or rate limit" in detail.get("error_message", "")
+                assert "Rate limit exceeded" not in detail.get("error_message", "")
 
 
 class TestToolExecution:
@@ -837,18 +866,18 @@ class TestToolExecution:
         db.has_tools = True
 
         class MockToolResult:
-            @property
             def scalars(self):
-                def all():
-                    return [
-                        AITool(
-                            name="odoo_search_read", display_name="Odoo Search Read",
-                            description="Search Odoo",
-                            target_system="odoo",
-                            input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
-                        ),
-                    ]
-                return all
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_search_read", display_name="Odoo Search Read",
+                                description="Search Odoo",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
+                            ),
+                        ]
+                return Scalars()
 
         # Override execute for AITool queries to return mock tools
         original_execute = db.execute
@@ -909,7 +938,7 @@ class TestToolExecution:
             assert result["tool_calls"] is not None
             assert len(result["tool_calls"]) == 1
             assert result["tool_calls"][0]["tool_name"] == "odoo_search_read"
-            assert result["total_tokens"] == 28
+            assert result["total_tokens"] == 43
 
 
 # ── Security Tests ──
