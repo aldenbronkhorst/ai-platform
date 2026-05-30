@@ -311,31 +311,43 @@ async def post_chat_message(
     tool_calls_data = router_result.get("tool_calls")
 
     # Reviewer check for finance/high-risk responses
+    reviewer_invoked = False
+    reviewer_result_data = None
     try:
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
         reviewer = ReviewerAgent()
-        review = await reviewer.review(
-            ReviewRequest(
-                content=assistant_content,
-                user_question=req.content,
-                tool_results=tool_calls_data if tool_calls_data else None,
+        # If it contains finance keywords or amounts
+        if reviewer._is_finance_question(req.content):
+            reviewer_invoked = True
+            review = await reviewer.review(
+                ReviewRequest(
+                    content=assistant_content,
+                    user_question=req.content,
+                    tool_results=tool_calls_data if tool_calls_data else None,
+                )
             )
-        )
-        if not review.approved:
-            logger.warning(
-                "Reviewer rejected response | request_id=%s issues=%d risk=%s",
-                request_id, len(review.issues), review.risk_level,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "request_id": request_id,
-                    "error_type": "review_failed",
-                    "error_message": "The response was reviewed and rejected. Please try again.",
-                    "technical_detail": f"Review issues: {'; '.join(review.issues)}",
-                },
-            )
+            reviewer_result_data = {
+                "approved": review.approved,
+                "risk_level": review.risk_level,
+                "issues": review.issues,
+                "required_changes": review.required_changes,
+                "reviewer_notes": review.reviewer_notes,
+            }
+            if not review.approved:
+                logger.warning(
+                    "Reviewer rejected response | request_id=%s issues=%d risk=%s",
+                    request_id, len(review.issues), review.risk_level,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail={
+                        "request_id": request_id,
+                        "error_type": "review_failed",
+                        "error_message": "The response was reviewed and rejected. Please try again.",
+                        "technical_detail": f"Review issues: {'; '.join(review.issues)}",
+                    },
+                )
     except HTTPException:
         raise
     except Exception as exc:
@@ -371,6 +383,10 @@ async def post_chat_message(
             "model_name": model_name,
             "latency_ms": router_result.get("latency_ms", 0),
             "token_usage": token_usage,
+            "request_id": request_id,
+            "reviewer_invoked": reviewer_invoked,
+            "reviewer_result": reviewer_result_data,
+            "tool_call_count": router_result.get("tool_call_count", 0),
         }
     }
     if tool_calls_data:

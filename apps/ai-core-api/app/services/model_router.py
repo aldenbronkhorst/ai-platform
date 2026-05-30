@@ -403,6 +403,7 @@ async def execute_chat(
             system_prompt += f"\n\n## Company Facts\n{facts_text}"
         # Inject Odoo company currency if available
         odoo_currency_str = None
+        currency_source = "none"
         if user_id:
             acct_result2 = await db.execute(
                 select(AIConnectedAccount).where(
@@ -418,6 +419,7 @@ async def execute_chat(
                 company = odoo_account.odoo_company_name or "your company"
                 odoo_currency_str = f"{company} uses {code} ({symbol})"
                 system_prompt += f"\n\n## Connected Odoo Currency\n{odoo_currency_str}"
+                currency_source = "odoo_connected_account"
 
         # Inject active memories (learned preferences, patterns, resolved cases)
         injected_memories: list[Any] = []
@@ -643,6 +645,8 @@ async def execute_chat(
     context_metadata = {
         "rules_injected": [{"id": str(r.id), "title": r.title, "priority": r.priority} for r in injected_rules] if injected_rules else [],
         "facts_injected": [{"key": f.key, "value": f.value} for f in injected_facts] if injected_facts else [],
+        "memories_injected": [{"id": str(m.id), "title": m.title, "type": m.type} for m in injected_memories] if injected_memories else [],
+        "currency_source": currency_source,
     }
 
     response = {
@@ -656,5 +660,6 @@ async def execute_chat(
         "latency_ms": total_latency_ms,
         "tool_calls": tool_results if tool_results else None,
         "context": context_metadata,
+        "tool_call_count": total_tool_calls,
     }
     return response

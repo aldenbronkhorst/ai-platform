@@ -152,6 +152,11 @@ jobs:
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
             --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}"
+          az containerapp update \
+            --name "ca-ai-worker-prod" \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
+            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}"
 
       - name: Deploy Odoo Connector
         run: |

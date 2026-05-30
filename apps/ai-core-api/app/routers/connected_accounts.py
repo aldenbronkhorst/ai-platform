@@ -128,7 +128,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             return {}
 
         data = response.json()
-        records = data.get("records") if isinstance(data, dict) else data
+        records = data.get("result") if isinstance(data, dict) else data
         if isinstance(records, list) and len(records) > 0:
             company = records[0]
             company_id = company.get("id")
@@ -138,10 +138,21 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             currency_symbol = None
             if isinstance(currency_data, list) and len(currency_data) >= 2:
                 currency_code = str(currency_data[1]) if currency_data[1] else None
+                if currency_code:
+                    currency_symbol = {
+                        "ZAR": "R",
+                        "USD": "$",
+                        "EUR": "€",
+                        "GBP": "£",
+                        "JPY": "¥",
+                        "AUD": "A$",
+                        "CAD": "C$",
+                    }.get(currency_code, currency_code)
             return {
                 "odoo_company_id": company_id,
                 "odoo_company_name": company_name,
                 "odoo_currency_code": currency_code,
+                "odoo_currency_symbol": currency_symbol,
             }
         return {}
     except Exception as exc:
@@ -338,6 +349,7 @@ async def connect_odoo(
             account.odoo_company_id = company_meta["odoo_company_id"]
             account.odoo_company_name = company_meta.get("odoo_company_name")
             account.odoo_currency_code = company_meta.get("odoo_currency_code")
+            account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
     else:
         account = AIConnectedAccount(
             id=connected_account_id,
@@ -355,6 +367,7 @@ async def connect_odoo(
             odoo_company_id=company_meta.get("odoo_company_id"),
             odoo_company_name=company_meta.get("odoo_company_name"),
             odoo_currency_code=company_meta.get("odoo_currency_code"),
+            odoo_currency_symbol=company_meta.get("odoo_currency_symbol"),
         )
         db.add(account)
 
@@ -493,6 +506,7 @@ async def test_odoo_connection(
             account.odoo_company_id = company_meta["odoo_company_id"]
             account.odoo_company_name = company_meta.get("odoo_company_name")
             account.odoo_currency_code = company_meta.get("odoo_currency_code")
+            account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
     except Exception as e:
         test_status = "error"
         account.status = "error"
