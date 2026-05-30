@@ -88,7 +88,7 @@ export function SidebarPanel({
 
   if (isSidebarCollapsed) {
     return (
-      <div className="fixed top-4 left-4 z-40">
+      <div className="fixed top-8 left-4 z-40">
         <button
           onClick={() => onToggleCollapse(false)}
           className="h-9 w-9 flex items-center justify-center bg-sidebar border border-default text-muted hover:text-default rounded-xl transition-all shadow-lg"

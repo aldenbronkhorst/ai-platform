@@ -51,7 +51,6 @@ export function ChatView({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
-  const prevSessionIdRef = useRef<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isEditSaving, setIsEditSaving] = useState(false);
@@ -60,33 +59,22 @@ export function ChatView({
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    const isNearBottom = el.scrollTop < 100;
     setIsUserScrolledUp(!isNearBottom);
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     setIsUserScrolledUp(false);
   }, []);
 
-  // useLayoutEffect fires synchronously before paint — no visible jump
-  useLayoutEffect(() => {
-    if (chatMessages.length === 0) return;
-
-    const isNewSession = activeSession?.id && activeSession.id !== prevSessionIdRef.current;
-    if (isNewSession) {
-      prevSessionIdRef.current = activeSession.id;
-    }
-
-    if (isNewSession) {
-      // Opening a new chat — instant scroll, no animation
-      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
-      setIsUserScrolledUp(false);
-    } else if (!isUserScrolledUp) {
-      // New message while at bottom — smooth scroll
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [chatMessages, isUserScrolledUp, activeSession?.id]);
+  const handleEditSave = useCallback(async (newContent: string) => {
+    if (!editingMessageId || !newContent.trim()) return;
+    setIsEditSaving(true);
+    setEditingMessageId(null);
+    await onEditResend(editingMessageId, newContent);
+    setIsEditSaving(false);
+  }, [editingMessageId, onEditResend]);
 
   useLayoutEffect(() => {
     const el = composerRef.current;
@@ -97,14 +85,6 @@ export function ChatView({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
-
-  const handleEditSave = useCallback(async (newContent: string) => {
-    if (!editingMessageId || !newContent.trim()) return;
-    setIsEditSaving(true);
-    setEditingMessageId(null);
-    await onEditResend(editingMessageId, newContent);
-    setIsEditSaving(false);
-  }, [editingMessageId, onEditResend]);
 
   if (isMessagesLoading) {
     return (
@@ -149,13 +129,13 @@ export function ChatView({
 
   return (
     <div className="h-full flex flex-col max-w-4xl mx-auto relative">
-      {/* 1. Messages scroll viewport */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto space-y-4 px-2 py-4"
+        className="flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4"
       >
-        {chatMessages.map((msg) => (
+        <div ref={messagesEndRef} />
+        {[...chatMessages].reverse().map((msg) => (
           <MessageBubble
             key={msg.id}
             message={msg}
@@ -168,10 +148,8 @@ export function ChatView({
             isEditSaving={isEditSaving}
           />
         ))}
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* 2. Jump-to-latest floating control – sits above composer dock */}
       {isUserScrolledUp && (
         <div
           className="absolute left-0 right-0 flex justify-center pointer-events-none"
@@ -187,7 +165,6 @@ export function ChatView({
         </div>
       )}
 
-      {/* 3. Composer dock – always at bottom */}
       <div ref={composerRef} className="relative z-10">
         <ChatComposer
           chatInput={chatInput}

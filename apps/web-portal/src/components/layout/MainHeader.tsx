@@ -27,7 +27,7 @@ export function MainHeader({
     : undefined;
 
   return (
-    <div className={`${isSidebarCollapsed ? "pt-1" : "pt-5"} pb-3 px-6 ${isSidebarCollapsed ? "pl-16" : ""}`}>
+    <div className={`pt-5 pb-3 px-6 ${isSidebarCollapsed ? "pl-16" : ""}`}>
       <div className="h-9 inline-flex items-center gap-2 px-4 rounded-xl bg-sidebar border border-default select-none shadow-sm">
         <span className="text-xs font-extrabold text-default tracking-wide">
           {label}
