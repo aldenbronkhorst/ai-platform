@@ -70,8 +70,8 @@ async def _process_single_message(body: dict, raw_msg) -> bool:
             # Write audit event for job completion
             audit = AuditService(session)
             await audit.log_event(AIAuditEventCreate(
-                event_type="memory_extraction_complete",
-                target_record_type="ai_chat_session",
+                action_type="memory_extraction_complete",
+                target_model="ai_chat_session",
                 target_record_id=str(conversation_id),
                 actor_user_id=user_id if user_id != "unknown" else None,
                 input_summary=f"Memory extraction job completed for session {conversation_id}",
@@ -94,7 +94,7 @@ async def _run_worker_loop():
     while not _shutdown_requested:
         try:
             msg_count = 0
-            async for body, raw_msg in receive_messages_async(
+            async for body, raw_msg, receiver in receive_messages_async(
                 queue_name=QUEUE_MEMORY_EXTRACTION,
                 max_messages=5,
                 max_wait_time=20.0,
@@ -107,10 +107,10 @@ async def _run_worker_loop():
                 success = await _process_single_message(body, raw_msg)
 
                 if success:
-                    await raw_msg.complete()
+                    await receiver.complete_message(raw_msg)
                     logger.info("Message completed")
                 else:
-                    await raw_msg.abandon()
+                    await receiver.abandon_message(raw_msg)
                     logger.info("Message abandoned")
 
             if msg_count == 0:

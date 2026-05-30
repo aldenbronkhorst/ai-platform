@@ -99,11 +99,10 @@ async def receive_messages_async(
     queue_name: str,
     max_messages: int = 10,
     max_wait_time: float = 30.0,
-) -> AsyncIterator[tuple[dict, Any]]:
+) -> AsyncIterator[tuple[dict, Any, Any]]:
     """Receive messages from a queue asynchronously.
 
-    Yields (parsed_body, raw_message) tuples. Caller must call
-    `raw_message.complete()` after processing.
+    Yields (parsed_body, raw_message, receiver) tuples.
     """
     client = _build_client(async_mode=True)
     if not client:
@@ -124,9 +123,9 @@ async def receive_messages_async(
                 body = json.loads(str(msg))
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Invalid message body: %s", msg)
-                await receiver.dead_letter(msg)
+                await receiver.dead_letter_message(msg)
                 continue
-            yield body, msg
+            yield body, msg, receiver
     except Exception:
         logger.exception("Error receiving messages from %s", queue_name)
     finally:
