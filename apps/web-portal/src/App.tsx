@@ -204,6 +204,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       }
     }
 
+    const requestId = crypto.randomUUID();
     const userMsgId = Math.random().toString();
     const pendingMsgId = Math.random().toString();
 
@@ -227,11 +228,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     setChatMessages(prev => [...prev, tempUserMsg, pendingAssistantMsg]);
 
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
+
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
         method: "POST",
-        headers: getHeaders(),
+        headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({ content, artifact_ids: artIds, workflow_context: currentSess.workflow_context }),
+        signal: abortController.signal,
       });
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
@@ -239,20 +244,66 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
         fetchChatSessions();
       } else {
-        const errorText = await res.text().catch(() => "");
-        setChatMessages(prev => prev.map(m =>
-          m.id === pendingMsgId
-            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
-            : m
-        ));
+        const body = await res.json().catch(() => null);
+        const respRequestId = res.headers.get("X-Request-ID") || requestId;
+        if (body && body.detail) {
+          const d = body.detail;
+          setChatMessages(prev => prev.map(m =>
+            m.id === pendingMsgId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: d.error_type || "server_error",
+                    errorMessage: d.error_message || `Server returned ${res.status}`,
+                    technicalDetail: d.technical_detail || "",
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        } else {
+          setChatMessages(prev => prev.map(m =>
+            m.id === pendingMsgId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: "server_error",
+                    errorMessage: `Server returned ${res.status}`,
+                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const isTimeout = err?.name === "AbortError";
       setChatMessages(prev => prev.map(m =>
         m.id === pendingMsgId
-          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          ? {
+              ...m,
+              status: "failed" as const,
+              error_message: JSON.stringify({
+                requestId,
+                errorType: isTimeout ? "timeout" : "network",
+                errorMessage: isTimeout
+                  ? "The request took too long to complete. Please try again or narrow the question."
+                  : "The AI service could not be reached. Please check your connection and try again.",
+                technicalDetail: isTimeout
+                  ? "Request timed out after 180 seconds"
+                  : err instanceof Error ? err.message : "Network error",
+                httpStatus: 0,
+              }),
+            }
           : m
       ));
     } finally {
+      clearTimeout(timeoutId);
       setIsChatSending(false);
     }
   };
@@ -276,15 +327,20 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       pendingAssistantMsg,
     ]);
 
+    const requestId = crypto.randomUUID();
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
+
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${activeSession.id}/messages`, {
         method: "POST",
-        headers: getHeaders(),
+        headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({
           content: "Please retry: " + (chatMessages.find(m => m.chat_session_id === activeSession.id && m.role === "user" && m.status === "completed")?.content || ""),
           artifact_ids: [],
           workflow_context: activeSession.workflow_context,
         }),
+        signal: abortController.signal,
       });
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
@@ -292,19 +348,66 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         setChatMessages(prev => prev.map(m => m.id === newPendingId ? botMsg : m));
         fetchChatSessions();
       } else {
-        const errorText = await res.text().catch(() => "");
-        setChatMessages(prev => prev.map(m =>
-          m.id === newPendingId
-            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
-            : m
-        ));
+        const body = await res.json().catch(() => null);
+        const respRequestId = res.headers.get("X-Request-ID") || requestId;
+        if (body && body.detail) {
+          const d = body.detail;
+          setChatMessages(prev => prev.map(m =>
+            m.id === newPendingId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: d.error_type || "server_error",
+                    errorMessage: d.error_message || `Server returned ${res.status}`,
+                    technicalDetail: d.technical_detail || "",
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        } else {
+          setChatMessages(prev => prev.map(m =>
+            m.id === newPendingId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: "server_error",
+                    errorMessage: `Server returned ${res.status}`,
+                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const isTimeout = err?.name === "AbortError";
       setChatMessages(prev => prev.map(m =>
         m.id === newPendingId
-          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          ? {
+              ...m,
+              status: "failed" as const,
+              error_message: JSON.stringify({
+                requestId,
+                errorType: isTimeout ? "timeout" : "network",
+                errorMessage: isTimeout
+                  ? "The request took too long to complete. Please try again or narrow the question."
+                  : "The AI service could not be reached. Please check your connection and try again.",
+                technicalDetail: isTimeout
+                  ? "Request timed out after 180 seconds"
+                  : err instanceof Error ? err.message : "Network error",
+                httpStatus: 0,
+              }),
+            }
           : m
       ));
+    } finally {
+      clearTimeout(timeoutId);
     }
   };
 
@@ -317,13 +420,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     const currentSess = activeSession;
 
-    // Truncate all messages after the edited message
     const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
     if (editIndex === -1) return;
 
     const beforeEdit = chatMessages.slice(0, editIndex);
 
-    // Update the edited user message and truncate
     const updatedUserMsg: ChatMessage = {
       ...chatMessages[editIndex],
       content: newContent,
@@ -341,15 +442,20 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     setChatMessages([...beforeEdit, updatedUserMsg, pendingAssistantMsg]);
 
+    const requestId = crypto.randomUUID();
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
+
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
         method: "POST",
-        headers: getHeaders(),
+        headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({
           content: newContent,
           artifact_ids: [],
           workflow_context: currentSess.workflow_context,
         }),
+        signal: abortController.signal,
       });
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
@@ -357,19 +463,66 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
         fetchChatSessions();
       } else {
-        const errorText = await res.text().catch(() => "");
-        setChatMessages(prev => prev.map(m =>
-          m.id === pendingMsgId
-            ? { ...m, status: "failed" as const, error_message: errorText || `Server returned ${res.status}` }
-            : m
-        ));
+        const body = await res.json().catch(() => null);
+        const respRequestId = res.headers.get("X-Request-ID") || requestId;
+        if (body && body.detail) {
+          const d = body.detail;
+          setChatMessages(prev => prev.map(m =>
+            m.id === pendingMsgId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: d.error_type || "server_error",
+                    errorMessage: d.error_message || `Server returned ${res.status}`,
+                    technicalDetail: d.technical_detail || "",
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        } else {
+          setChatMessages(prev => prev.map(m =>
+            m.id === pendingMsgId
+              ? {
+                  ...m,
+                  status: "failed" as const,
+                  error_message: JSON.stringify({
+                    requestId: respRequestId,
+                    errorType: "server_error",
+                    errorMessage: `Server returned ${res.status}`,
+                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
+                    httpStatus: res.status,
+                  }),
+                }
+              : m
+          ));
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
+      const isTimeout = err?.name === "AbortError";
       setChatMessages(prev => prev.map(m =>
         m.id === pendingMsgId
-          ? { ...m, status: "failed" as const, error_message: err instanceof Error ? err.message : "Network error" }
+          ? {
+              ...m,
+              status: "failed" as const,
+              error_message: JSON.stringify({
+                requestId,
+                errorType: isTimeout ? "timeout" : "network",
+                errorMessage: isTimeout
+                  ? "The request took too long to complete. Please try again or narrow the question."
+                  : "The AI service could not be reached. Please check your connection and try again.",
+                technicalDetail: isTimeout
+                  ? "Request timed out after 180 seconds"
+                  : err instanceof Error ? err.message : "Network error",
+                httpStatus: 0,
+              }),
+            }
           : m
       ));
+    } finally {
+      clearTimeout(timeoutId);
     }
   };
 

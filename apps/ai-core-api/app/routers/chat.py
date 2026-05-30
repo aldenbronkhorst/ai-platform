@@ -3,7 +3,7 @@ import uuid
 import httpx
 from datetime import datetime
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
@@ -202,15 +202,21 @@ async def list_chat_messages(
 async def post_chat_message(
     session_id: UUID,
     req: ChatMessageCreate,
+    request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
     """Posts a message to the chat session and executes the platform business assistant flow.
 
     Returns a natural language response with technical logs safely hidden inside metadata_json.
+    On failure, returns a structured JSON error response — failed messages are not persisted.
     """
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    response.headers["X-Request-ID"] = request_id
+
     user_id = auth["user_id"]
-    
+
     # 1. Verify session ownership
     sess_res = await db.execute(
         select(AIChatSession).where(
@@ -257,8 +263,6 @@ async def post_chat_message(
     messages = [{"role": m.role, "content": m.content} for m in previous_messages if m.id != user_msg.id]
     messages.append({"role": "user", "content": req.content})
 
-    router_result = None
-    router_error = None
     try:
         from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
         router_result = await execute_chat(
@@ -269,41 +273,58 @@ async def post_chat_message(
             user_id=user_id,
         )
     except RouteNotFoundError as e:
-        router_error = str(e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "configuration_error",
+                "error_message": str(e),
+                "technical_detail": "RouteNotFoundError: " + str(e),
+            },
+        )
     except ProviderCallError as e:
-        router_error = str(e)
+        error_msg = str(e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "model_error",
+                "error_message": error_msg,
+                "technical_detail": f"ProviderCallError (provider={e.provider}, model={e.model}): {error_msg}",
+            },
+        )
     except Exception as e:
-        router_error = f"Model router error: {str(e)}"
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "server_error",
+                "error_message": "Something went wrong while generating the response. Please try again.",
+                "technical_detail": f"Unhandled exception: {e}",
+            },
+        )
 
-    if router_result:
-        assistant_content = router_result["content"]
-        model_provider = router_result.get("model_provider", "unknown")
-        model_name = router_result.get("model_name", "unknown")
-        token_usage = {
-            "prompt_tokens": router_result.get("prompt_tokens", 0),
-            "completion_tokens": router_result.get("completion_tokens", 0),
-            "total_tokens": router_result.get("total_tokens", 0),
+    assistant_content = router_result["content"]
+    model_provider = router_result.get("model_provider", "unknown")
+    model_name = router_result.get("model_name", "unknown")
+    token_usage = {
+        "prompt_tokens": router_result.get("prompt_tokens", 0),
+        "completion_tokens": router_result.get("completion_tokens", 0),
+        "total_tokens": router_result.get("total_tokens", 0),
+    }
+    tool_calls_data = router_result.get("tool_calls")
+    metadata_info: dict[str, Any] = {
+        "technical_details": {
+            "model_provider": model_provider,
+            "model_name": model_name,
+            "latency_ms": router_result.get("latency_ms", 0),
+            "token_usage": token_usage,
         }
-        tool_calls_data = router_result.get("tool_calls")
-        metadata_info: dict[str, Any] = {
-            "technical_details": {
-                "model_provider": model_provider,
-                "model_name": model_name,
-                "latency_ms": router_result.get("latency_ms", 0),
-                "token_usage": token_usage,
-            }
-        }
-        if tool_calls_data:
-            metadata_info["technical_details"]["tool_calls"] = tool_calls_data
-    else:
-        assistant_content = router_error or "Failed to get AI response."
-        model_provider = None
-        model_name = None
-        token_usage = None
-        tool_calls_data = None
-        metadata_info = {"technical_details": {"error": router_error}} if router_error else None
+    }
+    if tool_calls_data:
+        metadata_info["technical_details"]["tool_calls"] = tool_calls_data
 
-    # 4. Save Assistant Message
+    # 4. Save Assistant Message (only on success)
     assistant_msg = AIChatMessage(
         id=uuid.uuid4(),
         chat_session_id=session_id,
