@@ -40,8 +40,6 @@ export function AppShell({
   onSignOut,
   hasRole,
 }: AppShellProps) {
-  const workflowTitle = undefined;
-
   return (
     <div className="flex h-screen bg-canvas text-default antialiased overflow-hidden">
       <div className="flex w-full gap-3 p-3">
@@ -63,14 +61,12 @@ export function AppShell({
           hasRole={hasRole}
         />
 
-        <main className="flex-1 flex flex-col overflow-hidden rounded-3xl bg-surface border border-default min-w-0">
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           <MainHeader
             activeTab={activeTab}
-            activeSession={activeSession}
-            workflowTitle={workflowTitle}
             isSidebarCollapsed={isSidebarCollapsed}
           />
-          <section className="flex-1 overflow-y-auto p-6">
+          <section className="flex-1 overflow-y-auto">
             {children}
           </section>
         </main>

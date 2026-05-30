@@ -1,3 +1,4 @@
+import { useEffect, useRef, useCallback } from "react";
 import {
   Layers,
   FileText,
@@ -50,6 +51,34 @@ export function SidebarPanel({
   onSignOut,
   hasRole,
 }: SidebarPanelProps) {
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
+
+  const handleClickOutside = useCallback((e: MouseEvent) => {
+    if (
+      profileMenuRef.current &&
+      !profileMenuRef.current.contains(e.target as Node) &&
+      profileButtonRef.current &&
+      !profileButtonRef.current.contains(e.target as Node)
+    ) {
+      onToggleProfileMenu();
+    }
+  }, [onToggleProfileMenu]);
+
+  const handleEscape = useCallback((e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      onToggleProfileMenu();
+    }
+  }, [onToggleProfileMenu]);
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) return;
+    const ac = new AbortController();
+    document.addEventListener("mousedown", handleClickOutside, { signal: ac.signal });
+    document.addEventListener("keydown", handleEscape, { signal: ac.signal });
+    return () => ac.abort();
+  }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
+
   const navItems = [
     { tab: "workflows" as const, icon: Layers, label: "Workflows" },
     { tab: "tasks" as const, icon: ClipboardList, label: "Tasks Tracker" },
@@ -164,7 +193,7 @@ export function SidebarPanel({
 
       <div className="p-3 border-t border-default relative">
         {isProfileMenuOpen && (
-          <div className="absolute bottom-16 left-3 right-3 bg-raised border border-default rounded-2xl shadow-2xl p-2 py-3 space-y-1 z-50 animate-fade-in text-left">
+          <div ref={profileMenuRef} className="absolute bottom-16 left-3 right-3 bg-raised border border-default rounded-2xl shadow-2xl p-2 py-3 space-y-1 z-50 animate-fade-in text-left">
             <div className="px-3 py-1">
               <p className="text-xs font-bold text-default truncate">
                 {activeUser?.displayName}
@@ -214,6 +243,7 @@ export function SidebarPanel({
         )}
 
         <button
+          ref={profileButtonRef}
           onClick={onToggleProfileMenu}
           className="w-full flex items-center justify-between p-2 rounded-xl bg-surface hover-bg-surface border border-default transition-all"
         >

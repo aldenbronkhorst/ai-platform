@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Sparkles } from "lucide-react";
 
 const pendingMessages = [
   "Working on it…",
@@ -33,21 +32,15 @@ export function PendingAssistant({ toolHint }: PendingAssistantProps) {
     : pendingMessages[msgIndex];
 
   return (
-    <div className="flex gap-3 justify-start">
-      <div className="w-8 h-8 rounded-lg bg-surface border border-default flex items-center justify-center shrink-0">
-        <Sparkles className="w-4 h-4 text-accent" />
-      </div>
-
-      <div className="max-w-[75%] p-4 rounded-2xl border bg-canvas border-default text-xs leading-relaxed">
-        <div className="flex items-center gap-2 text-muted">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-          <span className="font-medium">{message}</span>
-          <span className="flex gap-0.5">
-            <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "0ms" }} />
-            <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "150ms" }} />
-            <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "300ms" }} />
-          </span>
-        </div>
+    <div>
+      <div className="flex items-center gap-2 text-muted text-sm">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+        <span className="font-medium">{message}</span>
+        <span className="flex gap-0.5">
+          <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "0ms" }} />
+          <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "150ms" }} />
+          <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "300ms" }} />
+        </span>
       </div>
     </div>
   );
