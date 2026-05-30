@@ -45,11 +45,11 @@ export function MessageBubble({
 
     return (
       <div className="group flex justify-end">
-        <div className="relative">
-          <div className="max-w-[70%] p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap rounded-tr-none shadow-sm">
+        <div className="flex flex-col items-end max-w-[70%]">
+          <div className="w-fit p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap rounded-tr-none shadow-sm">
             {message.content}
           </div>
-          <div className="flex justify-end mt-1 mr-1">
+          <div className="mt-1">
             <MessageActions
               role="user"
               content={message.content}
