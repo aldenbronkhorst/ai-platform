@@ -346,8 +346,6 @@ async def execute_chat(
 ) -> dict:
     route, model_obj, provider = await get_enabled_route(db, task_type)
 
-    client = await build_foundry_client(provider, model_obj)
-
     # Build system prompt with dynamic connector context
     system_prompt = route.system_prompt or ""
     connector_context = await _get_connector_context(db, user_id)
@@ -468,17 +466,43 @@ async def execute_chat(
     total_tool_calls = 0
     tool_results: list[dict[str, Any]] = []
 
-    # Call model with tools (first round)
-    result = await client.chat_completion(
-        messages=full_messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tools=tool_definitions if tool_definitions else None,
-    )
+    async def _try_model(model, prov, msgs):
+        cl = await build_foundry_client(prov, model)
+        res = await cl.chat_completion(
+            messages=msgs,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tool_definitions if tool_definitions else None,
+        )
+        return res, model, prov, cl
 
+    result, used_model, used_provider, client = await _try_model(model_obj, provider, full_messages)
     total_prompt_tokens += result.get("prompt_tokens", 0)
     total_completion_tokens += result.get("completion_tokens", 0)
     total_latency_ms += result.get("latency_ms", 0)
+
+    # Fallback on quota / rate-limit errors
+    if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded"):
+        if route.fallback_model_id:
+            fallback_model_res = await db.execute(
+                select(AIModel).where(AIModel.id == route.fallback_model_id, AIModel.enabled == "true")
+            )
+            fallback_model = fallback_model_res.scalar_one_or_none()
+            if fallback_model:
+                fallback_prov_res = await db.execute(
+                    select(AIProvider).where(AIProvider.id == fallback_model.provider_id, AIProvider.enabled == "true")
+                )
+                fallback_prov = fallback_prov_res.scalar_one_or_none()
+                if fallback_prov:
+                    logger.warning(
+                        "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
+                        model_obj.display_name, fallback_model.display_name,
+                    )
+                    fb_result, used_model, used_provider, client = await _try_model(fallback_model, fallback_prov, full_messages)
+                    total_prompt_tokens += fb_result.get("prompt_tokens", 0)
+                    total_completion_tokens += fb_result.get("completion_tokens", 0)
+                    total_latency_ms += fb_result.get("latency_ms", 0)
+                    result = fb_result
 
     # Tool-calling loop (up to 10 rounds to prevent infinite loops)
     max_tool_rounds = 10
@@ -537,8 +561,8 @@ async def execute_chat(
         total_latency_ms += result.get("latency_ms", 0)
 
     log = AIUsageLog(
-        provider_id=provider.id,
-        model_id=model_obj.id,
+        provider_id=used_provider.id,
+        model_id=used_model.id,
         route_id=route.id,
         task_type=task_type,
         chat_session_id=chat_session_id,
@@ -563,9 +587,9 @@ async def execute_chat(
             "Provider call failed | provider=%s model=%s deployment=%s "
             "error_type=%s status_code=%s raw_message=%s "
             "user_id=%s chat_session_id=%s tools_enabled=%s",
-            provider.name,
-            model_obj.display_name,
-            model_obj.deployment_name,
+            used_provider.name,
+            used_model.display_name,
+            used_model.deployment_name,
             error_type,
             status_code,
             raw_message,
@@ -624,8 +648,8 @@ async def execute_chat(
     response = {
         "content": result.get("content", ""),
         "finish_reason": result.get("finish_reason", ""),
-        "model_provider": provider.name,
-        "model_name": model_obj.display_name,
+        "model_provider": used_provider.name,
+        "model_name": used_model.display_name,
         "prompt_tokens": total_prompt_tokens,
         "completion_tokens": total_completion_tokens,
         "total_tokens": total_prompt_tokens + total_completion_tokens,
