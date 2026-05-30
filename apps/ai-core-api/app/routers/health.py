@@ -59,7 +59,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
     # Check Service Bus
     try:
-        sb_namespace = os.environ.get("SERVICE_BUS_NAMESPACE")
+        sb_namespace = os.environ.get("AZURE_SERVICE_BUS_NAMESPACE") or os.environ.get("SERVICE_BUS_NAMESPACE")
         if sb_namespace:
             credential = DefaultAzureCredential()
             sb_client = ServiceBusClient(

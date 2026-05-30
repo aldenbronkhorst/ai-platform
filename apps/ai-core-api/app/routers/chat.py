@@ -415,30 +415,42 @@ async def post_chat_message(
     ))
     await db.commit()
 
-    # Non-blocking memory candidate extraction
+    # Async memory extraction via Service Bus (with inline fallback)
     try:
-        from app.services.memory import MemoryCandidateService
-        memory_svc = MemoryCandidateService(db)
-        candidates = await memory_svc.extract_from_messages(
-            messages=[user_msg, assistant_msg],
-            user_id=user_id,
-        )
-        if candidates:
-            logger.info(
-                "Memory candidates found | session=%s count=%d types=%s",
-                session_id, len(candidates), [c.type for c in candidates],
+        from app.services.service_bus import send_message_async, QUEUE_MEMORY_EXTRACTION
+        sent = await send_message_async(QUEUE_MEMORY_EXTRACTION, {
+            "message_type": "memory_extraction",
+            "conversation_id": str(session_id),
+            "user_id": str(user_id),
+        })
+        if not sent:
+            raise RuntimeError("Service Bus not configured")
+        logger.info("Enqueued memory extraction | session=%s", session_id)
+    except Exception:
+        # Fallback: inline extraction (original behavior)
+        try:
+            from app.services.memory import MemoryCandidateService
+            memory_svc = MemoryCandidateService(db)
+            candidates = await memory_svc.extract_from_messages(
+                messages=[user_msg, assistant_msg],
+                user_id=user_id,
             )
-            for candidate in candidates:
-                is_dup = await memory_svc.check_duplicate(candidate)
-                if not is_dup and candidate.save_mode == "auto":
-                    saved = await memory_svc.save_candidate(
-                        candidate=candidate,
-                        user_id=user_id,
-                        conversation_id=session_id,
-                        message_id=assistant_msg.id,
-                    )
-                    logger.info("Auto-saved memory | id=%s type=%s", saved.id, candidate.type)
-    except Exception as exc:
-        logger.warning("Memory extraction failed (non-blocking): %s", exc)
+            if candidates:
+                logger.info(
+                    "Memory candidates found | session=%s count=%d types=%s",
+                    session_id, len(candidates), [c.type for c in candidates],
+                )
+                for candidate in candidates:
+                    is_dup = await memory_svc.check_duplicate(candidate)
+                    if not is_dup and candidate.save_mode == "auto":
+                        saved = await memory_svc.save_candidate(
+                            candidate=candidate,
+                            user_id=user_id,
+                            conversation_id=session_id,
+                            message_id=assistant_msg.id,
+                        )
+                        logger.info("Auto-saved memory | id=%s type=%s", saved.id, candidate.type)
+        except Exception as inner_exc:
+            logger.warning("Inline memory extraction failed: %s", inner_exc)
 
     return assistant_msg

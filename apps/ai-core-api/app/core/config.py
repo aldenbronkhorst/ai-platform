@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     azure_client_id: str = os.environ.get("AZURE_CLIENT_ID", "")
     key_vault_uri: str = os.environ.get("KEY_VAULT_URI", "")
     storage_account_name: str = os.environ.get("STORAGE_ACCOUNT_NAME", "")
-    service_bus_namespace: str = os.environ.get("SERVICE_BUS_NAMESPACE", "")
+    service_bus_namespace: str = os.environ.get("AZURE_SERVICE_BUS_NAMESPACE") or os.environ.get("SERVICE_BUS_NAMESPACE", "")
     appinsights_connection_string: str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 
     # Auth (temporary — replace with Entra ID / JWT)
