@@ -28,7 +28,7 @@ export function MainHeader({
 
   return (
     <div className={`pt-5 pb-3 px-6 ${isSidebarCollapsed ? "pl-16" : ""}`}>
-      <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-sidebar border border-default select-none shadow-sm">
+      <div className="h-9 inline-flex items-center gap-2 px-4 rounded-xl bg-sidebar border border-default select-none shadow-sm">
         <span className="text-xs font-extrabold text-default tracking-wide">
           {label}
         </span>

@@ -91,7 +91,7 @@ export function SidebarPanel({
       <div className="fixed top-4 left-4 z-40">
         <button
           onClick={() => onToggleCollapse(false)}
-          className="p-3 bg-sidebar border border-default text-muted hover:text-default rounded-xl transition-all shadow-lg"
+          className="h-9 w-9 flex items-center justify-center bg-sidebar border border-default text-muted hover:text-default rounded-xl transition-all shadow-lg"
           title="Expand Sidebar"
         >
           <Menu className="w-4 h-4" />

@@ -51,15 +51,11 @@ export function ChatView({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const prevSessionIdRef = useRef<string | null>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isEditSaving, setIsEditSaving] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    setIsUserScrolledUp(false);
-  }, []);
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
@@ -68,11 +64,24 @@ export function ChatView({
     setIsUserScrolledUp(!isNearBottom);
   }, []);
 
-  useEffect(() => {
-    if (!isUserScrolledUp) {
-      scrollToBottom();
+  // useLayoutEffect fires synchronously before paint — no visible jump
+  useLayoutEffect(() => {
+    if (chatMessages.length === 0) return;
+
+    const isNewSession = activeSession?.id && activeSession.id !== prevSessionIdRef.current;
+    if (isNewSession) {
+      prevSessionIdRef.current = activeSession.id;
     }
-  }, [chatMessages, isUserScrolledUp, scrollToBottom]);
+
+    if (isNewSession) {
+      // Opening a new chat — instant scroll, no animation
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+      setIsUserScrolledUp(false);
+    } else if (!isUserScrolledUp) {
+      // New message while at bottom — smooth scroll
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, isUserScrolledUp, activeSession?.id]);
 
   useLayoutEffect(() => {
     const el = composerRef.current;
