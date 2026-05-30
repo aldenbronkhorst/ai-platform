@@ -238,39 +238,29 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               {statusBadge()}
             </div>
 
-            <div className="space-y-3 py-4 border-t border-b border-default text-sm text-muted font-medium select-text">
-              <div className="flex justify-between">
-                <span>Instance URL:</span>
-                <span className="text-default font-mono text-xs text-right max-w-[60%] truncate">
-                  {odooStatus.odoo_url || "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Database:</span>
-                <span className="text-default font-mono">
-                  {odooStatus.odoo_db || "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Username:</span>
-                <span className="text-default font-mono">
-                  {odooStatus.provider_username || "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Environment:</span>
-                <span className="text-default capitalize">
-                  {odooStatus.target_environment || "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Last Verified:</span>
-                <span className="text-default text-xs font-mono">
-                  {odooStatus.last_verified_at
-                    ? new Date(odooStatus.last_verified_at).toLocaleString()
-                    : "—"}
-                </span>
-              </div>
+            <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-3 py-4 border-t border-b border-default text-sm select-text">
+              <span className="text-muted font-medium">Instance URL:</span>
+              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                {odooStatus.odoo_url || "—"}
+              </span>
+              <span className="text-muted font-medium">Database:</span>
+              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                {odooStatus.odoo_db || "—"}
+              </span>
+              <span className="text-muted font-medium">Username:</span>
+              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                {odooStatus.provider_username || "—"}
+              </span>
+              <span className="text-muted font-medium">Environment:</span>
+              <span className="text-default capitalize">
+                {odooStatus.target_environment || "—"}
+              </span>
+              <span className="text-muted font-medium">Last Verified:</span>
+              <span className="text-default">
+                {odooStatus.last_verified_at
+                  ? new Date(odooStatus.last_verified_at).toLocaleString()
+                  : "—"}
+              </span>
             </div>
           </div>
 
