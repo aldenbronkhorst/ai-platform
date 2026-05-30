@@ -284,7 +284,8 @@ async def post_chat_message(
             "completion_tokens": router_result.get("completion_tokens", 0),
             "total_tokens": router_result.get("total_tokens", 0),
         }
-        metadata_info = {
+        tool_calls_data = router_result.get("tool_calls")
+        metadata_info: dict[str, Any] = {
             "technical_details": {
                 "model_provider": model_provider,
                 "model_name": model_name,
@@ -292,11 +293,14 @@ async def post_chat_message(
                 "token_usage": token_usage,
             }
         }
+        if tool_calls_data:
+            metadata_info["technical_details"]["tool_calls"] = tool_calls_data
     else:
         assistant_content = router_error or "Failed to get AI response."
         model_provider = None
         model_name = None
         token_usage = None
+        tool_calls_data = None
         metadata_info = {"technical_details": {"error": router_error}} if router_error else None
 
     # 4. Save Assistant Message
@@ -309,6 +313,7 @@ async def post_chat_message(
         model_provider=model_provider,
         model_name=model_name,
         token_usage_json=token_usage,
+        tool_call_json=tool_calls_data,
         metadata_json=metadata_info,
         created_at=datetime.utcnow()
     )

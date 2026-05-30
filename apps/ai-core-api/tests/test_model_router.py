@@ -11,7 +11,7 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount
+from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool
 from app.services.model_router import (
     RouteNotFoundError,
     ROUTE_NOT_CONFIGURED_MESSAGE,
@@ -389,6 +389,138 @@ class TestGreetingIdentity:
                     for phrase in odoo_phrases:
                         if phrase in content:
                             pytest.fail(f"Found '{phrase}' in {path}")
+
+
+# ── Tool Definition Tests ──
+
+class TestToolDefinitions:
+    def test_build_tool_definitions_empty(self):
+        from app.services.model_router import _build_tool_definitions
+        assert _build_tool_definitions([]) == []
+
+    def test_build_tool_definitions_skips_missing_schema(self):
+        from app.services.model_router import _build_tool_definitions
+        tool = AITool(name="odoo_search_read", display_name="Odoo Search Read",
+                       description="Search Odoo", target_system="odoo", input_schema=None)
+        assert _build_tool_definitions([tool]) == []
+
+    def test_build_tool_definitions_valid(self):
+        from app.services.model_router import _build_tool_definitions
+        tool = AITool(
+            name="odoo_search_read", display_name="Odoo Search Read",
+            description="Search and read Odoo records",
+            target_system="odoo",
+            input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
+        )
+        defs = _build_tool_definitions([tool])
+        assert len(defs) == 1
+        assert defs[0]["type"] == "function"
+        assert defs[0]["function"]["name"] == "odoo_search_read"
+        assert "parameters" in defs[0]["function"]
+
+
+class TestToolExecution:
+    @pytest.mark.asyncio
+    async def test_get_available_tools_no_user(self):
+        from app.services.model_router import _get_available_tools
+        db = MockSession(has_config=False)
+        result = await _get_available_tools(db, user_id=None)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_available_tools_no_connected_accounts(self):
+        from app.services.model_router import _get_available_tools
+        db = MockSession(has_config=False, connected_accounts=[])
+        result = await _get_available_tools(db, user_id=uuid.uuid4())
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_with_tools(self):
+        """When model supports tools and tools are registered, they should be
+        sent to the model. If model returns tool_calls, execute and loop."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+        db.has_tools = True
+
+        class MockToolResult:
+            @property
+            def scalars(self):
+                def all():
+                    return [
+                        AITool(
+                            name="odoo_search_read", display_name="Odoo Search Read",
+                            description="Search Odoo",
+                            target_system="odoo",
+                            input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
+                        ),
+                    ]
+                return all
+
+        # Override execute for AITool queries to return mock tools
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            stmt_str = str(stmt)
+            if "ai_tools" in stmt_str:
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(
+                chat_completion=AsyncMock(side_effect=[
+                    # First call: model returns a tool_call
+                    {
+                        "content": None,
+                        "finish_reason": "tool_calls",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "odoo_search_read",
+                                "arguments": '{"model": "res.partner"}',
+                            },
+                        }],
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                        "latency_ms": 100,
+                        "error": False,
+                    },
+                    # Second call: model returns final answer
+                    {
+                        "content": "I found 5 partners in Odoo.",
+                        "finish_reason": "stop",
+                        "tool_calls": None,
+                        "prompt_tokens": 20,
+                        "completion_tokens": 8,
+                        "total_tokens": 28,
+                        "latency_ms": 200,
+                        "error": False,
+                    },
+                ])
+            ))
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value={"records": [{"id": 1, "name": "Partner A"}]})
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "find partners"}], user_id=uuid.uuid4())
+            assert result["content"] == "I found 5 partners in Odoo."
+            assert result["tool_calls"] is not None
+            assert len(result["tool_calls"]) == 1
+            assert result["tool_calls"][0]["tool_name"] == "odoo_search_read"
+            assert result["total_tokens"] == 28
 
 
 # ── Security Tests ──

@@ -5,84 +5,178 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import select
 from app.core.config import get_settings
 from app.models.models import AITool
-from app.schemas.schemas import AIToolCreate
 
 settings = get_settings()
 
+# Tool names use underscores (OpenAI function-calling requires `^[a-zA-Z0-9_]+$`)
+# input_schema must be valid JSON Schema for the OpenAI tools API.
 TOOLS = [
     {
-        "name": "odoo.search_read",
+        "name": "odoo_search_read",
         "display_name": "Odoo Search Read",
-        "description": "Search and read records from Odoo",
+        "description": "Search and read records from any Odoo model. Supports domain filtering, field selection, pagination, and ordering.",
         "target_system": "odoo",
-        "input_schema": {"model": "string", "domain": "list", "fields": "list"},
-        "output_schema": {"records": "list"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name (e.g. res.partner, sale.order, product.product)"},
+                "domain": {"type": "array", "items": {}, "description": "Search domain as list of tuples, e.g. [['is_company', '=', True]]"},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to return (omit for id+name_get)"},
+                "limit": {"type": "integer", "description": "Maximum records to return (default 50)", "default": 50},
+                "offset": {"type": "integer", "description": "Number of records to skip", "default": 0},
+                "order": {"type": "string", "description": "Sort order, e.g. 'id desc'"},
+            },
+            "required": ["model"],
+        },
     },
     {
-        "name": "odoo.execute_kw",
-        "display_name": "Odoo Execute KW",
-        "description": "Execute any Odoo model method",
+        "name": "odoo_execute_kw",
+        "display_name": "Odoo Execute Method",
+        "description": "Execute a method on an Odoo model. Use for search, read, name_get, fields_get, browse and other read methods. Write methods require explicit approval.",
         "target_system": "odoo",
-        "input_schema": {"model": "string", "method": "string", "args": "list", "kwargs": "dict"},
-        "output_schema": {"result": "any"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name"},
+                "method": {"type": "string", "description": "Method name (e.g. search, read, name_get, fields_get)"},
+                "args": {"type": "array", "items": {}, "description": "Positional arguments for the method"},
+                "kwargs": {"type": "object", "description": "Keyword arguments for the method"},
+            },
+            "required": ["model", "method"],
+        },
     },
     {
-        "name": "odoo.attachment_ocr",
-        "display_name": "Odoo Attachment OCR",
-        "description": "OCR an attachment from Odoo",
+        "name": "odoo_schema",
+        "display_name": "Odoo Schema",
+        "description": "Get schema information for Odoo models. Returns model list or field definitions for a specific model.",
         "target_system": "odoo",
-        "input_schema": {"attachment_id": "integer"},
-        "output_schema": {"text": "string"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name to get fields for (omit to list all models)"},
+                "fields": {"type": "array", "items": {"type": "string"}, "description": "Specific fields to describe"},
+            },
+        },
     },
     {
-        "name": "odoo.attach_artifact",
-        "display_name": "Odoo Attach Artifact",
-        "description": "Attach a file to an Odoo record",
+        "name": "odoo_attachments_list",
+        "display_name": "Odoo List Attachments",
+        "description": "List attachments (ir.attachment) for a given Odoo record.",
         "target_system": "odoo",
-        "input_schema": {"model": "string", "record_id": "integer", "artifact_id": "string"},
-        "output_schema": {"attachment_id": "integer"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name the record belongs to"},
+                "record_id": {"type": "integer", "description": "ID of the record"},
+                "limit": {"type": "integer", "description": "Maximum attachments to return", "default": 20},
+            },
+            "required": ["model", "record_id"],
+        },
     },
     {
-        "name": "github.create_pr",
-        "display_name": "GitHub Create PR",
-        "description": "Create a pull request on GitHub",
-        "target_system": "github",
-        "input_schema": {"repo": "string", "title": "string", "body": "string", "head": "string", "base": "string"},
-        "output_schema": {"pr_url": "string"},
+        "name": "odoo_attachments_get",
+        "display_name": "Odoo Get Attachment",
+        "description": "Get metadata for a specific attachment by ID.",
+        "target_system": "odoo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "attachment_id": {"type": "integer", "description": "ID of the attachment (ir.attachment)"},
+            },
+            "required": ["attachment_id"],
+        },
     },
     {
-        "name": "github.search_repo",
+        "name": "odoo_messages_list",
+        "display_name": "Odoo List Messages",
+        "description": "List chatter messages (mail.message) for a given Odoo record.",
+        "target_system": "odoo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name the record belongs to"},
+                "record_id": {"type": "integer", "description": "ID of the record"},
+                "limit": {"type": "integer", "description": "Maximum messages to return", "default": 20},
+            },
+            "required": ["model", "record_id"],
+        },
+    },
+    {
+        "name": "odoo_messages_create",
+        "display_name": "Odoo Create Message",
+        "description": "Post a chatter message on an Odoo record.",
+        "target_system": "odoo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "description": "Odoo model name"},
+                "record_id": {"type": "integer", "description": "ID of the record"},
+                "body": {"type": "string", "description": "Message body text"},
+            },
+            "required": ["model", "record_id", "body"],
+        },
+    },
+    {
+        "name": "github_search_repo",
         "display_name": "GitHub Search Repo",
         "description": "Search within a GitHub repository",
         "target_system": "github",
-        "input_schema": {"repo": "string", "query": "string"},
-        "output_schema": {"results": "list"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "Repository name (owner/repo)"},
+                "query": {"type": "string", "description": "Search query"},
+            },
+            "required": ["repo", "query"],
+        },
     },
     {
-        "name": "runner.run_python",
+        "name": "github_create_pr",
+        "display_name": "GitHub Create PR",
+        "description": "Create a pull request on GitHub",
+        "target_system": "github",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "Repository name (owner/repo)"},
+                "title": {"type": "string", "description": "PR title"},
+                "body": {"type": "string", "description": "PR description"},
+                "head": {"type": "string", "description": "Source branch"},
+                "base": {"type": "string", "description": "Target branch"},
+            },
+            "required": ["repo", "title", "head", "base"],
+        },
+    },
+    {
+        "name": "runner_run_python",
         "display_name": "Runner Run Python",
-        "description": "Run a Python script in a secure runner",
+        "description": "Run a Python script in a secure sandboxed runner",
         "target_system": "runner",
-        "input_schema": {"script": "string", "inputs": "dict"},
-        "output_schema": {"stdout": "string", "stderr": "string", "artifacts": "list"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string", "description": "Python script to execute"},
+                "inputs": {"type": "object", "description": "Input variables for the script"},
+            },
+            "required": ["script"],
+        },
     },
     {
-        "name": "ai.save_artifact",
+        "name": "ai_save_artifact",
         "display_name": "AI Save Artifact",
-        "description": "Save an artifact to AI Platform storage",
+        "description": "Save an artifact to AI Platform blob storage",
         "target_system": "ai-platform",
-        "input_schema": {"content": "bytes", "filename": "string", "type": "string"},
-        "output_schema": {"artifact_id": "string", "uri": "string"},
-    },
-    {
-        "name": "ai.create_task",
-        "display_name": "AI Create Task",
-        "description": "Create a task in the AI Platform",
-        "target_system": "ai-platform",
-        "input_schema": {"title": "string", "description": "string", "owner": "string"},
-        "output_schema": {"task_id": "string"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Artifact filename"},
+                "content_type": {"type": "string", "description": "MIME type"},
+            },
+            "required": ["filename"],
+        },
     },
 ]
 
@@ -93,7 +187,6 @@ async def seed_tools():
 
     async with async_session() as session:
         for tool_data in TOOLS:
-            from sqlalchemy import select
             result = await session.execute(select(AITool).where(AITool.name == tool_data["name"]))
             existing = result.scalar_one_or_none()
             if not existing:

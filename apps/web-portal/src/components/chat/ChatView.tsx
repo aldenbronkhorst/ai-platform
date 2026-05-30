@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import type { ChatMessage, ChatSession, AttachedFile, VoiceState } from "../../types";
 import { ChatComposer } from "./ChatComposer";
@@ -50,9 +50,11 @@ export function ChatView({
 }: ChatViewProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isEditSaving, setIsEditSaving] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(0);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -71,6 +73,16 @@ export function ChatView({
       scrollToBottom();
     }
   }, [chatMessages, isUserScrolledUp, scrollToBottom]);
+
+  useLayoutEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setComposerHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const handleEditSave = useCallback(async (newContent: string) => {
     if (!editingMessageId || !newContent.trim()) return;
@@ -97,19 +109,21 @@ export function ChatView({
         <div className="flex-1 flex flex-col">
           <ChatEmptyState displayName={displayName} onSuggestion={onSuggestionClick} />
         </div>
-        <ChatComposer
-          chatInput={chatInput}
-          attachedFiles={attachedFiles}
-          voiceState={voiceState}
-          isChatSending={isChatSending}
-          placeholder={placeholder}
-          onInputChange={onInputChange}
-          onSend={onSend}
-          onFileUpload={onFileUpload}
-          onRemoveFile={onRemoveFile}
-          onTriggerUpload={onTriggerUpload}
-          onToggleVoice={onToggleVoice}
-        />
+        <div ref={composerRef}>
+          <ChatComposer
+            chatInput={chatInput}
+            attachedFiles={attachedFiles}
+            voiceState={voiceState}
+            isChatSending={isChatSending}
+            placeholder={placeholder}
+            onInputChange={onInputChange}
+            onSend={onSend}
+            onFileUpload={onFileUpload}
+            onRemoveFile={onRemoveFile}
+            onTriggerUpload={onTriggerUpload}
+            onToggleVoice={onToggleVoice}
+          />
+        </div>
         {voiceState === "listening" && (
           <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">
             Speak now…
@@ -120,7 +134,8 @@ export function ChatView({
   }
 
   return (
-    <div className="h-full flex flex-col max-w-4xl mx-auto">
+    <div className="h-full flex flex-col max-w-4xl mx-auto relative">
+      {/* 1. Messages scroll viewport */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
@@ -142,11 +157,15 @@ export function ChatView({
         <div ref={messagesEndRef} />
       </div>
 
+      {/* 2. Jump-to-latest floating control – sits above composer dock */}
       {isUserScrolledUp && (
-        <div className="flex justify-center -mb-2 relative z-10">
+        <div
+          className="absolute left-0 right-0 flex justify-center pointer-events-none"
+          style={{ bottom: composerHeight + 20 }}
+        >
           <button
             onClick={scrollToBottom}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-surface border border-default text-xs font-semibold text-muted hover:text-default shadow-sm transition-all"
+            className="pointer-events-auto flex items-center gap-1 px-3 py-1.5 rounded-full bg-surface border border-default text-xs font-semibold text-muted hover:text-default shadow-sm transition-all"
           >
             <ChevronDown className="w-3.5 h-3.5" />
             Jump to latest
@@ -154,19 +173,22 @@ export function ChatView({
         </div>
       )}
 
-      <ChatComposer
-        chatInput={chatInput}
-        attachedFiles={attachedFiles}
-        voiceState={voiceState}
-        isChatSending={isChatSending}
-        placeholder={placeholder}
-        onInputChange={onInputChange}
-        onSend={onSend}
-        onFileUpload={onFileUpload}
-        onRemoveFile={onRemoveFile}
-        onTriggerUpload={onTriggerUpload}
-        onToggleVoice={onToggleVoice}
-      />
+      {/* 3. Composer dock – always at bottom */}
+      <div ref={composerRef} className="relative z-10">
+        <ChatComposer
+          chatInput={chatInput}
+          attachedFiles={attachedFiles}
+          voiceState={voiceState}
+          isChatSending={isChatSending}
+          placeholder={placeholder}
+          onInputChange={onInputChange}
+          onSend={onSend}
+          onFileUpload={onFileUpload}
+          onRemoveFile={onRemoveFile}
+          onTriggerUpload={onTriggerUpload}
+          onToggleVoice={onToggleVoice}
+        />
+      </div>
 
       {voiceState === "listening" && (
         <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">

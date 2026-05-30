@@ -1,14 +1,18 @@
 import os
+import json
 import logging
 from uuid import UUID
 from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import select
+from typing import Optional, Any
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
+import httpx
 
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount
+from app.models.models import (
+    AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AICompanyFact,
+)
 from app.services.foundry_client import FoundryClient
 
 logger = logging.getLogger(__name__)
@@ -114,6 +118,148 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
 
 KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure", "microsoft_365", "azure_devops"]
 
+TOOL_CONNECTOR_MAP = {
+    "odoo": {
+        "connector_url_env": "ODOO_CONNECTOR_URL",
+        "connector_key_env": "ODOO_CONNECTOR_API_KEY",
+    },
+}
+
+ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
+ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
+
+
+async def _get_available_tools(db: AsyncSession, user_id: Optional[UUID]) -> list[AITool]:
+    """Get active tools for systems the user has connected accounts for."""
+    if not user_id:
+        return []
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == user_id,
+            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+        )
+    )
+    accounts = result.scalars().all()
+    connected_systems = {a.provider for a in accounts}
+    if not connected_systems:
+        return []
+    result = await db.execute(
+        select(AITool).where(
+            AITool.status == "active",
+            AITool.target_system.in_(connected_systems),
+        ).order_by(AITool.name)
+    )
+    return result.scalars().all()
+
+
+def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
+    """Convert AITool records to OpenAI-compatible tool definitions."""
+    definitions = []
+    for tool in tools:
+        schema = tool.input_schema
+        if not schema:
+            continue
+        definitions.append({
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": schema,
+            },
+        })
+    return definitions
+
+
+async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
+    """Resolve Odoo credentials for a given user (internal tool-execution path)."""
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.provider == "odoo",
+            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        raise RuntimeError("No Odoo connected account found for tool execution")
+
+    api_key = ""
+    if account.secret_reference and os.environ.get("KEY_VAULT_URI"):
+        try:
+            credential = DefaultAzureCredential()
+            kv_client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
+            secret = kv_client.get_secret(account.secret_reference)
+            api_key = secret.value or ""
+        except Exception as e:
+            raise RuntimeError(f"Failed to retrieve Odoo credentials from Key Vault: {e}")
+
+    if not api_key:
+        raise RuntimeError("Odoo connected account has no valid credentials")
+
+    url_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+    db_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+    url_fact = url_result.scalar_one_or_none()
+    db_fact = db_result.scalar_one_or_none()
+
+    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+
+    if not odoo_url or not odoo_db:
+        raise RuntimeError("Odoo URL or database not configured in company facts")
+
+    return {
+        "url": odoo_url,
+        "db": odoo_db,
+        "username": account.provider_username or "",
+        "api_key": api_key,
+        "transport": "auto",
+    }
+
+
+async def _execute_tool_call(
+    db: AsyncSession,
+    user_id: UUID,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute a tool call by routing to the appropriate connector."""
+    if tool_name.startswith("odoo_"):
+        credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
+        path = _map_odoo_tool_to_path(tool_name)
+        payload = {
+            "credentials": credentials,
+            "identity_mode": "user-delegated",
+            **arguments,
+        }
+        url = f"{ODOO_CONNECTOR_URL.rstrip('/')}{path}" if ODOO_CONNECTOR_URL else ""
+        if not url:
+            return {"error": "Odoo connector URL not configured"}
+        headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY, "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+        if response.status_code >= 400:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text
+            return {"error": str(detail), "status_code": response.status_code}
+        return response.json()
+
+    return {"error": f"Unknown tool: {tool_name}"}
+
+
+def _map_odoo_tool_to_path(tool_name: str) -> str:
+    mapping = {
+        "odoo_search_read": "/records/search-read",
+        "odoo_execute_kw": "/execute-kw/",
+        "odoo_schema": "/schema/fields",
+        "odoo_attachments_list": "/attachments/list",
+        "odoo_attachments_get": "/attachments/get",
+        "odoo_messages_list": "/messages/list",
+        "odoo_messages_create": "/messages/create",
+    }
+    return mapping.get(tool_name, "")
+
 
 async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> str:
     """Build a connector-availability context block for the current user.
@@ -162,15 +308,30 @@ async def execute_chat(
     chat_session_id: Optional[UUID] = None,
     user_id: Optional[UUID] = None,
 ) -> dict:
-    route, model, provider = await get_enabled_route(db, task_type)
+    route, model_obj, provider = await get_enabled_route(db, task_type)
 
-    client = await build_foundry_client(provider, model)
+    client = await build_foundry_client(provider, model_obj)
 
     # Build system prompt with dynamic connector context
     system_prompt = route.system_prompt or ""
     connector_context = await _get_connector_context(db, user_id)
     if connector_context:
         system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
+
+    # Fetch available tools for connected systems
+    tools: list[AITool] = []
+    tool_definitions: list[dict[str, Any]] = []
+    supports_tools = model_obj.supports_tools == "true"
+    if supports_tools:
+        tools = await _get_available_tools(db, user_id)
+        tool_definitions = _build_tool_definitions(tools)
+        if tool_definitions:
+            system_prompt += (
+                "\n\nYou have access to the following tools. "
+                "When the user asks about data from a connected system, call the appropriate tool "
+                "rather than saying you cannot access it. "
+                "Use tools proactively when relevant."
+            )
 
     if system_prompt:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -180,23 +341,91 @@ async def execute_chat(
     temperature = float(route.temperature) if route.temperature is not None else 0.3
     max_tokens = route.max_tokens or 2000
 
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_latency_ms = 0
+    total_tool_calls = 0
+    tool_results: list[dict[str, Any]] = []
+
+    # Call model with tools (first round)
     result = await client.chat_completion(
         messages=full_messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        tools=tool_definitions if tool_definitions else None,
     )
+
+    total_prompt_tokens += result.get("prompt_tokens", 0)
+    total_completion_tokens += result.get("completion_tokens", 0)
+    total_latency_ms += result.get("latency_ms", 0)
+
+    # Tool-calling loop (up to 10 rounds to prevent infinite loops)
+    max_tool_rounds = 10
+    tool_round = 0
+    while tool_round < max_tool_rounds:
+        if result.get("error"):
+            break
+
+        tool_calls = result.get("tool_calls")
+        if not tool_calls or not tools:
+            break
+
+        tool_round += 1
+        total_tool_calls += len(tool_calls)
+
+        assistant_msg = {"role": "assistant", "content": result.get("content") or None}
+        assistant_msg["tool_calls"] = [
+            {"id": tc["id"], "type": tc["type"], "function": tc["function"]}
+            for tc in tool_calls
+        ]
+        full_messages.append(assistant_msg)
+
+        for tc in tool_calls:
+            if tc.get("type") != "function":
+                continue
+            func = tc.get("function", {})
+            name = func.get("name", "")
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+            tc_result = await _execute_tool_call(db, user_id, name, args)
+            tool_results.append({
+                "tool_call_id": tc.get("id", ""),
+                "tool_name": name,
+                "arguments": args,
+                "result": tc_result,
+            })
+
+            full_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id", ""),
+                "content": json.dumps(tc_result),
+            })
+
+        result = await client.chat_completion(
+            messages=full_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tool_definitions if tool_definitions else None,
+        )
+
+        total_prompt_tokens += result.get("prompt_tokens", 0)
+        total_completion_tokens += result.get("completion_tokens", 0)
+        total_latency_ms += result.get("latency_ms", 0)
 
     log = AIUsageLog(
         provider_id=provider.id,
-        model_id=model.id,
+        model_id=model_obj.id,
         route_id=route.id,
         task_type=task_type,
         chat_session_id=chat_session_id,
         user_id=user_id,
-        prompt_tokens=result.get("prompt_tokens", 0),
-        completion_tokens=result.get("completion_tokens", 0),
-        total_tokens=result.get("total_tokens", 0),
-        latency_ms=result.get("latency_ms", 0),
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
+        total_tokens=total_prompt_tokens + total_completion_tokens,
+        latency_ms=total_latency_ms,
         status="failed" if result.get("error") else "success",
         error_message=result.get("message") if result.get("error") else None,
     )
@@ -207,16 +436,18 @@ async def execute_chat(
         raise ProviderCallError(
             result.get("message", "Provider returned an error"),
             provider.name,
-            model.display_name,
+            model_obj.display_name,
         )
 
-    return {
-        "content": result["content"],
+    response = {
+        "content": result.get("content", ""),
         "finish_reason": result.get("finish_reason", ""),
         "model_provider": provider.name,
-        "model_name": model.display_name,
-        "prompt_tokens": result.get("prompt_tokens", 0),
-        "completion_tokens": result.get("completion_tokens", 0),
-        "total_tokens": result.get("total_tokens", 0),
-        "latency_ms": result.get("latency_ms", 0),
+        "model_name": model_obj.display_name,
+        "prompt_tokens": total_prompt_tokens,
+        "completion_tokens": total_completion_tokens,
+        "total_tokens": total_prompt_tokens + total_completion_tokens,
+        "latency_ms": total_latency_ms,
+        "tool_calls": tool_results if tool_results else None,
     }
+    return response

@@ -1,7 +1,7 @@
 import os
 import time
 import httpx
-from typing import Optional
+from typing import Optional, Any
 from azure.identity import DefaultAzureCredential
 
 AZURE_AI_INFERENCE_API_VERSION = "2024-05-01-preview"
@@ -44,6 +44,7 @@ class FoundryClient:
         temperature: float = 0.3,
         max_tokens: int = 2000,
         model_override: Optional[str] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
     ) -> dict:
         url = f"{self.base_url}/models/chat/completions?api-version={AZURE_AI_INFERENCE_API_VERSION}"
         model = model_override or self.deployment_name
@@ -53,6 +54,8 @@ class FoundryClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if tools:
+            payload["tools"] = tools
 
         start = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -74,12 +77,14 @@ class FoundryClient:
 
         body = response.json()
         choice = body.get("choices", [{}])[0]
+        msg = choice.get("message", {})
         usage = body.get("usage", {})
 
         result = {
             "error": False,
-            "content": choice.get("message", {}).get("content", ""),
+            "content": msg.get("content", ""),
             "finish_reason": choice.get("finish_reason", ""),
+            "tool_calls": msg.get("tool_calls"),
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0),
