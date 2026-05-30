@@ -11,6 +11,7 @@ Queues (defined in IaC infra/bicep/modules/serviceBus.bicep):
 
 Message schemas are documented inline per queue.
 """
+import asyncio
 import json
 import logging
 import os
