@@ -133,7 +133,9 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             currency_data = company.get("currency_id")
             currency_code = None
             currency_symbol = None
-            if isinstance(currency_data, list) and len(currency_data) >= 2:
+            if isinstance(currency_data, dict):
+                currency_code = currency_data.get("name")
+            elif isinstance(currency_data, list) and len(currency_data) >= 2:
                 currency_code = str(currency_data[1]) if currency_data[1] else None
             elif isinstance(currency_data, str):
                 currency_code = currency_data
