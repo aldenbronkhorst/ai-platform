@@ -107,6 +107,7 @@ class MessageListRequest(BaseModel):
     credentials: OdooCredentialsRequest
     model: Optional[str] = None
     record_id: Optional[int] = None
+    domain: Optional[list[Any]] = None
     limit: int = 50
 
 
