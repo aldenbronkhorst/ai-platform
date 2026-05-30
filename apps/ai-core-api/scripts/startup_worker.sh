@@ -8,4 +8,5 @@ echo "Running database migrations..."
 alembic upgrade head
 
 echo "Starting memory worker..."
-exec PYTHONPATH=/app python3 scripts/run_worker.py
+export PYTHONPATH=/app
+exec python3 scripts/run_worker.py
