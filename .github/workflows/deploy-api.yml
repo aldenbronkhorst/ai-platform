@@ -68,7 +68,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
@@ -161,7 +161,7 @@ jobs:
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}"
 
       - name: Set up Node.js for Portal
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
 
