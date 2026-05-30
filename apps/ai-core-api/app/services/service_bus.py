@@ -20,6 +20,7 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage, ServiceBusRece
 from azure.servicebus.aio import ServiceBusClient as AsyncServiceBusClient
 from azure.servicebus.aio import ServiceBusReceiver as AsyncServiceBusReceiver
 from azure.identity import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential as AsyncDefaultAzureCredential
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +45,9 @@ def _build_client(async_mode: bool = False):
     if not ns:
         return None
     fqdn = f"{ns}.servicebus.windows.net"
-    credential = DefaultAzureCredential()
     if async_mode:
-        return AsyncServiceBusClient(fully_qualified_namespace=fqdn, credential=credential)
-    return ServiceBusClient(fully_qualified_namespace=fqdn, credential=credential)
+        return AsyncServiceBusClient(fully_qualified_namespace=fqdn, credential=AsyncDefaultAzureCredential())
+    return ServiceBusClient(fully_qualified_namespace=fqdn, credential=DefaultAzureCredential())
 
 
 # ── Synchronous helpers (for startup / non-async contexts) ──
