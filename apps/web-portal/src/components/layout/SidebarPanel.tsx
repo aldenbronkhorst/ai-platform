@@ -86,6 +86,10 @@ export function SidebarPanel({
     { tab: "connected-accounts" as const, icon: Database, label: "Connected Accounts" },
   ];
 
+  if (hasRole(["AIPlatform.Admin", "AIPlatform.Developer"])) {
+    navItems.push({ tab: "admin" as const, icon: ShieldAlert, label: "Admin" });
+  }
+
   if (isSidebarCollapsed) {
     return (
       <div className="fixed top-3 left-4 z-40">

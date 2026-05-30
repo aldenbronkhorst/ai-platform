@@ -1,6 +1,7 @@
 import base64
 import re
-from typing import Any
+from decimal import Decimal
+from typing import Any, Optional
 
 
 def enrich_record_with_human_references(record: dict[str, Any], fields_info: dict[str, Any]) -> dict[str, Any]:
@@ -165,6 +166,129 @@ def extract_text_from_attachment(record: dict[str, Any], mode: str = "auto") -> 
 
 def format_attachment_response(record: dict[str, Any], mode: str = "auto") -> dict[str, Any]:
     return extract_text_from_attachment(record, mode)
+
+
+MONEY_FIELD_SUFFIXES = (
+    "_total", "_residual", "_amount", "_untaxed", "_tax",
+    "amount_total", "amount_residual", "amount_untaxed", "amount_tax",
+    "price_total", "price_subtotal", "price_unit",
+    "balance", "debit", "credit", "amount_currency",
+)
+
+
+def _is_money_field(field_name: str) -> bool:
+    """Check if a field name looks like a financial/monetary amount."""
+    lower = field_name.lower()
+    for suffix in MONEY_FIELD_SUFFIXES:
+        if lower == suffix or lower.endswith(suffix):
+            return True
+    if lower.startswith(("amount_", "price_", "total_")):
+        return True
+    return False
+
+
+def _format_money_value(value: Any, currency_code: str = "ZAR", currency_symbol: str = "R") -> dict:
+    """Format a raw numeric value into a structured money object.
+
+    Args:
+        value: The raw numeric value.
+        currency_code: ISO currency code (e.g. ZAR, USD, EUR).
+        currency_symbol: Currency symbol (e.g. R, $, €).
+
+    Returns:
+        A dict with value, currency_code, currency_symbol, formatted, and source.
+    """
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    # Format with thousand separators and 2 decimal places
+    formatted = f"{currency_symbol} {num:,.2f}".replace(",", " ").replace(".", ",") if currency_symbol == "R" else f"{currency_symbol}{num:,.2f}"
+
+    return {
+        "value": num,
+        "currency_code": currency_code,
+        "currency_symbol": currency_symbol,
+        "formatted": formatted,
+        "source": "odoo.money_field",
+    }
+
+
+def _normalize_zar_format(num: float, currency_symbol: str) -> str:
+    """Format ZAR amounts in South African notation: R 1,234.56"""
+    return f"{currency_symbol} {num:,.2f}"
+
+
+def normalize_money_values(
+    record: dict[str, Any],
+    currency_cache: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Scan a record for money fields and add _money metadata.
+
+    Builds a money-formatted parallel value for each detected financial field.
+    If currency_cache contains 'code' and 'symbol', those are preferred.
+    Otherwise falls back to the record's own currency_id or company_currency_id.
+    """
+    enriched = dict(record)
+
+    # Resolve currency from cache or record
+    if currency_cache:
+        currency_code = currency_cache.get("code", "ZAR")
+        currency_symbol = currency_cache.get("symbol", "R")
+    else:
+        currency_code = "ZAR"
+        currency_symbol = "R"
+        # Try to extract from record fields
+        currency_id = record.get("currency_id")
+        if isinstance(currency_id, list) and len(currency_id) >= 2:
+            currency_code = str(currency_id[1]) if currency_id[1] else "ZAR"
+        company_currency = record.get("company_currency_id")
+        if isinstance(company_currency, list) and len(company_currency) >= 2:
+            currency_code = str(company_currency[1]) or currency_code
+
+    for field_name, value in list(record.items()):
+        if field_name.endswith("_money") or field_name.startswith("_"):
+            continue
+        if not _is_money_field(field_name):
+            continue
+        money_value = _format_money_value(value, currency_code, currency_symbol)
+        if money_value:
+            enriched[f"{field_name}_money"] = money_value
+
+    return enriched
+
+
+def format_search_read_response(
+    model: str,
+    records: list[dict[str, Any]],
+    fields_info: dict[str, Any] | None = None,
+    include_human_references: bool = True,
+    currency_code: Optional[str] = None,
+    currency_symbol: Optional[str] = None,
+) -> dict[str, Any]:
+    """Format a search_read response with structured metadata and money normalization."""
+    formatted_records = []
+    currency_cache = None
+    if currency_code and currency_symbol:
+        currency_cache = {"code": currency_code, "symbol": currency_symbol}
+
+    for record in records:
+        rec = dict(record)
+        rec["__model"] = model
+        if include_human_references and fields_info:
+            rec = enrich_record_with_human_references(rec, fields_info)
+        # Normalize money values
+        rec = normalize_money_values(rec, currency_cache)
+        formatted_records.append(rec)
+
+    return {
+        "model": model,
+        "count": len(formatted_records),
+        "records": formatted_records,
+    }
 
 
 def format_message_response(record: dict[str, Any]) -> dict[str, Any]:

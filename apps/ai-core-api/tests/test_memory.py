@@ -1,0 +1,378 @@
+"""Tests for memory CRUD endpoints, MemoryCandidateService, and chat integration."""
+import os
+import uuid
+import pytest
+from datetime import datetime
+from unittest.mock import patch, AsyncMock
+
+os.environ["DEBUG"] = "true"
+os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
+os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
+
+from app.main import app
+from app.core.database import get_db
+from app.models.models import AIMemory, AIChatMessage, AIChatSession
+
+
+class MockSession:
+    def __init__(self):
+        self.added = []
+        self.flushed = False
+        self.memories: list[AIMemory] = []
+        self.messages: list[AIChatMessage] = []
+        self.committed = False
+
+    async def execute(self, stmt, *args, **kwargs):
+        from sqlalchemy import select, desc
+        from sqlalchemy.sql.elements import BinaryExpression
+
+        class MockResult:
+            def __init__(self, data):
+                self._data = data
+
+            def scalar_one_or_none(self):
+                return self._data[0] if self._data else None
+
+            def scalars(self):
+                return self
+
+            def all(self):
+                return self._data
+
+            def first(self):
+                return self._data[0] if self._data else None
+
+        # Simulate select queries
+        if isinstance(stmt, select):
+            table = stmt.froms[0] if stmt.froms else None
+            if table and hasattr(table, 'entity_namespace'):
+                ns = table.entity_namespace
+                if ns == {AIMemory}:
+                    return MockResult(self.memories)
+                elif ns == {AIChatMessage}:
+                    return MockResult(self.messages)
+                elif ns == {AIChatSession}:
+                    return MockResult([])
+
+        return MockResult([])
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def flush(self):
+        self.flushed = True
+        for obj in self.added:
+            if isinstance(obj, AIMemory):
+                if not obj.id:
+                    obj.id = uuid.uuid4()
+                obj.created_at = datetime.utcnow()
+                obj.updated_at = datetime.utcnow()
+                self.memories.append(obj)
+
+    async def commit(self):
+        self.committed = True
+        if not self.flushed:
+            await self.flush()
+
+    async def refresh(self, obj):
+        pass
+
+    def add_all(self, objs):
+        self.added.extend(objs)
+
+
+@pytest.fixture
+def mock_db():
+    return MockSession()
+
+
+@pytest.fixture
+def client(mock_db):
+    async def override_get_db():
+        yield mock_db
+    app.dependency_overrides[get_db] = override_get_db
+    from fastapi.testclient import TestClient
+    test_client = TestClient(app)
+    yield test_client
+    app.dependency_overrides.clear()
+
+
+# ── MemoryCandidateService unit tests ──
+
+class TestMemoryCandidateService:
+    def test_explicit_remember_this(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+        from app.models.models import AIChatMessage
+
+        msg = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="user",
+            content="Remember this: ABC customers need special attention",
+            created_at=datetime.utcnow(),
+        )
+        svc = MemoryCandidateService(mock_db)
+        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.type == "system_behavior"
+        assert c.risk_level == "medium"
+        assert c.save_mode == "confirm"
+
+    def test_correction_detected(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+
+        msg = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="user",
+            content="No, that's not dollars, it should be ZAR",
+            created_at=datetime.utcnow(),
+        )
+        svc = MemoryCandidateService(mock_db)
+        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        assert len(candidates) == 1
+        c = candidates[0]
+        assert c.type == "correction"
+        assert c.risk_level == "medium"
+
+    def test_resolved_case_detected(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+
+        msg = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="user",
+            content="Thanks, that worked! The downstairs printer setup is working now.",
+            created_at=datetime.utcnow(),
+        )
+        svc = MemoryCandidateService(mock_db)
+        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        assert len(candidates) >= 1
+        c = candidates[0]
+        assert c.type == "resolved_case"
+        assert c.risk_level == "low"
+        assert c.save_mode == "auto"
+
+    def test_no_candidate_for_normal_chat(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+
+        msg = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="user",
+            content="What is the weather today?",
+            created_at=datetime.utcnow(),
+        )
+        svc = MemoryCandidateService(mock_db)
+        candidates = svc.extract_from_messages([msg], user_id=uuid.uuid4())
+        assert len(candidates) == 0
+
+    def test_duplicate_check(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+        from app.schemas.schemas import MemoryCandidate
+
+        # Add an existing memory
+        existing = AIMemory(
+            id=uuid.uuid4(),
+            type="system_behavior",
+            title="Test memory that already exists",
+            body="This is a test",
+            status="active",
+            confidence="medium",
+            risk_level="low",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        mock_db.memories.append(existing)
+
+        candidate = MemoryCandidate(
+            type="system_behavior",
+            title="Test memory that already exists",
+            body="This is a test",
+            confidence="medium",
+            risk_level="low",
+            save_mode="confirm",
+        )
+        svc = MemoryCandidateService(mock_db)
+        import asyncio
+        is_dup = asyncio.run(svc.check_duplicate(candidate))
+        assert is_dup is True
+
+    def test_save_candidate_auto_active(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+        from app.schemas.schemas import MemoryCandidate
+
+        candidate = MemoryCandidate(
+            type="resolved_case",
+            title="Test auto-save",
+            body="This should be active",
+            confidence="high",
+            risk_level="low",
+            save_mode="auto",
+        )
+        svc = MemoryCandidateService(mock_db)
+        import asyncio
+        memory = asyncio.run(svc.save_candidate(candidate, user_id=uuid.uuid4()))
+        assert memory.status == "active"
+        assert memory.type == "resolved_case"
+
+    def test_save_candidate_draft(self, mock_db):
+        from app.services.memory import MemoryCandidateService
+        from app.schemas.schemas import MemoryCandidate
+
+        candidate = MemoryCandidate(
+            type="system_behavior",
+            title="Test draft save",
+            body="This needs confirmation",
+            confidence="medium",
+            risk_level="medium",
+            save_mode="confirm",
+        )
+        svc = MemoryCandidateService(mock_db)
+        import asyncio
+        memory = asyncio.run(svc.save_candidate(candidate, user_id=uuid.uuid4()))
+        assert memory.status == "draft"
+        assert memory.type == "system_behavior"
+
+
+# ── ReviewerAgent unit tests ──
+
+class TestReviewerAgent:
+    def test_blank_response_rejected(self):
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+
+        agent = ReviewerAgent()
+        import asyncio
+        result = asyncio.run(agent.review(ReviewRequest(
+            content="",
+            user_question="What is revenue?",
+        )))
+        assert result.approved is False
+        assert "blank" in " ".join(result.issues).lower()
+
+    def test_currency_check_passes(self):
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+
+        agent = ReviewerAgent()
+        import asyncio
+        result = asyncio.run(agent.review(ReviewRequest(
+            content="Revenue this month is R 50,000.00",
+            user_question="What is revenue?",
+        )))
+        assert result.approved is True
+        assert len(result.issues) == 0
+
+    def test_dollar_assumption_caught(self):
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+
+        agent = ReviewerAgent()
+        import asyncio
+        result = asyncio.run(agent.review(ReviewRequest(
+            content="Revenue this month is $50,000.00",
+            user_question="What is the revenue? I need it in ZAR.",
+        )))
+        # Finance question with $ should flag
+        assert result.approved is False
+        assert len(result.issues) > 0
+
+    def test_non_finance_question_passes(self):
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+
+        agent = ReviewerAgent()
+        import asyncio
+        result = asyncio.run(agent.review(ReviewRequest(
+            content="The weather is sunny today.",
+            user_question="What is the weather?",
+        )))
+        assert result.approved is True
+
+
+# ── Memory CRUD endpoint tests ──
+
+class TestMemoryEndpoints:
+    def test_list_memories_empty(self, client):
+        res = client.get("/memories")
+        assert res.status_code == 200
+        assert res.json() == []
+
+    def test_create_memory(self, client):
+        res = client.post("/memories", json={
+            "type": "general_note",
+            "title": "Test memory",
+            "body": "This is a test memory",
+            "risk_level": "low",
+            "status": "draft",
+        })
+        assert res.status_code == 201
+        data = res.json()
+        assert data["type"] == "general_note"
+        assert data["title"] == "Test memory"
+        assert data["status"] == "draft"
+
+    def test_create_and_approve_memory(self, client):
+        res = client.post("/memories", json={
+            "type": "procedure",
+            "title": "Approval test",
+            "body": "Should be approved",
+            "risk_level": "medium",
+        })
+        assert res.status_code == 201
+        mem_id = res.json()["id"]
+
+        res = client.post(f"/memories/{mem_id}/approve")
+        assert res.status_code == 200
+        assert res.json()["status"] == "active"
+
+    def test_create_and_archive_memory(self, client):
+        res = client.post("/memories", json={
+            "type": "general_note",
+            "title": "Archive test",
+            "risk_level": "low",
+        })
+        assert res.status_code == 201
+        mem_id = res.json()["id"]
+
+        res = client.delete(f"/memories/{mem_id}")
+        assert res.status_code == 204
+
+    def test_update_memory(self, client):
+        res = client.post("/memories", json={
+            "type": "resolved_case",
+            "title": "Update test",
+            "body": "Original body",
+            "risk_level": "low",
+        })
+        assert res.status_code == 201
+        mem_id = res.json()["id"]
+
+        res = client.patch(f"/memories/{mem_id}", json={
+            "title": "Updated title",
+            "body": "Updated body",
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["title"] == "Updated title"
+        assert data["body"] == "Updated body"
+
+    def test_get_nonexistent_memory(self, client):
+        res = client.get(f"/memories/{uuid.uuid4()}")
+        assert res.status_code == 404
+
+    def test_filter_memories_by_type(self, client):
+        # Create two memories of different types
+        client.post("/memories", json={"type": "procedure", "title": "P1", "risk_level": "low"})
+        client.post("/memories", json={"type": "customer_note", "title": "C1", "risk_level": "low"})
+
+        res = client.get("/memories?type=procedure")
+        assert res.status_code == 200
+        data = res.json()
+        assert all(m["type"] == "procedure" for m in data)

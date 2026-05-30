@@ -56,4 +56,34 @@ export interface AttachedFile {
 
 export type VoiceState = "idle" | "listening" | "processing" | "unsupported" | "denied";
 
-export type ActiveTab = "workflows" | "chat" | "tasks" | "artifacts" | "connected-accounts" | "audit" | "settings";
+export interface AIMemory {
+  id: string;
+  type: string;
+  title: string;
+  summary: string | null;
+  body: string | null;
+  scope_type: string | null;
+  scope_value: string | null;
+  confidence: string;
+  risk_level: string;
+  status: string;
+  priority: number;
+  conversation_id: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MemoryCandidate {
+  type: string;
+  title: string;
+  summary: string | null;
+  body: string | null;
+  scope_type: string | null;
+  scope_value: string | null;
+  confidence: string;
+  risk_level: string;
+  save_mode: string;
+}
+
+export type ActiveTab = "workflows" | "chat" | "tasks" | "artifacts" | "connected-accounts" | "audit" | "settings" | "admin";

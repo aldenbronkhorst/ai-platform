@@ -222,6 +222,92 @@ class ContextRequest(BaseModel):
     limit: int = 10
 
 
+class AIMemoryCreate(BaseModel):
+    type: str
+    title: str
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    scope_type: Optional[str] = None
+    scope_value: Optional[str] = None
+    entities_json: Optional[Any] = None
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    conversation_id: Optional[UUID] = None
+    message_id: Optional[UUID] = None
+    confidence: str = "medium"
+    risk_level: str = "low"
+    status: str = "draft"
+    priority: int = 100
+    metadata_json: Optional[Any] = None
+
+
+class AIMemoryUpdate(BaseModel):
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    status: Optional[str] = None
+    confidence: Optional[str] = None
+    priority: Optional[int] = None
+
+
+class AIMemoryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    type: str
+    title: str
+    summary: Optional[str]
+    body: Optional[str]
+    scope_type: Optional[str]
+    scope_value: Optional[str]
+    entities_json: Optional[Any]
+    source_type: Optional[str]
+    source_id: Optional[str]
+    conversation_id: Optional[UUID]
+    message_id: Optional[UUID]
+    confidence: str
+    risk_level: str
+    status: str
+    priority: int
+    success_count: int
+    failure_count: int
+    last_used_at: Optional[datetime]
+    last_confirmed_at: Optional[datetime]
+    version: int
+    created_by_user_id: Optional[UUID]
+    approved_by_user_id: Optional[UUID]
+    metadata_json: Optional[Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class MemoryCandidate(BaseModel):
+    type: str
+    title: str
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    scope_type: Optional[str] = None
+    scope_value: Optional[str] = None
+    entities_json: Optional[Any] = None
+    confidence: str = "medium"
+    risk_level: str = "low"
+    save_mode: str = "auto"  # auto, confirm, admin_approval
+
+
+class ReviewRequest(BaseModel):
+    content: str
+    user_question: str
+    tool_results: Optional[List[Any]] = None
+    source_system: Optional[str] = None
+
+
+class ReviewResult(BaseModel):
+    approved: bool
+    issues: List[str] = []
+    required_changes: List[str] = []
+    risk_level: str = "low"
+    reviewer_notes: Optional[str] = None
+
+
 class ContextResponse(BaseModel):
     rules: List[AIRuleResponse]
     facts: List[AICompanyFactResponse]

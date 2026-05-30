@@ -41,6 +41,10 @@ class AIConnectedAccount(Base, AuditMixin):
     disconnected_at = Column(DateTime(timezone=True), nullable=True)
     odoo_url = Column(String(500), nullable=True)
     odoo_db = Column(String(255), nullable=True)
+    odoo_company_id = Column(Integer, nullable=True)
+    odoo_company_name = Column(String(255), nullable=True)
+    odoo_currency_code = Column(String(10), nullable=True)
+    odoo_currency_symbol = Column(String(10), nullable=True)
 
 
 class AICompanyFact(Base, AuditMixin):
@@ -259,6 +263,37 @@ class AIRoute(Base, AuditMixin):
     max_tokens = Column(Integer, default=2000, nullable=False)
     system_prompt = Column(Text, nullable=True)
     enabled = Column(String(10), default="true", nullable=False)
+
+
+class AIMemory(Base, AuditMixin):
+    __tablename__ = "ai_memories"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    type = Column(String(50), nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    summary = Column(String(1000), nullable=True)
+    body = Column(Text, nullable=True)
+    scope_type = Column(String(50), nullable=True)
+    scope_value = Column(String(255), nullable=True)
+    entities_json = Column(JSON, nullable=True)
+    source_type = Column(String(50), nullable=True)
+    source_id = Column(String(255), nullable=True)
+    conversation_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=True, index=True)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True)
+    confidence = Column(String(20), default="medium", nullable=False)
+    risk_level = Column(String(20), default="low", nullable=False)
+    status = Column(String(20), default="draft", nullable=False, index=True)
+    priority = Column(Integer, default=100, nullable=False)
+    success_count = Column(Integer, default=0, nullable=False)
+    failure_count = Column(Integer, default=0, nullable=False)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    last_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    stale_after = Column(DateTime(timezone=True), nullable=True)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
+    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
+    supersedes_memory_id = Column(UUID(as_uuid=True), ForeignKey("ai_memories.id"), nullable=True)
+    version = Column(Integer, default=1, nullable=False)
+    metadata_json = Column(JSON, nullable=True)
 
 
 class AIUsageLog(Base):

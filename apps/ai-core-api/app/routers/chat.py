@@ -1,5 +1,6 @@
 import os
 import uuid
+import logging
 import httpx
 from datetime import datetime
 from uuid import UUID
@@ -14,6 +15,8 @@ from app.core.database import get_db
 from app.models.models import AIChatSession, AIChatMessage, AIChatArtifact, AIChatJob, AIConnectedAccount
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -304,7 +307,56 @@ async def post_chat_message(
             },
         )
 
-    assistant_content = router_result["content"]
+    assistant_content = router_result.get("content", "")
+    tool_calls_data = router_result.get("tool_calls")
+
+    # Reviewer check for finance/high-risk responses
+    try:
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        reviewer = ReviewerAgent()
+        review = await reviewer.review(
+            ReviewRequest(
+                content=assistant_content,
+                user_question=req.content,
+                tool_results=tool_calls_data if tool_calls_data else None,
+            )
+        )
+        if not review.approved:
+            logger.warning(
+                "Reviewer rejected response | request_id=%s issues=%d risk=%s",
+                request_id, len(review.issues), review.risk_level,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "request_id": request_id,
+                    "error_type": "review_failed",
+                    "error_message": "The response was reviewed and rejected. Please try again.",
+                    "technical_detail": f"Review issues: {'; '.join(review.issues)}",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Reviewer check failed (non-blocking): %s", exc)
+
+    # Blank-response guard
+    if not assistant_content or not assistant_content.strip():
+        logger.warning(
+            "Blank response from model router | request_id=%s user_id=%s session_id=%s",
+            request_id, user_id, session_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "server_error",
+                "error_message": "The model returned an empty response. Please try again.",
+                "technical_detail": "Model router returned blank content",
+            },
+        )
+
     model_provider = router_result.get("model_provider", "unknown")
     model_name = router_result.get("model_name", "unknown")
     token_usage = {
@@ -312,7 +364,7 @@ async def post_chat_message(
         "completion_tokens": router_result.get("completion_tokens", 0),
         "total_tokens": router_result.get("total_tokens", 0),
     }
-    tool_calls_data = router_result.get("tool_calls")
+    context_data = router_result.get("context")
     metadata_info: dict[str, Any] = {
         "technical_details": {
             "model_provider": model_provider,
@@ -323,6 +375,8 @@ async def post_chat_message(
     }
     if tool_calls_data:
         metadata_info["technical_details"]["tool_calls"] = tool_calls_data
+    if context_data:
+        metadata_info["context"] = context_data
 
     # 4. Save Assistant Message (only on success)
     assistant_msg = AIChatMessage(
@@ -360,5 +414,31 @@ async def post_chat_message(
         status="success",
     ))
     await db.commit()
+
+    # Non-blocking memory candidate extraction
+    try:
+        from app.services.memory import MemoryCandidateService
+        memory_svc = MemoryCandidateService(db)
+        candidates = await memory_svc.extract_from_messages(
+            messages=[user_msg, assistant_msg],
+            user_id=user_id,
+        )
+        if candidates:
+            logger.info(
+                "Memory candidates found | session=%s count=%d types=%s",
+                session_id, len(candidates), [c.type for c in candidates],
+            )
+            for candidate in candidates:
+                is_dup = await memory_svc.check_duplicate(candidate)
+                if not is_dup and candidate.save_mode == "auto":
+                    saved = await memory_svc.save_candidate(
+                        candidate=candidate,
+                        user_id=user_id,
+                        conversation_id=session_id,
+                        message_id=assistant_msg.id,
+                    )
+                    logger.info("Auto-saved memory | id=%s type=%s", saved.id, candidate.type)
+    except Exception as exc:
+        logger.warning("Memory extraction failed (non-blocking): %s", exc)
 
     return assistant_msg

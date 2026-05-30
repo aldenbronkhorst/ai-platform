@@ -56,6 +56,18 @@ RULES = [
         "status": "active",
         "priority": 20,
     },
+    {
+        "title": "Currency Presentation Policy",
+        "body": (
+            "Always present monetary values using the connected Odoo company's currency. "
+            "Do not default to US dollar ($). "
+            "If the connected account shows ZAR, prepend 'R' symbol with a space and use thousand separators. "
+            "If currency is unknown, ask the user before quoting amounts."
+        ),
+        "scope_type": "global",
+        "status": "active",
+        "priority": 20,
+    },
 ]
 
 FACTS = [
@@ -73,6 +85,11 @@ FACTS = [
         "key": "ai_platform_region",
         "value": "southafricanorth",
         "category": "infrastructure",
+    },
+    {
+        "key": "default_currency_format",
+        "value": "R 1,234.56 (South African notation; symbol before amount, space before numeric)",
+        "category": "finance",
     },
 ]
 

@@ -71,6 +71,10 @@ class ConnectedAccountResponse(BaseModel):
     target_environment: str
     odoo_url: Optional[str] = None
     odoo_db: Optional[str] = None
+    odoo_company_id: Optional[int] = None
+    odoo_company_name: Optional[str] = None
+    odoo_currency_code: Optional[str] = None
+    odoo_currency_symbol: Optional[str] = None
 
 
 class OdooStatusResponse(BaseModel):
@@ -81,6 +85,68 @@ class OdooStatusResponse(BaseModel):
     account_id: Optional[UUID] = None
     odoo_url: Optional[str] = None
     odoo_db: Optional[str] = None
+    odoo_company_id: Optional[int] = None
+    odoo_company_name: Optional[str] = None
+    odoo_currency_code: Optional[str] = None
+    odoo_currency_symbol: Optional[str] = None
+
+
+async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key: str) -> dict:
+    """Fetch company currency and company name from Odoo via the connector."""
+    if not ODOO_CONNECTOR_URL:
+        return {}
+    try:
+        headers = {
+            "X-Internal-API-Key": ODOO_CONNECTOR_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "credentials": {
+                "url": url,
+                "db": db,
+                "username": username,
+                "api_key": api_key,
+                "transport": "auto",
+            },
+            "identity_mode": "user-delegated",
+            "model": "res.company",
+            "method": "search_read",
+            "args": [[]],
+            "kwargs": {
+                "fields": ["id", "name", "currency_id"],
+                "limit": 1,
+            },
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{ODOO_CONNECTOR_URL.rstrip('/')}/execute-kw/",
+                json=payload,
+                headers=headers,
+            )
+        if response.status_code >= 400:
+            logger.warning("Failed to fetch company metadata from Odoo: %s", response.text)
+            return {}
+
+        data = response.json()
+        records = data.get("records") if isinstance(data, dict) else data
+        if isinstance(records, list) and len(records) > 0:
+            company = records[0]
+            company_id = company.get("id")
+            company_name = company.get("name") or company.get("display_name", "")
+            currency_data = company.get("currency_id")
+            currency_code = None
+            currency_symbol = None
+            if isinstance(currency_data, list) and len(currency_data) >= 2:
+                currency_code = str(currency_data[1]) if currency_data[1] else None
+            return {
+                "odoo_company_id": company_id,
+                "odoo_company_name": company_name,
+                "odoo_currency_code": currency_code,
+            }
+        return {}
+    except Exception as exc:
+        logger.warning("Could not fetch Odoo company metadata: %s", exc)
+        return {}
 
 
 async def _verify_odoo_credentials_via_connector(url: str, db: str, username: str, api_key: str) -> None:
@@ -229,6 +295,14 @@ async def connect_odoo(
         api_key=req.odoo_api_key
     )
 
+    # 1b. Fetch company metadata (currency, company name) from Odoo
+    company_meta = await _fetch_odoo_company_metadata(
+        url=normalized_url,
+        db=req.odoo_db,
+        username=req.odoo_username,
+        api_key=req.odoo_api_key,
+    )
+
     # 2. Check if a connection already exists
     result = await db.execute(
         select(AIConnectedAccount).where(
@@ -260,6 +334,10 @@ async def connect_odoo(
         account.updated_at = datetime.utcnow()
         account.odoo_url = normalized_url
         account.odoo_db = req.odoo_db
+        if company_meta.get("odoo_company_id"):
+            account.odoo_company_id = company_meta["odoo_company_id"]
+            account.odoo_company_name = company_meta.get("odoo_company_name")
+            account.odoo_currency_code = company_meta.get("odoo_currency_code")
     else:
         account = AIConnectedAccount(
             id=connected_account_id,
@@ -274,6 +352,9 @@ async def connect_odoo(
             updated_at=datetime.utcnow(),
             odoo_url=normalized_url,
             odoo_db=req.odoo_db,
+            odoo_company_id=company_meta.get("odoo_company_id"),
+            odoo_company_name=company_meta.get("odoo_company_name"),
+            odoo_currency_code=company_meta.get("odoo_currency_code"),
         )
         db.add(account)
 
@@ -338,6 +419,10 @@ async def get_odoo_status(
         account_id=account.id,
         odoo_url=account.odoo_url,
         odoo_db=account.odoo_db,
+        odoo_company_id=account.odoo_company_id,
+        odoo_company_name=account.odoo_company_name,
+        odoo_currency_code=account.odoo_currency_code,
+        odoo_currency_symbol=account.odoo_currency_symbol,
     )
 
 
@@ -396,6 +481,18 @@ async def test_odoo_connection(
         )
         account.status = "connected"
         account.last_verified_at = datetime.utcnow()
+
+        # Refresh company metadata
+        company_meta = await _fetch_odoo_company_metadata(
+            url=odoo_url,
+            db=odoo_db,
+            username=account.provider_username,
+            api_key=api_key,
+        )
+        if company_meta.get("odoo_company_id"):
+            account.odoo_company_id = company_meta["odoo_company_id"]
+            account.odoo_company_name = company_meta.get("odoo_company_name")
+            account.odoo_currency_code = company_meta.get("odoo_currency_code")
     except Exception as e:
         test_status = "error"
         account.status = "error"
@@ -427,6 +524,10 @@ async def test_odoo_connection(
         account_id=account.id,
         odoo_url=account.odoo_url,
         odoo_db=account.odoo_db,
+        odoo_company_id=account.odoo_company_id,
+        odoo_company_name=account.odoo_company_name,
+        odoo_currency_code=account.odoo_currency_code,
+        odoo_currency_symbol=account.odoo_currency_symbol,
     )
 
 

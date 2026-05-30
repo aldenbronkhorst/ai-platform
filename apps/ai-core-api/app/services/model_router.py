@@ -15,6 +15,8 @@ from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AICompanyFact,
 )
 from app.services.foundry_client import FoundryClient
+from app.services.context import ContextService
+from app.schemas.schemas import ContextRequest
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +358,65 @@ async def execute_chat(
                 "Use tools proactively when relevant."
             )
 
+    # Inject business rules and company facts into the system prompt
+    injected_rules: list[Any] = []
+    injected_facts: list[Any] = []
+    try:
+        connected_systems: set[str] = set()
+        if user_id:
+            acct_result = await db.execute(
+                select(AIConnectedAccount).where(
+                    AIConnectedAccount.user_id == user_id,
+                    or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+                )
+            )
+            connected_systems = {a.provider for a in acct_result.scalars().all()}
+        context_svc = ContextService(db)
+        context = await context_svc.get_context(
+            ContextRequest(
+                task="general_chat",
+                systems=list(connected_systems) if connected_systems else None,
+                limit=50,
+            ),
+            user_id=user_id,
+        )
+        injected_rules = context.get("rules", [])
+        injected_facts = context.get("facts", [])
+        if injected_rules:
+            rules_text = "\n".join(
+                f"- [Priority {r.priority}] {r.body}" for r in injected_rules
+            )
+            system_prompt += f"\n\n## Active Business Rules\n{rules_text}"
+        if injected_facts:
+            facts_text = "\n".join(
+                f"- {f.key}: {f.value}" for f in injected_facts
+            )
+            system_prompt += f"\n\n## Company Facts\n{facts_text}"
+        # Inject Odoo company currency if available
+        odoo_currency_str = None
+        if user_id:
+            acct_result2 = await db.execute(
+                select(AIConnectedAccount).where(
+                    AIConnectedAccount.user_id == user_id,
+                    AIConnectedAccount.provider == "odoo",
+                    or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+                )
+            )
+            odoo_account = acct_result2.scalars().first()
+            if odoo_account and odoo_account.odoo_currency_code:
+                code = odoo_account.odoo_currency_code
+                symbol = odoo_account.odoo_currency_symbol or code
+                company = odoo_account.odoo_company_name or "your company"
+                odoo_currency_str = f"{company} uses {code} ({symbol})"
+                system_prompt += f"\n\n## Connected Odoo Currency\n{odoo_currency_str}"
+
+        logger.info(
+            "Context injected | rules=%d facts=%d user_id=%s currency=%s",
+            len(injected_rules), len(injected_facts), user_id, odoo_currency_str or "none",
+        )
+    except Exception as exc:
+        logger.warning("Failed to inject context: %s", exc)
+
     if system_prompt:
         full_messages = [{"role": "system", "content": system_prompt}] + messages
     else:
@@ -518,6 +579,11 @@ async def execute_chat(
             model_obj.display_name,
         )
 
+    context_metadata = {
+        "rules_injected": [{"id": str(r.id), "title": r.title, "priority": r.priority} for r in injected_rules] if injected_rules else [],
+        "facts_injected": [{"key": f.key, "value": f.value} for f in injected_facts] if injected_facts else [],
+    }
+
     response = {
         "content": result.get("content", ""),
         "finish_reason": result.get("finish_reason", ""),
@@ -528,5 +594,6 @@ async def execute_chat(
         "total_tokens": total_prompt_tokens + total_completion_tokens,
         "latency_ms": total_latency_ms,
         "tool_calls": tool_results if tool_results else None,
+        "context": context_metadata,
     }
     return response

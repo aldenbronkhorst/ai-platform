@@ -13,7 +13,8 @@ import { TasksPage } from "./pages/TasksPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { AiConfigView } from "./AiConfigView";
-import type { ActiveTab } from "./types";
+import { AdminPage } from "./pages/AdminPage";
+import type { ActiveTab, MemoryCandidate } from "./types";
 
 const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
 
@@ -241,110 +242,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
         botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
-        fetchChatSessions();
-      } else {
-        const body = await res.json().catch(() => null);
-        const respRequestId = res.headers.get("X-Request-ID") || requestId;
-        if (body && body.detail) {
-          const d = body.detail;
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: d.error_type || "server_error",
-                    errorMessage: d.error_message || `Server returned ${res.status}`,
-                    technicalDetail: d.technical_detail || "",
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        } else {
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: "server_error",
-                    errorMessage: `Server returned ${res.status}`,
-                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        }
-      }
-    } catch (err: any) {
-      const isTimeout = err?.name === "AbortError";
-      setChatMessages(prev => prev.map(m =>
-        m.id === pendingMsgId
-          ? {
-              ...m,
-              status: "failed" as const,
-              error_message: JSON.stringify({
-                requestId,
-                errorType: isTimeout ? "timeout" : "network",
-                errorMessage: isTimeout
-                  ? "The request took too long to complete. Please try again or narrow the question."
-                  : "The AI service could not be reached. Please check your connection and try again.",
-                technicalDetail: isTimeout
-                  ? "Request timed out after 180 seconds"
-                  : err instanceof Error ? err.message : "Network error",
-                httpStatus: 0,
-              }),
-            }
-          : m
-      ));
-    } finally {
-      clearTimeout(timeoutId);
-      setIsChatSending(false);
-    }
-  };
-
-  const handleRetryMessage = async (messageId: string) => {
-    const msg = chatMessages.find(m => m.id === messageId);
-    if (!msg || !activeSession) return;
-
-    const newPendingId = Math.random().toString();
-    const pendingAssistantMsg: ChatMessage = {
-      id: newPendingId,
-      chat_session_id: activeSession.id,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-    };
-
-    setChatMessages(prev => [
-      ...prev.filter(m => m.id !== messageId),
-      pendingAssistantMsg,
-    ]);
-
-    const requestId = crypto.randomUUID();
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
-
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${activeSession.id}/messages`, {
-        method: "POST",
-        headers: { ...getHeaders(), "X-Request-ID": requestId },
-        body: JSON.stringify({
-          content: "Please retry: " + (chatMessages.find(m => m.chat_session_id === activeSession.id && m.role === "user" && m.status === "completed")?.content || ""),
-          artifact_ids: [],
-          workflow_context: activeSession.workflow_context,
-        }),
-        signal: abortController.signal,
-      });
-      if (res.ok) {
-        const botMsg: ChatMessage = await res.json();
-        botMsg.status = "completed";
         setChatMessages(prev => prev.map(m => m.id === newPendingId ? botMsg : m));
         fetchChatSessions();
       } else {
@@ -411,7 +308,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   };
 
-  const handleCopyMessage = (content: string) => {
+  const handleRetryMessage = async (messageId: string) => {
     navigator.clipboard.writeText(content).catch(() => {});
   };
 
@@ -666,6 +563,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       case "audit":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) ? (
           <AuditPage accessToken={accessToken} />
+        ) : null;
+      case "admin":
+        return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
+          <AdminPage accessToken={accessToken} />
         ) : null;
       case "settings":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
