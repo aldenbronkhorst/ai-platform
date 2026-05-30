@@ -44,12 +44,12 @@ export function MessageBubble({
     }
 
     return (
-      <div className="group flex justify-end">
-        <div className="flex flex-col items-end max-w-[70%]">
-          <div className="p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap rounded-tr-none shadow-sm">
+      <div className="w-full flex justify-end">
+        <div className="flex flex-col gap-1 max-w-[70%] min-w-0 items-end">
+          <div className="w-fit max-w-full p-3.5 rounded-2xl bg-raised border border-default text-xs leading-relaxed whitespace-pre-wrap break-words rounded-tr-none shadow-sm">
             {message.content}
           </div>
-          <div className="mt-1">
+          <div className="self-end">
             <MessageActions
               role="user"
               content={message.content}
