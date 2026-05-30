@@ -1,4 +1,6 @@
 import os
+import re
+import logging
 import httpx
 import uuid
 from datetime import datetime
@@ -19,6 +21,15 @@ router = APIRouter(prefix="/connected-accounts", tags=["connected-accounts"])
 
 ODOO_CONNECTOR_URL = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
+
+logger = logging.getLogger(__name__)
+
+
+def _generate_secret_name(account_id: UUID) -> str:
+    """Generate a unique Key Vault secret name for a connected account.
+    Uses a random suffix to avoid collisions with soft-deleted secrets."""
+    random_suffix = uuid.uuid4().hex[:12]
+    return f"connected-account-{str(account_id)}-{random_suffix}-secret"
 
 
 class OdooConnectRequest(BaseModel):
@@ -102,10 +113,11 @@ async def _verify_odoo_credentials_via_connector(url: str, db: str, username: st
 
 
 def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
-    """Stores the secret in Azure Key Vault if Key Vault is configured."""
+    """Stores the secret in Azure Key Vault if Key Vault is configured.
+    Raises HTTPException on failure, with a user-friendly message for
+    ObjectIsDeletedButRecoverable conflicts."""
     kv_uri = os.environ.get("KEY_VAULT_URI", "")
     if not kv_uri:
-        # In non-production or local testing without Key Vault, fallback safely
         return
 
     try:
@@ -115,9 +127,22 @@ def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
         kv_client = SecretClient(vault_url=kv_uri, credential=credential)
         kv_client.set_secret(secret_name, secret_value)
     except Exception as e:
+        error_str = str(e)
+        if "ObjectIsDeletedButRecoverable" in error_str or "Conflict" in error_str:
+            logger.error(
+                "Key Vault secret name collision (ObjectIsDeletedButRecoverable) "
+                "for '%s': %s", secret_name, error_str
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Could not save connection credentials because a previously "
+                       "deleted secret is still reserved. Please retry, or contact "
+                       "support if the issue persists."
+            )
+        logger.error("Failed to store secret '%s' in Key Vault: %s", secret_name, error_str)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to store secret in Key Vault: {e}"
+            detail="Failed to save connection credentials securely. Please try again."
         )
 
 
@@ -192,10 +217,12 @@ async def connect_odoo(
 
     if account:
         connected_account_id = account.id
-        secret_name = account.secret_reference or f"connected-account-{str(connected_account_id)}-secret"
     else:
         connected_account_id = uuid.uuid4()
-        secret_name = f"connected-account-{str(connected_account_id)}-secret"
+
+    # Use a unique secret name per connection to avoid conflicts with
+    # soft-deleted secrets in Key Vault (ObjectIsDeletedButRecoverable).
+    secret_name = _generate_secret_name(connected_account_id)
 
     # 3. Store the Odoo API key in Key Vault under opaque secret reference
     _store_key_vault_secret(secret_name, req.odoo_api_key)
@@ -410,10 +437,12 @@ async def rotate_odoo_credentials(
         api_key=req.odoo_api_key
     )
 
-    # Store in Key Vault
-    _store_key_vault_secret(account.secret_reference, req.odoo_api_key)
+    # Generate a new unique secret name for the rotated key
+    new_secret_name = _generate_secret_name(account.id)
+    _store_key_vault_secret(new_secret_name, req.odoo_api_key)
 
-    # Update metadata
+    # Update metadata and point to the new secret
+    account.secret_reference = new_secret_name
     account.status = "connected"
     account.last_verified_at = datetime.utcnow()
     account.updated_at = datetime.utcnow()
