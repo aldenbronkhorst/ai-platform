@@ -212,16 +212,23 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     if not api_key:
         raise RuntimeError("Odoo connected account has no valid credentials")
 
-    url_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-    db_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-    url_fact = url_result.scalar_one_or_none()
-    db_fact = db_result.scalar_one_or_none()
-
-    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+    # Use the saved Odoo URL/DB from the connected account record.
+    # Fall back to company facts or env vars for backwards compatibility.
+    odoo_url = account.odoo_url or ""
+    odoo_db = account.odoo_db or ""
+    if not odoo_url or not odoo_db:
+        url_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+        db_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+        url_fact = url_result.scalar_one_or_none()
+        db_fact = db_result.scalar_one_or_none()
+        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
 
     if not odoo_url or not odoo_db:
-        raise RuntimeError("Odoo URL or database not configured in company facts")
+        raise RuntimeError("Odoo URL or database not configured")
+
+    logger.info("Resolved Odoo credentials for tool execution: user=%s host=%s db=%s",
+                account.provider_username, odoo_url, odoo_db)
 
     return {
         "url": odoo_url,

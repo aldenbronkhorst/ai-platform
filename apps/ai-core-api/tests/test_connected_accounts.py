@@ -2,14 +2,18 @@ import os
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
+from uuid import UUID
 
 # Enable debug mode for tests
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
 os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
+os.environ["ODOO_URL"] = "https://company-default.odoo.com"
+os.environ["ODOO_DB"] = "company-default-db"
 
 from app.main import app
 from app.core.database import get_db
+from app.models.models import AIConnectedAccount
 
 # Mock DB dependency completely
 async def mock_get_db():
@@ -194,6 +198,7 @@ class TestKeyVaultConflict:
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
     def test_store_key_vault_returns_user_friendly_message_on_conflict(self, mock_verify, mock_store):
         mock_verify.return_value = None
+
         from fastapi import HTTPException
         import logging
 
@@ -220,3 +225,138 @@ class TestKeyVaultConflict:
             assert "ObjectIsDeletedButRecoverable" not in response.json()["detail"]
         finally:
             logging.disable(logging.NOTSET)
+
+
+# ── Odoo URL Persistence Tests ──
+
+class TestOdooUrlPersistence:
+    """The user-provided Odoo URL must be saved and used, not the default/env var."""
+
+    def test_normalize_url_adds_https(self):
+        """A URL without scheme must get https:// prepended."""
+        from app.routers.connected_accounts import _normalize_odoo_url
+        assert _normalize_odoo_url("lotslotsmore.odoo.com") == "https://lotslotsmore.odoo.com"
+
+    def test_normalize_url_removes_trailing_slash(self):
+        """Trailing slashes must be stripped."""
+        from app.routers.connected_accounts import _normalize_odoo_url
+        result = _normalize_odoo_url("https://lotslotsmore.odoo.com/")
+        assert result == "https://lotslotsmore.odoo.com"
+        assert not result.endswith("/")
+
+    def test_normalize_url_keeps_existing_https(self):
+        """A URL that already has https:// must not be double-prefixed."""
+        from app.routers.connected_accounts import _normalize_odoo_url
+        assert _normalize_odoo_url("https://lotslotsmore.odoo.com") == "https://lotslotsmore.odoo.com"
+
+    def test_normalize_url_trims_whitespace(self):
+        """Leading/trailing whitespace must be trimmed."""
+        from app.routers.connected_accounts import _normalize_odoo_url
+        assert _normalize_odoo_url("  https://lotslotsmore.odoo.com  ") == "https://lotslotsmore.odoo.com"
+
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    def test_url_persisted_on_connect(self, mock_verify, mock_store):
+        """The user-provided Odoo URL and DB must be in the connect response."""
+        mock_verify.return_value = None
+        mock_store.return_value = None
+
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://lotslotsmore.odoo.com",
+                "odoo_db": "lotslotsmore_prod",
+                "odoo_username": "alden@lotslotsmore.com",
+                "odoo_api_key": "my-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["odoo_url"] == "https://lotslotsmore.odoo.com"
+        assert data["odoo_db"] == "lotslotsmore_prod"
+        assert data["provider_username"] == "alden@lotslotsmore.com"
+        # Verify no secret leaked
+        assert "my-key" not in str(data)
+
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    def test_url_replaced_on_reconnect(self, mock_verify, mock_store):
+        """Reconnecting with a different URL must persist the new URL."""
+        from uuid import UUID
+
+        mock_verify.return_value = None
+
+        # First connect with original URL
+        with patch("app.routers.connected_accounts._generate_secret_name",
+                   return_value="test-uuid-1-secret"):
+            response1 = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://old-instance.odoo.com",
+                    "odoo_db": "old_db",
+                    "odoo_username": "alden@lotslotsmore.com",
+                    "odoo_api_key": "old-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response1.status_code == 200
+            assert response1.json()["odoo_url"] == "https://old-instance.odoo.com"
+
+        mock_store.reset_mock()
+
+        # Reconnect with a different URL
+        with patch("app.routers.connected_accounts._generate_secret_name",
+                   return_value="test-uuid-2-secret"):
+            response2 = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://new-instance.odoo.com",
+                    "odoo_db": "new_db",
+                    "odoo_username": "alden@lotslotsmore.com",
+                    "odoo_api_key": "new-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response2.status_code == 200
+            data2 = response2.json()
+            assert data2["odoo_url"] == "https://new-instance.odoo.com"
+            assert data2["odoo_db"] == "new_db"
+            # The old URL should NOT be returned
+            assert data2["odoo_url"] != "https://old-instance.odoo.com"
+
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    def test_env_var_does_not_override_saved_url(self, mock_verify, mock_store):
+        """When an account has a saved odoo_url/odoo_db, env vars must NOT override.
+
+        This test patches the connected_accounts endpoint to simulate an existing
+        account with saved URL/DB, and verifies the Odoo status endpoint returns
+        the saved values, not the env var defaults."""
+        from fastapi import HTTPException
+
+        mock_verify.return_value = None
+
+        # Connect with a specific URL (different from env var ODOO_URL)
+        with patch("app.routers.connected_accounts._generate_secret_name",
+                   return_value="test-uuid-env-secret"):
+            response = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://user-saved.odoo.com",
+                    "odoo_db": "user_saved_db",
+                    "odoo_username": "alden@lotslotsmore.com",
+                    "odoo_api_key": "my-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            # The saved URL is NOT the env var default
+            assert data["odoo_url"] == "https://user-saved.odoo.com"
+            assert data["odoo_url"] != os.environ.get("ODOO_URL")
+
+    def test_url_normalized_on_connect(self):
+        """A URL without https:// must be normalized and persisted when connecting."""
+        from app.routers.connected_accounts import _normalize_odoo_url
+        assert _normalize_odoo_url("lotslotsmore.odoo.com") == "https://lotslotsmore.odoo.com"

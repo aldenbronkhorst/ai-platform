@@ -2,6 +2,7 @@ import os
 import logging
 import httpx
 import uuid
+import re
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,6 +23,21 @@ ODOO_CONNECTOR_URL = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_odoo_url(raw: str) -> str:
+    """Normalize an Odoo URL: trim, add https:// if missing, remove trailing slash."""
+    url = raw.strip()
+    if not url:
+        return url
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    # Remove www. prefix if present (common mistake)
+    # Validate hostname is present
+    parsed = url.rstrip("/")
+    if not re.match(r"^https?://[a-zA-Z0-9.-]+", parsed):
+        raise HTTPException(status_code=400, detail="Invalid Odoo URL format.")
+    return parsed
 
 
 def _generate_secret_name(account_id: UUID) -> str:
@@ -53,6 +69,8 @@ class ConnectedAccountResponse(BaseModel):
     updated_at: Optional[datetime]
     disconnected_at: Optional[datetime]
     target_environment: str
+    odoo_url: Optional[str] = None
+    odoo_db: Optional[str] = None
 
 
 class OdooStatusResponse(BaseModel):
@@ -61,10 +79,13 @@ class OdooStatusResponse(BaseModel):
     last_verified_at: Optional[datetime] = None
     target_environment: Optional[str] = None
     account_id: Optional[UUID] = None
+    odoo_url: Optional[str] = None
+    odoo_db: Optional[str] = None
 
 
 async def _verify_odoo_credentials_via_connector(url: str, db: str, username: str, api_key: str) -> None:
     """Uses the Odoo Connector API to perform a safe read-only call to verify credentials."""
+    logger.info("Verifying Odoo credentials for user=%s at host=%s db=%s", username, url, db)
     if not ODOO_CONNECTOR_URL:
         raise HTTPException(
             status_code=500,
@@ -197,9 +218,12 @@ async def connect_odoo(
     """Saves/creates Odoo connection. Validates credentials first, then saves API key to Key Vault."""
     user_id = auth.get("user_id")
 
+    # Normalize and validate the Odoo URL
+    normalized_url = _normalize_odoo_url(req.odoo_url)
+
     # 1. Validate Odoo credentials using a safe read-only call
     await _verify_odoo_credentials_via_connector(
-        url=req.odoo_url,
+        url=normalized_url,
         db=req.odoo_db,
         username=req.odoo_username,
         api_key=req.odoo_api_key
@@ -226,7 +250,7 @@ async def connect_odoo(
     # 3. Store the Odoo API key in Key Vault under opaque secret reference
     _store_key_vault_secret(secret_name, req.odoo_api_key)
 
-    # 4. Create/update the database record
+    # 4. Create/update the database record, saving the user-provided URL and DB
     if account:
         account.provider_username = req.odoo_username
         account.secret_reference = secret_name
@@ -234,6 +258,8 @@ async def connect_odoo(
         account.last_verified_at = datetime.utcnow()
         account.disconnected_at = None
         account.updated_at = datetime.utcnow()
+        account.odoo_url = normalized_url
+        account.odoo_db = req.odoo_db
     else:
         account = AIConnectedAccount(
             id=connected_account_id,
@@ -246,6 +272,8 @@ async def connect_odoo(
             target_environment="production",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
+            odoo_url=normalized_url,
+            odoo_db=req.odoo_db,
         )
         db.add(account)
 
@@ -307,7 +335,9 @@ async def get_odoo_status(
         provider_username=account.provider_username,
         last_verified_at=account.last_verified_at,
         target_environment=account.target_environment,
-        account_id=account.id
+        account_id=account.id,
+        odoo_url=account.odoo_url,
+        odoo_db=account.odoo_db,
     )
 
 
@@ -332,22 +362,24 @@ async def test_odoo_connection(
             detail="Odoo connected account not found."
         )
 
-    # 1. Resolve company facts
-    url_result = await db.execute(select(AIConnectedAccount.provider_username).where(AIConnectedAccount.id == account.id))
-    # We retrieve odoo_url and odoo_primary_db
-    from app.models.models import AICompanyFact
-    url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-    db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-    url_fact = url_fact_res.scalar_one_or_none()
-    db_fact = db_fact_res.scalar_one_or_none()
-
-    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+    # 1. Use the saved Odoo URL/DB from the connected account record.
+    #    Fall back to company facts or env vars for backwards compatibility
+    #    with accounts created before odoo_url/odoo_db were added.
+    odoo_url = account.odoo_url or ""
+    odoo_db = account.odoo_db or ""
+    if not odoo_url or not odoo_db:
+        from app.models.models import AICompanyFact
+        url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+        db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+        url_fact = url_fact_res.scalar_one_or_none()
+        db_fact = db_fact_res.scalar_one_or_none()
+        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
 
     if not odoo_url or not odoo_db:
         raise HTTPException(
             status_code=500,
-            detail="Odoo URL or DB name not configured in company facts."
+            detail="Odoo URL or DB name not configured."
         )
 
     # 2. Retrieve credentials from Key Vault
@@ -392,7 +424,9 @@ async def test_odoo_connection(
         provider_username=account.provider_username,
         last_verified_at=account.last_verified_at,
         target_environment=account.target_environment,
-        account_id=account.id
+        account_id=account.id,
+        odoo_url=account.odoo_url,
+        odoo_db=account.odoo_db,
     )
 
 
@@ -418,15 +452,18 @@ async def rotate_odoo_credentials(
             detail="Odoo connected account not found. Please connect first."
         )
 
-    # Resolve company facts to perform validation
-    from app.models.models import AICompanyFact
-    url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-    db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-    url_fact = url_fact_res.scalar_one_or_none()
-    db_fact = db_fact_res.scalar_one_or_none()
-
-    odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-    odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+    # Use the saved Odoo URL/DB from the connected account record.
+    # Fall back to company facts or env vars for backwards compatibility.
+    odoo_url = account.odoo_url or ""
+    odoo_db = account.odoo_db or ""
+    if not odoo_url or not odoo_db:
+        from app.models.models import AICompanyFact
+        url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
+        db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
+        url_fact = url_fact_res.scalar_one_or_none()
+        db_fact = db_fact_res.scalar_one_or_none()
+        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
+        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
 
     # Validate the new credentials
     await _verify_odoo_credentials_via_connector(

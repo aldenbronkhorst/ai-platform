@@ -32,8 +32,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [testResult, setTestResult] = useState<any>(null);
   const [showTechDetails, setShowTechDetails] = useState(false);
 
-  const [odooUrl, setOdooUrl] = useState("https://odoo.lotslotsmore.com");
-  const [odooDb, setOdooDb] = useState("Lots Lots More Production");
+  const [odooUrl, setOdooUrl] = useState("");
+  const [odooDb, setOdooDb] = useState("");
   const [odooUsername, setOdooUsername] = useState("alden@lotslotsmore.com");
   const [odooApiKey, setOdooApiKey] = useState("");
 
@@ -49,7 +49,12 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/status`, {
         headers: headers(),
       });
-      if (res.ok) setOdooStatus(await res.json());
+      if (res.ok) {
+        const data = await res.json();
+        setOdooStatus(data);
+        if (data.odoo_url) setOdooUrl(data.odoo_url);
+        if (data.odoo_db) setOdooDb(data.odoo_db);
+      }
     } catch (err) {
       console.error("Failed to fetch Odoo status:", err);
     } finally {
@@ -234,6 +239,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             </div>
 
             <div className="space-y-3 py-4 border-t border-b border-default text-sm text-muted font-medium select-text">
+              <div className="flex justify-between">
+                <span>Instance URL:</span>
+                <span className="text-default font-mono text-xs text-right max-w-[60%] truncate">
+                  {odooStatus.odoo_url || "—"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Database:</span>
+                <span className="text-default font-mono">
+                  {odooStatus.odoo_db || "—"}
+                </span>
+              </div>
               <div className="flex justify-between">
                 <span>Username:</span>
                 <span className="text-default font-mono">

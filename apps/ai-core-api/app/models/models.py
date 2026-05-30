@@ -39,6 +39,8 @@ class AIConnectedAccount(Base, AuditMixin):
     permission_summary = Column(Text, nullable=True)
     last_verified_at = Column(DateTime(timezone=True), nullable=True)
     disconnected_at = Column(DateTime(timezone=True), nullable=True)
+    odoo_url = Column(String(500), nullable=True)
+    odoo_db = Column(String(255), nullable=True)
 
 
 class AICompanyFact(Base, AuditMixin):
