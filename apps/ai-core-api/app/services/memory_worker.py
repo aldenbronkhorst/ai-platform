@@ -85,20 +85,9 @@ async def process_memory_extraction_message(
 
     logger.info("Loaded %d messages for conversation %s", len(messages), conversation_id)
 
-    # 2. Convert to dicts for MemoryCandidateService
-    message_dicts = [
-        {
-            "id": str(m.id),
-            "role": m.role,
-            "content": m.content or "",
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-        }
-        for m in messages
-    ]
-
-    # 3. Run MemoryCandidateService.extract_from_messages()
+    # 2. Run MemoryCandidateService.extract_from_messages()
     svc = MemoryCandidateService(db)
-    candidates = await svc.extract_from_messages(message_dicts)
+    candidates = await svc.extract_from_messages(messages, user_id=user_id)
 
     if not candidates:
         logger.info("No memory candidates found for conversation %s", conversation_id)
