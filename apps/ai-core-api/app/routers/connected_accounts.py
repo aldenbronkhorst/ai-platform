@@ -134,16 +134,19 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             currency_symbol = None
             if isinstance(currency_data, list) and len(currency_data) >= 2:
                 currency_code = str(currency_data[1]) if currency_data[1] else None
-                if currency_code:
-                    currency_symbol = {
-                        "ZAR": "R",
-                        "USD": "$",
-                        "EUR": "€",
-                        "GBP": "£",
-                        "JPY": "¥",
-                        "AUD": "A$",
-                        "CAD": "C$",
-                    }.get(currency_code, currency_code)
+            elif isinstance(currency_data, str):
+                currency_code = currency_data
+
+            if currency_code:
+                currency_symbol = {
+                    "ZAR": "R",
+                    "USD": "$",
+                    "EUR": "€",
+                    "GBP": "£",
+                    "JPY": "¥",
+                    "AUD": "A$",
+                    "CAD": "C$",
+                }.get(currency_code, currency_code)
             return {
                 "odoo_company_id": company_id,
                 "odoo_company_name": company_name,
