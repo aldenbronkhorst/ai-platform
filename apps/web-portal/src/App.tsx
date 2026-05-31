@@ -311,6 +311,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       ));
     } finally {
       clearTimeout(timeoutId);
+      setIsChatSending(false);
     }
   };
 
@@ -318,6 +319,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     const msg = chatMessages.find(m => m.id === messageId);
     if (!msg || !activeSession) return;
 
+    setIsChatSending(true);
     const currentSess = activeSession;
 
     const newPendingId = Math.random().toString();
@@ -416,6 +418,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       ));
     } finally {
       clearTimeout(timeoutId);
+      setIsChatSending(false);
     }
   };
 
@@ -431,6 +434,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
     if (editIndex === -1) return;
 
+    setIsChatSending(true);
     const beforeEdit = chatMessages.slice(0, editIndex);
 
     const updatedUserMsg: ChatMessage = {
@@ -531,6 +535,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       ));
     } finally {
       clearTimeout(timeoutId);
+      setIsChatSending(false);
     }
   };
 
