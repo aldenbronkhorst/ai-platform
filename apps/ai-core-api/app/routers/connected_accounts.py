@@ -435,7 +435,7 @@ async def get_odoo_status(
     )
     account = result.scalar_one_or_none()
 
-    if not account:
+    if not account or account.status == "disconnected":
         return OdooStatusResponse(status="not_connected")
 
     return OdooStatusResponse(
