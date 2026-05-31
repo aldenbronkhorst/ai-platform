@@ -128,6 +128,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           technicalDetail: techDetail,
           requestId,
         });
+        // Refresh status even on failure — account may have been saved with status="error"
+        fetchOdooStatus();
       }
     } catch (err: any) {
       setTestResult({
