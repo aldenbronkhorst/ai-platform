@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.config import get_settings
 from app.core.security import internal_api_key_auth
@@ -11,6 +12,7 @@ from app.models.schemas import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_client(creds):
@@ -30,6 +32,14 @@ def _get_client(creds):
 
 @router.post("/search-read")
 async def search_read(req: RecordsSearchReadRequest, auth: dict = Depends(internal_api_key_auth)):
+    logger.info(
+        "Connector search-read received model=%s url=%s db=%s username=%s api_key_present=%s",
+        req.model,
+        req.credentials.url,
+        req.credentials.db,
+        req.credentials.username,
+        bool(req.credentials.api_key),
+    )
     client = _get_client(req.credentials)
     records = client.search_read(
         model=req.model,

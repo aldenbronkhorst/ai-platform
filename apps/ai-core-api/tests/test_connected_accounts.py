@@ -371,6 +371,28 @@ class TestOdooUrlPersistence:
         from app.routers.connected_accounts import _normalize_odoo_url
         assert _normalize_odoo_url("lotslotsmore.odoo.com") == "https://lotslotsmore.odoo.com"
 
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_odoo_db_passed_unchanged_to_connector(self, mock_store, mock_verify):
+        """The exact req.odoo_db must be passed through to the connector without substitution."""
+        mock_store.return_value = None
+
+        user_db = "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://lotslotsmore.odoo.com",
+                "odoo_db": user_db,
+                "odoo_username": "alden@lotslotsmore.com",
+                "odoo_api_key": "my-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        # Verify the connector was called with the exact user-provided database
+        mock_verify.assert_called_once()
+        _, kwargs = mock_verify.call_args
+        assert kwargs["db"] == user_db, f"Expected db={user_db!r}, got db={kwargs['db']!r}"
+
 
 # ── Structured Error Tests ──
 

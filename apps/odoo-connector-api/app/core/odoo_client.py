@@ -1,4 +1,5 @@
 import json
+import logging
 import ssl
 import xmlrpc.client
 from dataclasses import dataclass
@@ -8,6 +9,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from app.core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 SAFE_TRANSPORT_FALLBACK_METHODS = {
@@ -132,6 +135,13 @@ class OdooClient:
     def authenticate(self) -> int:
         if self._uid:
             return self._uid
+        logger.info(
+            "OdooClient connecting to Odoo backend url=%s db=%s username=%s transport=%s",
+            self.credentials.url,
+            self.credentials.db,
+            self.credentials.username,
+            self.transport,
+        )
         uid = self.common.authenticate(
             self.credentials.db,
             self.credentials.username,

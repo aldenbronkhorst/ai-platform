@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
@@ -56,6 +57,33 @@ class TestRecords:
             "limit": 5,
         }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]
+
+    @patch("app.routers.records._get_client")
+    def test_search_read_passes_db_unchanged(self, mock_get_client):
+        """The request credentials.db must reach OdooClient without substitution."""
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = []
+        mock_get_client.return_value = mock_client
+
+        user_db = "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
+        response = client.post("/records/search-read", json={
+            "credentials": {
+                "url": "https://lotslotsmore.odoo.com",
+                "db": user_db,
+                "username": "alden@lotslotsmore.com",
+                "api_key": "test-key",
+            },
+            "model": "res.partner",
+            "domain": [],
+            "limit": 1,
+        }, headers=AUTH_HEADERS)
+        assert response.status_code == 200
+
+        # Verify _get_client was called with the exact user-provided db
+        mock_get_client.assert_called_once()
+        creds_arg = mock_get_client.call_args[0][0]
+        assert creds_arg.db == user_db, f"Expected db={user_db!r}, got db={creds_arg.db!r}"
 
     def test_count_requires_credentials(self):
         response = client.post("/records/count", json={

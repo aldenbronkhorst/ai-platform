@@ -112,6 +112,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     setIsConnecting(true);
     setTestResult(null);
     setShowTechDetails(false);
+    // Log the exact payload being sent (API key presence hidden)
+    console.debug("[Odoo Connect] Payload:", {
+      endpoint: "/connected-accounts/odoo/connect",
+      odoo_url: odooUrl,
+      odoo_db: odooDb,
+      odoo_username: odooUsername,
+      api_key_present: Boolean(odooApiKey),
+    });
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/connect`, {
         method: "POST",

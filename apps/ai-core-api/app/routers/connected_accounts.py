@@ -511,6 +511,15 @@ async def connect_odoo(
     user_id = auth.get("user_id")
     request_id = _get_request_id()
 
+    logger.info(
+        "Odoo connect request received user_id=%s url=%s db=%s username=%s api_key_present=%s",
+        user_id,
+        req.odoo_url,
+        req.odoo_db,
+        req.odoo_username,
+        bool(req.odoo_api_key),
+    )
+
     # Normalize and validate the Odoo URL
     normalized_url = _normalize_odoo_url(req.odoo_url)
 
@@ -535,6 +544,10 @@ async def connect_odoo(
     verified = False
     company_meta = {}
     verify_error = None
+    logger.info(
+        "Verifying Odoo via connector url=%s db=%s username=%s",
+        normalized_url, req.odoo_db, req.odoo_username,
+    )
     try:
         await _verify_odoo_credentials_via_connector(
             url=normalized_url,
@@ -631,6 +644,8 @@ async def connect_odoo(
             (verify_error or {}).get("technical_detail")
             or str(verify_error or "")
         )
+        # Include the database actually sent to the connector for debugging
+        attempted_db = req.odoo_db
         raise HTTPException(
             status_code=400,
             detail=ConnectErrorDetail(
@@ -640,6 +655,7 @@ async def connect_odoo(
                 technical_detail=tech_detail,
                 request_id=request_id,
             ).model_dump()
+            | {"attempted_db": attempted_db}
         )
 
     return account
