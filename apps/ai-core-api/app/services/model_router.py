@@ -517,9 +517,29 @@ async def execute_chat(
         except Exception as search_exc:
             logger.warning("Failed to retrieve or inject search results: %s", search_exc)
 
+        # Check if the user query is complex and requires Orchestrator task-graph node execution
+        subtasks_data: list[dict[str, Any]] = []
+        if messages:
+            user_query = messages[-1]["content"]
+            is_reconciliation = any(kw in user_query.lower() for kw in ["compare", "reconcile", "reconciliation", "credit note", "pdf"])
+            if is_reconciliation:
+                try:
+                    from app.services.task_graph import TaskGraphExecutor
+                    executor = TaskGraphExecutor()
+                    subtasks_data = await executor.execute_all(user_query)
+
+                    # Inject subtask results into system prompt
+                    subtask_summary = []
+                    for t in subtasks_data:
+                        subtask_summary.append(f"- Subtask '{t['name']}' ({t['status']}): Result={t['result']}")
+
+                    system_prompt += "\n\n## Ephemeral Sub-Agent / Task Worker Results\n" + "\n".join(subtask_summary)
+                except Exception as t_exc:
+                    logger.warning("Failed to execute Task Graph nodes: %s", t_exc)
+
         logger.info(
-            "Context injected | rules=%d facts=%d memories=%d search_results=%d user_id=%s currency=%s",
-            len(injected_rules), len(injected_facts), len(injected_memories), len(chunks_to_inject), user_id, odoo_currency_str or "none",
+            "Context injected | rules=%d facts=%d memories=%d search_results=%d subtasks=%d user_id=%s currency=%s",
+            len(injected_rules), len(injected_facts), len(injected_memories), len(chunks_to_inject), len(subtasks_data), user_id, odoo_currency_str or "none",
         )
     except Exception as exc:
         logger.warning("Failed to inject context: %s", exc)
@@ -739,6 +759,7 @@ async def execute_chat(
             for hit in chunks_to_inject
         ] if chunks_to_inject else [],
         "currency_source": currency_source,
+        "subtasks": subtasks_data if "subtasks_data" in locals() else [],
         "model_routing": {
             "primary_model": primary_model_display,
             "fallback_model": fallback_model_display,
