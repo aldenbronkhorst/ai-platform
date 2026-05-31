@@ -93,6 +93,19 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const isKeyVaultError = (msg: string) =>
     KV_ERROR_PHRASES.some((p) => msg.toLowerCase().includes(p));
 
+  const getConnectorFriendlyMessage = (errorType: string, message: string) => {
+    if (errorType === "odoo_connector_dns_failed") {
+      return "AI Platform could not reach the Odoo Connector service. Please contact an administrator.";
+    }
+    if (errorType === "odoo_connector_unreachable") {
+      return "AI Platform could not connect to the Odoo Connector service. Please contact an administrator.";
+    }
+    if (errorType === "odoo_connector_auth_failed") {
+      return "Internal connector API key mismatch. Please contact an administrator.";
+    }
+    return message;
+  };
+
   const handleConnectOdoo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accessToken) return;
@@ -204,18 +217,19 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         headers: headers(),
       });
       if (res.ok) {
-        // Clear all form fields on successful disconnect
+        // Clear all form fields and stale status on successful disconnect
         setOdooUrl("");
         setOdooDb("");
-        setOdooUsername("alden@lotslotsmore.com");
+        setOdooUsername("");
         setOdooApiKey("");
         setTestResult(null);
+        setOdooStatus({ status: "not_connected" });
       }
-      fetchOdooStatus();
     } catch (err) {
       console.error("Disconnect failed:", err);
     } finally {
       setIsStatusLoading(false);
+      fetchOdooStatus();
     }
   };
 
@@ -273,30 +287,37 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               {statusBadge()}
             </div>
 
-            <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-3 py-4 border-t border-b border-default text-sm select-text">
-              <span className="text-muted font-medium">Instance URL:</span>
-              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
-                {odooStatus.odoo_url || "—"}
-              </span>
-              <span className="text-muted font-medium">Database:</span>
-              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
-                {odooStatus.odoo_db || "—"}
-              </span>
-              <span className="text-muted font-medium">Username:</span>
-              <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
-                {odooStatus.provider_username || "—"}
-              </span>
-              <span className="text-muted font-medium">Environment:</span>
-              <span className="text-default capitalize">
-                {odooStatus.target_environment || "—"}
-              </span>
-              <span className="text-muted font-medium">Last Verified:</span>
-              <span className="text-default">
-                {odooStatus.last_verified_at
-                  ? new Date(odooStatus.last_verified_at).toLocaleString()
-                  : "—"}
-              </span>
-            </div>
+            {(() => {
+              const shouldShowOdooDetails =
+                ["connected", "error", "needs_verification"].includes(odooStatus.status);
+              const fmtLastVerified = odooStatus.last_verified_at
+                ? new Date(odooStatus.last_verified_at).toLocaleString()
+                : null;
+              return (
+                <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-3 py-4 border-t border-b border-default text-sm select-text">
+                  <span className="text-muted font-medium">Instance URL:</span>
+                  <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                    {shouldShowOdooDetails ? odooStatus.odoo_url : "—"}
+                  </span>
+                  <span className="text-muted font-medium">Database:</span>
+                  <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                    {shouldShowOdooDetails ? odooStatus.odoo_db : "—"}
+                  </span>
+                  <span className="text-muted font-medium">Username:</span>
+                  <span className="text-default min-w-0 break-words overflow-wrap-anywhere">
+                    {shouldShowOdooDetails ? odooStatus.provider_username : "—"}
+                  </span>
+                  <span className="text-muted font-medium">Environment:</span>
+                  <span className="text-default capitalize">
+                    {shouldShowOdooDetails ? odooStatus.target_environment : "—"}
+                  </span>
+                  <span className="text-muted font-medium">Last Verified:</span>
+                  <span className="text-default">
+                    {shouldShowOdooDetails && fmtLastVerified ? fmtLastVerified : "—"}
+                  </span>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
@@ -394,7 +415,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                       <p className="text-muted mt-0.5">
                         {testResult.isKeyVaultError
                           ? "Could not save Odoo credentials securely. The AI Platform service does not currently have permission to write to Key Vault. Please contact an administrator."
-                          : testResult.message}
+                          : getConnectorFriendlyMessage(testResult.errorType, testResult.message)}
                       </p>
                     </div>
                   </div>

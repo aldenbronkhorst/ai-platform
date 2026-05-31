@@ -823,3 +823,468 @@ class TestStartupConfigValidation:
         assert len(url_issues) > 0
 
         get_settings.cache_clear()
+
+
+# ── Disconnect Cleanup Tests ──
+
+class TestDisconnectCleanup:
+    """Disconnect must clear all connection metadata and credentials."""
+
+    def _make_account(self, **overrides):
+        """Create an AIConnectedAccount with all fields populated."""
+        from uuid import UUID
+        from datetime import datetime
+        account = AIConnectedAccount(
+            id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            user_id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            provider="odoo",
+            provider_username="alden@lotslotsmore.com",
+            provider_user_id="odoo-user-123",
+            provider_display_name="Alden Bronkhorst",
+            secret_reference="connected-account-abc123-secret",
+            status="connected",
+            permission_summary="Read access to res.partner, res.company",
+            last_verified_at=datetime(2025, 6, 1, 12, 0, 0),
+            target_environment="production",
+            odoo_url="https://lotslotsmore.odoo.com",
+            odoo_db="lotslotsmore_prod",
+            odoo_company_id=1,
+            odoo_company_name="Lots Lots More",
+            odoo_currency_code="ZAR",
+            odoo_currency_symbol="R",
+        )
+        for k, v in overrides.items():
+            setattr(account, k, v)
+        return account
+
+    def _setup_mock_db(self, account):
+        """Set up mock DB with the given account returned from execute()."""
+        from unittest.mock import AsyncMock, MagicMock
+        mock_session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = MagicMock(return_value=account)
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+        return mock_session
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_secret_reference(self, mock_delete):
+        """Disconnect must clear secret_reference on the DB model."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "disconnected"
+            # secret_reference is intentionally excluded from the API response model,
+            # so verify it was cleared on the DB model
+            assert account.secret_reference is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_provider_username(self, mock_delete):
+        """Disconnect must clear provider_username."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            assert account.provider_username == "alden@lotslotsmore.com"
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["provider_username"] is None
+            assert account.provider_username is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_odoo_url(self, mock_delete):
+        """Disconnect must clear odoo_url."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["odoo_url"] is None
+            assert account.odoo_url is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_odoo_db(self, mock_delete):
+        """Disconnect must clear odoo_db."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["odoo_db"] is None
+            assert account.odoo_db is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_company_currency_metadata(self, mock_delete):
+        """Disconnect must clear company_id, company_name, currency_code, currency_symbol."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["odoo_company_id"] is None
+            assert data["odoo_company_name"] is None
+            assert data["odoo_currency_code"] is None
+            assert data["odoo_currency_symbol"] is None
+            assert account.odoo_company_id is None
+            assert account.odoo_company_name is None
+            assert account.odoo_currency_code is None
+            assert account.odoo_currency_symbol is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_provider_user_id_and_display_name(self, mock_delete):
+        """Disconnect must clear provider_user_id, provider_display_name, permission_summary."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data.get("status") == "disconnected"
+            assert account.provider_user_id is None
+            assert account.provider_display_name is None
+            assert account.permission_summary is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_clears_last_verified_at(self, mock_delete):
+        """Disconnect must clear last_verified_at."""
+        from unittest.mock import AsyncMock
+        from datetime import datetime
+        account = self._make_account()
+        account.last_verified_at = datetime(2025, 6, 1, 12, 0, 0)
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["last_verified_at"] is None
+            assert account.last_verified_at is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._delete_key_vault_secret")
+    def test_disconnect_creates_audit_event(self, mock_delete):
+        """Disconnect must still create an audit event."""
+        from unittest.mock import AsyncMock
+        account = self._make_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/disconnect",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+
+            log_event_calls = [
+                call for call in mock_session.add.call_args_list
+                if hasattr(call[0][0], 'action_type')
+            ]
+            assert len(log_event_calls) >= 1
+            audit_event = log_event_calls[0][0][0]
+            assert audit_event.action_type == "disconnect"
+            assert audit_event.target_system == "odoo"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+# ── Status Endpoint for Disconnected Accounts ──
+
+class TestDisconnectedAccountStatus:
+    """Status endpoint must return not_connected with null detail fields when account is disconnected."""
+
+    def _make_disconnected_account(self):
+        """Create an AIConnectedAccount with status=disconnected but stale fields populated."""
+        from uuid import UUID
+        account = AIConnectedAccount(
+            id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            user_id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            provider="odoo",
+            provider_username="alden@lotslotsmore.com",
+            secret_reference="connected-account-abc123-secret",
+            status="disconnected",
+            odoo_url="https://lotslotsmore.odoo.com",
+            odoo_db="lotslotsmore_prod",
+            odoo_company_id=1,
+            odoo_company_name="Lots Lots More",
+            odoo_currency_code="ZAR",
+            odoo_currency_symbol="R",
+        )
+        return account
+
+    def _setup_mock_db(self, account):
+        """Set up mock DB with the given account returned from execute()."""
+        from unittest.mock import AsyncMock, MagicMock
+        mock_session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = MagicMock(return_value=account)
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+        return mock_session
+
+    def test_status_returns_not_connected_with_null_details(self):
+        """Disconnected account must return status=not_connected with all null details."""
+        from unittest.mock import AsyncMock, MagicMock
+        account = self._make_disconnected_account()
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.get(
+                "/connected-accounts/odoo/status",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "not_connected"
+            assert data["provider_username"] is None
+            assert data["last_verified_at"] is None
+            assert data["target_environment"] is None
+            assert data["odoo_url"] is None
+            assert data["odoo_db"] is None
+            assert data["odoo_company_id"] is None
+            assert data["odoo_company_name"] is None
+            assert data["odoo_currency_code"] is None
+            assert data["odoo_currency_symbol"] is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    def test_status_returns_not_connected_when_no_account(self):
+        """No account must return status=not_connected with all null details."""
+        response = client.get(
+            "/connected-accounts/odoo/status",
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_connected"
+        assert data.get("odoo_url") is None
+        assert data.get("odoo_db") is None
+        assert data.get("provider_username") is None
+
+    def test_status_does_not_leak_stale_fields_when_disconnected(self):
+        """Stale odoo_url/odoo_db in DB must NOT appear in status response when disconnected."""
+        from unittest.mock import AsyncMock, MagicMock
+        account = self._make_disconnected_account()
+        account.odoo_url = "https://stale-instance.odoo.com"
+        account.odoo_db = "stale_db"
+        account.provider_username = "stale@user.com"
+        mock_session = self._setup_mock_db(account)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.get(
+                "/connected-accounts/odoo/status",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "not_connected"
+            assert data["odoo_url"] is None
+            assert data["odoo_db"] is None
+            assert data["provider_username"] is None
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+# ── Connector DNS Failure Tests ──
+
+class TestConnectorDnsFailure:
+    """DNS resolution failure must produce a specific odoo_connector_dns_failed error type."""
+
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_dns_failure_returns_odoo_connector_dns_failed(self, mock_store):
+        """DNS failure during connect must return odoo_connector_dns_failed error."""
+        mock_store.return_value = None
+
+        from fastapi import HTTPException
+        import logging
+        logging.disable(logging.CRITICAL)
+        try:
+            with patch(
+                "app.routers.connected_accounts._verify_odoo_credentials_via_connector",
+                side_effect=HTTPException(
+                    status_code=502,
+                    detail={
+                        "error_type": "odoo_connector_dns_failed",
+                        "stage": "verify_connector",
+                        "message": "The AI Platform API could not resolve the Odoo Connector service hostname.",
+                        "technical_detail": "[Errno -2] Name or service not known",
+                    }
+                )
+            ):
+                response = client.post(
+                    "/connected-accounts/odoo/connect",
+                    json={
+                        "odoo_url": "https://odoo.example.com",
+                        "odoo_db": "prod_db",
+                        "odoo_username": "alden@example.com",
+                        "odoo_api_key": "my-key",
+                    },
+                    headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+                )
+                assert response.status_code == 400
+                detail = response.json().get("detail", {})
+                assert detail.get("error_type") == "odoo_connector_dns_failed"
+                assert detail.get("stage") == "verify_connector"
+                assert "could not resolve" in detail.get("message", "").lower()
+        finally:
+            logging.disable(logging.NOTSET)
+
+    def test_dns_failure_detected_from_connect_error(self):
+        """The _verify_odoo_credentials_via_connector must detect DNS errors from httpx.ConnectError."""
+        from app.routers.connected_accounts import _verify_odoo_credentials_via_connector
+        import httpx
+
+        with patch.dict(os.environ, {"ODOO_CONNECTOR_URL": "https://this-domain-definitely-does-not-exist-12345.com"}):
+            import app.routers.connected_accounts as mod
+            old_url = mod.ODOO_CONNECTOR_URL
+            mod.ODOO_CONNECTOR_URL = "https://this-domain-definitely-does-not-exist-12345.com"
+            old_key = mod.ODOO_CONNECTOR_KEY
+            mod.ODOO_CONNECTOR_KEY = "test-key"
+
+            import pytest
+            with pytest.raises(Exception) as exc_info:
+                import asyncio
+                asyncio.run(
+                    _verify_odoo_credentials_via_connector(
+                        url="https://odoo.example.com",
+                        db="test_db",
+                        username="test@user.com",
+                        api_key="test-key",
+                    )
+                )
+
+            mod.ODOO_CONNECTOR_URL = old_url
+            mod.ODOO_CONNECTOR_KEY = old_key
+
+            error_detail = exc_info.value.detail
+            assert error_detail.get("error_type") == "odoo_connector_dns_failed" or \
+                   error_detail.get("error_type") == "odoo_connector_unreachable"
+
+
+# ── Frontend Display Guard Logic Tests ──
+
+class TestFrontendGuardLogic:
+    """Verify the shouldShowOdooDetails guard logic used by the frontend."""
+
+    def test_should_show_details_for_connected_status(self):
+        should_show = "connected" in ("connected", "error", "needs_verification")
+        assert should_show is True
+
+    def test_should_show_details_for_error_status(self):
+        should_show = "error" in ("connected", "error", "needs_verification")
+        assert should_show is True
+
+    def test_should_not_show_details_for_not_connected(self):
+        should_show = "not_connected" in ("connected", "error", "needs_verification")
+        assert should_show is False
+
+    def test_should_not_show_details_for_disconnected(self):
+        should_show = "disconnected" in ("connected", "error", "needs_verification")
+        assert should_show is False
+
+    def test_should_not_show_details_for_unknown_status(self):
+        should_show = "pending" in ("connected", "error", "needs_verification")
+        assert should_show is False

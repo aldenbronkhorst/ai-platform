@@ -291,13 +291,34 @@ async def _verify_odoo_credentials_via_connector(url: str, db: str, username: st
                 headers=headers,
             )
     except httpx.ConnectError as e:
+        error_str = str(e)
+        is_dns_failure = any(
+            phrase in error_str.lower()
+            for phrase in [
+                "name or service not known",
+                "nodename nor servname provided",
+                "temporary failure in name resolution",
+                "no address associated with hostname",
+                "no such host is known",
+            ]
+        )
+        if is_dns_failure:
+            raise HTTPException(
+                status_code=502,
+                detail=ConnectErrorDetail(
+                    error_type="odoo_connector_dns_failed",
+                    stage="verify_connector",
+                    message="The AI Platform API could not resolve the Odoo Connector service hostname.",
+                    technical_detail=error_str,
+                ).model_dump()
+            )
         raise HTTPException(
             status_code=502,
             detail=ConnectErrorDetail(
                 error_type="odoo_connector_unreachable",
                 stage="verify_connector",
                 message="Could not reach the Odoo Connector service. Check network connectivity.",
-                technical_detail=f"Connection failed: {e}",
+                technical_detail=error_str,
             ).model_dump()
         )
     except httpx.TimeoutException as e:
@@ -655,7 +676,19 @@ async def get_odoo_status(
     account = result.scalar_one_or_none()
 
     if not account or account.status == "disconnected":
-        return OdooStatusResponse(status="not_connected")
+        return OdooStatusResponse(
+            status="not_connected",
+            provider_username=None,
+            last_verified_at=None,
+            target_environment=None,
+            account_id=None,
+            odoo_url=None,
+            odoo_db=None,
+            odoo_company_id=None,
+            odoo_company_name=None,
+            odoo_currency_code=None,
+            odoo_currency_symbol=None,
+        )
 
     return OdooStatusResponse(
         status=account.status,
@@ -877,10 +910,22 @@ async def disconnect_odoo(
     if account.secret_reference:
         _delete_key_vault_secret(account.secret_reference)
 
-    # 2. Update DB metadata
+    # 2. Clear all connection metadata and credentials
     account.status = "disconnected"
+    account.secret_reference = None
+    account.provider_username = None
+    account.provider_user_id = None
+    account.provider_display_name = None
+    account.permission_summary = None
+    account.last_verified_at = None
     account.disconnected_at = datetime.utcnow()
     account.updated_at = datetime.utcnow()
+    account.odoo_url = None
+    account.odoo_db = None
+    account.odoo_company_id = None
+    account.odoo_company_name = None
+    account.odoo_currency_code = None
+    account.odoo_currency_symbol = None
 
     await db.commit()
     await db.refresh(account)
