@@ -1,60 +1,8 @@
 import os
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-
-# Enable debug mode for tests to bypass API key auth
-os.environ["DEBUG"] = "true"
 
 from app.main import app
-from app.core.database import Base, get_db
-
-# Register UUID type support for SQLite DDL compiler (models use PostgreSQL UUID)
-from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
-
-def visit_uuid(self, type_, **kw):
-    return "CHAR(36)"
-
-SQLiteTypeCompiler.visit_UUID = visit_uuid
-
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
-engine = create_async_engine(TEST_DATABASE_URL, echo=False, future=True)
-TestingSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
-
-
-async def override_get_db():
-    async with TestingSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
-
-
-@pytest.fixture(scope="session", autouse=True)
-def setup_database():
-    import asyncio
-    asyncio.run(_create_tables())
-    yield
-    asyncio.run(_drop_tables())
-
-
-async def _create_tables():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-async def _drop_tables():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
 
 @pytest.fixture
 def client():
