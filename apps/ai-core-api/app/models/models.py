@@ -315,3 +315,20 @@ class AIUsageLog(Base):
     status = Column(String(20), default="success", nullable=False)
     error_message = Column(Text, nullable=True)
 
+
+class AIMemoryUsageEvent(Base):
+    __tablename__ = "ai_memory_usage_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    memory_id = Column(UUID(as_uuid=True), ForeignKey("ai_memories.id"), nullable=False, index=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=True, index=True)
+    chat_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
+    request_id = Column(String(100), nullable=True)
+    used_in_context = Column(String(10), default="true", nullable=False)  # "true" or "false"
+    used_in_final_answer = Column(String(10), default="true", nullable=False)  # "true" or "false"
+    feedback_type = Column(String(50), nullable=True)  # helpful, wrong, outdated, not_relevant, do_not_use, etc.
+    feedback_value = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+

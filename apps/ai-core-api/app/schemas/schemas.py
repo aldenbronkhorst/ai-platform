@@ -312,3 +312,9 @@ class ContextResponse(BaseModel):
     rules: List[AIRuleResponse]
     facts: List[AICompanyFactResponse]
     tools: List[AIToolResponse]
+
+
+class MemoryFeedbackRequest(BaseModel):
+    feedback_type: str  # helpful, worked, wrong, outdated, not_relevant, do_not_use, needs_review
+    comment: Optional[str] = None
+    chat_message_id: Optional[UUID] = None

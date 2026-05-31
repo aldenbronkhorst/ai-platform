@@ -242,6 +242,84 @@ async def post_chat_message(
     )
     db.add(user_msg)
 
+    # Detect feedback from natural language
+    content_clean = req.content.strip().lower()
+    positive_feedback_keywords = ["that worked", "thanks, fixed", "yes that's right", "that solved it", "perfect, remember that", "it worked"]
+    negative_feedback_keywords = ["no that's wrong", "that is outdated", "don't use that anymore", "that no longer applies", "forget that", "that didn't work"]
+
+    is_positive = any(kw in content_clean for kw in positive_feedback_keywords)
+    is_negative = any(kw in content_clean for kw in negative_feedback_keywords)
+
+    if is_positive or is_negative:
+        # Load the last assistant message of the session
+        last_assistant_q = await db.execute(
+            select(AIChatMessage).where(
+                AIChatMessage.chat_session_id == session_id,
+                AIChatMessage.role == "assistant"
+            ).order_by(AIChatMessage.created_at.desc()).limit(1)
+        )
+        last_assistant = last_assistant_q.scalar_one_or_none()
+        if last_assistant and last_assistant.metadata_json:
+            context_data = last_assistant.metadata_json.get("context", {})
+            injected = context_data.get("memories_injected", [])
+            if injected:
+                from app.models.models import AIMemory, AIMemoryUsageEvent, AITask
+                for mem_ref in injected:
+                    try:
+                        mem_id = UUID(mem_ref["id"])
+                        mem_q = await db.execute(select(AIMemory).where(AIMemory.id == mem_id))
+                        memory = mem_q.scalar_one_or_none()
+                        if memory:
+                            f_type = "worked" if is_positive else "wrong"
+                            old_confidence = memory.confidence
+                            old_status = memory.status
+
+                            if is_positive:
+                                memory.success_count = (memory.success_count or 0) + 1
+                                memory.last_confirmed_at = datetime.utcnow()
+                                if memory.confidence == "low":
+                                    memory.confidence = "medium"
+                                elif memory.confidence == "medium":
+                                    memory.confidence = "high"
+                                audit_act = "memory_confidence_increased"
+                            else:
+                                memory.failure_count = (memory.failure_count or 0) + 1
+                                if memory.confidence == "high":
+                                    memory.confidence = "medium"
+                                elif memory.confidence == "medium":
+                                    memory.confidence = "low"
+                                audit_act = "memory_confidence_decreased"
+
+                                if (memory.failure_count or 0) > 3:
+                                    memory.status = "needs_review"
+                                    audit_act = "memory_flagged_for_review"
+                                    task = AITask(
+                                        id=uuid.uuid4(),
+                                        title=f"Flagged by Natural Language: {memory.title}",
+                                        description=f"Memory (id={memory.id}) has been flagged as 'wrong' via natural language feedback: '{req.content}'.",
+                                        status="open",
+                                        priority="high",
+                                        linked_model="ai_memories",
+                                        linked_record_id=str(memory.id),
+                                    )
+                                    db.add(task)
+
+                            memory.updated_at = datetime.utcnow()
+
+                            # Log Audit Event
+                            audit_svc = AuditService(db)
+                            await audit_svc.log_event(AIAuditEventCreate(
+                                action_type=audit_act,
+                                target_model="ai_memories",
+                                target_record_id=str(memory.id),
+                                actor_user_id=user_id,
+                                input_summary=f"Natural language feedback detected: '{req.content}'. Confidence: {old_confidence} -> {memory.confidence}.",
+                                risk_level="low",
+                                status="success",
+                            ))
+                    except Exception as e:
+                        logger.warning("Failed to apply natural language feedback to memory: %s", e)
+
     # Automatically update session title if it is still "New Chat"
     if session.title == "New Chat":
         session.title = req.content[:35] + ("..." if len(req.content) > 35 else "")
@@ -409,6 +487,34 @@ async def post_chat_message(
         created_at=datetime.utcnow()
     )
     db.add(assistant_msg)
+
+    # Track memory usage and update last_used_at
+    if context_data and context_data.get("memories_injected"):
+        from app.models.models import AIMemoryUsageEvent, AIMemory
+        for mem_ref in context_data["memories_injected"]:
+            try:
+                mem_id = UUID(mem_ref["id"])
+                # 1. Update last_used_at on the memory record
+                mem_q = await db.execute(select(AIMemory).where(AIMemory.id == mem_id))
+                mem_record = mem_q.scalar_one_or_none()
+                if mem_record:
+                    mem_record.last_used_at = datetime.utcnow()
+
+                # 2. Record individual usage event in database
+                usage_event = AIMemoryUsageEvent(
+                    id=uuid.uuid4(),
+                    memory_id=mem_id,
+                    chat_session_id=session_id,
+                    chat_message_id=assistant_msg.id,
+                    user_id=user_id,
+                    request_id=request_id,
+                    used_in_context="true",
+                    used_in_final_answer="true" if mem_ref["title"].lower() in assistant_content.lower() else "false",
+                    created_at=datetime.utcnow()
+                )
+                db.add(usage_event)
+            except Exception as e:
+                logger.warning("Failed to record memory usage event: %s", e)
 
     # Update session timestamps
     session.last_message_at = datetime.utcnow()
