@@ -54,6 +54,26 @@ resource searchContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 }
 
+resource searchIndexDataContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, apiManagedIdentityPrincipalId, 'searchindexdatacontributor')
+  scope: search
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a1e-416e-445e-9391-7f9e8a719c8d')
+    principalId: apiManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource searchIndexDataReaderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, apiManagedIdentityPrincipalId, 'searchindexdatareader')
+  scope: search
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '14071b83-acda-42c4-9023-ad4e44928aa2')
+    principalId: apiManagedIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 output name string = search.name
 output id string = search.id
 output endpoint string = 'https://${search.name}.search.windows.net'
