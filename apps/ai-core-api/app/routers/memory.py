@@ -340,3 +340,16 @@ async def trigger_memory_review(
     result = await svc.run_review_job()
     await db.commit()
     return result
+
+
+@router.post("/consolidate", status_code=status.HTTP_200_OK)
+async def trigger_memory_consolidation(
+    db: AsyncSession = Depends(get_db),
+    auth=Depends(api_key_auth),
+):
+    """Triggers the memory review and consolidation pipeline."""
+    from app.services.memory_consolidation import MemoryConsolidationService
+    svc = MemoryConsolidationService(db)
+    result = await svc.consolidate_memories()
+    await db.commit()
+    return result

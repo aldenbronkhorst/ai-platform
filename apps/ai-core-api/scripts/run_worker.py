@@ -61,20 +61,27 @@ async def _process_single_message(body: dict, raw_msg) -> bool:
 
     try:
         async with _db_session() as session:
-            if body.get("message_type") == "memory_extraction":
+            msg_type = body.get("message_type")
+            if msg_type == "memory_extraction":
                 await process_memory_extraction_message(body, session)
+                action_text = "Memory extraction"
+            elif msg_type == "memory_consolidation":
+                from app.services.memory_consolidation import MemoryConsolidationService
+                svc = MemoryConsolidationService(session)
+                await svc.consolidate_memories()
+                action_text = "Memory consolidation"
             else:
-                logger.warning("Unknown message type: %s", body.get("message_type"))
+                logger.warning("Unknown message type: %s", msg_type)
                 return False  # dead-letter unknown types
 
             # Write audit event for job completion
             audit = AuditService(session)
             await audit.log_event(AIAuditEventCreate(
-                action_type="memory_extraction_complete",
-                target_model="ai_chat_session",
-                target_record_id=str(conversation_id),
+                action_type=f"{msg_type}_complete" if msg_type else "job_complete",
+                target_model="ai_chat_session" if msg_type == "memory_extraction" else "ai_memories",
+                target_record_id=str(conversation_id) if msg_type == "memory_extraction" else str(uuid4()),
                 actor_user_id=user_id if user_id != "unknown" else None,
-                input_summary=f"Memory extraction job completed for session {conversation_id}",
+                input_summary=f"{action_text} job completed successfully",
                 risk_level="low",
                 status="success",
             ))
