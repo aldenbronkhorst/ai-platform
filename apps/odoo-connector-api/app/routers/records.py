@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from app.core.config import get_settings
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
 from app.core.formatting import format_search_read_response, format_mutation_response
@@ -13,6 +14,7 @@ router = APIRouter()
 
 
 def _get_client(creds):
+    settings = get_settings()
     return OdooClient(
         credentials=OdooCredentials(
             url=creds.url,
@@ -21,6 +23,8 @@ def _get_client(creds):
             password_or_api_key=creds.api_key,
         ),
         transport=creds.transport,
+        timeout=settings.odoo_api_timeout_seconds,
+        ssl_verify=settings.odoo_ssl_verify,
     )
 
 
@@ -85,7 +89,9 @@ async def mutate_records(req: RecordsMutateRequest, auth: dict = Depends(interna
     client = _get_client(req.credentials)
 
     if req.dry_run:
-        return {"dry_run": True, "would_execute": req.model_dump()}
+        safe_dump = req.model_dump()
+        safe_dump.pop("credentials", None)
+        return {"dry_run": True, "would_execute": safe_dump}
 
     operation = req.operation.strip().lower()
     if operation not in {"create", "write", "delete", "workflow"}:
@@ -107,9 +113,14 @@ async def mutate_records(req: RecordsMutateRequest, auth: dict = Depends(interna
     else:  # workflow
         if not req.record_ids:
             raise HTTPException(status_code=400, detail="record_ids required for workflow")
+        ALLOWED_WORKFLOW_METHODS = {
+            "action_confirm", "action_done", "action_cancel", "action_draft",
+            "button_approve", "button_refuse", "button_validate", "button_cancel",
+            "toggle_active", "action_archive", "action_unarchive",
+        }
         method = str(req.workflow_method or "").strip()
-        if not method or method.startswith("_"):
-            raise HTTPException(status_code=400, detail="workflow_method must be a public method name")
+        if not method or method.startswith("_") or method not in ALLOWED_WORKFLOW_METHODS:
+            raise HTTPException(status_code=400, detail=f"workflow_method must be one of: {', '.join(sorted(ALLOWED_WORKFLOW_METHODS))}")
         result = client.call_with_transport(req.model, method, args=[req.record_ids], kwargs={})
         affected_ids = req.record_ids
 

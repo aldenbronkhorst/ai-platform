@@ -5,10 +5,13 @@ from unittest.mock import patch, MagicMock
 
 # Enable debug mode for tests
 os.environ["DEBUG"] = "true"
+os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.main import app
 
 client = TestClient(app)
+
+AUTH_HEADERS = {"X-Internal-API-Key": "test-internal-key"}
 
 
 class TestOdooReportExecution:
@@ -50,7 +53,7 @@ class TestOdooReportExecution:
             "date_from": "2026-05-01",
             "date_to": "2026-05-31",
             "line_names": ["Revenue"]  # Filter!
-        })
+        }, headers=AUTH_HEADERS)
         
         assert response.status_code == 200
         data = response.json()
@@ -93,7 +96,7 @@ class TestOdooReportExecution:
             },
             "report_name": "Trial Balance",
             "line_names": ["Cash", "MissingLine"]  # Filter with a missing line name
-        })
+        }, headers=AUTH_HEADERS)
         
         assert response.status_code == 200
         data = response.json()
@@ -119,7 +122,7 @@ class TestOdooReportExecution:
             "report_name": "Profit and Loss",
             "date_from": "2026-05-01",
             "date_to": "2026-05-31"
-        })
+        }, headers=AUTH_HEADERS)
         
         assert response.status_code == 400
         data = response.json()
@@ -142,7 +145,7 @@ class TestOdooReportExecution:
                 "api_key": "secret"
             },
             "report_name": "Balance Sheet"
-        })
+        }, headers=AUTH_HEADERS)
         
         assert response.status_code == 400
         data = response.json()

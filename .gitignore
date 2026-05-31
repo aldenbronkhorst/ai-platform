@@ -43,3 +43,9 @@ Thumbs.db
 
 # Bicep
 *.bicepparam
+
+# Azure resource inventory (contains subscription IDs)
+azure-resources.json
+
+# Virtual environments
+.venv/

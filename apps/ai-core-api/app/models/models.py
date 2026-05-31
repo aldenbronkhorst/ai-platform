@@ -1,14 +1,18 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 from app.core.database import Base
 
 
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 class AuditMixin:
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
 
 
 class AIUser(Base, AuditMixin):

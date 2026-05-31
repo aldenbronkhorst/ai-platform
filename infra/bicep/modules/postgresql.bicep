@@ -49,6 +49,9 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
     highAvailability: {
       mode: 'Disabled'
     }
+    network: {
+      publicNetworkAccess: 'Disabled'
+    }
   }
 }
 

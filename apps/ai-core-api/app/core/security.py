@@ -1,7 +1,7 @@
 import os
 import jwt
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import Security, HTTPException, status, Header, Depends
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,14 +37,11 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
     """
     settings = get_settings()
 
-    # Safe local mock bypass ONLY on localhost and ONLY if debug/test mode is active
-    if settings.debug and (token == "mock-local-token" or token.startswith("mock-")):
-        # Retrieve or fallback to a developer user
+    if settings.debug and token == "mock-local-token":
         fallback_email = "alden@lotslotsmore.com"
         result = await db.execute(select(AIUser).where(AIUser.email == fallback_email))
         db_user = result.scalar_one_or_none()
         if not db_user:
-            # Auto-provision developer on localhost if missing
             db_user = AIUser(
                 id=uuid.UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
                 email=fallback_email,
@@ -162,41 +159,37 @@ async def api_key_auth(
     if bearer and bearer.credentials:
         return await validate_entra_jwt(bearer.credentials, db)
 
-    # 2. Local-only development and testing overrides
-    fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-    target_user_id = fallback_user_id
-
-    if x_user_id:
-        try:
-            target_user_id = uuid.UUID(x_user_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid X-User-Id format. Must be a UUID."
-            )
-
-    # Local debug check: Allow missing key but require localhost
-    if settings.debug and not api_key:
-        return {"user_id": target_user_id, "email": "anonymous@local", "roles": ["AIPlatform.Admin"], "mode": "debug"}
-
-    # Validate temporary production API key (will log warning to transition to JWT)
+    # 2. API key authentication
     if api_key and api_key == settings.api_key:
-        # Auto-provision user if they don't exist (API key is a fallback auth)
-        result = await db.execute(select(AIUser).where(AIUser.id == target_user_id))
+        fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        if x_user_id and settings.debug:
+            try:
+                fallback_user_id = uuid.UUID(x_user_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid X-User-Id format. Must be a UUID."
+                )
+        result = await db.execute(select(AIUser).where(AIUser.id == fallback_user_id))
         existing_user = result.scalar_one_or_none()
         if not existing_user:
             db_user = AIUser(
-                id=target_user_id,
-                email=f"api-key-{target_user_id}@internal",
-                display_name=f"API User ({str(target_user_id)[:8]})",
-                role="admin",
+                id=fallback_user_id,
+                email=f"api-key-{fallback_user_id}@internal",
+                display_name=f"API User ({str(fallback_user_id)[:8]})",
+                role="user",
                 is_active="true",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
             )
             db.add(db_user)
             await db.commit()
-        return {"user_id": target_user_id, "email": "api-key@local", "roles": ["AIPlatform.Admin"], "mode": "api-key"}
+        return {"user_id": fallback_user_id, "email": "api-key@internal", "roles": ["AIPlatform.User"], "mode": "api-key"}
+
+    # 3. Debug mode (local development only, requires DEBUG=true)
+    if settings.debug and not api_key:
+        fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        return {"user_id": fallback_user_id, "email": "anonymous@local", "roles": ["AIPlatform.Admin"], "mode": "debug"}
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

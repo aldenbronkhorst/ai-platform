@@ -59,7 +59,10 @@ def clean_display_value(value: Any, include_ids: bool = False) -> Any:
         for key, item in value.items():
             if key == "id" and not include_ids:
                 continue
-            cleaned[key] = clean_display_value(item, include_ids=include_ids)
+            if isinstance(item, list) and len(item) == 2 and isinstance(item[0], int) and isinstance(item[1], str):
+                cleaned[key] = {"id": item[0], "name": item[1]} if include_ids else item[1]
+            else:
+                cleaned[key] = clean_display_value(item, include_ids=include_ids)
         return cleaned
     return value
 
@@ -194,9 +197,13 @@ class OdooClient:
                 return self.execute_kw_xmlrpc(model, method, args, kwargs)
             try:
                 return self.execute_kw_jsonrpc(model, method, args, kwargs)
+            except OdooAuthError:
+                raise
             except Exception as jsonrpc_error:
                 try:
                     return self.execute_kw_xmlrpc(model, method, args, kwargs)
+                except OdooAuthError:
+                    raise
                 except Exception as xmlrpc_error:
                     raise OdooError(
                         f"Both Odoo API transports failed. JSON-RPC: {jsonrpc_error}; XML-RPC: {xmlrpc_error}"

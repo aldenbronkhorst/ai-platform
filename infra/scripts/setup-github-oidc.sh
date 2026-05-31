@@ -5,7 +5,7 @@ set -e
 # Run this locally after creating the GitHub repo
 
 REPO_NAME="${1:-lots-ai-platform/ai-platform}"
-ENVIRONMENT="${2:-dev}"
+ENVIRONMENT="${2:-prod}"
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 TENANT_ID=$(az account show --query tenantId -o tsv)
 APP_NAME="github-actions-ai-platform-${ENVIRONMENT}"
@@ -66,13 +66,15 @@ else
     echo "Federated credential already exists: $FIC_PR_NAME"
 fi
 
-# Assign Contributor role to the subscription for the service principal
-echo "Assigning Contributor role to subscription"
+# Assign Contributor role scoped to the resource group
+RESOURCE_GROUP="rg-ai-platform-${ENVIRONMENT}-san-001"
+echo "Assigning Contributor role to resource group: $RESOURCE_GROUP"
+RG_ID=$(az group show --name "$RESOURCE_GROUP" --query id -o tsv 2>/dev/null || echo "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP")
 az role assignment create \
     --assignee-object-id "$SP_ID" \
     --assignee-principal-type ServicePrincipal \
     --role Contributor \
-    --scope "/subscriptions/$SUBSCRIPTION_ID" \
+    --scope "$RG_ID" \
     2>/dev/null || echo "Role assignment may already exist"
 
 echo ""

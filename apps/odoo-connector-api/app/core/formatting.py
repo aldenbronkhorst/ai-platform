@@ -26,12 +26,12 @@ def enrich_record_with_human_references(record: dict[str, Any], fields_info: dic
             if ref:
                 enriched[f"{field_name}_human_reference"] = ref
 
-        # Direct model fields
+        # Direct model fields (Many2one stored as integer ID with name in sibling field)
         model = field_meta.get("relation", "")
         if model and field_name in ("product_id", "product_tmpl_id", "partner_id", "customer_id", "vendor_id", "company_id"):
             if isinstance(value, int):
-                # Already resolved name is in display_name or name
-                name = record.get("display_name") or record.get("name", "")
+                name_field = f"{field_name}_name"
+                name = record.get(name_field) or record.get("display_name") or record.get("name", "")
                 ref = _human_reference_for_model(model, value, name)
                 if ref:
                     enriched[f"{field_name}_human_reference"] = ref
@@ -72,28 +72,6 @@ def _human_reference_for_model(model: str, record_id: int | None, name: str) -> 
 
     # Generic
     return {"id": record_id, "label": label}
-
-
-def format_search_read_response(
-    model: str,
-    records: list[dict[str, Any]],
-    fields_info: dict[str, Any] | None = None,
-    include_human_references: bool = True,
-) -> dict[str, Any]:
-    """Format a search_read response with structured metadata."""
-    formatted_records = []
-    for record in records:
-        rec = dict(record)
-        rec["__model"] = model
-        if include_human_references and fields_info:
-            rec = enrich_record_with_human_references(rec, fields_info)
-        formatted_records.append(rec)
-
-    return {
-        "model": model,
-        "count": len(formatted_records),
-        "records": formatted_records,
-    }
 
 
 def format_mutation_response(

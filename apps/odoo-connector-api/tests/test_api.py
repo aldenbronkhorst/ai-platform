@@ -3,11 +3,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
+os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.main import app
 from app.core.config import get_settings
 
 client = TestClient(app)
+
+AUTH_HEADERS = {"X-Internal-API-Key": "test-internal-key"}
 
 
 class TestHealth:
@@ -19,7 +22,7 @@ class TestHealth:
         assert "capabilities" in data
 
     def test_capabilities(self):
-        response = client.get("/capabilities")
+        response = client.get("/capabilities", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "endpoints" in data
@@ -35,8 +38,7 @@ class TestSchema:
                 "api_key": "test",
             },
             "query": "account",
-        })
-        # Catches OdooError -> 400 (or any transport error)
+        }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]
 
 
@@ -52,7 +54,7 @@ class TestRecords:
             "model": "res.partner",
             "domain": [],
             "limit": 5,
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]
 
     def test_count_requires_credentials(self):
@@ -64,7 +66,7 @@ class TestRecords:
                 "api_key": "test",
             },
             "model": "res.partner",
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]
 
 
@@ -90,6 +92,7 @@ class TestExecuteKw:
         finally:
             get_settings.cache_clear()
             os.environ["DEBUG"] = "true"
+            os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
             os.environ.pop("INTERNAL_API_KEY", None)
 
 
@@ -104,7 +107,7 @@ class TestAttachments:
             },
             "model": "res.partner",
             "record_id": 1,
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]
 
 
@@ -119,5 +122,5 @@ class TestMessages:
             },
             "model": "res.partner",
             "record_id": 1,
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code in [200, 400, 500, 502]

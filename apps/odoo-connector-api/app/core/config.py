@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     debug: bool = os.environ.get("DEBUG", "false").lower() == "true"
 
     # Internal service auth
-    internal_api_key: str = os.environ.get("INTERNAL_API_KEY", "change-me-in-production")
+    internal_api_key: str = os.environ.get("INTERNAL_API_KEY", "")
 
     # Odoo defaults (can be overridden per-request)
     odoo_url: str = os.environ.get("ODOO_URL", "")

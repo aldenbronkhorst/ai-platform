@@ -1,4 +1,4 @@
-import type { Configuration, PopupRequest } from "@azure/msal-browser";
+import type { Configuration, RedirectRequest } from "@azure/msal-browser";
 
 const portalClientId = "ff6a9526-c27a-42a6-b317-56060d11b14e";
 const apiClientId = "fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208";
@@ -17,11 +17,6 @@ export const msalConfig: Configuration = {
 };
 
 // Add scopes here for active directory token acquisition (Access Token for AI Core API)
-export const loginRequest: PopupRequest = {
+export const loginRequest: RedirectRequest = {
   scopes: [`api://${apiClientId}/access_as_user`]
-};
-
-// Graph API endpoint config
-export const graphConfig = {
-  graphMeEndpoint: "https://graph.microsoft.com/v1.0/me"
 };

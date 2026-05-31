@@ -1,5 +1,6 @@
 import os
 from functools import lru_cache
+from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings
 
 
@@ -28,15 +29,17 @@ class Settings(BaseSettings):
     azure_search_max_injected_chunks: int = int(os.environ.get("AZURE_SEARCH_MAX_INJECTED_CHUNKS", "5"))
 
     # Auth (temporary — replace with Entra ID / JWT)
-    api_key: str = os.environ.get("API_KEY", "change-in-production")
+    api_key: str = os.environ.get("API_KEY", "")
 
     @property
     def database_url(self) -> str:
-        return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        pw = quote_plus(self.postgres_password)
+        return f"postgresql+asyncpg://{self.postgres_user}:{pw}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
 
     @property
     def sync_database_url(self) -> str:
-        return f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        pw = quote_plus(self.postgres_password)
+        return f"postgresql+psycopg2://{self.postgres_user}:{pw}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
 
 
 @lru_cache()

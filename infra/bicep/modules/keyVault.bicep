@@ -23,6 +23,14 @@ param apiManagedIdentityPrincipalId string
 @secure()
 param postgresAdminPassword string
 
+@description('API key for AI Core API authentication')
+@secure()
+param apiKey string = newGuid()
+
+@description('API key for Odoo Connector internal authentication')
+@secure()
+param odooConnectorApiKey string = newGuid()
+
 var sanitizedWorkload = replace(workload, '-', '')
 var keyVaultName = 'kv${sanitizedWorkload}${environment}${regionCode}${instance}'
 
@@ -40,7 +48,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enabledForTemplateDeployment: true
     publicNetworkAccess: 'Enabled'
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: 'Deny'
       bypass: 'AzureServices'
     }
   }
@@ -61,6 +69,22 @@ resource postgresPasswordSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' =
   name: 'postgres-admin-password'
   properties: {
     value: postgresAdminPassword
+  }
+}
+
+resource apiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'api-key'
+  properties: {
+    value: apiKey
+  }
+}
+
+resource odooConnectorApiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'odoo-connector-api-key'
+  properties: {
+    value: odooConnectorApiKey
   }
 }
 

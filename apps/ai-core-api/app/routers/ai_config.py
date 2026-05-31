@@ -6,7 +6,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field, ConfigDict
 
-from app.core.security import api_key_auth
+from app.core.security import api_key_auth, require_role
 from app.core.database import get_db
 from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog
 from app.services.model_router import get_enabled_route, build_foundry_client, ROUTE_NOT_CONFIGURED_MESSAGE
@@ -40,7 +40,6 @@ class ProviderResponse(BaseModel):
     provider_type: str
     base_url: str
     auth_type: str
-    secret_reference: Optional[str]
     enabled: str
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
@@ -165,7 +164,7 @@ async def list_providers(
 async def create_provider(
     req: ProviderCreate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin"])),
 ):
     existing = await db.execute(select(AIProvider).where(AIProvider.name == req.name))
     if existing.scalar_one_or_none():
@@ -182,7 +181,7 @@ async def update_provider(
     provider_id: UUID,
     req: ProviderUpdate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin"])),
 ):
     result = await db.execute(select(AIProvider).where(AIProvider.id == provider_id))
     provider = result.scalar_one_or_none()

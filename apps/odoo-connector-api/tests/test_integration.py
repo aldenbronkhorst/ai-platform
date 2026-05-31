@@ -5,10 +5,16 @@ from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
 os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
+os.environ["INTERNAL_API_KEY"] = "test-internal-key"
+
+from app.core.config import get_settings
+get_settings.cache_clear()
 
 from app.main import app
 
 client = TestClient(app)
+
+AUTH_HEADERS = {"X-Internal-API-Key": "test-internal-key"}
 
 
 class MockServerProxy:
@@ -74,7 +80,7 @@ class TestSchemaIntegration:
                 "api_key": "secret",
             },
             "query": "partner",
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "records" in data
@@ -88,7 +94,7 @@ class TestSchemaIntegration:
                 "api_key": "secret",
             },
             "model": "res.partner",
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "model" in data
@@ -108,7 +114,7 @@ class TestRecordsIntegration:
             "model": "res.partner",
             "domain": [],
             "limit": 5,
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "records" in data
@@ -124,7 +130,7 @@ class TestRecordsIntegration:
                 "api_key": "secret",
             },
             "model": "res.partner",
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["count"] == 2
@@ -139,7 +145,7 @@ class TestRecordsIntegration:
             },
             "model": "res.partner",
             "ids": [1],
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "records" in data
@@ -148,6 +154,11 @@ class TestRecordsIntegration:
 
 class TestExecuteKwIntegration:
     def test_execute_kw_allowed(self, mock_xmlrpc):
+        from app.core.config import get_settings
+        os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
+        os.environ["EXECUTE_KW_ALLOW_WRITE_METHODS"] = "true"
+        os.environ["DEBUG"] = "true"
+        get_settings.cache_clear()
         response = client.post("/execute-kw/", json={
             "credentials": {
                 "url": "https://odoo.example.com",
@@ -158,7 +169,7 @@ class TestExecuteKwIntegration:
             "model": "res.partner",
             "method": "search",
             "args": [[]],
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
 
     def test_execute_kw_blocked_method(self, mock_xmlrpc):
@@ -173,7 +184,7 @@ class TestExecuteKwIntegration:
             "model": "res.partner",
             "method": "unlink",
             "args": [[1]],
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 403
         os.environ["EXECUTE_KW_BLOCKED_METHODS"] = ""
 
@@ -190,7 +201,7 @@ class TestMessagesIntegration:
             "model": "res.partner",
             "record_id": 1,
             "body": "Test message",
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert data["message_id"] == 101
@@ -206,7 +217,7 @@ class TestMessagesIntegration:
             },
             "model": "res.partner",
             "record_id": 1,
-        })
+        }, headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "messages" in data

@@ -74,6 +74,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
         .then(response => setAccessToken(response.accessToken))
         .catch(() => setAuthError("Token acquisition failed. Please sign in again."));
+      const refreshInterval = setInterval(() => {
+        instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
+          .then(response => setAccessToken(response.accessToken))
+          .catch(() => {});
+      }, 30 * 60 * 1000);
+      return () => clearInterval(refreshInterval);
     } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
       setActiveUser(localMockUser);
       setAccessToken("mock-local-token");
@@ -121,6 +127,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       };
       recognitionRef.current = rec;
     }
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch {}
+        recognitionRef.current = null;
+      }
+    };
   }, []);
 
   const fetchChatSessions = async () => {
@@ -206,8 +218,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
 
     const requestId = crypto.randomUUID();
-    const userMsgId = Math.random().toString();
-    const pendingMsgId = Math.random().toString();
+    const userMsgId = crypto.randomUUID();
+    const pendingMsgId = crypto.randomUUID();
 
     const tempUserMsg: ChatMessage = {
       id: userMsgId,
@@ -322,7 +334,16 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     setIsChatSending(true);
     const currentSess = activeSession;
 
-    const newPendingId = Math.random().toString();
+    const failedIdx = chatMessages.findIndex(m => m.id === messageId);
+    let userContent = "";
+    for (let i = failedIdx - 1; i >= 0; i--) {
+      if (chatMessages[i].role === "user" && chatMessages[i].status === "completed") {
+        userContent = chatMessages[i].content;
+        break;
+      }
+    }
+
+    const newPendingId = crypto.randomUUID();
     const pendingAssistantMsg: ChatMessage = {
       id: newPendingId,
       chat_session_id: activeSession.id,
@@ -346,7 +367,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         method: "POST",
         headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({
-          content: "Please retry: " + (chatMessages.find(m => m.chat_session_id === activeSession.id && m.role === "user" && m.status === "completed")?.content || ""),
+          content: userContent,
           artifact_ids: [],
           workflow_context: currentSess.workflow_context,
         }),
@@ -442,7 +463,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       content: newContent,
     };
 
-    const pendingMsgId = Math.random().toString();
+    const pendingMsgId = crypto.randomUUID();
     const pendingAssistantMsg: ChatMessage = {
       id: pendingMsgId,
       chat_session_id: currentSess.id,
@@ -452,7 +473,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       status: "pending",
     };
 
-    setChatMessages([...beforeEdit, updatedUserMsg, pendingAssistantMsg]);
+    setChatMessages(prev => [...prev.filter(m => m.id !== chatMessages[editIndex]?.id), ...beforeEdit.slice(beforeEdit.length), updatedUserMsg, pendingAssistantMsg]);
 
     const requestId = crypto.randomUUID();
     const abortController = new AbortController();

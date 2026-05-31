@@ -1,4 +1,5 @@
 import os
+import logging
 import httpx
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +16,8 @@ from app.services.audit import AuditService
 from app.services.job import JobService
 from app.services.artifact import ArtifactService
 from app.schemas.schemas import AIAuditEventCreate, AIJobCreate, AIArtifactCreate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -81,7 +84,7 @@ async def _log_audit(
             target_record_id=None,
             actor_user_id=auth.get("user_id"),
             identity_mode=identity_mode,
-            details=details,
+            input_summary=str(details)[:500],
             status=status,
         ))
         await db.commit()

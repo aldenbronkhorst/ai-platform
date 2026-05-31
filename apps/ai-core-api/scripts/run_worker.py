@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 

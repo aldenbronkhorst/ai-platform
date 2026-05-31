@@ -25,6 +25,7 @@ async def health_check():
             "attachments.create",
             "messages.list",
             "messages.create",
+            "reports.execute",
         ],
     )
 
@@ -47,6 +48,6 @@ async def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
             {"path": "/messages/list", "method": "POST", "description": "List messages/chatter"},
             {"path": "/messages/create", "method": "POST", "description": "Post message to record chatter"},
         ],
-        execute_kw_enabled=settings.debug or settings.execute_kw_allow_write_methods,
+        execute_kw_enabled=settings.execute_kw_allow_write_methods,
         execute_kw_write_methods=settings.execute_kw_allow_write_methods,
     )

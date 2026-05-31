@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import api_key_auth, require_role
 from app.models.models import AIRule
 from app.schemas.schemas import AIRuleResponse
 
@@ -58,7 +58,7 @@ async def list_rules(
 async def create_rule(
     req: AIRuleCreate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
+    auth=Depends(require_role(["AIPlatform.Admin"])),
 ):
     """Create a new business rule."""
     user_id = auth.get("user_id")
@@ -94,7 +94,7 @@ async def update_rule(
     rule_id: UUID,
     req: AIRuleUpdate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
+    auth=Depends(require_role(["AIPlatform.Admin"])),
 ):
     """Update a business rule."""
     user_id = auth.get("user_id")
@@ -128,13 +128,15 @@ async def update_rule(
 async def delete_rule(
     rule_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
+    auth=Depends(require_role(["AIPlatform.Admin"])),
 ):
     """Delete an archived/inactive rule."""
     result = await db.execute(select(AIRule).where(AIRule.id == rule_id))
     rule = result.scalar_one_or_none()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    if rule.status == "active":
+        raise HTTPException(status_code=409, detail="Cannot delete an active rule. Archive it first.")
     await db.delete(rule)
     await db.commit()
     logger.info("Rule deleted | id=%s title=%s", rule.id, rule.title)

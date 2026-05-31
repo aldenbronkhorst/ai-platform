@@ -186,7 +186,8 @@ class SearchService:
         # Normal user can only see 'global' memories OR their own 'user'-scoped memories.
         # Admin can see company/global memories.
         if user_id:
-            user_filter = f"(visibility eq 'global' or created_by_user_id eq '{user_id}')"
+            safe_user_id = str(user_id).replace("'", "''")
+            user_filter = f"(visibility eq 'global' or created_by_user_id eq '{safe_user_id}')"
             filter_parts.append(user_filter)
         else:
             filter_parts.append("visibility eq 'global'")

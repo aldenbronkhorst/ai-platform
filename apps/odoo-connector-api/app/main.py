@@ -91,7 +91,7 @@ async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.Pro
         status_code=502,
         content={
             "error": "odoo_transport_error",
-            "message": f"XML-RPC protocol error: {exc}",
+            "message": f"XML-RPC protocol error: {exc.errcode} {exc.errmsg}",
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )
@@ -99,11 +99,12 @@ async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.Pro
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
+    logging.getLogger(__name__).exception("Unhandled exception: %s", exc)
     return JSONResponse(
         status_code=500,
         content={
             "error": "internal_error",
-            "message": str(exc),
+            "message": "An internal error occurred.",
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )

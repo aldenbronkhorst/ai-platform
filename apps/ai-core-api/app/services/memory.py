@@ -13,6 +13,10 @@ from sqlalchemy import select, or_, and_
 from app.models.models import AIMemory, AIChatMessage, AIRule
 from app.schemas.schemas import MemoryCandidate
 
+
+def _escape_like(s: str) -> str:
+    return s.replace("%", "\\%").replace("_", "\\_")
+
 logger = logging.getLogger(__name__)
 
 MEMORY_EXPLICIT_PATTERNS = [
@@ -136,7 +140,7 @@ class MemoryCandidateService:
             select(AIMemory).where(
                 AIMemory.type == candidate.type,
                 AIMemory.status == "active",
-                AIMemory.title.ilike(f"%{candidate.title[:50]}%"),
+                AIMemory.title.ilike(f"%{_escape_like(candidate.title[:50])}%"),
             )
         )
         existing = result.scalar_one_or_none()

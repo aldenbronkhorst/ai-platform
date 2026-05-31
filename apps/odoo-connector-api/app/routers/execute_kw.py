@@ -13,8 +13,8 @@ router = APIRouter()
 async def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_key_auth)):
     settings = get_settings()
 
-    if not settings.debug and not settings.execute_kw_allow_write_methods:
-        raise HTTPException(status_code=403, detail="execute_kw is disabled. Enable EXECUTE_KW_ALLOW_WRITE or use mode-based endpoints.")
+    if not settings.execute_kw_allow_write_methods:
+        raise HTTPException(status_code=403, detail="execute_kw is disabled. Enable EXECUTE_KW_ALLOW_WRITE to allow write operations.")
 
     blocked = set()
     if settings.execute_kw_blocked_methods:
@@ -24,6 +24,7 @@ async def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_ke
     if req.method in blocked:
         raise HTTPException(status_code=403, detail=f"Method '{req.method}' is blocked.")
 
+    settings = get_settings()
     client = OdooClient(
         credentials=OdooCredentials(
             url=req.credentials.url,
@@ -32,10 +33,14 @@ async def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_ke
             password_or_api_key=req.credentials.api_key,
         ),
         transport=req.credentials.transport,
+        timeout=settings.odoo_api_timeout_seconds,
+        ssl_verify=settings.odoo_ssl_verify,
     )
 
     if req.dry_run:
-        return {"dry_run": True, "would_execute": req.model_dump()}
+        safe_dump = req.model_dump()
+        safe_dump.pop("credentials", None)
+        return {"dry_run": True, "would_execute": safe_dump}
 
     result = client.call_with_transport(
         req.model,

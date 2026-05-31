@@ -21,7 +21,7 @@ param apiManagedIdentityPrincipalId string
 
 var serviceBusName = 'sb-${workload}-${environment}-${regionCode}-${instance}'
 
-resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
+resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
   name: serviceBusName
   location: location
   tags: tags
@@ -29,7 +29,10 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
     name: 'Standard'
     tier: 'Standard'
   }
-  properties: {}
+  properties: {
+    publicNetworkAccess: 'Disabled'
+    minimumTlsVersion: '1.2'
+  }
 }
 
 var queueNames = [
@@ -42,7 +45,7 @@ var queueNames = [
   'ai-automation-events'
 ]
 
-resource queues 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = [for queueName in queueNames: {
+resource queues 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = [for queueName in queueNames: {
   parent: serviceBusNamespace
   name: queueName
   properties: {

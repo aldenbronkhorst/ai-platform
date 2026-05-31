@@ -103,7 +103,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Azure Login
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -116,7 +116,9 @@ jobs:
           echo "acr_name=acraiplatformprodsan001" >> $GITHUB_OUTPUT
           echo "container_app=ca-ai-platform-api-prod-san-001" >> $GITHUB_OUTPUT
           echo "connector_app=ca-odoo-connector-prod-san-001" >> $GITHUB_OUTPUT
-          echo "connector_url=https://ca-odoo-connector-prod-san-001.nicefield-638716c4.southafricanorth.azurecontainerapps.io" >> $GITHUB_OUTPUT
+          echo "worker_app=ca-ai-worker-prod" >> $GITHUB_OUTPUT
+          CONNECTOR_FQDN=$(az containerapp show --name ca-odoo-connector-prod-san-001 --resource-group rg-ai-platform-prod-san-001 --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "connector_url=https://${CONNECTOR_FQDN}" >> $GITHUB_OUTPUT
 
       - name: ACR Login
         run: |
@@ -151,12 +153,12 @@ jobs:
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}"
+            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} ODOO_CONNECTOR_API_KEY=secretref:odoo-connector-api-key API_KEY=secretref:api-key POSTGRES_PASSWORD=secretref:keyvault-dsn"
           az containerapp update \
-            --name "ca-ai-worker-prod" \
+            --name ${{ steps.env.outputs.worker_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}"
+            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} ODOO_CONNECTOR_API_KEY=secretref:odoo-connector-api-key API_KEY=secretref:api-key POSTGRES_PASSWORD=secretref:keyvault-dsn"
 
       - name: Deploy Odoo Connector
         run: |

@@ -73,15 +73,34 @@ class ArtifactService:
         return result.scalar_one_or_none()
 
     def generate_sas_url(self, container: str, blob_name: str) -> str:
-        """Generates a secure, read-only SAS URL valid for 15 minutes."""
+        """Generates a read-only URL for the blob. Uses SAS if account key is available."""
         from datetime import datetime, timedelta
         from azure.storage.blob import generate_blob_sas, BlobSasPermissions
-        
+
+        account_name = self.settings.storage_account_name
+        blob_url = f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}"
+
         try:
-            account_name = self.settings.storage_account_name
-            # Fallback securely if we don't have account key (e.g. using DefaultAzureCredential)
-            # We return the standard URI as a robust fallback
-            return f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}"
+            from azure.identity import DefaultAzureCredential
+            credential = DefaultAzureCredential()
+            from azure.storage.blob import BlobServiceClient
+            blob_service = BlobServiceClient(
+                account_url=f"https://{account_name}.blob.core.windows.net",
+                credential=credential,
+            )
+            user_delegation_key = blob_service.get_user_delegation_key(
+                key_start_time=datetime.utcnow(),
+                key_expiry_time=datetime.utcnow() + timedelta(minutes=15),
+            )
+            sas_token = generate_blob_sas(
+                account_name=account_name,
+                container_name=container,
+                blob_name=blob_name,
+                user_delegation_key=user_delegation_key,
+                permission=BlobSasPermissions(read=True),
+                expiry=datetime.utcnow() + timedelta(minutes=15),
+            )
+            return f"{blob_url}?{sas_token}"
         except Exception:
-            return f"https://{self.settings.storage_account_name}.blob.core.windows.net/{container}/{blob_name}"
+            return blob_url
 

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
-from typing import Any, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Any, Optional, Literal
+from urllib.parse import urlparse
 
 
 class OdooCredentialsRequest(BaseModel):
@@ -7,7 +8,22 @@ class OdooCredentialsRequest(BaseModel):
     db: str = Field(..., description="Odoo database name")
     username: str = Field(..., description="Odoo username")
     api_key: str = Field(..., description="Odoo API key or password")
-    transport: str = Field(default="auto", description="Transport: auto, xmlrpc, jsonrpc")
+    transport: Literal["auto", "xmlrpc", "jsonrpc"] = Field(default="auto", description="Transport: auto, xmlrpc, jsonrpc")
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("URL must use http or https scheme")
+        hostname = parsed.hostname or ""
+        blocked_prefixes = ("169.254.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                           "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                           "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                           "192.168.", "127.", "0.")
+        if any(hostname.startswith(p) for p in blocked_prefixes) or hostname in ("localhost", "metadata.google.internal"):
+            raise ValueError("URL must not target internal/private network addresses")
+        return v
 
 
 class HealthResponse(BaseModel):
