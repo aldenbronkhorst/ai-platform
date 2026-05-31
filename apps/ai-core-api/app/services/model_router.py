@@ -344,7 +344,43 @@ async def execute_chat(
     chat_session_id: Optional[UUID] = None,
     user_id: Optional[UUID] = None,
 ) -> dict:
-    route, model_obj, provider = await get_enabled_route(db, task_type)
+    # Use ModelRoutingPolicyService to determine primary route and fallback properties
+    from app.services.model_routing_policy import ModelRoutingPolicyService
+    from app.core.config import get_settings
+    routing_svc = ModelRoutingPolicyService(db)
+
+    # Analyze risk level based on task_type and text content
+    user_msg_text = messages[-1]["content"] if messages else ""
+    is_finance_topic = any(kw in user_msg_text.lower() for kw in [
+        "revenue", "income", "expense", "profit", "loss", "balance", "invoice",
+        "bill", "payment", "amount", "total", "cost", "price", "tax", "vat", "accounting"
+    ])
+    risk_level = "high" if is_finance_topic else "low"
+
+    policy = await routing_svc.select_route(
+        task_type=task_type,
+        risk_level=risk_level,
+        requires_tools=True if task_type == "general_chat" else False
+    )
+
+    route_id_str = policy.get("selected_route_id")
+    model_id_str = policy.get("selected_model_id")
+
+    if route_id_str and model_id_str:
+        # Load selected route
+        route_res = await db.execute(select(AIRoute).where(AIRoute.id == UUID(route_id_str)))
+        route = route_res.scalar_one_or_none()
+
+        # Load selected model
+        model_res = await db.execute(select(AIModel).where(AIModel.id == UUID(model_id_str)))
+        model_obj = model_res.scalar_one_or_none()
+
+        # Load provider
+        prov_res = await db.execute(select(AIProvider).where(AIProvider.id == model_obj.provider_id))
+        provider = prov_res.scalar_one_or_none()
+    else:
+        # Fallback to legacy get_enabled_route if none found in DB
+        route, model_obj, provider = await get_enabled_route(db, task_type)
 
     # Build system prompt with dynamic connector context
     system_prompt = route.system_prompt or ""
@@ -518,6 +554,10 @@ async def execute_chat(
     total_latency_ms += result.get("latency_ms", 0)
 
     # Fallback on quota / rate-limit errors
+    fallback_used = False
+    primary_model_display = model_obj.display_name
+    fallback_model_display = "none"
+
     if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded"):
         if route.fallback_model_id:
             fallback_model_res = await db.execute(
@@ -525,20 +565,29 @@ async def execute_chat(
             )
             fallback_model = fallback_model_res.scalar_one_or_none()
             if fallback_model:
-                fallback_prov_res = await db.execute(
-                    select(AIProvider).where(AIProvider.id == fallback_model.provider_id, AIProvider.enabled == "true")
-                )
-                fallback_prov = fallback_prov_res.scalar_one_or_none()
-                if fallback_prov:
-                    logger.warning(
-                        "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
-                        model_obj.display_name, fallback_model.display_name,
+                fallback_model_display = fallback_model.display_name
+                # Verify that fallback supports required tools (if tools are enabled/requested)
+                config_fb = fallback_model.config_json or {}
+                fb_supports_tools = fallback_model.supports_tools == "true" or config_fb.get("supports_tools") is True
+
+                if tool_definitions and not fb_supports_tools:
+                    logger.warning("Fallback model %s does not support required tools. Skipping fallback.", fallback_model.display_name)
+                else:
+                    fallback_prov_res = await db.execute(
+                        select(AIProvider).where(AIProvider.id == fallback_model.provider_id, AIProvider.enabled == "true")
                     )
-                    fb_result, used_model, used_provider, client = await _try_model(fallback_model, fallback_prov, full_messages)
-                    total_prompt_tokens += fb_result.get("prompt_tokens", 0)
-                    total_completion_tokens += fb_result.get("completion_tokens", 0)
-                    total_latency_ms += fb_result.get("latency_ms", 0)
-                    result = fb_result
+                    fallback_prov = fallback_prov_res.scalar_one_or_none()
+                    if fallback_prov:
+                        logger.warning(
+                            "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
+                            model_obj.display_name, fallback_model.display_name,
+                        )
+                        fb_result, used_model, used_provider, client = await _try_model(fallback_model, fallback_prov, full_messages)
+                        total_prompt_tokens += fb_result.get("prompt_tokens", 0)
+                        total_completion_tokens += fb_result.get("completion_tokens", 0)
+                        total_latency_ms += fb_result.get("latency_ms", 0)
+                        result = fb_result
+                        fallback_used = True
 
     # Tool-calling loop (up to 10 rounds to prevent infinite loops)
     max_tool_rounds = 10
@@ -690,6 +739,13 @@ async def execute_chat(
             for hit in chunks_to_inject
         ] if chunks_to_inject else [],
         "currency_source": currency_source,
+        "model_routing": {
+            "primary_model": primary_model_display,
+            "fallback_model": fallback_model_display,
+            "fallback_used": fallback_used,
+            "routing_reason": policy.get("reason", "unknown") if "policy" in locals() else "legacy_get_enabled_route",
+            "cost_tier": policy.get("cost_tier", "medium") if "policy" in locals() else "medium"
+        }
     }
 
     response = {
