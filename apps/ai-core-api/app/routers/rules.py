@@ -61,6 +61,7 @@ async def create_rule(
     auth=Depends(api_key_auth),
 ):
     """Create a new business rule."""
+    user_id = auth.get("user_id")
     rule = AIRule(
         id=uuid_pkg.uuid4(),
         title=req.title,
@@ -75,9 +76,16 @@ async def create_rule(
         priority=req.priority,
     )
     db.add(rule)
+    await db.flush()
+
+    # Run conflict detection and block silent activation
+    from app.services.rule_conflict import RuleConflictService
+    conflict_svc = RuleConflictService(db)
+    await conflict_svc.enforce_rule_governance(rule, user_id=user_id)
+
     await db.commit()
     await db.refresh(rule)
-    logger.info("Rule created | id=%s title=%s", rule.id, rule.title)
+    logger.info("Rule created | id=%s title=%s status=%s", rule.id, rule.title, rule.status)
     return rule
 
 
@@ -89,6 +97,7 @@ async def update_rule(
     auth=Depends(api_key_auth),
 ):
     """Update a business rule."""
+    user_id = auth.get("user_id")
     result = await db.execute(select(AIRule).where(AIRule.id == rule_id))
     rule = result.scalar_one_or_none()
     if not rule:
@@ -102,6 +111,13 @@ async def update_rule(
         rule.status = req.status
     if req.priority is not None:
         rule.priority = req.priority
+
+    await db.flush()
+
+    # Run conflict detection and block silent activation
+    from app.services.rule_conflict import RuleConflictService
+    conflict_svc = RuleConflictService(db)
+    await conflict_svc.enforce_rule_governance(rule, user_id=user_id)
 
     await db.commit()
     await db.refresh(rule)
