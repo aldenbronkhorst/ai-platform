@@ -9,7 +9,7 @@ from app.models.models import AIRoute, AIModel, AIProvider, AIConnectedAccount, 
 from tests.test_model_router import MockSession
 
 
-class TestProfitAndLossRouterAndReviewer:
+class TestOdooReportsRouter:
     @pytest.mark.asyncio
     async def test_reviewer_approved_with_currency(self):
         agent = ReviewerAgent()
