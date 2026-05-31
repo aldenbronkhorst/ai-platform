@@ -19,6 +19,10 @@ param tags object
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
 
+@description('Search service SKU name')
+@allowed(['free', 'basic', 'standard'])
+param skuName string = 'free'
+
 var searchName = 'srch-${workload}-${environment}-${regionCode}-${instance}'
 
 resource search 'Microsoft.Search/searchServices@2022-09-01' = {
@@ -26,7 +30,7 @@ resource search 'Microsoft.Search/searchServices@2022-09-01' = {
   location: location
   tags: tags
   sku: {
-    name: 'standard'
+    name: skuName
   }
   properties: {
     replicaCount: 1

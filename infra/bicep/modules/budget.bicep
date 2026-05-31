@@ -32,6 +32,13 @@ resource budget 'Microsoft.Consumption/budgets@2023-05-01' = {
       endDate: endDate
     }
     notifications: {
+      '50Percent': {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: 50
+        contactEmails: ['alden@lotslotsmore.com']
+        contactRoles: ['Owner']
+      }
       '80Percent': {
         enabled: true
         operator: 'GreaterThan'

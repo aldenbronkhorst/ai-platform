@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "3043323062747549314"
+      "templateHash": "9229437771164442542"
     }
   },
   "parameters": {
@@ -109,6 +109,25 @@
       "defaultValue": "latest",
       "metadata": {
         "description": "Odoo Connector container image tag"
+      }
+    },
+    "deploySearch": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Whether to deploy Azure AI Search"
+      }
+    },
+    "searchSku": {
+      "type": "string",
+      "defaultValue": "free",
+      "allowedValues": [
+        "free",
+        "basic",
+        "standard"
+      ],
+      "metadata": {
+        "description": "Azure AI Search SKU name"
       }
     }
   },
@@ -1314,6 +1333,9 @@
           },
           "postgresAdminUsername": {
             "value": "[parameters('postgresAdminUsername')]"
+          },
+          "deploySearch": {
+            "value": "[parameters('deploySearch')]"
           }
         },
         "template": {
@@ -1323,7 +1345,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "6959095214819485716"
+              "templateHash": "8338059121706654306"
             }
           },
           "parameters": {
@@ -1442,6 +1464,13 @@
               "metadata": {
                 "description": "PostgreSQL admin username"
               }
+            },
+            "deploySearch": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Whether to deploy Azure AI Search"
+              }
             }
           },
           "variables": {
@@ -1500,6 +1529,16 @@
                       "name": "keyvault-dsn",
                       "keyVaultUrl": "[format('{0}secrets/postgres-admin-password', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "api-key",
+                      "keyVaultUrl": "[format('{0}secrets/api-key', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "odoo-connector-api-key",
+                      "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
                     }
                   ]
                 },
@@ -1548,6 +1587,42 @@
                         {
                           "name": "VERSION",
                           "value": "1.0.0"
+                        },
+                        {
+                          "name": "API_KEY",
+                          "secretRef": "api-key"
+                        },
+                        {
+                          "name": "ODOO_CONNECTOR_URL",
+                          "value": "[format('https://{0}.nicefield-638716c4.southafricanorth.azurecontainerapps.io', variables('odooConnectorAppName'))]"
+                        },
+                        {
+                          "name": "ODOO_CONNECTOR_API_KEY",
+                          "secretRef": "odoo-connector-api-key"
+                        },
+                        {
+                          "name": "KEY_VAULT_URI",
+                          "value": "[parameters('keyVaultUri')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_ENDPOINT",
+                          "value": "[if(parameters('deploySearch'), format('https://srch-{0}-{1}-{2}-{3}.search.windows.net', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance')), '')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_INDEX_NAME",
+                          "value": "[if(parameters('deploySearch'), 'company-knowledge', '')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_ENABLE",
+                          "value": "[if(parameters('deploySearch'), 'true', 'false')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_MAX_RESULTS",
+                          "value": "5"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_MAX_INJECTED_CHUNKS",
+                          "value": "5"
                         }
                       ],
                       "resources": {
@@ -1698,6 +1773,161 @@
               "dependsOn": [
                 "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
               ]
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2023-05-01",
+              "name": "[format('ca-ai-worker-{0}', parameters('environment'))]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('apiManagedIdentityResourceId'))]": {}
+                }
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+                "configuration": {
+                  "ingress": null,
+                  "registries": [
+                    {
+                      "server": "[parameters('acrLoginServer')]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    }
+                  ],
+                  "secrets": [
+                    {
+                      "name": "keyvault-dsn",
+                      "keyVaultUrl": "[format('{0}secrets/postgres-admin-password', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "api-key",
+                      "keyVaultUrl": "[format('{0}secrets/api-key', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "odoo-connector-api-key",
+                      "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "containers": [
+                    {
+                      "name": "memory-worker",
+                      "image": "[variables('containerImage')]",
+                      "command": [
+                        "./scripts/startup_worker.sh"
+                      ],
+                      "env": [
+                        {
+                          "name": "POSTGRES_HOST",
+                          "value": "[parameters('postgresHost')]"
+                        },
+                        {
+                          "name": "POSTGRES_DATABASE",
+                          "value": "[parameters('postgresDatabaseName')]"
+                        },
+                        {
+                          "name": "POSTGRES_USERNAME",
+                          "value": "[parameters('postgresAdminUsername')]"
+                        },
+                        {
+                          "name": "POSTGRES_PASSWORD",
+                          "secretRef": "keyvault-dsn"
+                        },
+                        {
+                          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                          "value": "[parameters('appInsightsConnectionString')]"
+                        },
+                        {
+                          "name": "AZURE_CLIENT_ID",
+                          "value": "[parameters('apiManagedIdentityClientId')]"
+                        },
+                        {
+                          "name": "AZURE_STORAGE_ACCOUNT",
+                          "value": "[parameters('storageAccountName')]"
+                        },
+                        {
+                          "name": "AZURE_SERVICE_BUS_NAMESPACE",
+                          "value": "[parameters('serviceBusNamespace')]"
+                        },
+                        {
+                          "name": "ENVIRONMENT",
+                          "value": "[parameters('environment')]"
+                        },
+                        {
+                          "name": "VERSION",
+                          "value": "1.0.0"
+                        },
+                        {
+                          "name": "API_KEY",
+                          "secretRef": "api-key"
+                        },
+                        {
+                          "name": "ODOO_CONNECTOR_URL",
+                          "value": "[format('https://{0}.nicefield-638716c4.southafricanorth.azurecontainerapps.io', variables('odooConnectorAppName'))]"
+                        },
+                        {
+                          "name": "ODOO_CONNECTOR_API_KEY",
+                          "secretRef": "odoo-connector-api-key"
+                        },
+                        {
+                          "name": "KEY_VAULT_URI",
+                          "value": "[parameters('keyVaultUri')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_ENDPOINT",
+                          "value": "[if(parameters('deploySearch'), format('https://srch-{0}-{1}-{2}-{3}.search.windows.net', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance')), '')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_INDEX_NAME",
+                          "value": "[if(parameters('deploySearch'), 'company-knowledge', '')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_ENABLE",
+                          "value": "[if(parameters('deploySearch'), 'true', 'false')]"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_MAX_RESULTS",
+                          "value": "5"
+                        },
+                        {
+                          "name": "AZURE_SEARCH_MAX_INJECTED_CHUNKS",
+                          "value": "5"
+                        }
+                      ],
+                      "resources": {
+                        "cpu": "[json('0.5')]",
+                        "memory": "1.0Gi"
+                      }
+                    }
+                  ],
+                  "scale": {
+                    "minReplicas": 0,
+                    "maxReplicas": 2,
+                    "rules": [
+                      {
+                        "name": "queue-rule",
+                        "custom": {
+                          "type": "azure-servicebus",
+                          "metadata": {
+                            "queueName": "ai-jobs",
+                            "messageCount": "1",
+                            "namespace": "[parameters('serviceBusNamespace')]"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
+              ]
             }
           ],
           "outputs": {
@@ -1744,6 +1974,7 @@
       ]
     },
     {
+      "condition": "[parameters('deploySearch')]",
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
       "name": "aiSearchDeploy",
@@ -1774,6 +2005,9 @@
           },
           "apiManagedIdentityPrincipalId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy'), '2025-04-01').outputs.apiManagedIdentityPrincipalId.value]"
+          },
+          "skuName": {
+            "value": "[parameters('searchSku')]"
           }
         },
         "template": {
@@ -1783,7 +2017,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "7420018581396041391"
+              "templateHash": "10614992166024371805"
             }
           },
           "parameters": {
@@ -1828,6 +2062,18 @@
               "metadata": {
                 "description": "API managed identity principal ID"
               }
+            },
+            "skuName": {
+              "type": "string",
+              "defaultValue": "free",
+              "allowedValues": [
+                "free",
+                "basic",
+                "standard"
+              ],
+              "metadata": {
+                "description": "Search service SKU name"
+              }
             }
           },
           "variables": {
@@ -1841,7 +2087,7 @@
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
               "sku": {
-                "name": "standard"
+                "name": "[parameters('skuName')]"
               },
               "properties": {
                 "replicaCount": 1,
@@ -1865,6 +2111,34 @@
               "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchcontributor')]",
               "properties": {
                 "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')]",
+                "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]",
+              "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchindexdatacontributor')]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8ebe5a1e-416e-445e-9391-7f9e8a719c8d')]",
+                "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
+                "principalType": "ServicePrincipal"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Search/searchServices', variables('searchName'))]",
+              "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), parameters('apiManagedIdentityPrincipalId'), 'searchindexdatareader')]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '14071b83-acda-42c4-9023-ad4e44928aa2')]",
                 "principalId": "[parameters('apiManagedIdentityPrincipalId')]",
                 "principalType": "ServicePrincipal"
               },
@@ -2056,11 +2330,12 @@
           "serviceBusNamespaceId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy'), '2025-04-01').outputs.id.value]"
           },
-          "aiSearchId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.id.value]"
-          },
+          "aiSearchId": "[if(parameters('deploySearch'), createObject('value', reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.id.value), createObject('value', ''))]",
           "postgresServerId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy'), '2025-04-01').outputs.id.value]"
+          },
+          "deploySearch": {
+            "value": "[parameters('deploySearch')]"
           }
         },
         "template": {
@@ -2070,7 +2345,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "4846421792045710342"
+              "templateHash": "10856149186699084322"
             }
           },
           "parameters": {
@@ -2118,6 +2393,10 @@
             },
             "postgresServerId": {
               "type": "string"
+            },
+            "deploySearch": {
+              "type": "bool",
+              "defaultValue": false
             }
           },
           "variables": {
@@ -2194,6 +2473,7 @@
               }
             },
             {
+              "condition": "[parameters('deploySearch')]",
               "type": "Microsoft.Network/privateEndpoints",
               "apiVersion": "2023-11-01",
               "name": "[format('pe-{0}-srch', variables('namePrefix'))]",
@@ -2560,7 +2840,7 @@
     },
     "aiSearchName": {
       "type": "string",
-      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.name.value]"
+      "value": "[if(parameters('deploySearch'), reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy'), '2025-04-01').outputs.name.value, '')]"
     },
     "apiManagementName": {
       "type": "string",

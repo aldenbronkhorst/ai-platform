@@ -15,6 +15,7 @@ param storageAccountId string
 param serviceBusNamespaceId string
 param aiSearchId string
 param postgresServerId string
+param deploySearch bool = false
 
 var namePrefix = '${workload}-${environment}-${regionCode}-${instance}'
 
@@ -88,7 +89,7 @@ resource privateEndpointServiceBus 'Microsoft.Network/privateEndpoints@2023-11-0
   }
 }
 
-resource privateEndpointAIsearch 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+resource privateEndpointAIsearch 'Microsoft.Network/privateEndpoints@2023-11-01' = if (deploySearch) {
   name: 'pe-${namePrefix}-srch'
   location: location
   tags: tags

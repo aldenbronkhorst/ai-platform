@@ -39,7 +39,7 @@ param postgresAdminUsername string = 'aiplatformadmin'
 param postgresAdminPassword string
 
 @description('Budget amount')
-param budgetAmount int = 3000
+param budgetAmount int = 250
 
 @description('Budget start date')
 param budgetStartDate string = '${utcNow('yyyy-MM')}-01'
@@ -52,6 +52,13 @@ param apiImageTag string = 'latest'
 
 @description('Odoo Connector container image tag')
 param odooConnectorImageTag string = 'latest'
+
+@description('Whether to deploy Azure AI Search')
+param deploySearch bool = false
+
+@description('Azure AI Search SKU name')
+@allowed(['free', 'basic', 'standard'])
+param searchSku string = 'free'
 
 // Naming helper variables
 var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
@@ -192,11 +199,12 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresHost: postgres.outputs.fqdn
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
+    deploySearch: deploySearch
   }
 }
 
 // Module: AI Search
-module aiSearch 'modules/searchService.bicep' = {
+module aiSearch 'modules/searchService.bicep' = if (deploySearch) {
   name: 'aiSearchDeploy'
   scope: rg
   params: {
@@ -207,6 +215,7 @@ module aiSearch 'modules/searchService.bicep' = {
     location: location
     tags: tags
     apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
+    skuName: searchSku
   }
 }
 
@@ -240,8 +249,10 @@ module privateEndpoints 'modules/privateEndpoints.bicep' = {
     keyVaultId: keyVault.outputs.id
     storageAccountId: storage.outputs.id
     serviceBusNamespaceId: serviceBus.outputs.id
-    aiSearchId: aiSearch.outputs.id
+#disable-next-line BCP318
+    aiSearchId: deploySearch ? aiSearch.outputs.id : ''
     postgresServerId: postgres.outputs.id
+    deploySearch: deploySearch
   }
 }
 
@@ -287,7 +298,8 @@ output appInsightsName string = monitoring.outputs.name
 output serviceBusNamespace string = serviceBus.outputs.namespaceName
 output containerAppName string = containerApps.outputs.containerAppName
 output containerAppsEnvironmentName string = containerApps.outputs.environmentName
-output aiSearchName string = aiSearch.outputs.name
+#disable-next-line BCP318
+output aiSearchName string = deploySearch ? aiSearch.outputs.name : ''
 output apiManagementName string = apiManagement.outputs.name
 output apiManagementGatewayUrl string = apiManagement.outputs.gatewayUrl
 output apiManagedIdentityClientId string = identity.outputs.apiManagedIdentityClientId

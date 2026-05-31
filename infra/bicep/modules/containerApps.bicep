@@ -55,6 +55,9 @@ param postgresDatabaseName string
 @description('PostgreSQL admin username')
 param postgresAdminUsername string
 
+@description('Whether to deploy Azure AI Search')
+param deploySearch bool = false
+
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
 var odooConnectorAppName = 'ca-${workload}-odoo-connector-${environment}-${regionCode}-${instance}'
@@ -111,6 +114,16 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/postgres-admin-password'
           identity: apiManagedIdentityResourceId
         }
+        {
+          name: 'api-key'
+          keyVaultUrl: '${keyVaultUri}secrets/api-key'
+          identity: apiManagedIdentityResourceId
+        }
+        {
+          name: 'odoo-connector-api-key'
+          keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
+          identity: apiManagedIdentityResourceId
+        }
       ]
     }
     template: {
@@ -129,6 +142,15 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
             { name: 'ENVIRONMENT', value: environment }
             { name: 'VERSION', value: '1.0.0' }
+            { name: 'API_KEY', secretRef: 'api-key' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}.nicefield-638716c4.southafricanorth.azurecontainerapps.io' }
+            { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
+            { name: 'KEY_VAULT_URI', value: keyVaultUri }
+            { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
+            { name: 'AZURE_SEARCH_INDEX_NAME', value: deploySearch ? 'company-knowledge' : '' }
+            { name: 'AZURE_SEARCH_ENABLE', value: deploySearch ? 'true' : 'false' }
+            { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
+            { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
           ]
           resources: {
             cpu: json('0.25')
@@ -255,6 +277,100 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
               type: 'http'
               metadata: {
                 concurrentRequests: '50'
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-ai-worker-${environment}'
+  location: location
+  tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${apiManagedIdentityResourceId}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerAppsEnvironment.id
+    configuration: {
+      ingress: null
+      registries: [
+        {
+          server: acrLoginServer
+          identity: apiManagedIdentityResourceId
+        }
+      ]
+      secrets: [
+        {
+          name: 'keyvault-dsn'
+          keyVaultUrl: '${keyVaultUri}secrets/postgres-admin-password'
+          identity: apiManagedIdentityResourceId
+        }
+        {
+          name: 'api-key'
+          keyVaultUrl: '${keyVaultUri}secrets/api-key'
+          identity: apiManagedIdentityResourceId
+        }
+        {
+          name: 'odoo-connector-api-key'
+          keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
+          identity: apiManagedIdentityResourceId
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'memory-worker'
+          image: containerImage
+          command: [
+            './scripts/startup_worker.sh'
+          ]
+          env: [
+            { name: 'POSTGRES_HOST', value: postgresHost }
+            { name: 'POSTGRES_DATABASE', value: postgresDatabaseName }
+            { name: 'POSTGRES_USERNAME', value: postgresAdminUsername }
+            { name: 'POSTGRES_PASSWORD', secretRef: 'keyvault-dsn' }
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+            { name: 'AZURE_CLIENT_ID', value: apiManagedIdentityClientId }
+            { name: 'AZURE_STORAGE_ACCOUNT', value: storageAccountName }
+            { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
+            { name: 'ENVIRONMENT', value: environment }
+            { name: 'VERSION', value: '1.0.0' }
+            { name: 'API_KEY', secretRef: 'api-key' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}.nicefield-638716c4.southafricanorth.azurecontainerapps.io' }
+            { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
+            { name: 'KEY_VAULT_URI', value: keyVaultUri }
+            { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
+            { name: 'AZURE_SEARCH_INDEX_NAME', value: deploySearch ? 'company-knowledge' : '' }
+            { name: 'AZURE_SEARCH_ENABLE', value: deploySearch ? 'true' : 'false' }
+            { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
+            { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
+          ]
+          resources: {
+            cpu: json('0.5')
+            memory: '1.0Gi'
+          }
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 2
+        rules: [
+          {
+            name: 'queue-rule'
+            custom: {
+              type: 'azure-servicebus'
+              metadata: {
+                queueName: 'ai-jobs'
+                messageCount: '1'
+                namespace: serviceBusNamespace
               }
             }
           }
