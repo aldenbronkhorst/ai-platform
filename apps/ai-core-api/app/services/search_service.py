@@ -32,6 +32,9 @@ class SearchService:
 
     def _get_credential(self) -> Any:
         """Prefers Managed Identity, can fall back to local credentials/DefaultAzureCredential."""
+        settings = get_settings()
+        if settings.azure_client_id:
+            return DefaultAzureCredential(managed_identity_client_id=settings.azure_client_id)
         return DefaultAzureCredential()
 
     def _get_index_client(self) -> Optional[SearchIndexClient]:
