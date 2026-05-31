@@ -97,60 +97,38 @@ export function ChatView({
     );
   }
 
-  if (!activeSession || chatMessages.length === 0) {
-    return (
-      <div className="h-full flex flex-col">
-        <div className="flex-1 flex flex-col">
-          <ChatEmptyState displayName={displayName} onSuggestion={onSuggestionClick} />
-        </div>
-        <div ref={composerRef}>
-          <ChatComposer
-            chatInput={chatInput}
-            attachedFiles={attachedFiles}
-            voiceState={voiceState}
-            isChatSending={isChatSending}
-            placeholder={placeholder}
-            onInputChange={onInputChange}
-            onSend={onSend}
-            onFileUpload={onFileUpload}
-            onRemoveFile={onRemoveFile}
-            onTriggerUpload={onTriggerUpload}
-            onToggleVoice={onToggleVoice}
-          />
-        </div>
-        {voiceState === "listening" && (
-          <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">
-            Speak now…
-          </div>
-        )}
-      </div>
-    );
-  }
+  const hasMessages = activeSession && chatMessages.length > 0;
 
   return (
-    <div className="h-full flex flex-col max-w-4xl mx-auto relative">
-      <div
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4"
-      >
-        <div ref={messagesEndRef} />
-        {[...chatMessages].reverse().map((msg) => (
-          <MessageBubble
-            key={msg.id}
-            message={msg}
-            onRetry={() => onRetryMessage(msg.id)}
-            onCopy={onCopyMessage}
-            onEdit={setEditingMessageId}
-            isEditing={editingMessageId === msg.id}
-            onEditSave={handleEditSave}
-            onEditCancel={() => setEditingMessageId(null)}
-            isEditSaving={isEditSaving}
-          />
-        ))}
-      </div>
+    <div className="h-full flex flex-col max-w-4xl mx-auto relative w-full">
+      {hasMessages ? (
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4"
+        >
+          <div ref={messagesEndRef} />
+          {[...chatMessages].reverse().map((msg) => (
+            <MessageBubble
+              key={msg.id}
+              message={msg}
+              onRetry={() => onRetryMessage(msg.id)}
+              onCopy={onCopyMessage}
+              onEdit={setEditingMessageId}
+              isEditing={editingMessageId === msg.id}
+              onEditSave={handleEditSave}
+              onEditCancel={() => setEditingMessageId(null)}
+              isEditSaving={isEditSaving}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col overflow-y-auto">
+          <ChatEmptyState displayName={displayName} onSuggestion={onSuggestionClick} />
+        </div>
+      )}
 
-      {isUserScrolledUp && (
+      {isUserScrolledUp && hasMessages && (
         <div
           className="absolute left-0 right-0 flex justify-center pointer-events-none"
           style={{ bottom: composerHeight + 20 }}
@@ -165,7 +143,7 @@ export function ChatView({
         </div>
       )}
 
-      <div ref={composerRef} className="relative z-10">
+      <div ref={composerRef} className="relative z-10 shrink-0">
         <ChatComposer
           chatInput={chatInput}
           attachedFiles={attachedFiles}

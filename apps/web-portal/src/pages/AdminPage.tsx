@@ -104,7 +104,7 @@ export function AdminPage({ accessToken }: { accessToken: string }) {
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="max-w-5xl mx-auto">
       <div className="flex items-center gap-2 mb-6">
         <Shield className="w-5 h-5 text-muted" />
         <h1 className="text-lg font-extrabold">Admin Dashboard</h1>
