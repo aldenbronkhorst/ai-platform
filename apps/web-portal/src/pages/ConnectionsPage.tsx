@@ -52,11 +52,26 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       if (res.ok) {
         const data = await res.json();
         setOdooStatus(data);
-        if (data.odoo_url) setOdooUrl(data.odoo_url);
-        if (data.odoo_db) setOdooDb(data.odoo_db);
+        // Update form fields from status, or clear if disconnected
+        if (data.status === "connected" || data.status === "error") {
+          if (data.odoo_url) setOdooUrl(data.odoo_url);
+          if (data.odoo_db) setOdooDb(data.odoo_db);
+          if (data.provider_username) setOdooUsername(data.provider_username);
+        } else {
+          // Clear form when not connected
+          setOdooUrl("");
+          setOdooDb("");
+          setOdooUsername("alden@lotslotsmore.com");
+        }
+      } else {
+        // Handle API errors
+        setOdooStatus({ status: "not_connected" });
+        setOdooUrl("");
+        setOdooDb("");
       }
     } catch (err) {
       console.error("Failed to fetch Odoo status:", err);
+      setOdooStatus({ status: "not_connected" });
     } finally {
       setIsStatusLoading(false);
     }
@@ -172,10 +187,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!confirm("Disconnect Odoo? Credentials will be permanently deleted.")) return;
     setIsStatusLoading(true);
     try {
-      await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/disconnect`, {
+      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/disconnect`, {
         method: "POST",
         headers: headers(),
       });
+      if (res.ok) {
+        // Clear all form fields on successful disconnect
+        setOdooUrl("");
+        setOdooDb("");
+        setOdooUsername("alden@lotslotsmore.com");
+        setOdooApiKey("");
+        setTestResult(null);
+      }
       fetchOdooStatus();
     } catch (err) {
       console.error("Disconnect failed:", err);

@@ -246,7 +246,8 @@ def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
 
 
 def _delete_key_vault_secret(secret_name: str) -> None:
-    """Deletes the secret in Azure Key Vault if Key Vault is configured."""
+    """Deletes the secret in Azure Key Vault if Key Vault is configured.
+    Does not raise if the secret doesn't exist (already deleted or never created)."""
     kv_uri = os.environ.get("KEY_VAULT_URI", "")
     if not kv_uri:
         return
@@ -260,11 +261,16 @@ def _delete_key_vault_secret(secret_name: str) -> None:
         poller = kv_client.begin_delete_secret(secret_name)
         poller.wait()
     except Exception as e:
-        # Log or raise but let DB transaction proceed. For safety we raise.
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to delete secret in Key Vault: {e}"
-        )
+        error_str = str(e)
+        # If secret doesn't exist, just log and continue - don't fail the disconnect
+        if "SecretNotFound" in error_str or "NotFound" in error_str:
+            logger.warning(
+                "Secret '%s' not found in Key Vault during disconnect (already deleted or never created)",
+                secret_name
+            )
+            return
+        # For other errors, log but don't raise - let the DB transaction proceed
+        logger.error("Failed to delete secret '%s' from Key Vault: %s", secret_name, error_str)
 
 
 async def _retrieve_key_vault_secret(secret_name: str) -> str:
@@ -282,9 +288,15 @@ async def _retrieve_key_vault_secret(secret_name: str) -> str:
         secret = kv_client.get_secret(secret_name)
         return secret.value or ""
     except Exception as e:
+        error_str = str(e)
+        if "SecretNotFound" in error_str or "NotFound" in error_str:
+            raise HTTPException(
+                status_code=404,
+                detail="Connection credentials not found. Please disconnect and reconnect your Odoo account."
+            )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve secret from Key Vault: {e}"
+            detail="Failed to retrieve connection credentials. Please try disconnecting and reconnecting."
         )
 
 
