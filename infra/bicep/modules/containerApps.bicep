@@ -143,7 +143,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'ENVIRONMENT', value: environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
@@ -352,7 +352,7 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'ENVIRONMENT', value: environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
