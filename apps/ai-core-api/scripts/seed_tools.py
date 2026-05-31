@@ -15,6 +15,21 @@ settings = get_settings()
 # input_schema must be valid JSON Schema for the OpenAI tools API.
 TOOLS = [
     {
+        "name": "odoo_get_profit_and_loss",
+        "display_name": "Odoo Profit and Loss Report",
+        "description": "Retrieve the Profit and Loss (P&L) statement/report from Odoo for a given date range. If the official report is unavailable, it automatically calculates and falls back to a sum of posted customer invoices.",
+        "target_system": "odoo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "Start date for the report (YYYY-MM-DD)"},
+                "date_to": {"type": "string", "description": "End date for the report (YYYY-MM-DD)"},
+                "company_id": {"type": "integer", "description": "Specific Odoo company ID"},
+                "currency": {"type": "string", "description": "Currency code (e.g. ZAR, USD)"},
+            },
+        },
+    },
+    {
         "name": "odoo_search_read",
         "display_name": "Odoo Search Read",
         "description": "Search and read records from any Odoo model. Supports domain filtering, field selection, pagination, and ordering.",

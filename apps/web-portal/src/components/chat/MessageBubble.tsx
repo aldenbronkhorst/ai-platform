@@ -74,22 +74,24 @@ export function MessageBubble({
   const technicalDetails = metadata?.technical_details;
 
   return (
-    <div className="group max-w-[80%]">
-      <div className="text-sm leading-relaxed">
-        <MarkdownRenderer content={message.content} />
-      </div>
+    <div className="w-full flex justify-start">
+      <div className="group w-full max-w-none min-w-0">
+        <div className="text-sm leading-relaxed">
+          <MarkdownRenderer content={message.content} />
+        </div>
 
-      <div className="mt-1">
-        <MessageActions
-          role="assistant"
-          content={message.content}
-          onCopy={() => onCopy?.(message.content)}
-        />
-      </div>
+        <div className="mt-1">
+          <MessageActions
+            role="assistant"
+            content={message.content}
+            onCopy={() => onCopy?.(message.content)}
+          />
+        </div>
 
-      {technicalDetails && (
-        <TechnicalDetails data={technicalDetails} />
-      )}
+        {technicalDetails && (
+          <TechnicalDetails data={technicalDetails} />
+        )}
+      </div>
     </div>
   );
 }

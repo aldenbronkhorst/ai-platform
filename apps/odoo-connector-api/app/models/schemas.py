@@ -120,3 +120,11 @@ class MessageCreateRequest(BaseModel):
     message_type: str = "comment"
     partner_ids: Optional[list[int]] = None
     attachment_ids: Optional[list[int]] = None
+
+
+class OdooProfitAndLossRequest(BaseModel):
+    credentials: OdooCredentialsRequest
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    company_id: Optional[int] = None
+    currency: Optional[str] = None

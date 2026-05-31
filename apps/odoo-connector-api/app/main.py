@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.odoo_client import OdooError, OdooAuthError
 from app.core.middleware import CorrelationIdMiddleware
-from app.routers import health, schema, records, execute_kw, attachments, messages
+from app.routers import health, schema, records, execute_kw, attachments, messages, reports
 
 settings = get_settings()
 
@@ -58,6 +58,7 @@ app.include_router(records.router, prefix="/records", tags=["Records"])
 app.include_router(execute_kw.router, prefix="/execute-kw", tags=["Execute"])
 app.include_router(attachments.router, prefix="/attachments", tags=["Attachments"])
 app.include_router(messages.router, prefix="/messages", tags=["Messages"])
+app.include_router(reports.router, prefix="/reports", tags=["Reports"])
 
 
 @app.exception_handler(OdooAuthError)
