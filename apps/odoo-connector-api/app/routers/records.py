@@ -1,5 +1,6 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
+from typing import Optional
 from app.core.config import get_settings
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
@@ -31,14 +32,20 @@ def _get_client(creds):
 
 
 @router.post("/search-read")
-async def search_read(req: RecordsSearchReadRequest, auth: dict = Depends(internal_api_key_auth)):
+async def search_read(
+    req: RecordsSearchReadRequest,
+    auth: dict = Depends(internal_api_key_auth),
+    x_connection_attempt_id: Optional[str] = Header(None, alias="X-Connection-Attempt-Id"),
+):
+    conn_id = x_connection_attempt_id or "unknown"
     logger.info(
-        "Connector search-read received model=%s url=%s db=%s username=%s api_key_present=%s",
+        "Connector search-read received model=%s url=%s db=%s username=%s api_key_present=%s connection_attempt_id=%s",
         req.model,
         req.credentials.url,
         req.credentials.db,
         req.credentials.username,
         bool(req.credentials.api_key),
+        conn_id,
     )
     client = _get_client(req.credentials)
     records = client.search_read(

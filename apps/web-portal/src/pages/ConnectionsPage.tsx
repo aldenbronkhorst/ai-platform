@@ -31,6 +31,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
   const [showTechDetails, setShowTechDetails] = useState(false);
+  const [showTraceStages, setShowTraceStages] = useState(false);
 
   const [odooUrl, setOdooUrl] = useState("");
   const [odooDb, setOdooDb] = useState("");
@@ -133,13 +134,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setOdooApiKey("");
         fetchOdooStatus();
       } else {
-        // Try structured error detail first (error_type, stage, message, technical_detail)
+        // Try structured error detail first (error_type, stage, message, technical_detail, trace)
         const detail = data.detail || {};
         const errorType = detail.error_type || "";
         const stage = detail.stage || "";
         const friendlyMessage = detail.message || data.detail || "Connection failed.";
         const techDetail = detail.technical_detail || "";
         const requestId = detail.request_id || "";
+        const connectionAttemptId = detail.connection_attempt_id || "";
+        const trace = detail.trace || null;
         setTestResult({
           success: false,
           message: friendlyMessage,
@@ -148,6 +151,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           stage,
           technicalDetail: techDetail,
           requestId,
+          connectionAttemptId,
+          trace,
         });
         // Refresh status even on failure — account may have been saved with status="error"
         fetchOdooStatus();
@@ -435,10 +440,40 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                     {showTechDetails ? "Hide technical details" : "Show technical details"}
                   </button>
                   {showTechDetails && (
-                    <pre className="text-xs text-muted bg-surface p-2 rounded-lg overflow-x-auto whitespace-pre-wrap font-mono border border-default">
-                      {testResult.technicalDetail || testResult.message || "No technical details available."}
-                      {testResult.requestId && `\n\nRequest ID: ${testResult.requestId}`}
-                    </pre>
+                    <div className="space-y-2">
+                      <pre className="text-xs text-muted bg-surface p-2 rounded-lg overflow-x-auto whitespace-pre-wrap font-mono border border-default">
+                        {testResult.technicalDetail || testResult.message || "No technical details available."}
+                        {testResult.requestId && `\nRequest ID: ${testResult.requestId}`}
+                        {testResult.connectionAttemptId && `\nConnection Attempt ID: ${testResult.connectionAttemptId}`}
+                      </pre>
+                      {testResult.trace && testResult.trace.stages && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setShowTraceStages(!showTraceStages)}
+                            className="text-xs text-muted hover:text-default underline underline-offset-2"
+                          >
+                            {showTraceStages ? "Hide connection trace" : "Show connection trace"}
+                          </button>
+                          {showTraceStages && (
+                            <div className="space-y-2 text-xs font-mono">
+                              {Object.entries(testResult.trace.stages).map(([stageName, stageData]: [string, any]) => (
+                                <details key={stageName} className="border border-default rounded-lg p-2 bg-surface/50">
+                                  <summary className="cursor-pointer text-default font-semibold">
+                                    {stageName} {stageData.status === "success" ? "✓" : stageData.status === "failed" ? "✗" : stageData.status === "pending" ? "…" : ""}
+                                  </summary>
+                                  <pre className="mt-1 text-muted whitespace-pre-wrap overflow-x-auto">
+                                    {JSON.stringify(stageData, null, 2)
+                                      .replace(/"api_key_fingerprint": "[^"]+"/g, '"api_key_fingerprint": "(redacted)"')
+                                      .replace(/"internal_key_fingerprint": "[^"]+"/g, '"internal_key_fingerprint": "(redacted)"')}
+                                  </pre>
+                                </details>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
