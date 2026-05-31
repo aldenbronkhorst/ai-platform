@@ -90,51 +90,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   }, [accounts, localMockAuthenticated, localMockUser, instance]);
 
-  useEffect(() => {
-    if (accessToken) {
-      fetchChatSessions();
-    }
-  }, [accessToken, fetchChatSessions]);
-
-  useEffect(() => {
-    if (activeSession && accessToken) {
-      fetchSessionMessages(activeSession.id);
-    } else {
-      setChatMessages([]);
-    }
-  }, [activeSession, accessToken]);
-
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceState("unsupported");
-    } else {
-      const rec = new SpeechRecognition();
-      rec.continuous = false;
-      rec.interimResults = false;
-      rec.lang = "en-US";
-      rec.onstart = () => setVoiceState("listening");
-      rec.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setChatInput(prev => (prev ? prev + " " + transcript : transcript));
-        setVoiceState("processing");
-      };
-      rec.onerror = (e: any) => {
-        setVoiceState(e.error === "not-allowed" ? "denied" : "idle");
-      };
-      rec.onend = () => {
-        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
-      };
-      recognitionRef.current = rec;
-    }
-    return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch {}
-        recognitionRef.current = null;
-      }
-    };
-  }, []);
-
   const fetchChatSessions = useCallback(async () => {
     if (!accessToken) return;
     setIsSessionsLoading(true);
@@ -206,6 +161,51 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       console.error("Delete session failed:", err);
     }
   };
+
+  useEffect(() => {
+    if (accessToken) {
+      fetchChatSessions();
+    }
+  }, [accessToken, fetchChatSessions]);
+
+  useEffect(() => {
+    if (activeSession && accessToken) {
+      fetchSessionMessages(activeSession.id);
+    } else {
+      setChatMessages([]);
+    }
+  }, [activeSession, accessToken]);
+
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setVoiceState("unsupported");
+    } else {
+      const rec = new SpeechRecognition();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = "en-US";
+      rec.onstart = () => setVoiceState("listening");
+      rec.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        setChatInput(prev => (prev ? prev + " " + transcript : transcript));
+        setVoiceState("processing");
+      };
+      rec.onerror = (e: any) => {
+        setVoiceState(e.error === "not-allowed" ? "denied" : "idle");
+      };
+      rec.onend = () => {
+        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
+      };
+      recognitionRef.current = rec;
+    }
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch {}
+        recognitionRef.current = null;
+      }
+    };
+  }, []);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -466,7 +466,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (editIndex === -1) return;
 
     setIsChatSending(true);
-    const beforeEdit = chatMessages.slice(0, editIndex);
 
     const updatedUserMsg: ChatMessage = {
       ...chatMessages[editIndex],
