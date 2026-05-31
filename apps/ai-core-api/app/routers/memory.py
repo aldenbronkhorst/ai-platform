@@ -327,3 +327,16 @@ async def save_memory_candidate(
         except Exception as e:
             logger.warning("Failed to index candidate memory into search index: %s", e)
     return memory
+
+
+@router.post("/review", status_code=status.HTTP_200_OK)
+async def trigger_memory_review(
+    db: AsyncSession = Depends(get_db),
+    auth=Depends(api_key_auth),
+):
+    """Triggers the memory review, conflict detection, and cleanup job."""
+    from app.services.memory_review import MemoryReviewService
+    svc = MemoryReviewService(db)
+    result = await svc.run_review_job()
+    await db.commit()
+    return result
