@@ -3,6 +3,7 @@ import logging
 import httpx
 import uuid
 import re
+import socket
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from urllib.parse import urlparse
 
 from app.core.security import api_key_auth
 from app.core.database import get_db
@@ -23,6 +25,76 @@ ODOO_CONNECTOR_URL = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 
 logger = logging.getLogger(__name__)
+
+
+@router.get("/debug/connector")
+async def debug_connector_connectivity():
+    """Debug endpoint to test DNS resolution and connectivity to Odoo Connector."""
+    results = {
+        "odoo_connector_url": ODOO_CONNECTOR_URL,
+        "odoo_connector_key_configured": bool(ODOO_CONNECTOR_KEY),
+        "dns_resolution": None,
+        "http_connectivity": None,
+        "environment_vars": {
+            "ODOO_CONNECTOR_URL": ODOO_CONNECTOR_URL,
+            "ODOO_CONNECTOR_API_KEY": "***" if ODOO_CONNECTOR_KEY else None,
+        }
+    }
+    
+    if not ODOO_CONNECTOR_URL:
+        results["error"] = "ODOO_CONNECTOR_URL is not configured"
+        return results
+    
+    # Test DNS resolution
+    try:
+        parsed = urlparse(ODOO_CONNECTOR_URL)
+        hostname = parsed.hostname
+        if hostname:
+            ip_addresses = socket.getaddrinfo(hostname, None)
+            results["dns_resolution"] = {
+                "hostname": hostname,
+                "resolved": True,
+                "ip_addresses": list(set([addr[4][0] for addr in ip_addresses]))
+            }
+        else:
+            results["dns_resolution"] = {"error": "Could not parse hostname from URL"}
+    except socket.gaierror as e:
+        results["dns_resolution"] = {
+            "resolved": False,
+            "error": f"DNS resolution failed: {str(e)}"
+        }
+    except Exception as e:
+        results["dns_resolution"] = {
+            "error": f"Unexpected error during DNS resolution: {str(e)}"
+        }
+    
+    # Test HTTP connectivity
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            health_url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/health"
+            response = await client.get(health_url)
+            results["http_connectivity"] = {
+                "url": health_url,
+                "status_code": response.status_code,
+                "reachable": response.status_code == 200,
+                "response_time_ms": response.elapsed.total_seconds() * 1000
+            }
+    except httpx.ConnectError as e:
+        results["http_connectivity"] = {
+            "reachable": False,
+            "error": f"Connection failed: {str(e)}"
+        }
+    except httpx.TimeoutException as e:
+        results["http_connectivity"] = {
+            "reachable": False,
+            "error": f"Connection timeout: {str(e)}"
+        }
+    except Exception as e:
+        results["http_connectivity"] = {
+            "error": f"Unexpected error during HTTP connectivity test: {str(e)}"
+        }
+    
+    return results
 
 
 def _normalize_odoo_url(raw: str) -> str:
