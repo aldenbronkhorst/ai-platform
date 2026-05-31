@@ -152,13 +152,11 @@ jobs:
           az containerapp update \
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
-            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} ODOO_CONNECTOR_API_KEY=secretref:odoo-connector-api-key API_KEY=secretref:api-key POSTGRES_PASSWORD=secretref:keyvault-dsn"
+            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}"
           az containerapp update \
             --name ${{ steps.env.outputs.worker_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
-            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars "ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} ODOO_CONNECTOR_API_KEY=secretref:odoo-connector-api-key API_KEY=secretref:api-key POSTGRES_PASSWORD=secretref:keyvault-dsn"
+            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}"
 
       - name: Deploy Odoo Connector
         run: |

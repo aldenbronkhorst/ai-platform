@@ -94,7 +94,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (accessToken) {
       fetchChatSessions();
     }
-  }, [accessToken]);
+  }, [accessToken, fetchChatSessions]);
 
   useEffect(() => {
     if (activeSession && accessToken) {
@@ -102,7 +102,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } else {
       setChatMessages([]);
     }
-  }, [activeSession]);
+  }, [activeSession, accessToken]);
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -135,7 +135,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     };
   }, []);
 
-  const fetchChatSessions = async () => {
+  const fetchChatSessions = useCallback(async () => {
     if (!accessToken) return;
     setIsSessionsLoading(true);
     try {
@@ -143,16 +143,21 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       if (res.ok) {
         const data = await res.json();
         setChatSessions(data);
-        if (data.length > 0 && !activeSession) setActiveSession(data[0]);
+        setActiveSession(prev => {
+          if (prev) return prev;
+          return data.length > 0 ? data[0] : null;
+        });
+      } else {
+        console.error("Failed to fetch sessions:", res.status, await res.text().catch(() => ""));
       }
     } catch (err) {
       console.error("Failed to fetch chat sessions:", err);
     } finally {
       setIsSessionsLoading(false);
     }
-  };
+  }, [accessToken, getHeaders]);
 
-  const createNewChat = async (workflowContext?: string): Promise<ChatSession | null> => {
+  const createNewChat = useCallback(async (workflowContext?: string): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
@@ -166,12 +171,17 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         setActiveSession(newSess);
         setActiveTab("chat");
         return newSess;
+      } else {
+        const errBody = await res.text().catch(() => "");
+        console.error("Failed to create chat:", res.status, errBody);
+        alert(`Failed to create new chat (HTTP ${res.status}). The API may be unavailable.`);
       }
     } catch (err) {
       console.error("Failed to create new chat:", err);
+      alert("Failed to create new chat. Please check your connection.");
     }
     return null;
-  };
+  }, [accessToken, getHeaders]);
 
   const fetchSessionMessages = async (sid: string) => {
     setIsMessagesLoading(true);
@@ -473,7 +483,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       status: "pending",
     };
 
-    setChatMessages(prev => [...prev.filter(m => m.id !== chatMessages[editIndex]?.id), ...beforeEdit.slice(beforeEdit.length), updatedUserMsg, pendingAssistantMsg]);
+    setChatMessages(prev => {
+      const idx = prev.findIndex(m => m.id === originalMessageId);
+      if (idx === -1) return prev;
+      return [...prev.slice(0, idx), updatedUserMsg, pendingAssistantMsg];
+    });
 
     const requestId = crypto.randomUUID();
     const abortController = new AbortController();
