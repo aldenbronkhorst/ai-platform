@@ -92,7 +92,7 @@ export function SidebarPanel({
 
   if (isSidebarCollapsed) {
     return (
-      <div className="fixed top-3 left-4 z-40">
+      <div className="fixed top-[22px] left-4 z-40">
         <button
           onClick={() => onToggleCollapse(false)}
           className="h-11 w-11 flex items-center justify-center bg-sidebar border border-default text-muted hover:text-default rounded-2xl transition-all shadow-lg"
@@ -107,7 +107,7 @@ export function SidebarPanel({
   return (
     <aside className="w-72 flex flex-col justify-between select-none shrink-0 animate-fade-in bg-sidebar border border-default rounded-3xl overflow-hidden">
       <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-4 border-b border-default flex items-center justify-between">
+        <div className="h-16 px-4 border-b border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <h1 className="font-extrabold text-sm tracking-wide text-default">
               AI Platform

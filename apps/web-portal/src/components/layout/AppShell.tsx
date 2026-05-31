@@ -67,7 +67,7 @@ export function AppShell({
             activeSession={activeSession}
             isSidebarCollapsed={isSidebarCollapsed}
           />
-          <section className="flex-1 overflow-y-auto">
+          <section className={`flex-1 overflow-y-auto ${activeTab === "chat" ? "" : "p-6"}`}>
             {children}
           </section>
         </main>
