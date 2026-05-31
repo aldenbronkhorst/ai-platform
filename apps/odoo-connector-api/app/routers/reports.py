@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
-from app.models.schemas import OdooExecuteReportRequest, OdooProfitAndLossRequest
+from app.models.schemas import OdooExecuteReportRequest
 from typing import Optional, Any
 
 router = APIRouter()
@@ -278,47 +278,3 @@ async def execute_report(req: OdooExecuteReportRequest, auth: dict = Depends(int
                 ]
             }
         )
-
-
-@router.post("/profit-and-loss")
-async def get_profit_and_loss(req: OdooProfitAndLossRequest, auth: dict = Depends(internal_api_key_auth)):
-    """Thin backward compatibility alias that delegates directly to the generic execute_report layer."""
-    exec_req = OdooExecuteReportRequest(
-        credentials=req.credentials,
-        report_name="Profit and Loss",
-        date_from=req.date_from,
-        date_to=req.date_to,
-        company_id=req.company_id,
-        line_names=["Revenue"]
-    )
-    result = await execute_report(exec_req, auth)
-    
-    # Map back to old P&L-specific schema
-    lines = result.get("lines", [])
-    total_rev_val = 0.0
-    total_rev_formatted = f"{result['currency_symbol']} 0.00"
-    for l in lines:
-        if "revenue" in str(l["name"]).lower() or "Total Revenue" in str(l["name"]):
-            total_rev_val = l["value"]
-            total_rev_formatted = l["formatted_value"]
-            break
-    if not total_rev_val and lines:
-        total_rev_val = lines[0]["value"]
-        total_rev_formatted = lines[0]["formatted_value"]
-        
-    pnl_res = {
-        "report": result["report_name"],
-        "date_from": result["date_from"],
-        "date_to": result["date_to"],
-        "currency_code": result["currency_code"],
-        "currency_symbol": result["currency_symbol"],
-        "revenue": {
-            "value": total_rev_val,
-            "formatted": total_rev_formatted,
-            "source": result["source"]
-        },
-        "lines": lines
-    }
-    if "warning" in result.get("revenue", {}):
-        pnl_res["revenue"]["warning"] = result["revenue"]["warning"]
-    return pnl_res

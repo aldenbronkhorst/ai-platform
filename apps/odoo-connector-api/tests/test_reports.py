@@ -144,39 +144,3 @@ class TestProfitAndLossReport:
         assert data["detail"]["error"] == "report_unavailable"
         assert data["detail"]["attempted_report_name"] == "Balance Sheet"
         assert "supported" in data["detail"]["likely_causes"][3].lower()
-
-    @patch("app.routers.reports.OdooClient")
-    def test_legacy_pnl_alias_endpoint(self, mock_client_cls):
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-        
-        # Mock search finding a report id, then get_report_informations
-        mock_client.call_with_transport.side_effect = [
-            [123],  # report search
-            {
-                "lines": [
-                    {
-                        "name": "Revenue",
-                        "columns": [{"no_format_name": 150000.0, "name": "R 150,000.00"}]
-                    }
-                ]
-            }
-        ]
-        
-        response = client.post("/reports/profit-and-loss", json={
-            "credentials": {
-                "url": "https://test.odoo.com",
-                "db": "test_db",
-                "username": "admin",
-                "api_key": "secret"
-            },
-            "date_from": "2026-05-01",
-            "date_to": "2026-05-31",
-            "currency": "ZAR"
-        })
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["report"] == "Profit and Loss"
-        assert data["revenue"]["value"] == 150000.0
-        assert data["revenue"]["source"] == "odoo_account_report"

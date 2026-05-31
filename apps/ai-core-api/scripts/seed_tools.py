@@ -34,21 +34,6 @@ TOOLS = [
         },
     },
     {
-        "name": "odoo_get_profit_and_loss",
-        "display_name": "Odoo Profit and Loss Report",
-        "description": "Retrieve the Profit and Loss (P&L) statement/report from Odoo for a given date range. Bypassed in favor of odoo_execute_report but maintained as compatibility alias.",
-        "target_system": "odoo",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "date_from": {"type": "string", "description": "Start date for the report (YYYY-MM-DD)"},
-                "date_to": {"type": "string", "description": "End date for the report (YYYY-MM-DD)"},
-                "company_id": {"type": "integer", "description": "Specific Odoo company ID"},
-                "currency": {"type": "string", "description": "Currency code (e.g. ZAR, USD)"},
-            },
-        },
-    },
-    {
         "name": "odoo_search_read",
         "display_name": "Odoo Search Read",
         "description": "Search and read records from any Odoo model. Supports domain filtering, field selection, pagination, and ordering.",
