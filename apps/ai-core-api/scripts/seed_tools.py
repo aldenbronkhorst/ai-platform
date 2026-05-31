@@ -15,9 +15,28 @@ settings = get_settings()
 # input_schema must be valid JSON Schema for the OpenAI tools API.
 TOOLS = [
     {
+        "name": "odoo_execute_report",
+        "display_name": "Odoo Accounting Report",
+        "description": "Execute any accounting/financial report from Odoo (e.g. Profit and Loss, Balance Sheet, Trial Balance, Aged Receivables/Payables, Partner Ledger, General Ledger, Tax Report). Normalizes and flattens report lines.",
+        "target_system": "odoo",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "report_name": {"type": "string", "description": "The name or alias of the report to run (e.g. 'Profit and Loss', 'Balance Sheet', 'Trial Balance')"},
+                "report_id": {"type": "integer", "description": "Specific Odoo report ID (optional)"},
+                "date_from": {"type": "string", "description": "Start date for the report (YYYY-MM-DD)"},
+                "date_to": {"type": "string", "description": "End date for the report (YYYY-MM-DD)"},
+                "company_id": {"type": "integer", "description": "Specific Odoo company ID"},
+                "line_names": {"type": "array", "items": {"type": "string"}, "description": "Specific line names to filter in the report"},
+                "include_raw_lines": {"type": "boolean", "description": "Include raw unflattened Odoo lines (default false)"},
+            },
+            "required": ["report_name"],
+        },
+    },
+    {
         "name": "odoo_get_profit_and_loss",
         "display_name": "Odoo Profit and Loss Report",
-        "description": "Retrieve the Profit and Loss (P&L) statement/report from Odoo for a given date range. If the official report is unavailable, it automatically calculates and falls back to a sum of posted customer invoices.",
+        "description": "Retrieve the Profit and Loss (P&L) statement/report from Odoo for a given date range. Bypassed in favor of odoo_execute_report but maintained as compatibility alias.",
         "target_system": "odoo",
         "input_schema": {
             "type": "object",

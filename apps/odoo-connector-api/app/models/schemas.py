@@ -128,3 +128,16 @@ class OdooProfitAndLossRequest(BaseModel):
     date_to: Optional[str] = None
     company_id: Optional[int] = None
     currency: Optional[str] = None
+
+
+class OdooExecuteReportRequest(BaseModel):
+    credentials: OdooCredentialsRequest
+    report_name: str
+    report_id: Optional[int] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    company_id: Optional[int] = None
+    timezone: Optional[str] = None
+    lang: Optional[str] = None
+    line_names: Optional[list[str]] = None
+    include_raw_lines: bool = False

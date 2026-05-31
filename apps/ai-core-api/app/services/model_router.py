@@ -286,6 +286,7 @@ async def _execute_tool_call(
 
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     mapping = {
+        "odoo_execute_report": "/reports/execute",
         "odoo_get_profit_and_loss": "/reports/profit-and-loss",
         "odoo_search_read": "/records/search-read",
         "odoo_execute_kw": "/execute-kw/",
