@@ -11,16 +11,21 @@ from app.main import app
 client = TestClient(app)
 
 
-class TestProfitAndLossReport:
+class TestOdooReportExecution:
     @patch("app.routers.reports.OdooClient")
     def test_generic_execute_pnl_success(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         
-        # Mock search finding a report id, then get_report_informations
+        # Mock search_read resolving the report_id
+        mock_client.search_read.side_effect = [
+            [{"id": 123, "name": "Profit and Loss"}]
+        ]
+        
+        # Mock get_options then get_report_information
         mock_client.call_with_transport.side_effect = [
-            [123],  # report search
-            {
+            {"options": {}},  # get_options
+            {  # get_report_information
                 "lines": [
                     {
                         "name": "Operating Revenue",
@@ -50,7 +55,8 @@ class TestProfitAndLossReport:
         assert response.status_code == 200
         data = response.json()
         assert data["report_name"] == "Profit and Loss"
-        assert data["currency_symbol"] == "TES"  # From test_db[:3] prefix "TES" -> "TES"
+        assert data["currency_symbol"] is None
+        assert data["currency_source"] == "unknown"
         assert data["line_count"] == 1
         assert data["lines"][0]["name"] == "Operating Revenue"
         assert "Cost of Goods Sold" in data["available_line_names"]
@@ -60,9 +66,15 @@ class TestProfitAndLossReport:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         
+        # Mock search_read resolving the report_id
+        mock_client.search_read.side_effect = [
+            [{"id": 456, "name": "Trial Balance"}]
+        ]
+        
+        # Mock get_options then get_report_information
         mock_client.call_with_transport.side_effect = [
-            [456],  # report search
-            {
+            {"options": {}},  # get_options
+            {  # get_report_information
                 "lines": [
                     {
                         "name": "Cash",
@@ -90,18 +102,12 @@ class TestProfitAndLossReport:
         assert data["line_count"] == 1
 
     @patch("app.routers.reports.OdooClient")
-    def test_pnl_fallback_to_invoices(self, mock_client_cls):
+    def test_report_execution_failure_returns_unavailable(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         
-        # account.report fails (raises Exception)
-        mock_client.call_with_transport.side_effect = Exception("Report model not found")
-        
-        # search_read on account.move succeeds and returns moves
-        mock_client.search_read.return_value = [
-            {"id": 1, "amount_untaxed": 45000.0, "currency_id": [2, "USD"]},
-            {"id": 2, "amount_untaxed": 55000.0, "currency_id": [2, "USD"]}
-        ]
+        # P&L report execution fails — no hidden fallback
+        mock_client.search_read.side_effect = Exception("No report model")
         
         response = client.post("/reports/execute", json={
             "credentials": {
@@ -110,24 +116,23 @@ class TestProfitAndLossReport:
                 "username": "admin",
                 "api_key": "secret"
             },
-            "report_name": "Profit & Loss",
+            "report_name": "Profit and Loss",
             "date_from": "2026-05-01",
             "date_to": "2026-05-31"
         })
         
-        assert response.status_code == 200
+        assert response.status_code == 400
         data = response.json()
-        assert "Fallback" in data["report_name"]
-        assert data["source"] == "fallback_posted_customer_invoices"
-        assert data["lines"][0]["value"] == 100000.0
+        assert data["detail"]["error"] == "report_unavailable"
+        assert "Profit and Loss" in data["detail"]["attempted_report_name"]
 
     @patch("app.routers.reports.OdooClient")
     def test_unsupported_report_unavailable_error(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         
-        # Balance Sheet fails
-        mock_client.call_with_transport.side_effect = Exception("Model not installed")
+        # Balance Sheet search_read fails
+        mock_client.search_read.side_effect = Exception("Model not installed")
         
         response = client.post("/reports/execute", json={
             "credentials": {

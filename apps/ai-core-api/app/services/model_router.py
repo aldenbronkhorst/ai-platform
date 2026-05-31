@@ -203,7 +203,7 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     """Resolve Odoo credentials for a given user (internal tool-execution path)."""
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
             or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
         )
@@ -262,6 +262,8 @@ async def _execute_tool_call(
     if tool_name.startswith("odoo_"):
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         path = _map_odoo_tool_to_path(tool_name)
+        if not path:
+            return {"error_type": "unknown_tool", "tool_name": tool_name}
         payload = {
             "credentials": credentials,
             "identity_mode": "user-delegated",
