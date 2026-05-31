@@ -319,7 +319,7 @@ async def connect_odoo(
     # 2. Check if a connection already exists
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )
@@ -402,7 +402,7 @@ async def get_connected_accounts(
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id)
+            AIConnectedAccount.user_id == user_id,
         )
     )
     return result.scalars().all()
@@ -417,7 +417,7 @@ async def get_odoo_status(
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )
@@ -450,7 +450,7 @@ async def test_odoo_connection(
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )
@@ -557,7 +557,7 @@ async def rotate_odoo_credentials(
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )
@@ -630,7 +630,7 @@ async def disconnect_odoo(
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )

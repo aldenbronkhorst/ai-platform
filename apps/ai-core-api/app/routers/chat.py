@@ -98,7 +98,7 @@ async def list_chat_sessions(
     user_id = auth["user_id"]
     result = await db.execute(
         select(AIChatSession).where(
-            AIChatSession.user_id == str(user_id),
+            AIChatSession.user_id == user_id,
             AIChatSession.status == "active"
         ).order_by(AIChatSession.last_message_at.desc())
     )
@@ -116,7 +116,7 @@ async def get_chat_session(
     result = await db.execute(
         select(AIChatSession).where(
             AIChatSession.id == session_id,
-            AIChatSession.user_id == str(user_id)
+            AIChatSession.user_id == user_id
         )
     )
     session = result.scalar_one_or_none()
@@ -137,7 +137,7 @@ async def update_chat_session(
     result = await db.execute(
         select(AIChatSession).where(
             AIChatSession.id == session_id,
-            AIChatSession.user_id == str(user_id)
+            AIChatSession.user_id == user_id
         )
     )
     session = result.scalar_one_or_none()
@@ -162,7 +162,7 @@ async def delete_chat_session(
     result = await db.execute(
         select(AIChatSession).where(
             AIChatSession.id == session_id,
-            AIChatSession.user_id == str(user_id)
+            AIChatSession.user_id == user_id
         )
     )
     session = result.scalar_one_or_none()
@@ -184,13 +184,14 @@ async def list_chat_messages(
     user_id = auth["user_id"]
     
     # Verify session ownership
-    sess_res = await db.execute(
+    sess_result = await db.execute(
         select(AIChatSession).where(
             AIChatSession.id == session_id,
-            AIChatSession.user_id == str(user_id)
+            AIChatSession.user_id == user_id
         )
     )
-    if not sess_res.scalar_one_or_none():
+    session = sess_result.scalar_one_or_none()
+    if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
 
     result = await db.execute(
@@ -224,7 +225,7 @@ async def post_chat_message(
     sess_res = await db.execute(
         select(AIChatSession).where(
             AIChatSession.id == session_id,
-            AIChatSession.user_id == str(user_id)
+            AIChatSession.user_id == user_id
         )
     )
     session = sess_res.scalar_one_or_none()

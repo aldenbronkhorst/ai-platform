@@ -117,7 +117,7 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID, identity_mo
     # User-delegated mode: resolve from connected account
     result = await db.execute(
         select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == str(user_id),
+            AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
             AIConnectedAccount.status == "active",
         )

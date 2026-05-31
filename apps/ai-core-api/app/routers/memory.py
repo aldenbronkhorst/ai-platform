@@ -273,7 +273,7 @@ async def extract_memory_candidates(
     result = await db.execute(
         select(AIChatMessage).where(
             AIChatMessage.chat_session_id == conversation_id,
-            AIChatMessage.user_id == str(user_id),
+            AIChatMessage.user_id == user_id,
         ).order_by(AIChatMessage.created_at.asc())
     )
     messages = result.scalars().all()
