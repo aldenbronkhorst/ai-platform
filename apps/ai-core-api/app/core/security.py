@@ -188,6 +188,11 @@ async def api_key_auth(
 
     # 3. Debug mode (local development only, requires DEBUG=true)
     if settings.debug and not api_key:
+        if settings.app_env == "production":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Anonymous access is not allowed in production even with DEBUG=true."
+            )
         fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
         return {"user_id": fallback_user_id, "email": "anonymous@local", "roles": ["AIPlatform.Admin"], "mode": "debug"}
 

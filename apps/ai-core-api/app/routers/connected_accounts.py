@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from urllib.parse import urlparse
 
-from app.core.security import api_key_auth
+from app.core.security import api_key_auth, require_role
 from app.core.database import get_db
 from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
@@ -27,9 +27,24 @@ ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 logger = logging.getLogger(__name__)
 
 
+class ConnectErrorDetail(BaseModel):
+    error_type: str = ""
+    stage: str = ""
+    message: str = ""
+    technical_detail: str = ""
+    request_id: str = ""
+
+
+def _get_request_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
 @router.get("/debug/connector")
-async def debug_connector_connectivity():
-    """Debug endpoint to test DNS resolution and connectivity to Odoo Connector."""
+async def debug_connector_connectivity(
+    auth: dict = Depends(require_role(["AIPlatform.Admin"])),
+):
+    """Debug endpoint to test DNS resolution and connectivity to Odoo Connector.
+    Requires admin-level authentication."""
     results = {
         "odoo_connector_url": ODOO_CONNECTOR_URL,
         "odoo_connector_key_configured": bool(ODOO_CONNECTOR_KEY),
@@ -40,11 +55,11 @@ async def debug_connector_connectivity():
             "ODOO_CONNECTOR_API_KEY": "***" if ODOO_CONNECTOR_KEY else None,
         }
     }
-    
+
     if not ODOO_CONNECTOR_URL:
         results["error"] = "ODOO_CONNECTOR_URL is not configured"
         return results
-    
+
     # Test DNS resolution
     try:
         parsed = urlparse(ODOO_CONNECTOR_URL)
@@ -67,7 +82,7 @@ async def debug_connector_connectivity():
         results["dns_resolution"] = {
             "error": f"Unexpected error during DNS resolution: {str(e)}"
         }
-    
+
     # Test HTTP connectivity
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -93,7 +108,7 @@ async def debug_connector_connectivity():
         results["http_connectivity"] = {
             "error": f"Unexpected error during HTTP connectivity test: {str(e)}"
         }
-    
+
     return results
 
 
@@ -235,12 +250,20 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
 
 
 async def _verify_odoo_credentials_via_connector(url: str, db: str, username: str, api_key: str) -> None:
-    """Uses the Odoo Connector API to perform a safe read-only call to verify credentials."""
+    """Uses the Odoo Connector API to perform a safe read-only call to verify credentials.
+
+    Raises HTTPException with structured ConnectErrorDetail on failure.
+    """
     logger.info("Verifying Odoo credentials for user=%s at host=%s db=%s", username, url, db)
     if not ODOO_CONNECTOR_URL:
         raise HTTPException(
             status_code=500,
-            detail="Odoo Connector URL is not configured."
+            detail=ConnectErrorDetail(
+                error_type="odoo_connector_unreachable",
+                stage="verify_connector",
+                message="Odoo Connector is not configured.",
+                technical_detail="ODOO_CONNECTOR_URL environment variable is not set.",
+            ).model_dump()
         )
 
     headers = {
@@ -267,19 +290,86 @@ async def _verify_odoo_credentials_via_connector(url: str, db: str, username: st
                 json=payload,
                 headers=headers,
             )
-        if response.status_code >= 400:
-            try:
-                err_detail = response.json()
-            except Exception:
-                err_detail = response.text
-            raise HTTPException(
-                status_code=400,
-                detail=f"Odoo verification failed: {err_detail}"
-            )
+    except httpx.ConnectError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=ConnectErrorDetail(
+                error_type="odoo_connector_unreachable",
+                stage="verify_connector",
+                message="Could not reach the Odoo Connector service. Check network connectivity.",
+                technical_detail=f"Connection failed: {e}",
+            ).model_dump()
+        )
+    except httpx.TimeoutException as e:
+        raise HTTPException(
+            status_code=504,
+            detail=ConnectErrorDetail(
+                error_type="odoo_connector_unreachable",
+                stage="verify_connector",
+                message="Odoo Connector timed out. Check network connectivity.",
+                technical_detail=f"Connection timeout: {e}",
+            ).model_dump()
+        )
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Could not connect to Odoo Connector: {e}"
+            detail=ConnectErrorDetail(
+                error_type="odoo_connector_unreachable",
+                stage="verify_connector",
+                message="Could not connect to Odoo Connector.",
+                technical_detail=f"Request error: {e}",
+            ).model_dump()
+        )
+
+    if response.status_code >= 400:
+        try:
+            err_body = response.json()
+        except Exception:
+            err_body = {"raw": response.text}
+
+        if response.status_code == 401:
+            err_msg = str(err_body.get("detail", err_body))
+            # Distinguish between connector internal key mismatch and Odoo auth failure
+            if err_body.get("error") == "odoo_auth_failed":
+                raise HTTPException(
+                    status_code=400,
+                    detail=ConnectErrorDetail(
+                        error_type="odoo_credentials_invalid",
+                        stage="verify_odoo",
+                        message="Odoo credentials are invalid. Check your URL, database, username, and API key.",
+                        technical_detail=f"Odoo auth error: {err_body.get('message', err_msg)}",
+                    ).model_dump()
+                )
+            else:
+                raise HTTPException(
+                    status_code=401,
+                    detail=ConnectErrorDetail(
+                        error_type="odoo_connector_auth_failed",
+                        stage="verify_connector",
+                        message="Internal connector API key mismatch. Contact an administrator.",
+                        technical_detail=f"Connector returned 401: {err_msg}",
+                    ).model_dump()
+                )
+
+        if response.status_code == 400 and err_body.get("error") == "odoo_auth_failed":
+            raise HTTPException(
+                status_code=400,
+                detail=ConnectErrorDetail(
+                    error_type="odoo_credentials_invalid",
+                    stage="verify_odoo",
+                    message="Odoo credentials are invalid. Check your URL, database, username, and API key.",
+                    technical_detail=f"Odoo auth error: {err_body.get('message', str(err_body))}",
+                ).model_dump()
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=ConnectErrorDetail(
+                error_type="odoo_permission_error",
+                stage="verify_odoo",
+                message="Odoo verification failed. Check permissions or contact support.",
+                technical_detail=f"Connector returned {response.status_code}: {err_body}",
+            ).model_dump()
         )
 
 
@@ -306,14 +396,24 @@ def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
             )
             raise HTTPException(
                 status_code=500,
-                detail="Could not save connection credentials because a previously "
-                       "deleted secret is still reserved. Please retry, or contact "
-                       "support if the issue persists."
+                detail=ConnectErrorDetail(
+                    error_type="key_vault_write_failed",
+                    stage="store_secret",
+                    message="Could not save connection credentials because a previously "
+                           "deleted secret is still reserved. Please retry, or contact "
+                           "support if the issue persists.",
+                    technical_detail=f"ObjectIsDeletedButRecoverable for secret '{secret_name}'",
+                ).model_dump()
             )
         logger.error("Failed to store secret '%s' in Key Vault: %s", secret_name, error_str)
         raise HTTPException(
             status_code=500,
-            detail="Failed to save connection credentials securely. Please try again."
+            detail=ConnectErrorDetail(
+                error_type="key_vault_write_failed",
+                stage="store_secret",
+                message="Failed to save connection credentials securely. Please try again.",
+                technical_detail=error_str,
+            ).model_dump()
         )
 
 
@@ -372,70 +472,85 @@ async def _retrieve_key_vault_secret(secret_name: str) -> str:
         )
 
 
-@router.post("/odoo/connect", response_model=ConnectedAccountResponse)
+@router.post("/odoo/connect")
 async def connect_odoo(
     req: OdooConnectRequest,
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    """Saves/creates Odoo connection. Validates credentials first, then saves API key to Key Vault."""
+    """Saves/creates Odoo connection.
+
+    Flow:
+    1. Normalize URL
+    2. Store API key in Key Vault FIRST (if this fails, nothing is saved)
+    3. Verify credentials against Odoo Connector
+    4. If verification fails, save account with status=\"error\" to preserve user-entered details
+    5. If verification succeeds, fetch metadata and save as status=\"connected\"
+    """
     user_id = auth.get("user_id")
+    request_id = _get_request_id()
 
     # Normalize and validate the Odoo URL
     normalized_url = _normalize_odoo_url(req.odoo_url)
 
-    # 1. Validate Odoo credentials using a safe read-only call
-    await _verify_odoo_credentials_via_connector(
-        url=normalized_url,
-        db=req.odoo_db,
-        username=req.odoo_username,
-        api_key=req.odoo_api_key
-    )
-
-    # 1b. Fetch company metadata (currency, company name) from Odoo
-    company_meta = await _fetch_odoo_company_metadata(
-        url=normalized_url,
-        db=req.odoo_db,
-        username=req.odoo_username,
-        api_key=req.odoo_api_key,
-    )
-
-    # 2. Check if a connection already exists
+    # 1. Resolve account identity before any mutation
     result = await db.execute(
         select(AIConnectedAccount).where(
             AIConnectedAccount.user_id == user_id,
             AIConnectedAccount.provider == "odoo",
         )
     )
-    account = result.scalar_one_or_none()
-
-    if account:
-        connected_account_id = account.id
-    else:
-        connected_account_id = uuid.uuid4()
+    existing_account = result.scalar_one_or_none()
+    connected_account_id = existing_account.id if existing_account else uuid.uuid4()
 
     # Use a unique secret name per connection to avoid conflicts with
     # soft-deleted secrets in Key Vault (ObjectIsDeletedButRecoverable).
     secret_name = _generate_secret_name(connected_account_id)
 
-    # 3. Store the Odoo API key in Key Vault under opaque secret reference
+    # 2. Store the Odoo API key in Key Vault FIRST (gate: if this fails, nothing is saved)
     _store_key_vault_secret(secret_name, req.odoo_api_key)
 
-    # 4. Create/update the database record, saving the user-provided URL and DB
-    if account:
-        account.provider_username = req.odoo_username
-        account.secret_reference = secret_name
-        account.status = "connected"
-        account.last_verified_at = datetime.utcnow()
-        account.disconnected_at = None
-        account.updated_at = datetime.utcnow()
-        account.odoo_url = normalized_url
-        account.odoo_db = req.odoo_db
+    # 3. Verify credentials (failure does NOT block saving the account)
+    verified = False
+    company_meta = {}
+    verify_error = None
+    try:
+        await _verify_odoo_credentials_via_connector(
+            url=normalized_url,
+            db=req.odoo_db,
+            username=req.odoo_username,
+            api_key=req.odoo_api_key,
+        )
+        verified = True
+        # 3b. Fetch company metadata on successful verification
+        company_meta = await _fetch_odoo_company_metadata(
+            url=normalized_url,
+            db=req.odoo_db,
+            username=req.odoo_username,
+            api_key=req.odoo_api_key,
+        )
+    except HTTPException as e:
+        verify_error = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
+    except Exception as e:
+        verify_error = {"message": str(e), "technical_detail": str(e)}
+
+    # 4. Save/update the database record with whatever state we have
+    now = datetime.utcnow()
+    if existing_account:
+        existing_account.provider_username = req.odoo_username
+        existing_account.secret_reference = secret_name
+        existing_account.status = "connected" if verified else "error"
+        existing_account.last_verified_at = now if verified else existing_account.last_verified_at
+        existing_account.disconnected_at = None
+        existing_account.updated_at = now
+        existing_account.odoo_url = normalized_url
+        existing_account.odoo_db = req.odoo_db
         if company_meta.get("odoo_company_id"):
-            account.odoo_company_id = company_meta["odoo_company_id"]
-            account.odoo_company_name = company_meta.get("odoo_company_name")
-            account.odoo_currency_code = company_meta.get("odoo_currency_code")
-            account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
+            existing_account.odoo_company_id = company_meta["odoo_company_id"]
+            existing_account.odoo_company_name = company_meta.get("odoo_company_name")
+            existing_account.odoo_currency_code = company_meta.get("odoo_currency_code")
+            existing_account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
+        account = existing_account
     else:
         account = AIConnectedAccount(
             id=connected_account_id,
@@ -443,11 +558,11 @@ async def connect_odoo(
             provider="odoo",
             provider_username=req.odoo_username,
             secret_reference=secret_name,
-            status="connected",
-            last_verified_at=datetime.utcnow(),
+            status="connected" if verified else "error",
+            last_verified_at=now if verified else None,
             target_environment="production",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=now,
+            updated_at=now,
             odoo_url=normalized_url,
             odoo_db=req.odoo_db,
             odoo_company_id=company_meta.get("odoo_company_id"),
@@ -468,11 +583,43 @@ async def connect_odoo(
         target_model="ai_connected_accounts",
         target_record_id=str(account.id),
         actor_user_id=user_id,
-        input_summary=f"Connected Odoo account '{req.odoo_username}' for user {user_id}",
+        input_summary=(
+            f"Connected Odoo account '{req.odoo_username}' for user {user_id}. "
+            f"Verification: {'success' if verified else 'failed'}"
+        ),
         risk_level="medium",
-        status="success",
+        status="success" if verified else "error",
     ))
     await db.commit()
+
+    # 6. If verification failed, return structured error (account IS saved)
+    if not verified:
+        err_type = (
+            (verify_error or {}).get("error_type")
+            or "odoo_credentials_invalid"
+        )
+        err_stage = (
+            (verify_error or {}).get("stage")
+            or "verify_odoo"
+        )
+        err_msg = (
+            (verify_error or {}).get("message")
+            or "Odoo credentials could not be verified. Your details have been saved with status 'error'."
+        )
+        tech_detail = (
+            (verify_error or {}).get("technical_detail")
+            or str(verify_error or "")
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=ConnectErrorDetail(
+                error_type=err_type,
+                stage=err_stage,
+                message=err_msg,
+                technical_detail=tech_detail,
+                request_id=request_id,
+            ).model_dump()
+        )
 
     return account
 

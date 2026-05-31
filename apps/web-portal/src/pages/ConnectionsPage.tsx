@@ -112,11 +112,21 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setOdooApiKey("");
         fetchOdooStatus();
       } else {
-        const rawMsg = data.detail || "Connection failed.";
+        // Try structured error detail first (error_type, stage, message, technical_detail)
+        const detail = data.detail || {};
+        const errorType = detail.error_type || "";
+        const stage = detail.stage || "";
+        const friendlyMessage = detail.message || data.detail || "Connection failed.";
+        const techDetail = detail.technical_detail || "";
+        const requestId = detail.request_id || "";
         setTestResult({
           success: false,
-          message: rawMsg,
-          isKeyVaultError: isKeyVaultError(rawMsg),
+          message: friendlyMessage,
+          isKeyVaultError: isKeyVaultError(friendlyMessage),
+          errorType,
+          stage,
+          technicalDetail: techDetail,
+          requestId,
         });
       }
     } catch (err: any) {
@@ -372,6 +382,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                     <XCircle className="w-4 h-4 text-[var(--color-danger)] shrink-0 mt-0.5" />
                     <div>
                       <p className="font-semibold text-[var(--color-danger)]">Connection Failed</p>
+                      {testResult.errorType && (
+                        <p className="text-xs text-muted mt-0.5 font-mono">
+                          {testResult.stage && <span>Stage: {testResult.stage}</span>}
+                          {testResult.stage && testResult.errorType && <span> &middot; </span>}
+                          {testResult.errorType && <span>Type: {testResult.errorType}</span>}
+                        </p>
+                      )}
                       <p className="text-muted mt-0.5">
                         {testResult.isKeyVaultError
                           ? "Could not save Odoo credentials securely. The AI Platform service does not currently have permission to write to Key Vault. Please contact an administrator."
@@ -388,7 +405,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   </button>
                   {showTechDetails && (
                     <pre className="text-xs text-muted bg-surface p-2 rounded-lg overflow-x-auto whitespace-pre-wrap font-mono border border-default">
-                      {testResult.message}
+                      {testResult.technicalDetail || testResult.message || "No technical details available."}
+                      {testResult.requestId && `\n\nRequest ID: ${testResult.requestId}`}
                     </pre>
                   )}
                 </div>

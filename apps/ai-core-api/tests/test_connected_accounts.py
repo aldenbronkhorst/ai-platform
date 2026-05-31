@@ -76,8 +76,10 @@ class TestConnectedAccountsFlow:
         assert args[1] == "my-secret-api-key"
 
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
-    def test_connect_odoo_invalid_credentials(self, mock_verify):
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_connect_odoo_invalid_credentials(self, mock_store, mock_verify):
         from fastapi import HTTPException
+        mock_store.return_value = None
         mock_verify.side_effect = HTTPException(status_code=400, detail="Odoo verification failed: Invalid password")
 
         response = client.post(
@@ -92,7 +94,11 @@ class TestConnectedAccountsFlow:
         )
         assert response.status_code == 400
         data = response.json()
-        assert "verification failed" in data["detail"].lower()
+        detail = data.get("detail", {})
+        assert isinstance(detail, dict)
+        # The message should contain "verification" or "credentials" context
+        msg = (detail.get("message") or str(detail)).lower()
+        assert "credential" in msg or "verif" in msg or "error" in msg or "fail" in msg
 
     def test_get_connected_accounts_list(self):
         response = client.get(
@@ -364,3 +370,456 @@ class TestOdooUrlPersistence:
         """A URL without https:// must be normalized and persisted when connecting."""
         from app.routers.connected_accounts import _normalize_odoo_url
         assert _normalize_odoo_url("lotslotsmore.odoo.com") == "https://lotslotsmore.odoo.com"
+
+
+# ── Structured Error Tests ──
+
+class TestStructuredErrors:
+    """Tests for structured ConnectErrorDetail responses."""
+
+    def test_connect_returns_connect_error_detail_on_failure(self):
+        """A verification failure must return a ConnectErrorDetail-shaped dict."""
+        from app.routers.connected_accounts import ConnectErrorDetail
+        err = ConnectErrorDetail(
+            error_type="odoo_credentials_invalid",
+            stage="verify_odoo",
+            message="Test message",
+            technical_detail="Test technical detail",
+            request_id="abc123",
+        )
+        d = err.model_dump()
+        assert d["error_type"] == "odoo_credentials_invalid"
+        assert d["stage"] == "verify_odoo"
+        assert d["message"] == "Test message"
+        assert d["technical_detail"] == "Test technical detail"
+        assert d["request_id"] == "abc123"
+
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_odoo_connector_auth_failed(self, mock_store, mock_verify):
+        """Connector returning 401 (internal key mismatch) must produce odoo_connector_auth_failed."""
+        from fastapi import HTTPException
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "odoo_connector_auth_failed",
+                "stage": "verify_connector",
+                "message": "Internal connector API key mismatch.",
+                "technical_detail": "Connector returned 401: Invalid internal API key",
+            }
+        )
+
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://odoo.example.com",
+                "odoo_db": "prod_db",
+                "odoo_username": "alden@example.com",
+                "odoo_api_key": "my-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 400
+        detail = response.json().get("detail", {})
+        assert detail.get("error_type") == "odoo_connector_auth_failed"
+        # Stage is propagated from the original error
+        assert detail.get("stage") == "verify_connector"
+        assert "API key mismatch" in detail.get("message", "")
+
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_odoo_connector_unreachable(self, mock_store, mock_verify):
+        """Connector unreachable must produce odoo_connector_unreachable."""
+        from fastapi import HTTPException
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "odoo_connector_unreachable",
+                "stage": "verify_connector",
+                "message": "Could not reach the Odoo Connector service.",
+                "technical_detail": "Connection failed: ...",
+            }
+        )
+
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://odoo.example.com",
+                "odoo_db": "prod_db",
+                "odoo_username": "alden@example.com",
+                "odoo_api_key": "my-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 400
+        detail = response.json().get("detail", {})
+        assert detail.get("error_type") == "odoo_connector_unreachable"
+
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_odoo_credentials_invalid(self, mock_store, mock_verify):
+        """Invalid Odoo credentials must produce odoo_credentials_invalid."""
+        from fastapi import HTTPException
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "odoo_credentials_invalid",
+                "stage": "verify_odoo",
+                "message": "Odoo credentials are invalid.",
+                "technical_detail": "Odoo auth error: Invalid password",
+            }
+        )
+
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://odoo.example.com",
+                "odoo_db": "prod_db",
+                "odoo_username": "alden@example.com",
+                "odoo_api_key": "wrong-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 400
+        detail = response.json().get("detail", {})
+        assert detail.get("error_type") == "odoo_credentials_invalid"
+
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_key_vault_write_failure(self, mock_store):
+        """Key Vault write failure must produce key_vault_write_failed."""
+        from fastapi import HTTPException
+        import logging
+        logging.disable(logging.CRITICAL)
+        try:
+            mock_store.side_effect = HTTPException(
+                status_code=500,
+                detail={
+                    "error_type": "key_vault_write_failed",
+                    "stage": "store_secret",
+                    "message": "Failed to save connection credentials securely.",
+                    "technical_detail": "RBAC authorization failed",
+                }
+            )
+            response = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://odoo.example.com",
+                    "odoo_db": "prod_db",
+                    "odoo_username": "alden@example.com",
+                    "odoo_api_key": "my-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 500
+            detail = response.json().get("detail", {})
+            assert detail.get("error_type") == "key_vault_write_failed"
+        finally:
+            logging.disable(logging.NOTSET)
+
+
+# ── Save as Unverified Tests ──
+
+class TestSaveAsUnverified:
+    """When KV save succeeds but verification fails, account must be saved with status='error'."""
+
+    @patch("app.routers.connected_accounts._fetch_odoo_company_metadata")
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_account_saved_as_error_on_verify_fail(self, mock_store, mock_verify, mock_fetch):
+        """Account must be saved with status='error' when verification fails after KV save."""
+        from fastapi import HTTPException
+        from unittest.mock import AsyncMock, patch as _patch
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(status_code=400, detail="Verification failed")
+        mock_fetch.return_value = {}
+
+        # Expose the mock session to verify calls
+        mock_session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = lambda self=None: None
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://odoo.example.com",
+                    "odoo_db": "prod_db",
+                    "odoo_username": "alden@example.com",
+                    "odoo_api_key": "my-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            # 400 error because verification failed, but account IS saved
+            assert response.status_code == 400
+            detail = response.json().get("detail", {})
+            assert "error_type" in detail
+
+            # Find the AIConnectedAccount in db.add calls (there are also audit events)
+            from app.models.models import AIConnectedAccount as ACA
+            add_calls = mock_session.add.call_args_list
+            saved_accounts = [call[0][0] for call in add_calls if isinstance(call[0][0], ACA)]
+            assert len(saved_accounts) >= 1, "AIConnectedAccount was not added to DB"
+            saved_account = saved_accounts[0]
+            assert saved_account.status == "error"
+            assert saved_account.odoo_url == "https://odoo.example.com"
+            assert saved_account.odoo_db == "prod_db"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._fetch_odoo_company_metadata")
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_url_db_username_preserved_after_verify_fail(self, mock_store, mock_verify, mock_fetch):
+        """User-entered URL, DB, and username must be preserved even after failed verification."""
+        from fastapi import HTTPException
+        from unittest.mock import AsyncMock
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(status_code=400, detail="Verification failed")
+        mock_fetch.return_value = {}
+
+        mock_session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = lambda self=None: None
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            response = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://my-instance.odoo.com",
+                    "odoo_db": "my_custom_db",
+                    "odoo_username": "admin@mycompany.com",
+                    "odoo_api_key": "my-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 400
+
+            # Find the AIConnectedAccount in db.add calls
+            from app.models.models import AIConnectedAccount as ACA
+            add_calls = mock_session.add.call_args_list
+            saved_accounts = [call[0][0] for call in add_calls if isinstance(call[0][0], ACA)]
+            assert len(saved_accounts) >= 1, "AIConnectedAccount was not added to DB"
+            saved_account = saved_accounts[0]
+            assert saved_account.odoo_url == "https://my-instance.odoo.com"
+            assert saved_account.odoo_db == "my_custom_db"
+            assert saved_account.provider_username == "admin@mycompany.com"
+            assert saved_account.status == "error"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    @patch("app.routers.connected_accounts._retrieve_key_vault_secret")
+    def test_verify_fail_still_allows_test_connection(self, mock_retrieve, mock_store, mock_verify):
+        """After a failed verify that saves as error, Test Connection should still work."""
+        from fastapi import HTTPException
+        from unittest.mock import AsyncMock, MagicMock
+        from uuid import UUID
+        from app.models.models import AIConnectedAccount
+
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(status_code=400, detail="Verification failed")
+        mock_retrieve.return_value = "my-key"
+
+        # Create a real account that the test endpoint can find
+        saved_account = AIConnectedAccount(
+            id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            user_id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+            provider="odoo",
+            provider_username="alden@example.com",
+            secret_reference="test-secret-ref",
+            status="error",
+            odoo_url="https://odoo.example.com",
+            odoo_db="prod_db",
+        )
+
+        mock_session = AsyncMock()
+        result_mock = AsyncMock()
+        result_mock.scalar_one_or_none = MagicMock(return_value=saved_account)
+        result_mock.scalars = lambda self=None: result_mock
+        result_mock.all = lambda self=None: []
+        mock_session.execute = AsyncMock(return_value=result_mock)
+
+        async def mock_get_db():
+            yield mock_session
+
+        from app.core.database import get_db
+        app.dependency_overrides[get_db] = mock_get_db
+        try:
+            # First connect (verification will fail, save as error)
+            response = client.post(
+                "/connected-accounts/odoo/connect",
+                json={
+                    "odoo_url": "https://odoo.example.com",
+                    "odoo_db": "prod_db",
+                    "odoo_username": "alden@example.com",
+                    "odoo_api_key": "my-key",
+                },
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert response.status_code == 400
+
+            # Now test connection (verify succeeds this time)
+            mock_verify.reset_mock()
+            mock_verify.side_effect = None
+            mock_verify.return_value = None
+
+            test_resp = client.post(
+                "/connected-accounts/odoo/test",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+            assert test_resp.status_code == 200
+            test_data = test_resp.json()
+            assert test_data["status"] == "connected"
+            assert test_data["odoo_url"] == "https://odoo.example.com"
+            assert test_data["odoo_db"] == "prod_db"
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+
+
+# ── Protected Debug Endpoint Tests ──
+
+class TestProtectedDebugEndpoint:
+    """The /debug/connector endpoint must require auth."""
+
+    def test_debug_requires_auth_in_production(self, monkeypatch):
+        """Debug connector must return 401 without auth when production mode prevents bypass."""
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("DEBUG", "false")
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+
+        response = client.get("/connected-accounts/debug/connector")
+        assert response.status_code == 401
+
+        get_settings.cache_clear()
+
+    def test_debug_allows_authenticated_admin(self):
+        """Debug connector must allow access when properly authenticated as admin."""
+        # In test env with DEBUG=true, anonymous gets admin via debug bypass
+        response = client.get(
+            "/connected-accounts/debug/connector",
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 200
+
+
+# ── Production Mode Debug Bypass Tests ──
+
+class TestProductionDebugBypass:
+    """Production mode must reject debug anonymous admin bypass."""
+
+    def test_production_rejects_debug_anonymous_bypass(self, monkeypatch):
+        """When APP_ENV=production and DEBUG=true, anonymous access must be rejected."""
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("DEBUG", "true")
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+
+        response = client.get(
+            "/connected-accounts/odoo/status",
+            headers={}
+        )
+        assert response.status_code == 401
+
+        get_settings.cache_clear()
+
+
+# ── Internal Key Mismatch Detection Tests ──
+
+class TestInternalKeyMismatch:
+    """ODOO_CONNECTOR_API_KEY <-> INTERNAL_API_KEY mismatch must be clearly detected."""
+
+    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
+    @patch("app.routers.connected_accounts._store_key_vault_secret")
+    def test_key_mismatch_clearly_reported(self, mock_store, mock_verify):
+        """Key mismatch (connector 401) must produce odoo_connector_auth_failed with clear message."""
+        from fastapi import HTTPException
+        mock_store.return_value = None
+        mock_verify.side_effect = HTTPException(
+            status_code=401,
+            detail={
+                "error_type": "odoo_connector_auth_failed",
+                "stage": "verify_connector",
+                "message": "Internal connector API key mismatch. Contact an administrator.",
+                "technical_detail": "Connector returned 401: Invalid internal API key",
+            }
+        )
+
+        response = client.post(
+            "/connected-accounts/odoo/connect",
+            json={
+                "odoo_url": "https://odoo.example.com",
+                "odoo_db": "prod_db",
+                "odoo_username": "alden@example.com",
+                "odoo_api_key": "my-key",
+            },
+            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+        )
+        assert response.status_code == 400
+        detail = response.json().get("detail", {})
+        assert detail.get("error_type") == "odoo_connector_auth_failed"
+        # The message should reference "API key mismatch" or similar
+        msg = (detail.get("message") or "").lower()
+        assert "mismatch" in msg or "key mismatch" in msg or "api key" in msg
+
+
+# ── Startup Config Validation Tests ──
+
+class TestStartupConfigValidation:
+    """Health endpoint must validate startup configuration."""
+
+    def test_config_validation_reports_debug_in_production(self, monkeypatch):
+        """DEBUG=true in production must be reported as a config issue."""
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("DEBUG", "true")
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+
+        response = client.get("/health")
+        assert response.status_code == 503
+        data = response.json()
+        config_issues = data.get("config_issues", [])
+        debug_issues = [i for i in config_issues if i.get("check") == "DEBUG"]
+        assert len(debug_issues) > 0
+        assert "production" in debug_issues[0].get("message", "").lower()
+
+        get_settings.cache_clear()
+
+    def test_config_validation_reports_missing_connector_url(self, monkeypatch):
+        """Missing ODOO_CONNECTOR_URL must be reported as a config issue."""
+        monkeypatch.setenv("ODOO_CONNECTOR_URL", "")
+        monkeypatch.setenv("KEY_VAULT_URI", "https://test.vault.azure.net")
+        monkeypatch.setenv("POSTGRES_HOST", "localhost")
+        monkeypatch.setenv("ODOO_CONNECTOR_API_KEY", "some-key")
+        monkeypatch.setenv("APP_ENV", "development")
+        monkeypatch.setenv("DEBUG", "false")
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+
+        response = client.get("/health")
+        data = response.json()
+        config_issues = data.get("config_issues", [])
+        url_issues = [i for i in config_issues if i.get("check") == "ODOO_CONNECTOR_URL"]
+        assert len(url_issues) > 0
+
+        get_settings.cache_clear()

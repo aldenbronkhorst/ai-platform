@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     app_name: str = "Odoo Connector API"
     app_version: str = "1.0.0"
+    app_env: str = os.environ.get("APP_ENV", "development")
     debug: bool = os.environ.get("DEBUG", "false").lower() == "true"
 
     # Internal service auth

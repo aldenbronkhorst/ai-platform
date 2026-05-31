@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     app_name: str = "AI Platform Core API"
     app_version: str = "0.1.0"
+    app_env: str = os.environ.get("APP_ENV", "development")
     debug: bool = os.environ.get("DEBUG", "false").lower() == "true"
 
     # Database
