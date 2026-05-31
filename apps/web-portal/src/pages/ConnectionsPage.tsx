@@ -18,6 +18,11 @@ const APIM_BASE_URL =
   import.meta.env.VITE_APIM_BASE_URL ||
   "https://apim-ai-platform-prod-san-001.azure-api.net";
 
+const APP_COMMIT_SHA = import.meta.env.VITE_APP_COMMIT_SHA || "dev";
+
+// Log build version for diagnostic purposes
+console.debug("[App Version] commit_sha:", APP_COMMIT_SHA);
+
 interface ConnectionsPageProps {
   accessToken: string;
 }

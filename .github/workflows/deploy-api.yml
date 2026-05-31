@@ -136,6 +136,8 @@ jobs:
             ${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            CACHEBUST=${{ github.sha }}
 
       - name: Build and Push Odoo Connector
         uses: docker/build-push-action@v5
@@ -146,6 +148,8 @@ jobs:
             ${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            CACHEBUST=${{ github.sha }}
 
       - name: Deploy AI Core API
         run: |
@@ -174,7 +178,7 @@ jobs:
         run: |
           cd apps/web-portal
           npm install --legacy-peer-deps
-          npm run build
+          VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build
 
       - name: Deploy Web Portal to SWA
         uses: Azure/static-web-apps-deploy@v1
