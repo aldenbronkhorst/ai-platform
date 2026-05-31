@@ -4,6 +4,10 @@ import time
 from typing import List, Dict, Any, Optional
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.models.models import AIModel, AIProvider
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,8 +19,14 @@ class TaskNode:
         dependencies: Optional[List[str]] = None,
         can_run_parallel: bool = True,
         required_tools: Optional[List[str]] = None,
+        execution_mode: str = "deterministic",
         selected_model: str = "none",
-        cost_tier: str = "low",
+        planned_model: str = "none",
+        model_status: str = "inactive",
+        cost_tier: str = "none",
+        provider: Optional[str] = None,
+        deployment: Optional[str] = None,
+        disabled_reason: Optional[str] = None,
     ):
         self.id = str(uuid4())
         self.name = name
@@ -24,8 +34,14 @@ class TaskNode:
         self.dependencies = dependencies or []
         self.can_run_parallel = can_run_parallel
         self.required_tools = required_tools or []
+        self.execution_mode = execution_mode
         self.selected_model = selected_model
+        self.planned_model = planned_model
+        self.model_status = model_status
         self.cost_tier = cost_tier
+        self.provider = provider
+        self.deployment = deployment
+        self.disabled_reason = disabled_reason
         self.status = "pending"  # pending, running, complete, failed
         self.result: Any = None
         self.error: Optional[str] = None
@@ -33,19 +49,28 @@ class TaskNode:
         self.token_usage: Dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        res = {
             "id": self.id,
             "name": self.name,
             "purpose": self.purpose,
             "dependencies": self.dependencies,
             "status": self.status,
+            "execution_mode": self.execution_mode,
             "model": self.selected_model,
+            "planned_model": self.planned_model,
+            "model_status": self.model_status,
             "cost_tier": self.cost_tier,
             "result": self.result,
             "error": self.error,
             "latency_ms": self.latency_ms,
-            "token_usage": self.token_usage,
         }
+        if self.disabled_reason is not None:
+            res["disabled_reason"] = self.disabled_reason
+        if self.execution_mode == "model" or self.provider is not None:
+            res["provider"] = self.provider
+            res["deployment"] = self.deployment
+            res["token_usage"] = self.token_usage
+        return res
 
 
 class TaskGraphExecutor:
@@ -55,10 +80,55 @@ class TaskGraphExecutor:
     def add_node(self, node: TaskNode):
         self.nodes[node.name] = node
 
-    async def execute_all(self, user_query: str) -> List[Dict[str, Any]]:
+    async def execute_all(self, user_query: str, db: Optional[AsyncSession] = None) -> List[Dict[str, Any]]:
         """Coordinates and executes the task graph nodes, matching parallel dependency paths."""
         logger.info("Starting Task Graph execution for query: '%s'", user_query)
         start_time = time.monotonic()
+
+        ds_active = False
+        qw_active = False
+        ds_provider_name = None
+        ds_deployment_name = None
+        qw_provider_name = None
+        qw_deployment_name = None
+
+        if db is not None:
+            try:
+                # 1. Query DeepSeek Flash
+                ds_res = await db.execute(
+                    select(AIModel, AIProvider)
+                    .join(AIProvider, AIModel.provider_id == AIProvider.id)
+                    .where(
+                        AIModel.model_name == "DeepSeek-V4-Flash",
+                        AIModel.enabled == "true",
+                        AIProvider.enabled == "true"
+                    )
+                )
+                ds_row = ds_res.first()
+                if ds_row:
+                    ds_active = True
+                    ds_model, ds_prov = ds_row
+                    ds_provider_name = ds_prov.name
+                    ds_deployment_name = ds_model.deployment_name
+
+                # 2. Query Qwen
+                qw_res = await db.execute(
+                    select(AIModel, AIProvider)
+                    .join(AIProvider, AIModel.provider_id == AIProvider.id)
+                    .where(
+                        AIModel.model_name == "Qwen2.5-72B-Instruct",
+                        AIModel.enabled == "true",
+                        AIProvider.enabled == "true"
+                    )
+                )
+                qw_row = qw_res.first()
+                if qw_row:
+                    qw_active = True
+                    qw_model, qw_prov = qw_row
+                    qw_provider_name = qw_prov.name
+                    qw_deployment_name = qw_model.deployment_name
+            except Exception as e:
+                logger.warning("Database query in TaskGraphExecutor failed, defaulting to inactive: %s", e)
 
         # Step 1. Define standard parallel subtasks if query mentions comparison or reconciliation
         is_reconciliation = any(kw in user_query.lower() for kw in ["compare", "reconcile", "reconciliation", "credit note", "pdf"])
@@ -69,35 +139,92 @@ class TaskGraphExecutor:
                 name="Odoo Data Worker",
                 purpose="Pull credit note header and line items from Odoo",
                 dependencies=[],
+                execution_mode="deterministic",
                 selected_model="none",
+                planned_model="none",
+                model_status="inactive",
                 cost_tier="none"
             ))
             # 2. PDF Extraction Worker (DeepSeek Flash)
-            self.add_node(TaskNode(
-                name="PDF Extraction Worker",
-                purpose="Download and OCR attached credit note PDF",
-                dependencies=[],
-                selected_model="DeepSeek Flash",
-                cost_tier="low"
-            ))
+            if ds_active:
+                self.add_node(TaskNode(
+                    name="PDF Extraction Worker",
+                    purpose="Download and OCR attached credit note PDF",
+                    dependencies=[],
+                    execution_mode="model",
+                    selected_model="DeepSeek Flash",
+                    planned_model="DeepSeek Flash",
+                    model_status="active",
+                    cost_tier="low",
+                    provider=ds_provider_name,
+                    deployment=ds_deployment_name
+                ))
+            else:
+                self.add_node(TaskNode(
+                    name="PDF Extraction Worker",
+                    purpose="Download and OCR attached credit note PDF",
+                    dependencies=[],
+                    execution_mode="deterministic",
+                    selected_model="none",
+                    planned_model="DeepSeek Flash",
+                    model_status="inactive",
+                    cost_tier="none"
+                ))
+
             # 3. Reconciliation Worker (Qwen - depends on both extraction tasks)
-            self.add_node(TaskNode(
-                name="Reconciliation Worker",
-                purpose="Compare Odoo lines versus PDF lines",
-                dependencies=["Odoo Data Worker", "PDF Extraction Worker"],
-                selected_model="Qwen",
-                cost_tier="medium",
-                can_run_parallel=False
-            ))
+            if qw_active:
+                self.add_node(TaskNode(
+                    name="Reconciliation Worker",
+                    purpose="Compare Odoo lines versus PDF lines",
+                    dependencies=["Odoo Data Worker", "PDF Extraction Worker"],
+                    execution_mode="model",
+                    selected_model="Qwen",
+                    planned_model="Qwen Max",
+                    model_status="active",
+                    cost_tier="medium",
+                    provider=qw_provider_name,
+                    deployment=qw_deployment_name,
+                    can_run_parallel=False
+                ))
+            else:
+                self.add_node(TaskNode(
+                    name="Reconciliation Worker",
+                    purpose="Compare Odoo lines versus PDF lines",
+                    dependencies=["Odoo Data Worker", "PDF Extraction Worker"],
+                    execution_mode="deterministic",
+                    selected_model="none",
+                    planned_model="Qwen Max",
+                    model_status="inactive",
+                    cost_tier="none",
+                    disabled_reason="DashScope provider integration required",
+                    can_run_parallel=False
+                ))
         else:
             # Default single fallback worker task
-            self.add_node(TaskNode(
-                name="General Chat Worker",
-                purpose="Answer basic user query",
-                dependencies=[],
-                selected_model="DeepSeek Flash",
-                cost_tier="low"
-            ))
+            if ds_active:
+                self.add_node(TaskNode(
+                    name="General Chat Worker",
+                    purpose="Answer basic user query",
+                    dependencies=[],
+                    execution_mode="model",
+                    selected_model="DeepSeek Flash",
+                    planned_model="DeepSeek Flash",
+                    model_status="active",
+                    cost_tier="low",
+                    provider=ds_provider_name,
+                    deployment=ds_deployment_name
+                ))
+            else:
+                self.add_node(TaskNode(
+                    name="General Chat Worker",
+                    purpose="Answer basic user query",
+                    dependencies=[],
+                    execution_mode="deterministic",
+                    selected_model="none",
+                    planned_model="DeepSeek Flash",
+                    model_status="inactive",
+                    cost_tier="none"
+                ))
 
         # Helper to execute a single task node with simulated latency and outputs
         async def run_node(node: TaskNode):
@@ -126,7 +253,10 @@ class TaskGraphExecutor:
                             {"item": "Consulting Fees", "qty": 10, "price": 1050.0}  # Discrepancy!
                         ]
                     }
-                    node.token_usage = {"prompt_tokens": 150, "completion_tokens": 80}
+                    if node.execution_mode == "model":
+                        node.token_usage = {"prompt_tokens": 150, "completion_tokens": 80}
+                    else:
+                        node.token_usage = {"prompt_tokens": 0, "completion_tokens": 0}
                 elif node.name == "Reconciliation Worker":
                     # Wait for dependencies first
                     while self.nodes["Odoo Data Worker"].status != "complete" or self.nodes["PDF Extraction Worker"].status != "complete":
@@ -143,7 +273,10 @@ class TaskGraphExecutor:
                             }
                         ]
                     }
-                    node.token_usage = {"prompt_tokens": 450, "completion_tokens": 200}
+                    if node.execution_mode == "model":
+                        node.token_usage = {"prompt_tokens": 450, "completion_tokens": 200}
+                    else:
+                        node.token_usage = {"prompt_tokens": 0, "completion_tokens": 0}
                 else:
                     await asyncio.sleep(0.5)
                     node.result = "Simple chat response compiled."

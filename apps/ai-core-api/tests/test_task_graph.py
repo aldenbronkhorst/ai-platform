@@ -26,15 +26,119 @@ class TestTaskGraphExecutor:
         
         assert odoo_task["status"] == "complete"
         assert odoo_task["model"] == "none"
+        assert odoo_task["execution_mode"] == "deterministic"
+        assert odoo_task["model_status"] == "inactive"
+        assert odoo_task["cost_tier"] == "none"
         assert odoo_task["result"]["credit_note_number"] == "CN-2026-0012"
         
         assert pdf_task["status"] == "complete"
-        assert pdf_task["model"] == "DeepSeek Flash"
+        assert pdf_task["model"] == "none"
+        assert pdf_task["planned_model"] == "DeepSeek Flash"
+        assert pdf_task["execution_mode"] == "deterministic"
+        assert pdf_task["model_status"] == "inactive"
+        assert pdf_task["cost_tier"] == "none"
         assert pdf_task["result"]["pdf_filename"] == "credit_note_reconcile.pdf"
+        assert "provider" not in pdf_task
+        assert "deployment" not in pdf_task
+        assert "token_usage" not in pdf_task
         
         assert reconcile_task["status"] == "complete"
-        assert reconcile_task["model"] == "Qwen"
+        assert reconcile_task["model"] == "none"
+        assert reconcile_task["planned_model"] == "Qwen Max"
+        assert reconcile_task["execution_mode"] == "deterministic"
+        assert reconcile_task["model_status"] == "inactive"
+        assert reconcile_task["cost_tier"] == "none"
+        assert reconcile_task["disabled_reason"] == "DashScope provider integration required"
         assert len(reconcile_task["result"]["discrepancies"]) == 1
+        assert "provider" not in reconcile_task
+        assert "deployment" not in reconcile_task
+        assert "token_usage" not in reconcile_task
+
+    @pytest.mark.asyncio
+    async def test_task_graph_with_active_models(self):
+        # Setup a mock DB and models
+        db = AsyncMock()
+        
+        ds_model = AIModel(
+            id=uuid4(),
+            provider_id=uuid4(),
+            display_name="DeepSeek Flash",
+            model_name="DeepSeek-V4-Flash",
+            deployment_name="deepseek-v4-flash",
+            enabled="true"
+        )
+        ds_prov = AIProvider(
+            id=ds_model.provider_id,
+            name="Microsoft Foundry",
+            enabled="true"
+        )
+        
+        qw_model = AIModel(
+            id=uuid4(),
+            provider_id=uuid4(),
+            display_name="Qwen 2.5",
+            model_name="Qwen2.5-72B-Instruct",
+            deployment_name="qwen-2-5-72b-instruct-general-chat",
+            enabled="true"
+        )
+        qw_prov = AIProvider(
+            id=qw_model.provider_id,
+            name="Microsoft Foundry",
+            enabled="true"
+        )
+
+        async def mock_execute(stmt, *args, **kwargs):
+            try:
+                params = stmt.compile().params
+            except Exception:
+                params = {}
+            res = MagicMock()
+            # Find if any parameter value matches the model names
+            is_deepseek = any(val == "DeepSeek-V4-Flash" for val in params.values())
+            is_qwen = any(val == "Qwen2.5-72B-Instruct" for val in params.values())
+            
+            if is_deepseek:
+                res.first = lambda: (ds_model, ds_prov)
+            elif is_qwen:
+                res.first = lambda: (qw_model, qw_prov)
+            else:
+                res.first = lambda: None
+            return res
+
+        db.execute = mock_execute
+
+        executor = TaskGraphExecutor()
+        results = await executor.execute_all("Compare credit note CN-12 to PDF attached.", db=db)
+
+        assert len(results) == 3
+        
+        odoo_task = [t for t in results if t["name"] == "Odoo Data Worker"][0]
+        pdf_task = [t for t in results if t["name"] == "PDF Extraction Worker"][0]
+        reconcile_task = [t for t in results if t["name"] == "Reconciliation Worker"][0]
+
+        # Odoo Data Worker should still be deterministic
+        assert odoo_task["execution_mode"] == "deterministic"
+        assert odoo_task["model"] == "none"
+
+        # PDF Extraction Worker should be model/active
+        assert pdf_task["execution_mode"] == "model"
+        assert pdf_task["model"] == "DeepSeek Flash"
+        assert pdf_task["planned_model"] == "DeepSeek Flash"
+        assert pdf_task["model_status"] == "active"
+        assert pdf_task["cost_tier"] == "low"
+        assert pdf_task["provider"] == "Microsoft Foundry"
+        assert pdf_task["deployment"] == "deepseek-v4-flash"
+        assert pdf_task["token_usage"] == {"prompt_tokens": 150, "completion_tokens": 80}
+
+        # Reconciliation Worker should be model/active
+        assert reconcile_task["execution_mode"] == "model"
+        assert reconcile_task["model"] == "Qwen"
+        assert reconcile_task["planned_model"] == "Qwen Max"
+        assert reconcile_task["model_status"] == "active"
+        assert reconcile_task["cost_tier"] == "medium"
+        assert reconcile_task["provider"] == "Microsoft Foundry"
+        assert reconcile_task["deployment"] == "qwen-2-5-72b-instruct-general-chat"
+        assert reconcile_task["token_usage"] == {"prompt_tokens": 450, "completion_tokens": 200}
 
     @pytest.mark.asyncio
     @patch("app.services.model_router.build_foundry_client")
@@ -75,12 +179,15 @@ class TestTaskGraphExecutor:
                 res.scalar_one_or_none = lambda: route
             elif "ai_models" in stmt_str:
                 res.scalar_one_or_none = lambda: model
+                res.first = lambda: None
             elif "ai_providers" in stmt_str:
                 res.scalar_one_or_none = lambda: provider
             elif "ai_connected_accounts" in stmt_str:
                 res.scalars = lambda: MagicMock(all=lambda: [], first=lambda: None)
             elif "ai_memories" in stmt_str:
                 res.scalars = lambda: MagicMock(all=lambda: [])
+            else:
+                res.first = lambda: None
             return res
 
         db.execute = mock_execute

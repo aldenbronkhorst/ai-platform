@@ -526,7 +526,7 @@ async def execute_chat(
                 try:
                     from app.services.task_graph import TaskGraphExecutor
                     executor = TaskGraphExecutor()
-                    subtasks_data = await executor.execute_all(user_query)
+                    subtasks_data = await executor.execute_all(user_query, db=db)
 
                     # Inject subtask results into system prompt
                     subtask_summary = []
