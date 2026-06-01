@@ -261,9 +261,7 @@ async def _execute_tool_call(
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name.startswith("odoo_"):
-        # Log deprecated tool usage
         _log_deprecated_tool(tool_name)
-
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         path = _map_odoo_tool_to_path(tool_name)
         if not path:
@@ -289,6 +287,32 @@ async def _execute_tool_call(
                 "status_code": response.status_code,
                 "connector_error": detail,
                 "error_type": detail.get("error_type") or detail.get("error") or "connector_error",
+                "message": detail.get("message") or detail.get("detail") or str(detail),
+            }
+        return response.json()
+
+    if tool_name in ("azure_cli", "github_cli"):
+        path = _map_odoo_tool_to_path(tool_name)
+        if not path:
+            return {"error_type": "unknown_tool", "tool_name": tool_name}
+        from app.core.config import get_settings
+        settings = get_settings()
+        base_url = f"http://localhost:{os.environ.get('PORT', '8000')}"
+        url = f"{base_url}{path}"
+        payload = {**arguments}
+        headers = {"X-API-Key": settings.api_key, "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+        if response.status_code >= 400:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = {"error_type": "connector_http_error", "message": response.text}
+            return {
+                "error": True,
+                "status_code": response.status_code,
+                "connector_error": detail,
+                "error_type": "cli_error",
                 "message": detail.get("message") or detail.get("detail") or str(detail),
             }
         return response.json()
@@ -545,7 +569,7 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
         "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s line_names=%s",
         query[:80], report_name, date_from, date_to, line_names,
     )
-    return {"tool": "odoo_analyze", "input": {"mode": "account_report", **args}}
+    return {"tool": "odoo_ops_runner", "input": {"mode": "report", **args}}
 
 
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
@@ -646,18 +670,26 @@ def _log_deprecated_tool(tool_name: str):
         logger.warning("Deprecated tool '%s' called — delegate to '%s' instead", tool_name, replacement)
 
 
+def _get_connector_url_for_tool(tool_name: str) -> str:
+    """Return the Odoo Connector URL for Odoo tools, or empty for native tools."""
+    if tool_name.startswith("odoo_"):
+        return ODOO_CONNECTOR_URL
+    return ""
+
+
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     mapping = {
-        # New tool surface (primary)
-        "odoo_health": "/odoo/health/check",
-        "odoo_schema": "/schema/fields",
-        "odoo_query": "/odoo/query/query",
-        "odoo_analyze": "/odoo/analyze/analyze",
-        "odoo_content": "/odoo/content/content",
-        "odoo_attachment": "/odoo/attachment/attachment",
-        "odoo_mutation": "/odoo/mutation/mutation",
-        "odoo_message": "/odoo/message/message",
-        # Legacy tools (deprecated)
+        # Primary consolidated tools
+        "odoo_ops_runner": "/odoo/ops/run",
+        # Legacy individual Odoo tools (still work as compatibility aliases)
+        "odoo_health": "/odoo/ops/run",
+        "odoo_schema": "/odoo/ops/run",
+        "odoo_query": "/odoo/ops/run",
+        "odoo_analyze": "/odoo/ops/run",
+        "odoo_content": "/odoo/ops/run",
+        "odoo_attachment": "/odoo/ops/run",
+        "odoo_mutation": "/odoo/ops/run",
+        "odoo_message": "/odoo/ops/run",
         "odoo_execute_report": "/reports/execute",
         "odoo_list_reports": "/reports/list",
         "odoo_search_read": "/records/search-read",
@@ -666,6 +698,9 @@ def _map_odoo_tool_to_path(tool_name: str) -> str:
         "odoo_attachments_get": "/attachments/get",
         "odoo_messages_list": "/messages/list",
         "odoo_messages_create": "/messages/create",
+        # Native connectors (routed differently)
+        "azure_cli": "/connector/azure/cli",
+        "github_cli": "/connector/github/cli",
     }
     return mapping.get(tool_name, "")
 

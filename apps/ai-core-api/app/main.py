@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import health, audit, artifact, context, job, task, tool, odoo, connected_accounts, chat, ai_config, memory, rules, admin_traces
+from app.routers import health, audit, artifact, context, job, task, tool, odoo, connected_accounts, chat, ai_config, memory, rules, admin_traces, connector_azure, connector_github
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,8 @@ app.include_router(ai_config.router)
 app.include_router(memory.router)
 app.include_router(rules.router)
 app.include_router(admin_traces.router)
+app.include_router(connector_azure.router)
+app.include_router(connector_github.router)
 
 
 @app.get("/")

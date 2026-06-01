@@ -373,11 +373,10 @@ class TestConnectorContext:
         mock_svc.enabled = True
         mock_svc.search_memories = AsyncMock(return_value=[
             {
-                "id": "doc123",
-                "title": "Printer SOP",
-                "chunk_text": "Select tray 2 and downstairs printer",
-                "type": "procedure",
-                "score": 0.95
+                "id": "search_1",
+                "title": "Test Document",
+                "type": "reference",
+                "chunk_text": "This is test content for search injection.",
             }
         ])
         mock_search_svc_cls.return_value = mock_svc
@@ -1020,10 +1019,10 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_query", display_name="Odoo Query",
-                                description="Query Odoo records",
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
                                 target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
                             ),
                         ]
                 return Scalars()
@@ -1055,8 +1054,8 @@ class TestToolExecution:
                             "id": "call_1",
                             "type": "function",
                             "function": {
-                                "name": "odoo_query",
-                                "arguments": '{"model": "res.partner"}',
+                                "name": "odoo_ops_runner",
+                                "arguments": '{"mode": "query", "model": "res.partner"}',
                             },
                         }],
                         "prompt_tokens": 10,
@@ -1086,7 +1085,7 @@ class TestToolExecution:
             assert result["content"] == "I found 5 partners in Odoo."
             assert result["tool_calls"] is not None
             assert len(result["tool_calls"]) == 1
-            assert result["tool_calls"][0]["tool_name"] == "odoo_query"
+            assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
             assert result["total_tokens"] == 43
 
 

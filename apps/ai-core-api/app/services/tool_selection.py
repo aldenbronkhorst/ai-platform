@@ -38,15 +38,34 @@ INTENT_PATTERNS: dict[str, list[re.Pattern]] = {
         re.compile(r"(chatter|message|note|comment|discuss|conversation)\s+(on|for|of)", re.IGNORECASE),
         re.compile(r"post\s+(a\s+)?(note|message|comment)\s+(on|to)", re.IGNORECASE),
     ],
+    "azure_infra": [
+        re.compile(r"(azure|az cli|containerapp|aks|key.vault|service.bus|storage.account|resource.group|cognitive)", re.IGNORECASE),
+        re.compile(r"(deployment|revision|log|metric|quota)\s*(azure|foundry|cognitive)", re.IGNORECASE),
+    ],
+    "github_dev": [
+        re.compile(r"(github|gh|git|repo|commit|pr|pull.request|issue|action|workflow)", re.IGNORECASE),
+        re.compile(r"(run|build|test|deploy|ci/cd|pipeline)\s*(github|action)", re.IGNORECASE),
+    ],
+    "deployment_debug": [
+        re.compile(r"(deployment|release|rollback|incident|outage)\s+(failed|stuck|broken)", re.IGNORECASE),
+        re.compile(r"(why did|what caused|check|investigate)\s+(deploy|build|release)", re.IGNORECASE),
+    ],
 }
 
 # Per-intent allowed tools
+CONSOLIDATED_ODOO = {"odoo_ops_runner"}
+CONSOLIDATED_AZURE = {"azure_cli"}
+CONSOLIDATED_GITHUB = {"github_cli"}
+
 INTENT_TOOL_MAP: dict[str, set[str]] = {
-    "odoo_lookup": {"odoo_query", "odoo_attachment", "odoo_schema", "odoo_health"},
-    "odoo_report": {"odoo_analyze", "odoo_query", "odoo_schema", "odoo_health"},
-    "odoo_mutation": {"odoo_mutation", "odoo_query", "odoo_schema", "odoo_health"},
-    "odoo_chatter": {"odoo_content", "odoo_message", "odoo_query", "odoo_health"},
-    "general_odoo": {"odoo_query", "odoo_schema", "odoo_health"},
+    "odoo_lookup": CONSOLIDATED_ODOO,
+    "odoo_report": CONSOLIDATED_ODOO,
+    "odoo_mutation": CONSOLIDATED_ODOO,
+    "odoo_chatter": CONSOLIDATED_ODOO,
+    "general_odoo": CONSOLIDATED_ODOO,
+    "azure_infra": CONSOLIDATED_AZURE,
+    "github_dev": CONSOLIDATED_GITHUB,
+    "deployment_debug": CONSOLIDATED_AZURE | CONSOLIDATED_GITHUB,
     "general": set(),
 }
 
@@ -54,7 +73,6 @@ CONNECTOR_TOOL_PREFIXES: dict[str, str] = {
     "odoo": "odoo_",
     "github": "github_",
     "azure": "azure_",
-    "microsoft": "ms_",
 }
 
 
@@ -108,12 +126,9 @@ async def get_tool_selection(
     intent = _classify_intent(user_message, task_type, risk_level)
     result.intent = intent
 
-    # Exclude deprecated/legacy tools globally
-    deprecated_prefixes = ("odoo_execute_kw", "odoo_execute_report", "odoo_search_read",
-                          "odoo_attachments_list", "odoo_attachments_get",
-                          "odoo_messages_list", "odoo_messages_create",
-                          "odoo.", "odoo_attach", "odoo.attach")
-    non_deprecated = [t for t in all_tools if not any(t.name.startswith(p) for p in deprecated_prefixes)]
+    # Exclude deprecated/legacy fragmented tools; keep only consolidated ones
+    consolidated_tool_names = {"odoo_ops_runner", "azure_cli", "github_cli"}
+    non_deprecated = [t for t in all_tools if t.name in consolidated_tool_names]
 
     # Apply intent-based selection
     tool_prefix = _get_connector_prefix(user_message, connected_systems)

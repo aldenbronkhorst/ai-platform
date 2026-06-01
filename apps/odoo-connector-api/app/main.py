@@ -13,6 +13,7 @@ from app.routers import attachment as attachment_router
 from app.routers import mutation as mutation_router
 from app.routers import message as message_router
 from app.routers import health_check as health_check_router
+from app.routers import ops_runner as ops_runner_router
 
 settings = get_settings()
 
@@ -67,6 +68,9 @@ app.include_router(content_router.router, prefix="/odoo/content", tags=["Odoo Co
 app.include_router(attachment_router.router, prefix="/odoo/attachment", tags=["Odoo Attachment"])
 app.include_router(mutation_router.router, prefix="/odoo/mutation", tags=["Odoo Mutation"])
 app.include_router(message_router.router, prefix="/odoo/message", tags=["Odoo Message"])
+
+# Odoo operations runner (primary consolidated tool)
+app.include_router(ops_runner_router.router, prefix="/odoo/ops", tags=["Odoo Ops Runner"])
 
 # Register legacy routers (deprecated, will be removed after migration)
 app.include_router(health.router, tags=["Health"])

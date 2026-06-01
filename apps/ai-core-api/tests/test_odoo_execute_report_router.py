@@ -83,8 +83,8 @@ class TestOdooExecuteReportRouterAndReviewer:
         )
         tool = AITool(
             id=uuid4(),
-            name="odoo_analyze",
-            display_name="Odoo Analyze",
+            name="odoo_ops_runner",
+            display_name="Odoo Ops Runner",
             input_schema={}
         )
 
@@ -122,8 +122,8 @@ class TestOdooExecuteReportRouterAndReviewer:
                         "id": "call_pnl_123",
                         "type": "function",
                         "function": {
-                            "name": "odoo_analyze",
-                            "arguments": '{"report_name": "Profit and Loss", "date_from": "2026-05-01", "date_to": "2026-05-31", "line_names": ["Revenue"]}'
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "report", "report_name": "Profit and Loss", "date_from": "2026-05-01", "date_to": "2026-05-31", "line_names": ["Revenue"]}'
                         }
                     }
                 ],
@@ -381,9 +381,9 @@ class TestDetectOdooReportIntent:
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("whats the revenue for this month on p&l report")
         assert result is not None
-        assert result["tool"] == "odoo_analyze"
+        assert result["tool"] == "odoo_ops_runner"
         args = result["input"]
-        assert args["mode"] == "account_report"
+        assert args["mode"] == "report"
         assert args["report_name"] == "Profit and Loss"
         assert "date_from" in args
         assert "date_to" in args
@@ -394,8 +394,8 @@ class TestDetectOdooReportIntent:
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("show trial balance this month")
         assert result is not None
-        assert result["tool"] == "odoo_analyze"
-        assert result["input"]["mode"] == "account_report"
+        assert result["tool"] == "odoo_ops_runner"
+        assert result["input"]["mode"] == "report"
         assert result["input"]["report_name"] == "Trial Balance"
         assert "date_from" in result["input"]
 
