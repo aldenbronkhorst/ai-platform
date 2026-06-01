@@ -470,6 +470,12 @@ async def post_chat_message(
                         "error_type": "review_failed",
                         "error_message": "The response was reviewed and rejected. Please try again.",
                         "technical_detail": f"Review issues: {'; '.join(review.issues)}",
+                        "reviewer_result": {
+                            "approved": review.approved,
+                            "issues": review.issues,
+                            "risk_level": review.risk_level,
+                            "reviewer_notes": review.reviewer_notes,
+                        },
                     },
                 )
     except HTTPException:

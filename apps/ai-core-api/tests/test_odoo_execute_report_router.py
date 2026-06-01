@@ -489,3 +489,130 @@ class TestExecuteChatReportFallback:
         # No dedicated P&L tool should exist
         assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
         assert _map_odoo_tool_to_path("get_revenue_this_month") == ""
+
+
+class TestReviewerFalsePositiveFix:
+    """Tests for Reviewer currency false-positive fix."""
+
+    @pytest.mark.asyncio
+    async def test_report_error_no_money_passes(self):
+        """Report error response with no monetary amount must pass reviewer."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content=(
+                "I reached Odoo, but I could not execute the Profit and Loss report.\n\n"
+                "Reason: Could not execute Odoo account report 'Profit and Loss'. Technical error: 'id'."
+            ),
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_currency_amount_passes(self):
+        """Monetary value with currency symbol must pass."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content="Revenue for June 2026 is R 150,000.00.",
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_amount_without_currency_rejected(self):
+        """Monetary value without currency must be rejected."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content="Revenue for June 2026 is 150,000.00.",
+        ))
+        assert not review.approved
+        assert "currency symbol" in str(review.issues).lower()
+
+    @pytest.mark.asyncio
+    async def test_date_range_does_not_trigger(self):
+        """Date ranges must not trigger missing currency."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content="I checked the Profit and Loss report for 2026-06-01 to 2026-06-30.",
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_report_id_does_not_trigger(self):
+        """Report IDs, line counts, and request IDs must not trigger currency check."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        content = (
+            "Report: Profit and Loss | report_id: 42 | line_count: 5 | "
+            "Request ID: abc123 | error_code: 400"
+        )
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content=content,
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_technical_error_id_not_flagged(self):
+        """Technical error mentioning 'id' must not trigger currency check."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content="Technical error: 'id' while executing report 'Profit and Loss'.",
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_report_unavailable_answer_passes(self):
+        """Report unavailable answer with no amount must pass."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content=(
+                "I reached Odoo, but could not execute the report. "
+                "The report engine encountered an internal issue. "
+                "This usually means the report could not be resolved or executed "
+                "with the current Odoo account."
+            ),
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
+    async def test_reviewer_diagnostics_included(self):
+        """Reviewer rejection must include matched amounts in reviewer_notes."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="what is the revenue",
+            content="The revenue is 50000 for this month.",
+        ))
+        assert not review.approved
+        assert review.reviewer_notes is not None
+        assert "50000" in review.reviewer_notes
+
+    @pytest.mark.asyncio
+    async def test_successful_report_with_zar_passes(self):
+        """Successful report result with ZAR currency must pass reviewer."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question="whats the revenue on p&l report",
+            content="Revenue: R 150,000.00 for June 2026.",
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"

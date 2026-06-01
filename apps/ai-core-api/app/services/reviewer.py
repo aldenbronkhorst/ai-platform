@@ -18,8 +18,26 @@ FINANCE_KEYWORDS = [
     "p&l", "pnl", "financial", "budget", "forecast", "audit",
 ]
 
-CURRENCY_PATTERN = re.compile(r'\$\s*\d+[\d,.]*', re.IGNORECASE)
-AMOUNT_PATTERN = re.compile(r'[RZ€£]\s*\d+[\d,.]*|\d+[\d,.]*\s*(ZAR|USD|EUR|GBP|R)', re.IGNORECASE)
+# Matches $ symbol immediately before a number
+DOLLAR_PATTERN = re.compile(r'\$\s*\d+[\d,.]*', re.IGNORECASE)
+
+# Matches currency symbols/codes: R 123, ZAR 123, 123 ZAR, €123, etc.
+CURRENCY_PATTERN = re.compile(
+    r'(?:[RZ€£])\s*\d+[\d,.]*'        # R 123, Z 123, €123, £123
+    r'|\d+[\d,.]*\s*(?:ZAR|USD|EUR|GBP|R)',  # 123 ZAR, 123.45 USD
+    re.IGNORECASE,
+)
+
+# Finance words that indicate a number nearby is monetary.
+# Allows optional words between the keyword and the number.
+FINANCE_NEAR_NUMBER = re.compile(
+    r'\b(?:revenue|income|expense|profit|loss|balance|invoice|payment|'
+    r'amount|total|cost|price|tax|vat|net|gross|value|'
+    r'debit|credit|receivable|payable|sales|turnover)'
+    r'(?:\s+\w+){0,4}\s*'
+    r'[:\s]*\d+[\d,.]*',
+    re.IGNORECASE,
+)
 
 
 class ReviewerAgent:
@@ -46,11 +64,13 @@ class ReviewerAgent:
             )
 
         # 2. Finance-specific checks
+        matched_amounts: list[str] = []
+        currency_matches: list[str] = []
         if self._is_finance_question(request.user_question):
             risk = "medium"
 
-            # Check for dollar assumptions
-            dollar_matches = CURRENCY_PATTERN.findall(content)
+            # Check for raw '$' usage (without currency code context)
+            dollar_matches = DOLLAR_PATTERN.findall(content)
             if dollar_matches:
                 issues.append(
                     f"Response uses '$' which may be incorrect without confirmed USD source "
@@ -58,9 +78,13 @@ class ReviewerAgent:
                 )
                 changes.append("Verify the source currency before using '$'")
 
-            # Check that financial values have currency context
-            if self._has_financial_amounts(content):
-                if not dollar_matches and not AMOUNT_PATTERN.search(content):
+            # Check for monetary amounts with currency context
+            currency_matches = CURRENCY_PATTERN.findall(content)
+            matched_amounts = FINANCE_NEAR_NUMBER.findall(content)
+
+            has_monetary_amount = bool(currency_matches or matched_amounts)
+            if has_monetary_amount:
+                if not currency_matches:
                     issues.append("Financial values present but no currency symbol detected")
                     changes.append("Add currency prefix/suffix to financial values")
                 risk = "high"
@@ -77,10 +101,17 @@ class ReviewerAgent:
                 changes.append("Verify all data points against tool output")
 
         approved = len(issues) == 0
+        reviewer_notes_parts = issues[:]
+        if matched_amounts:
+            reviewer_notes_parts.append(f"matched_amounts={matched_amounts[:5]}")
+        if currency_matches:
+            reviewer_notes_parts.append(f"currency_matches={currency_matches[:5]}")
+        reviewer_notes = "; ".join(reviewer_notes_parts) if reviewer_notes_parts else None
+
         if not approved:
             logger.info(
-                "Reviewer rejected | issues=%d risk=%s content_len=%d",
-                len(issues), risk, len(content),
+                "Reviewer rejected | issues=%d risk=%s matched_amounts=%s currency=%s",
+                len(issues), risk, matched_amounts[:5], currency_matches[:5],
             )
 
         return ReviewResult(
@@ -88,7 +119,7 @@ class ReviewerAgent:
             issues=issues,
             required_changes=changes,
             risk_level=risk,
-            reviewer_notes="; ".join(issues) if issues else None,
+            reviewer_notes=reviewer_notes,
         )
 
     def _is_finance_question(self, question: str) -> bool:
@@ -98,8 +129,16 @@ class ReviewerAgent:
         return any(kw in q for kw in FINANCE_KEYWORDS)
 
     def _has_financial_amounts(self, content: str) -> bool:
-        """Check if content contains numeric amounts that look financial."""
-        return bool(re.search(r'\b\d+[\d,]*\.?\d{0,2}\b', content))
+        """Check if content contains numeric amounts that look financial.
+        
+        Only flags amounts that are:
+        - Preceded by a currency symbol (R, $, €, £)
+        - Followed by a currency code (ZAR, USD, EUR, GBP, R)
+        - Immediately preceded by a finance keyword (revenue, amount, total, etc.)
+        
+        Does NOT flag dates, years, IDs, error messages, report IDs, etc.
+        """
+        return bool(CURRENCY_PATTERN.search(content) or FINANCE_NEAR_NUMBER.search(content))
 
     def _addresses_question(self, content: str, question: str) -> bool:
         if not question or not content:
