@@ -16,11 +16,17 @@ echo "Seeding initial data..."
 set +e
 PYTHONPATH=/app python3 scripts/seed_providers.py
 SEED_EXIT=$?
-set -e
 if [ $SEED_EXIT -ne 0 ]; then
-  echo "Seed failed (exit $SEED_EXIT) but continuing; will retry on next restart"
+  echo "Seed providers failed (exit $SEED_EXIT) but continuing; will retry on next restart"
   python3 -c "import sys; print('sys.path:', sys.path); import os; print('cwd:', os.getcwd()); print('app dir exists:', os.path.isdir('/app/app'))"
 fi
+echo "Seeding tools..."
+PYTHONPATH=/app python3 scripts/seed_tools.py
+TOOL_SEED_EXIT=$?
+if [ $TOOL_SEED_EXIT -ne 0 ]; then
+  echo "Seed tools failed (exit $TOOL_SEED_EXIT) but continuing; will retry on next restart"
+fi
+set -e
 
 echo "Ensuring system prompt is up-to-date..."
 set +e
