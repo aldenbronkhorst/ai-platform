@@ -294,18 +294,42 @@ async def _execute_tool_call(
 
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     """Build a fallback user-facing answer from odoo_execute_report tool results.
-    Used when the model produces blank content after a report tool call."""
+    Used when the model produces blank content after a report tool call.
+    All user-facing strings are clean — no raw dicts or Python repr."""
     for tr in tool_results:
-        if tr.get("tool_name") != "odoo_execute_report":
+        if tr.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports"):
             continue
         result = tr.get("result", {})
         if isinstance(result, dict) and result.get("error"):
-            err = result.get("connector_error") or result
-            err_type = err.get("error_type") or err.get("error") or "unknown"
-            err_msg = err.get("message") or str(err)
+            connector_err = result.get("connector_error") or result
+            detail = connector_err.get("detail", connector_err) if isinstance(connector_err, dict) else {}
+            raw_message = detail.get("message") or detail.get("detail") or connector_err.get("message") or str(connector_err)
+            err_type = (
+                detail.get("error_type")
+                or (detail.get("error") if isinstance(detail.get("error"), str) else None)
+                or connector_err.get("error_type")
+                or "report_error"
+            )
+
+            if err_type == "report_not_found":
+                report_name = tr.get("arguments", {}).get("report_name", "unknown")
+                return (
+                    f"I could not find a report named \"{report_name}\" in Odoo. "
+                    f"This may be because the report module is not installed or the name is different. "
+                    f"Try using the report discovery tool to list available reports."
+                )
+            if "Technical error" in raw_message:
+                return (
+                    f"I reached Odoo, but could not execute the report. "
+                    f"The report engine encountered an internal issue: {raw_message}. "
+                    f"This usually means the report could not be resolved or executed "
+                    f"with the current Odoo account. Please check Accounting report access, "
+                    f"Odoo edition/version, or use the report discovery diagnostic "
+                    f"to confirm the available report names."
+                )
             return (
-                f"I tried to run the Odoo report but encountered an issue. "
-                f"The report engine returned: {err_msg}. "
+                f"I reached Odoo, but could not execute the report. "
+                f"Reason: {raw_message}. "
                 f"This may be due to report permissions, Odoo edition/version differences, "
                 f"or unsupported report options."
             )
@@ -353,6 +377,7 @@ def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     mapping = {
         "odoo_execute_report": "/reports/execute",
+        "odoo_list_reports": "/reports/list",
         "odoo_search_read": "/records/search-read",
         "odoo_execute_kw": "/execute-kw/",
         "odoo_schema": "/schema/fields",

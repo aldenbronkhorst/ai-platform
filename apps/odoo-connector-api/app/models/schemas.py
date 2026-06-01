@@ -149,3 +149,9 @@ class OdooExecuteReportRequest(BaseModel):
     lang: Optional[str] = None
     line_names: Optional[list[str]] = None
     include_raw_lines: bool = False
+
+
+class OdooListReportsRequest(BaseModel):
+    credentials: OdooCredentialsRequest
+    query: Optional[str] = None
+    limit: int = 100

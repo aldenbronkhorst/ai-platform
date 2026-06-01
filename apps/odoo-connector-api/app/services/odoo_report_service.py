@@ -1,10 +1,39 @@
 import logging
 from typing import Optional, Any, List, Dict
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from app.core.odoo_client import OdooClient
 from app.models.schemas import OdooExecuteReportRequest
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_report_id(record: dict[str, Any], index: int = 0) -> int:
+    """Safely extract numeric report ID from an account.report search result.
+    Raises HTTPException with structured error if id is missing or invalid."""
+    rid = record.get("id")
+    if rid is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "report_resolution_invalid_shape",
+                "message": "Odoo returned an account.report record without an id field.",
+                "record_index": index,
+                "record_keys": list(record.keys()),
+                "record_sample": {k: record.get(k) for k in list(record.keys())[:5]},
+            },
+        )
+    try:
+        return int(rid)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "report_resolution_invalid_shape",
+                "message": f"Odoo account.report record has non-numeric id: {rid!r}.",
+                "record_index": index,
+                "record_id_raw": str(rid),
+            },
+        )
 
 
 class OdooReportService:
@@ -108,39 +137,47 @@ class OdooReportService:
         try:
             # Step 1. Resolve account.report by ID or name with ambiguity checks
             if not report_id:
-                # Exact search
                 exact_res = self.client.search_read(
                     model="account.report",
                     domain=[["name", "=", report_name]],
                     fields=["id", "name"]
+                ) or []
+                logger.info(
+                    "Odoo report exact search result | report_name=%s result_count=%d sample=%s",
+                    report_name, len(exact_res), exact_res[:3],
                 )
                 if len(exact_res) == 1:
-                    report_id = exact_res[0]["id"]
+                    report_id = _extract_report_id(exact_res[0], 0)
                 elif len(exact_res) > 1:
                     raise HTTPException(
                         status_code=400,
                         detail={
                             "error": "report_ambiguity",
                             "message": f"Multiple reports exactly match the name '{report_name}'. Please specify exact report ID.",
-                            "candidates": exact_res
+                            "candidates": exact_res,
+                            "available_report_names": [r.get("name") for r in exact_res if r.get("name")],
                         }
                     )
                 else:
-                    # Fuzzy search
                     fuzzy_res = self.client.search_read(
                         model="account.report",
                         domain=[["name", "ilike", report_name]],
                         fields=["id", "name"]
+                    ) or []
+                    logger.info(
+                        "Odoo report fuzzy search result | report_name=%s result_count=%d sample=%s",
+                        report_name, len(fuzzy_res), fuzzy_res[:5],
                     )
                     if len(fuzzy_res) == 1:
-                        report_id = fuzzy_res[0]["id"]
+                        report_id = _extract_report_id(fuzzy_res[0], 0)
                     elif len(fuzzy_res) > 1:
                         raise HTTPException(
                             status_code=400,
                             detail={
                                 "error": "report_ambiguity",
                                 "message": f"Multiple reports partially match the name '{report_name}'. Please specify exact report ID.",
-                                "candidates": fuzzy_res
+                                "candidates": fuzzy_res,
+                                "available_report_names": [r.get("name") for r in fuzzy_res if r.get("name")],
                             }
                         )
                     else:
@@ -149,7 +186,8 @@ class OdooReportService:
                             detail={
                                 "error": "report_not_found",
                                 "message": f"No official Odoo report matching name '{report_name}' was found.",
-                                "attempted_report_name": report_name
+                                "attempted_report_name": report_name,
+                                "available_report_names": [r.get("name") for r in exact_res if r.get("name")],
                             }
                         )
 

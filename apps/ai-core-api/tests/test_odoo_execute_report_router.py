@@ -292,7 +292,7 @@ class TestReportFallbackAnswer:
             }},
         ])
         assert result is not None
-        assert "report" in result.lower() and "issue" in result.lower()
+        assert "report" in result.lower() and "could not find" in result.lower()
 
     def test_fallback_ignores_non_report_tools(self):
         from app.services.model_router import _build_report_fallback_answer
@@ -316,6 +316,61 @@ class TestReviewerBlankCheck:
             tool_results=[{"tool_name": "odoo_execute_report", "result": {"error": True}}],
         ))
         assert not review.approved
+
+
+class TestReportDiscovery:
+    """Tests for Fix 2: Generic report discovery."""
+
+    def test_odoo_list_reports_tool_mapped(self):
+        """odoo_list_reports must map to /reports/list endpoint."""
+        from app.services.model_router import _map_odoo_tool_to_path
+        assert _map_odoo_tool_to_path("odoo_list_reports") == "/reports/list"
+        # No dedicated P&L tool
+        assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
+
+
+class TestCleanFallback:
+    """Tests for Fix 4: Clean user-facing fallback errors."""
+
+    def test_fallback_no_raw_dicts(self):
+        """Fallback answer must never contain raw dict repr."""
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_execute_report", "result": {
+                "error": True,
+                "connector_error": {
+                    "detail": {
+                        "error": "report_unavailable",
+                        "message": "Could not execute Odoo account report 'Profit and Loss'.",
+                    },
+                },
+            }},
+        ])
+        assert result is not None
+        # Must not contain raw Python dict formatting
+        assert "{'detail'" not in result
+        assert "{" not in result
+        assert "odoo" in result.lower()
+        assert "could not execute" in result.lower()
+
+    def test_fallback_technical_error_clean(self):
+        """Technical error with 'id' must produce clean message."""
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_execute_report", "result": {
+                "error": True,
+                "connector_error": {
+                    "detail": {
+                        "error": "report_unavailable",
+                        "message": "Could not execute Odoo account report 'Profit and Loss'. Technical error: 'id'",
+                    },
+                },
+            }},
+        ])
+        assert result is not None
+        assert "{'detail'" not in result
+        assert "Technical error" in result
+        assert "'id'" in result
 
 
 class TestExecuteChatReportFallback:
