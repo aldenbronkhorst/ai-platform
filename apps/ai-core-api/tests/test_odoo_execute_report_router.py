@@ -381,8 +381,9 @@ class TestDetectOdooReportIntent:
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("whats the revenue for this month on p&l report")
         assert result is not None
-        assert result["tool"] == "odoo_execute_report"
+        assert result["tool"] == "odoo_analyze"
         args = result["input"]
+        assert args["mode"] == "account_report"
         assert args["report_name"] == "Profit and Loss"
         assert "date_from" in args
         assert "date_to" in args
@@ -393,7 +394,8 @@ class TestDetectOdooReportIntent:
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("show trial balance this month")
         assert result is not None
-        assert result["tool"] == "odoo_execute_report"
+        assert result["tool"] == "odoo_analyze"
+        assert result["input"]["mode"] == "account_report"
         assert result["input"]["report_name"] == "Trial Balance"
         assert "date_from" in result["input"]
 

@@ -261,6 +261,9 @@ async def _execute_tool_call(
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name.startswith("odoo_"):
+        # Log deprecated tool usage
+        _log_deprecated_tool(tool_name)
+
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         path = _map_odoo_tool_to_path(tool_name)
         if not path:
@@ -421,7 +424,7 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
         "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s line_names=%s",
         query[:80], report_name, date_from, date_to, line_names,
     )
-    return {"tool": "odoo_execute_report", "input": args}
+    return {"tool": "odoo_analyze", "input": {"mode": "account_report", **args}}
 
 
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
@@ -506,13 +509,38 @@ def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     return None
 
 
+DEPRECATED_TOOL_ALIASES: dict[str, str] = {
+    "odoo_search_read": "odoo_query",
+    "odoo_execute_report": "odoo_analyze",
+    "odoo_attachments_list": "odoo_query",
+    "odoo_attachments_get": "odoo_attachment",
+    "odoo_messages_list": "odoo_content",
+    "odoo_messages_create": "odoo_message",
+}
+
+
+def _log_deprecated_tool(tool_name: str):
+    replacement = DEPRECATED_TOOL_ALIASES.get(tool_name)
+    if replacement:
+        logger.warning("Deprecated tool '%s' called — delegate to '%s' instead", tool_name, replacement)
+
+
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     mapping = {
+        # New tool surface (primary)
+        "odoo_health": "/odoo/health/check",
+        "odoo_schema": "/schema/fields",
+        "odoo_query": "/odoo/query/query",
+        "odoo_analyze": "/odoo/analyze/analyze",
+        "odoo_content": "/odoo/content/content",
+        "odoo_attachment": "/odoo/attachment/attachment",
+        "odoo_mutation": "/odoo/mutation/mutation",
+        "odoo_message": "/odoo/message/message",
+        # Legacy tools (deprecated)
         "odoo_execute_report": "/reports/execute",
         "odoo_list_reports": "/reports/list",
         "odoo_search_read": "/records/search-read",
         "odoo_execute_kw": "/execute-kw/",
-        "odoo_schema": "/schema/fields",
         "odoo_attachments_list": "/attachments/list",
         "odoo_attachments_get": "/attachments/get",
         "odoo_messages_list": "/messages/list",
@@ -629,30 +657,46 @@ async def execute_chat(
             )
             if has_report_tool:
                 system_prompt += (
-                    "\n\n### Report Tool Guidance\n"
-                    "When the user asks about financial reports, use `odoo_execute_report`. "
-                    "Resolve report aliases into the full report name:\n"
-                    "  - \"P&L\" or \"PNL\" → \"Profit and Loss\"\n"
-                    "  - \"Balance Sheet\" → \"Balance Sheet\"\n"
-                    "  - \"Trial Balance\" → \"Trial Balance\"\n"
-                    "  - \"Aged Receivables\" / \"AR\" → \"Aged Receivables\"\n"
-                    "  - \"Aged Payables\" / \"AP\" → \"Aged Payables\"\n"
+                    "\n\n### Odoo Tool Guidance\n"
+                    "Use these mode-based Odoo tools. Do not create or call one-off tools for "
+                    "individual reports, document types, customers, suppliers, or business questions.\n\n"
+                    "  - **odoo_health**: Verify connection/runtime status.\n"
+                    "  - **odoo_schema**: When unsure about models or fields.\n"
+                    "  - **odoo_query**: Normal record search/read/count/summary. "
+                    "Default to records mode with domain filters. Use count for totals. "
+                    "Use summary for count + sample. "
+                    "Do not request body/content/binary fields — use odoo_content instead.\n"
+                    "  - **odoo_analyze**: Aggregates, pivots, and account reports. "
+                    "Use mode=\"account_report\" with report_name for financial reports. "
+                    "P&L/PNL → \"Profit and Loss\". "
+                    "Include line_names for specific lines (e.g., [\"Revenue\", \"Income\"]). "
+                    "Resolve date phrases into YYYY-MM-DD values.\n"
+                    "  - **odoo_content**: Chatter, notes, HTML/body fields, long text. "
+                    "Use metadata mode first to find relevant records, then content mode "
+                    "with specific IDs to read full content.\n"
+                    "  - **odoo_attachment**: Attachment metadata, links, text, OCR, base64. "
+                    "Use odoo_query on ir.attachment for discovery, then odoo_attachment for reading.\n"
+                    "  - **odoo_mutation**: Structured create/write/delete/workflow. "
+                    "Delete and workflow default to dry_run=true.\n"
+                    "  - **odoo_message**: Chatter/Discuss message posting.\n"
+                    "  - **odoo_execute_kw**: Advanced escape hatch only. Disabled by default.\n\n"
+                    "**Report alias reference:**\n"
+                    "  - \"P&L\" / \"PNL\" → \"Profit and Loss\"\n"
+                    "  - \"Balance Sheet\" / \"BS\" → \"Balance Sheet\"\n"
+                    "  - \"Trial Balance\" / \"TB\" → \"Trial Balance\"\n"
                     "  - \"General Ledger\" / \"GL\" → \"General Ledger\"\n"
                     "  - \"Partner Ledger\" → \"Partner Ledger\"\n"
+                    "  - \"Aged Receivables\" / \"AR\" → \"Aged Receivables\"\n"
+                    "  - \"Aged Payables\" / \"AP\" → \"Aged Payables\"\n"
                     "  - \"Tax Report\" → \"Tax Report\"\n"
-                    "Resolve date phrases into actual dates:\n"
-                    "  - \"this month\" → first day of current month to today/last day\n"
-                    "  - \"last month\" → first to last day of previous month\n"
-                    "  - \"this year\" → Jan 1 to today\n"
-                    "  - \"last year\" → Jan 1 to Dec 31 of previous year\n"
-                    "  - \"Q1\" / \"first quarter\" → Jan 1 to Mar 31\n"
-                    "Resolve line targets into candidate line names:\n"
-                    "  - \"revenue\" → [\"Revenue\", \"Income\", \"Operating Income\", \"Sales\"]\n"
-                    "  - \"expenses\" → [\"Expenses\", \"Operating Expenses\", \"Cost of Goods Sold\", \"COGS\"]\n"
-                    "  - \"net income\" → [\"Net Income\", \"Net Profit\", \"Profit/Loss\"]\n"
-                    "  - \"gross profit\" → [\"Gross Profit\", \"Gross Margin\"]\n"
-                    "Always provide `line_names` when asking about specific line items."
-                    " If unsure about line names, omit `line_names` to get all available lines."
+                    "**Date resolution:** \"this month\" → first day to today; "
+                    "\"last month\" → previous month; "
+                    "\"this year\" → Jan 1 to today; "
+                    "\"last year\" → Jan 1 to Dec 31.\n"
+                    "**Line name candidates:** revenue → [Revenue, Income, Sales]; "
+                    "expenses → [Expenses, Operating Expenses, COGS]; "
+                    "net income → [Net Profit, Net Income]; "
+                    "gross profit → [Gross Profit, Gross Margin]."
                 )
 
     # Inject business rules and company facts into the system prompt
@@ -1055,7 +1099,7 @@ async def execute_chat(
                     user_id, report_intent,
                 )
                 try:
-                    tc_result = await _execute_tool_call(db, user_id, "odoo_execute_report", report_intent["input"])
+                    tc_result = await _execute_tool_call(db, user_id, "odoo_analyze", report_intent["input"])
                     dr_tool_results = [{
                         "tool_call_id": "deterministic_report",
                         "tool_name": "odoo_execute_report",
