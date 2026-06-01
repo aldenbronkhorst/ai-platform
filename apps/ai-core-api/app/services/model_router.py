@@ -392,6 +392,127 @@ def _detect_line_names(query: str) -> Optional[list[str]]:
     return list(matched) if matched else None
 
 
+ODOO_LOOKUP_PATTERNS: list[tuple[re.Pattern, str, dict[str, Any]]] = [
+    # "latest posted bills" / "posted bills" / "vendor bills"
+    (re.compile(r'(latest\s+)?(posted\s+)?(vendor\s+)?(bill|bills|invoice|invoices)\s*', re.IGNORECASE), "bills", {
+        "model": "account.move",
+        "domain": [["move_type", "in", ["in_invoice", "in_receipt"]], ["state", "=", "posted"]],
+        "order": "invoice_date desc",
+        "limit": 10,
+    }),
+    # "credit note" / "credit notes" / "refund" for a partner
+    (re.compile(r'(credit\s+note|credit\s+notes|refund)\s*(for|from|of)?\s*(.+?)(\?|$)', re.IGNORECASE), "credit_note", {
+        "model": "account.move",
+        "domain": [["move_type", "in", ["out_refund", "in_refund"]]],
+        "order": "invoice_date desc",
+        "limit": 10,
+    }),
+    # generic "find X" / "search for X" / "do you see X"
+    (re.compile(r'(find|search|see|locate|look\s+(for|up))\s+(.+?)(\?|$)', re.IGNORECASE), "generic_search", {}),
+    # attachment pattern: "attachments" / "PDF" / "files" on a record
+    (re.compile(r'(attachment|pdf|file|document)s?\s*(on|for|attached|of)?', re.IGNORECASE), "attachment_check", {}),
+]
+
+
+def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
+    """Detect common Odoo lookup patterns and return deterministic actions.
+    
+    Returns a dict with the tool calls to execute, or None if query is not
+    a detectable Odoo lookup pattern.
+    """
+    if not query:
+        return None
+    q = query.strip()
+
+    # Check for credit-note + partner pattern
+    cn_match = re.search(r'(credit\s+note|credit\s+notes|refund)\s*(?:for|from|of)?\s*(.+?)(?:\?|$|\s+with|\s+that|\s+attached)', q, re.IGNORECASE)
+    if cn_match:
+        partner_hint = cn_match.group(2).strip().rstrip("?.!")
+        if partner_hint and not partner_hint.lower().startswith(("the ", "a ", "an ", "this ", "that ")):
+            return {
+                "reason": f"Found explicit credit-note + partner query for '{partner_hint}'",
+                "actions": [
+                    {
+                        "tool": "odoo_query",
+                        "input": {
+                            "mode": "records",
+                            "model": "account.move",
+                            "domain": [
+                                ["move_type", "in", ["out_refund", "in_refund"]],
+                                "|",
+                                ["partner_id.name", "ilike", partner_hint],
+                                ["partner_id.display_name", "ilike", partner_hint],
+                            ],
+                            "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type", "ref"],
+                            "order": "invoice_date desc",
+                            "limit": 10,
+                        },
+                    },
+                ],
+            }
+        # Credit note without explicit partner
+        return {
+            "reason": "Found credit-note query (no explicit partner)",
+            "actions": [
+                {
+                    "tool": "odoo_query",
+                    "input": {
+                        "mode": "records",
+                        "model": "account.move",
+                        "domain": [["move_type", "in", ["out_refund", "in_refund"]]],
+                        "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type"],
+                        "order": "invoice_date desc",
+                        "limit": 10,
+                    },
+                },
+            ],
+        }
+
+    # Check for bill/invoice search
+    bill_match = re.search(r'(?:latest\s+|posted\s+|vendor\s+)?(?:bill|bills|invoice|invoices)(?:\s|$|for|from)', q, re.IGNORECASE)
+    if bill_match:
+        partner_hint2 = None
+        for prefix in ["for ", "from ", "by "]:
+            idx = q.lower().find(prefix)
+            if idx >= 0:
+                partner_hint2 = q[idx + len(prefix):].strip().rstrip("?.!")
+                break
+        domain = [["move_type", "in", ["in_invoice", "in_receipt"]], ["state", "=", "posted"]]
+        if partner_hint2 and len(partner_hint2) > 2:
+            domain = [
+                ["move_type", "in", ["in_invoice", "in_receipt"]],
+                ["state", "=", "posted"],
+                "|",
+                ["partner_id.name", "ilike", partner_hint2],
+                ["partner_id.display_name", "ilike", partner_hint2],
+            ]
+        return {
+            "reason": f"Found bill/invoice query{' for ' + partner_hint2 if partner_hint2 else ''}",
+            "actions": [
+                {
+                    "tool": "odoo_query",
+                    "input": {
+                        "mode": "records",
+                        "model": "account.move",
+                        "domain": domain,
+                        "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type"],
+                        "order": "invoice_date desc",
+                        "limit": 10,
+                    },
+                },
+            ],
+        }
+
+    # Check for attachment pattern on a known record
+    attach_match = re.search(r'(?:attachment|pdf|file|document)s?\s*(?:on|for|attached|of)?\s*(.+?)(?:\?|$)', q, re.IGNORECASE)
+    if attach_match and "attachment" in q.lower() or "pdf" in q.lower() or "attached" in q.lower():
+        # If we're asking about attachments, we need to first find the record
+        # This is handled by the model, not deterministically
+        pass
+
+    return None
+
+
 def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
     """Detect a generic Odoo report intent from a user query.
     
@@ -648,14 +769,14 @@ async def execute_chat(
         tools = await _get_available_tools(db, user_id)
         tool_definitions = _build_tool_definitions(tools)
         if tool_definitions:
-            has_report_tool = any(t.name == "odoo_execute_report" for t in tools)
+            has_odoo_tools = any(t.name.startswith("odoo_") for t in tools)
             system_prompt += (
                 "\n\nYou have access to the following tools. "
                 "When the user asks about data from a connected system, call the appropriate tool "
                 "rather than saying you cannot access it. "
                 "Use tools proactively when relevant."
             )
-            if has_report_tool:
+            if has_odoo_tools:
                 system_prompt += (
                     "\n\n### Odoo Tool Guidance\n"
                     "Use these mode-based Odoo tools. Do not create or call one-off tools for "
@@ -983,62 +1104,73 @@ async def execute_chat(
         raw_message = result.get("message", "Provider returned an error")
         status_code = result.get("status_code", 0)
 
-        # Structured logging for developer debugging
         logger.error(
-            "Provider call failed | provider=%s model=%s deployment=%s "
+            "Provider call failed | primary_model=%s primary_provider=%s "
+            "used_model=%s used_provider=%s "
             "error_type=%s status_code=%s raw_message=%s "
+            "fallback_used=%s fallback_model=%s "
             "user_id=%s chat_session_id=%s tools_enabled=%s",
-            used_provider.name,
+            model_obj.display_name,
+            provider.name,
             used_model.display_name,
-            used_model.deployment_name,
+            used_provider.name,
             error_type,
             status_code,
             raw_message,
+            fallback_used,
+            fallback_model_display,
             user_id,
             chat_session_id,
             bool(tool_definitions),
         )
 
-        user_facing = {
-            "rate_limit_exceeded": (
-                "The AI service is temporarily unavailable because the model "
-                "quota or rate limit has been reached. "
-                "Please try again shortly, or contact support if this continues."
-            ),
-            "quota_exceeded": (
-                "The AI service is temporarily unavailable because the model "
-                "quota or rate limit has been reached. "
-                "Please try again shortly, or contact support if this continues."
-            ),
-            "authentication_error": (
-                "The AI service is unavailable due to an authentication issue. "
-                "Please contact support."
-            ),
-            "authorization_error": (
-                "The AI service is unavailable due to an authorization issue. "
-                "Please contact support."
-            ),
-            "model_not_found": (
-                "The configured AI model could not be found. "
-                "Please contact support."
-            ),
-            "server_error": (
+        if error_type in ("rate_limit_exceeded", "quota_exceeded"):
+            if fallback_used:
+                user_facing = (
+                    f"The AI service is temporarily unavailable because all models "
+                    f"reached their quota or rate limit. "
+                    f"Tried: {primary_model_display} (primary) and {fallback_model_display} (fallback). "
+                    f"Please try again shortly, or contact support if this continues."
+                )
+            else:
+                fb_note = f" (fallback model: {fallback_model_display})" if fallback_model_display != "none" else ""
+                user_facing = (
+                    f"The AI service is temporarily unavailable because the model "
+                    f"quota or rate limit has been reached. "
+                    f"Primary: {primary_model_display}{fb_note}. "
+                    f"Please try again shortly, or contact support if this continues."
+                )
+        else:
+            user_facing = {
+                "authentication_error": (
+                    "The AI service is unavailable due to an authentication issue. "
+                    "Please contact support."
+                ),
+                "authorization_error": (
+                    "The AI service is unavailable due to an authorization issue. "
+                    "Please contact support."
+                ),
+                "model_not_found": (
+                    "The configured AI model could not be found. "
+                    "Please contact support."
+                ),
+                "server_error": (
+                    "The AI service is temporarily unavailable. "
+                    "Please try again shortly, or contact support if this continues."
+                ),
+                "bad_request": (
+                    "The AI service received an invalid request. "
+                    "Please try again, or contact support if this continues."
+                ),
+            }.get(error_type, (
                 "The AI service is temporarily unavailable. "
                 "Please try again shortly, or contact support if this continues."
-            ),
-            "bad_request": (
-                "The AI service received an invalid request. "
-                "Please try again, or contact support if this continues."
-            ),
-        }.get(error_type, (
-            "The AI service is temporarily unavailable. "
-            "Please try again shortly, or contact support if this continues."
-        ))
+            ))
 
         raise ProviderCallError(
             user_facing,
-            provider.name,
-            model_obj.display_name,
+            used_provider.name,
+            used_model.display_name,
         )
 
     context_metadata = {
