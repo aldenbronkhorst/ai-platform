@@ -778,74 +778,61 @@ async def execute_chat(
     if connector_context:
         system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
 
-    # Fetch available tools for connected systems
+    # Fetch available tools for connected systems using generic ToolSelectionService
     tools: list[AITool] = []
     tool_definitions: list[dict[str, Any]] = []
+    tool_selection_result = None
     supports_tools = model_obj.supports_tools == "true"
     if supports_tools:
-        all_tools = await _get_available_tools(db, user_id)
-        # Dynamic tool exposure: for simple Odoo lookup queries, expose only
-        # the relevant Odoo primitives — not all tools or deprecated ones.
-        odoo_lookup_phrases = [
-            "check odoo", "odoo", "credit note", "find", "search", "look up",
-            "attachment", "pdf", "bill", "invoice",
-        ]
-        is_odoo_lookup = any(p in user_msg_text.lower() for p in odoo_lookup_phrases)
-        if is_odoo_lookup and not is_finance_topic:
-            odoo_relevant = {"odoo_query", "odoo_attachment", "odoo_schema", "odoo_health"}
-            tools = [t for t in all_tools if t.name in odoo_relevant]
-            logger.info(
-                "Dynamic tool exposure for Odoo lookup | user_id=%s tools=%s",
-                user_id, [t.name for t in tools],
-            )
-        else:
-            # Exclude deprecated tools (legacy names still registered)
-            deprecated_names = {
-                "odoo_execute_report", "odoo_search_read", "odoo_execute_kw",
-                "odoo_attachments_list", "odoo_attachments_get",
-                "odoo_messages_list", "odoo_messages_create",
-            }
-            tools = [t for t in all_tools if t.name not in deprecated_names]
-
+        from app.services.tool_selection import get_tool_selection
+        tool_selection_result = await get_tool_selection(
+            db, user_id, user_msg_text, task_type, risk_level,
+        )
+        tools = tool_selection_result.selected
         tool_definitions = _build_tool_definitions(tools)
+        if tool_selection_result.selected:
+            logger.info(
+                "Tool selection | intent=%s selected=%d excluded=%d schema_before=%d schema_after=%d reason=%s",
+                tool_selection_result.intent,
+                len(tool_selection_result.selected),
+                len(tool_selection_result.excluded),
+                tool_selection_result.schema_size_before,
+                tool_selection_result.schema_size_after,
+                tool_selection_result.selection_reason,
+            )
         if tool_definitions:
-            has_odoo_tools = any(t.name.startswith("odoo_") for t in tools)
+            avail_names = [t.name for t in tools]
             system_prompt += (
                 "\n\nYou have access to the following tools. "
                 "When the user asks about data from a connected system, call the appropriate tool "
                 "rather than saying you cannot access it. "
                 "Use tools proactively when relevant."
             )
-            if has_odoo_tools:
-                avail_names = [t.name for t in tools]
-                guidance = (
-                    "\n\n### Odoo Tool Guidance\n"
-                    "Use these mode-based Odoo tools. Do not create one-off tools.\n\n"
-                )
-                if "odoo_query" in avail_names:
-                    guidance += "  - **odoo_query**: Records/count/summary. Default to records with domain.\n"
-                if "odoo_analyze" in avail_names:
-                    guidance += "  - **odoo_analyze**: Aggregates and account reports. P&L→\"Profit and Loss\".\n"
-                if "odoo_content" in avail_names:
-                    guidance += "  - **odoo_content**: Chatter/notes/long text. metadata first, then content with IDs.\n"
-                if "odoo_attachment" in avail_names:
-                    guidance += "  - **odoo_attachment**: Attachment metadata and text. Use odoo_query on ir.attachment.\n"
-                if "odoo_mutation" in avail_names:
-                    guidance += "  - **odoo_mutation**: Create/write/delete/workflow. dry_run for delete/workflow.\n"
-                if "odoo_message" in avail_names:
-                    guidance += "  - **odoo_message**: Post/update chatter/Discuss messages.\n"
-                if "odoo_schema" in avail_names:
-                    guidance += "  - **odoo_schema**: Model/field discovery when unsure.\n"
-                if "odoo_health" in avail_names:
-                    guidance += "  - **odoo_health**: Connection/runtime check.\n"
-                if "odoo_analyze" in avail_names:
-                    guidance += (
-                        "\nReport aliases: P&L/PNL→Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
+            odoo_avail = [n for n in avail_names if n.startswith("odoo_")]
+            if odoo_avail:
+                guidance_parts = ["\n\n### Odoo Tool Guidance\nUse these mode-based Odoo tools. Do not create one-off tools.\n"]
+                tool_descriptions = {
+                    "odoo_query": "Records/count/summary. Default to records with domain.",
+                    "odoo_analyze": "Aggregates and account reports. P&L → Profit and Loss.",
+                    "odoo_content": "Chatter/notes/long text. metadata first, then content with IDs.",
+                    "odoo_attachment": "Attachment metadata and text. Discovery via odoo_query on ir.attachment.",
+                    "odoo_mutation": "Create/write/delete/workflow. dry_run for delete/workflow.",
+                    "odoo_message": "Post/update chatter/Discuss messages.",
+                    "odoo_schema": "Model/field discovery when unsure.",
+                    "odoo_health": "Connection/runtime check.",
+                }
+                for name in odoo_avail:
+                    desc = tool_descriptions.get(name, "")
+                    if desc:
+                        guidance_parts.append(f"  - **{name}**: {desc}")
+                if "odoo_analyze" in odoo_avail:
+                    guidance_parts.append(
+                        "Report aliases: P&L/PNL→Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
                         "Dates: this month→first day to today; this year→Jan 1 to today; last month→previous month.\n"
-                        "Line names: revenue→[Revenue, Income, Sales]; expenses→[Expenses, COGS]; net income→[Net Profit, Net Income].\n"
+                        "Line names: revenue→[Revenue, Income, Sales]; expenses→[Expenses, COGS]; net income→[Net Profit, Net Income]."
                     )
-                guidance += "Do not use odoo_execute_kw (disabled). Do not create one-off tools.\n"
-                system_prompt += guidance
+                guidance_parts.append("Do not use odoo_execute_kw (disabled). Do not create one-off tools.")
+                system_prompt += "\n".join(guidance_parts)
 
     # Inject business rules and company facts into the system prompt
     injected_rules: list[Any] = []
