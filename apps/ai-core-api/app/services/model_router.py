@@ -2,8 +2,9 @@ import os
 import re
 import json
 import logging
+from calendar import monthrange
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Any
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -290,6 +291,137 @@ async def _execute_tool_call(
         return response.json()
 
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+REPORT_ALIASES: dict[str, str] = {
+    "p&l": "Profit and Loss",
+    "pnl": "Profit and Loss",
+    "profit and loss": "Profit and Loss",
+    "profit & loss": "Profit and Loss",
+    "profit_and_loss": "Profit and Loss",
+    "balance sheet": "Balance Sheet",
+    "balancesheet": "Balance Sheet",
+    "bs": "Balance Sheet",
+    "trial balance": "Trial Balance",
+    "trialbalance": "Trial Balance",
+    "tb": "Trial Balance",
+    "general ledger": "General Ledger",
+    "generalledger": "General Ledger",
+    "gl": "General Ledger",
+    "partner ledger": "Partner Ledger",
+    "partnerledger": "Partner Ledger",
+    "aged receivables": "Aged Receivables",
+    "aged_receivables": "Aged Receivables",
+    "receivables aged": "Aged Receivables",
+    "aged payables": "Aged Payables",
+    "aged_payables": "Aged Payables",
+    "payables aged": "Aged Payables",
+    "tax report": "Tax Report",
+    "tax_report": "Tax Report",
+}
+
+REPORT_LINE_KEYWORDS: dict[str, list[str]] = {
+    "revenue": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
+    "income": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
+    "sales": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
+    "expenses": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
+    "expense": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
+    "cost": ["Cost of Goods Sold", "COGS", "Operating Expenses"],
+    "cogs": ["Cost of Goods Sold"],
+    "net profit": ["Net Profit", "Net Income", "Profit/Loss"],
+    "net income": ["Net Profit", "Net Income", "Profit/Loss"],
+    "gross profit": ["Gross Profit", "Gross Margin"],
+    "gross margin": ["Gross Profit", "Gross Margin"],
+    "assets": ["Assets", "Total Assets", "Current Assets", "Non-Current Assets"],
+    "liabilities": ["Liabilities", "Total Liabilities", "Current Liabilities"],
+    "equity": ["Equity", "Total Equity", "Owner's Equity"],
+    "receivable": ["Receivables", "Accounts Receivable", "Trade Receivables"],
+    "payable": ["Payables", "Accounts Payable", "Trade Payables"],
+    "balance": ["Total Assets", "Total Liabilities", "Total Equity"],
+}
+
+
+def _detect_date_range(query: str) -> tuple[Optional[str], Optional[str]]:
+    """Parse date period from a user query. Returns (date_from, date_to) or (None, None)."""
+    now = datetime.utcnow()
+    q = query.lower()
+
+    if "this month" in q or "current month" in q:
+        return now.replace(day=1).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+    if "last month" in q or "previous month" in q:
+        first_of_this = now.replace(day=1)
+        end_of_last = first_of_this - timedelta(days=1)
+        start_of_last = end_of_last.replace(day=1)
+        return start_of_last.strftime("%Y-%m-%d"), end_of_last.strftime("%Y-%m-%d")
+
+    if "this year" in q or "current year" in q or "ytd" in q or "year to date" in q:
+        return now.replace(month=1, day=1).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+
+    if "last year" in q or "previous year" in q:
+        return f"{now.year - 1}-01-01", f"{now.year - 1}-12-31"
+
+    if "this quarter" in q or "current quarter" in q or "q1" in q or "q2" in q or "q3" in q or "q4" in q:
+        q_num = 1
+        for i, label in enumerate(["q1", "q2", "q3", "q4"], 1):
+            if label in q:
+                q_num = i
+                break
+        quarter_start = {1: 1, 2: 4, 3: 7, 4: 10}[q_num]
+        quarter_end = {1: 3, 2: 6, 3: 9, 4: 12}[q_num]
+        year = now.year
+        end_day = monthrange(year, quarter_end)[1]
+        return (
+            datetime(year, quarter_start, 1).strftime("%Y-%m-%d"),
+            datetime(year, quarter_end, end_day).strftime("%Y-%m-%d"),
+        )
+
+    return None, None
+
+
+def _detect_line_names(query: str) -> Optional[list[str]]:
+    """Parse requested line names from a user query."""
+    q = query.lower()
+    matched = set()
+    for keyword, candidates in REPORT_LINE_KEYWORDS.items():
+        if keyword in q:
+            matched.update(candidates)
+    return list(matched) if matched else None
+
+
+def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
+    """Detect a generic Odoo report intent from a user query.
+    
+    Returns tool arguments dict for odoo_execute_report if a report is detected,
+    or None if the query does not appear to be about Odoo reports.
+    """
+    if not query:
+        return None
+    q = query.lower().strip()
+
+    report_name = None
+    for alias, canonical in REPORT_ALIASES.items():
+        if alias in q:
+            report_name = canonical
+            break
+    if not report_name:
+        return None
+
+    date_from, date_to = _detect_date_range(q)
+    line_names = _detect_line_names(q)
+
+    args: dict[str, Any] = {"report_name": report_name}
+    if date_from and date_to:
+        args["date_from"] = date_from
+        args["date_to"] = date_to
+    if line_names:
+        args["line_names"] = line_names
+
+    logger.info(
+        "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s line_names=%s",
+        query[:80], report_name, date_from, date_to, line_names,
+    )
+    return {"tool": "odoo_execute_report", "input": args}
 
 
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
@@ -903,15 +1035,42 @@ async def execute_chat(
         "tool_call_count": total_tool_calls,
     }
 
-    # If content is blank and tool results exist, try deterministic fallback
+    # If content is blank, try deterministic fallback paths
     content = response.get("content", "")
-    if not content.strip() and tool_results:
-        fallback = _build_report_fallback_answer(tool_results)
-        if fallback:
-            logger.info(
-                "Used report fallback answer in execute_chat | user_id=%s tool_calls=%d",
-                user_id, len(tool_results),
-            )
-            response["content"] = fallback
+    if not content.strip():
+        if tool_results:
+            fallback = _build_report_fallback_answer(tool_results)
+            if fallback:
+                logger.info(
+                    "Used report fallback answer (from tool results) | user_id=%s tool_calls=%d",
+                    user_id, len(tool_results),
+                )
+                response["content"] = fallback
+        elif messages:
+            user_query = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
+            report_intent = detect_odoo_report_intent(user_query) if user_query else None
+            if report_intent:
+                logger.info(
+                    "Deterministic report intent detected | user_id=%s intent=%s",
+                    user_id, report_intent,
+                )
+                try:
+                    tc_result = await _execute_tool_call(db, user_id, "odoo_execute_report", report_intent["input"])
+                    dr_tool_results = [{
+                        "tool_call_id": "deterministic_report",
+                        "tool_name": "odoo_execute_report",
+                        "arguments": report_intent["input"],
+                        "result": tc_result,
+                    }]
+                    dr_fallback = _build_report_fallback_answer(dr_tool_results)
+                    if dr_fallback:
+                        response["content"] = dr_fallback
+                        response["tool_calls"] = dr_tool_results
+                        response["deterministic_report"] = True
+                        logger.info(
+                            "Used deterministic report answer | user_id=%s", user_id,
+                        )
+                except Exception as drexc:
+                    logger.error("Deterministic report execution failed: %s", drexc)
 
     return response
