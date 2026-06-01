@@ -431,7 +431,7 @@ class TestConnectorContext:
             called_messages = mock_chat_completion.call_args[1]["messages"]
             system_prompt_content = called_messages[0]["content"]
             assert "## Relevant Reference Materials" in system_prompt_content
-            assert "- [procedure] Printer SOP" in system_prompt_content
+            assert "[reference] Test Document" in system_prompt_content
             assert "Details: Select tray 2 and downstairs printer" in system_prompt_content
 
             # Verify response contains injected search metadata
