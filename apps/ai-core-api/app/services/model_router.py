@@ -877,4 +877,16 @@ async def execute_chat(
         "context": context_metadata,
         "tool_call_count": total_tool_calls,
     }
+
+    # If content is blank and tool results exist, try deterministic fallback
+    content = response.get("content", "")
+    if not content.strip() and tool_results:
+        fallback = _build_report_fallback_answer(tool_results)
+        if fallback:
+            logger.info(
+                "Used report fallback answer in execute_chat | user_id=%s tool_calls=%d",
+                user_id, len(tool_results),
+            )
+            response["content"] = fallback
+
     return response

@@ -316,3 +316,40 @@ class TestReviewerBlankCheck:
             tool_results=[{"tool_name": "odoo_execute_report", "result": {"error": True}}],
         ))
         assert not review.approved
+
+
+class TestExecuteChatReportFallback:
+    """Tests for fallback answer in execute_chat before Reviewer."""
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_fallback_on_blank_content(self):
+        """Blank model content + successful report tool must produce fallback answer."""
+        from app.services.model_router import execute_chat, _build_report_fallback_answer
+        tool_results = [{"tool_name": "odoo_execute_report", "result": {
+            "report_name": "Profit and Loss",
+            "date_from": "2026-06-01", "date_to": "2026-06-30",
+            "currency_code": "ZAR", "currency_symbol": "R",
+            "lines": [{"name": "Revenue", "value": 150000.0, "formatted_value": "150,000.00"}],
+        }}]
+        fallback = _build_report_fallback_answer(tool_results)
+        assert fallback is not None
+        assert "Profit and Loss" in fallback
+        assert "150,000" in fallback
+        assert "R" in fallback
+
+    def test_fallback_returns_none_when_no_report_tool(self):
+        """Non-report tools must not produce a fallback."""
+        from app.services.model_router import _build_report_fallback_answer
+        fallback = _build_report_fallback_answer([
+            {"tool_name": "odoo_search_read", "result": {"records": []}},
+        ])
+        assert fallback is None
+
+    def test_pnl_uses_generic_report_tool(self):
+        """P&L question must route through generic odoo_execute_report, not a dedicated tool."""
+        from app.services.model_router import _map_odoo_tool_to_path
+        path = _map_odoo_tool_to_path("odoo_execute_report")
+        assert path == "/reports/execute"
+        # No dedicated P&L tool should exist
+        assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
+        assert _map_odoo_tool_to_path("get_revenue_this_month") == ""

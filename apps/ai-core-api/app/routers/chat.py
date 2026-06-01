@@ -389,14 +389,59 @@ async def post_chat_message(
     assistant_content = router_result.get("content", "")
     tool_calls_data = router_result.get("tool_calls")
 
-    # Reviewer check for finance/high-risk responses
+    # Blank-response guard — execute_chat() already applies report fallback,
+    # but catch any remaining blank content before the Reviewer runs
+    if not assistant_content or not assistant_content.strip():
+        if tool_calls_data:
+            tool_errors = [
+                t for t in tool_calls_data
+                if isinstance(t.get("result"), dict) and t["result"].get("error")
+            ]
+            logger.warning(
+                "Blank response after tool calls | request_id=%s user_id=%s session_id=%s tool_errors=%d",
+                request_id, user_id, session_id, len(tool_errors),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "request_id": request_id,
+                    "error_type": "empty_model_response_after_tools",
+                    "error_message": "The model did not produce an answer after using tools.",
+                    "technical_detail": {
+                        "tool_calls": tool_calls_data,
+                        "tool_errors": [
+                            {
+                                "tool_name": t.get("tool_name"),
+                                "arguments": t.get("arguments"),
+                                "error_type": t["result"].get("error_type", "unknown"),
+                                "message": t["result"].get("message", str(t["result"])),
+                            }
+                            for t in tool_errors
+                        ],
+                    },
+                },
+            )
+        logger.warning(
+            "Blank response from model router | request_id=%s user_id=%s session_id=%s",
+            request_id, user_id, session_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "server_error",
+                "error_message": "The model returned an empty response. Please try again.",
+                "technical_detail": "Model router returned blank content",
+            },
+        )
+
+    # Reviewer check for finance/high-risk responses (runs after blank guard)
     reviewer_invoked = False
     reviewer_result_data = None
     try:
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
         reviewer = ReviewerAgent()
-        # If it contains finance keywords or amounts
         if reviewer._is_finance_question(req.content):
             reviewer_invoked = True
             review = await reviewer.review(
@@ -431,61 +476,6 @@ async def post_chat_message(
         raise
     except Exception as exc:
         logger.warning("Reviewer check failed (non-blocking): %s", exc)
-
-    # Blank-response guard — check for tool errors first
-    if not assistant_content or not assistant_content.strip():
-        from app.services.model_router import _build_report_fallback_answer
-        report_fallback = _build_report_fallback_answer(tool_calls_data) if tool_calls_data else None
-        if report_fallback:
-            assistant_content = report_fallback
-            logger.info(
-                "Used report fallback answer | request_id=%s tool_calls=%d",
-                request_id, len(tool_calls_data),
-            )
-        elif tool_calls_data:
-            # Tool calls were made but no fallback available — return structured error
-            tool_errors = [
-                t for t in tool_calls_data
-                if isinstance(t.get("result"), dict) and t["result"].get("error")
-            ]
-            logger.warning(
-                "Blank response after tool calls | request_id=%s user_id=%s session_id=%s tool_errors=%d",
-                request_id, user_id, session_id, len(tool_errors),
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "request_id": request_id,
-                    "error_type": "empty_model_response_after_tools",
-                    "error_message": "The model did not produce an answer after using tools.",
-                    "technical_detail": {
-                        "tool_calls": tool_calls_data,
-                        "tool_errors": [
-                            {
-                                "tool_name": t.get("tool_name"),
-                                "arguments": t.get("arguments"),
-                                "error_type": t["result"].get("error_type", "unknown"),
-                                "message": t["result"].get("message", str(t["result"])),
-                            }
-                            for t in tool_errors
-                        ],
-                    },
-                },
-            )
-        else:
-            logger.warning(
-                "Blank response from model router | request_id=%s user_id=%s session_id=%s",
-                request_id, user_id, session_id,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail={
-                    "request_id": request_id,
-                    "error_type": "server_error",
-                    "error_message": "The model returned an empty response. Please try again.",
-                    "technical_detail": "Model router returned blank content",
-                },
-            )
 
     model_provider = router_result.get("model_provider", "unknown")
     model_name = router_result.get("model_name", "unknown")
