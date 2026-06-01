@@ -126,7 +126,8 @@ class TraceService:
         for span in self._spans.values():
             self.db.add(span)
         try:
-            await self.db.flush()
+            if hasattr(self.db, 'flush') and callable(self.db.flush):
+                await self.db.flush()
         except Exception as e:
             logger.warning("Failed to flush trace: %s", e)
 

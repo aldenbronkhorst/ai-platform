@@ -379,14 +379,15 @@ async def post_chat_message(
             },
         )
     except ProviderCallError as e:
-        await trace_svc.commit(status="failed", error_type="model_error", error_message=str(e))
+        error_msg = str(e)
+        await trace_svc.commit(status="failed", error_type="model_error", error_message=error_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "request_id": request_id,
                 "trace_id": trace_svc.trace_id,
                 "error_type": "model_error",
-                "error_message": str(e),
+                "error_message": error_msg,
                 "technical_detail": f"ProviderCallError (provider={e.provider}, model={e.model}): {error_msg}",
             },
         )
