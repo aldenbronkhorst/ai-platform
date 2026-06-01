@@ -39,6 +39,14 @@ FINANCE_NEAR_NUMBER = re.compile(
     re.IGNORECASE,
 )
 
+NON_MONETARY_COUNT_UNITS = re.compile(
+    r'^\s*(?:[-–—,:;()]*\s*)?'
+    r'(?:pdf\s+)?'
+    r'(?:attachments?|pdfs?|files?|documents?|pages?|records?|lines?|items?|'
+    r'rows?|results?|matches?|notes?)\b',
+    re.IGNORECASE,
+)
+
 
 class ReviewerAgent:
     def __init__(self):
@@ -80,7 +88,7 @@ class ReviewerAgent:
 
             # Check for monetary amounts with currency context
             currency_matches = CURRENCY_PATTERN.findall(content)
-            matched_amounts = FINANCE_NEAR_NUMBER.findall(content)
+            matched_amounts = self._find_monetary_amounts_without_currency(content)
 
             has_monetary_amount = bool(currency_matches or matched_amounts)
             if has_monetary_amount:
@@ -138,7 +146,27 @@ class ReviewerAgent:
         
         Does NOT flag dates, years, IDs, error messages, report IDs, etc.
         """
-        return bool(CURRENCY_PATTERN.search(content) or FINANCE_NEAR_NUMBER.search(content))
+        return bool(CURRENCY_PATTERN.search(content) or self._find_monetary_amounts_without_currency(content))
+
+    def _find_monetary_amounts_without_currency(self, content: str) -> list[str]:
+        """Return finance-near-number matches that look like money, not counts.
+
+        Finance documents often contain non-monetary counts near finance words,
+        e.g. "credit note with 7 PDF attachments". Those counts should not
+        trigger the currency reviewer.
+        """
+        matches: list[str] = []
+        for match in FINANCE_NEAR_NUMBER.finditer(content or ""):
+            if self._is_non_monetary_count(content, match):
+                continue
+            matches.append(match.group(0))
+        return matches
+
+    def _is_non_monetary_count(self, content: str, match: re.Match) -> bool:
+        after = content[match.end(): match.end() + 80]
+        if NON_MONETARY_COUNT_UNITS.search(after):
+            return True
+        return False
 
     def _addresses_question(self, content: str, question: str) -> bool:
         if not question or not content:

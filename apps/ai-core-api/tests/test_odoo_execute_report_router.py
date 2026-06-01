@@ -565,6 +565,25 @@ class TestReviewerFalsePositiveFix:
         assert review.approved, f"Expected approved but got issues: {review.issues}"
 
     @pytest.mark.asyncio
+    async def test_credit_note_attachment_count_does_not_trigger_currency_check(self):
+        """Attachment counts near 'credit note' are not monetary amounts."""
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        agent = ReviewerAgent()
+        review = await agent.review(ReviewRequest(
+            user_question=(
+                "Can you check Odoo for a credit note for Cosmetic Connection "
+                "that has 7 PDF attachments?"
+            ),
+            content=(
+                "I found a credit note with 7 PDF attachments. "
+                "The attachment names are COSMETIC CONNECTION GRV141814.pdf, "
+                "COSMETIC CONNECTION GRV 141411.pdf, and COSMETIC CONNECTION GRV 142274.pdf."
+            ),
+        ))
+        assert review.approved, f"Expected approved but got issues: {review.issues}"
+
+    @pytest.mark.asyncio
     async def test_technical_error_id_not_flagged(self):
         """Technical error mentioning 'id' must not trigger currency check."""
         from app.services.reviewer import ReviewerAgent
