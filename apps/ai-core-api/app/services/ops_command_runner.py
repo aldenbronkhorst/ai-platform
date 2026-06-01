@@ -79,11 +79,11 @@ async def run_command(
             cwd=cwd,
         )
     except FileNotFoundError as e:
-        return CommandResult(error=f"Command not found: {e}")
+        return CommandResult(error=f"Command not found: {e}", exit_code=127)
     except PermissionError as e:
-        return CommandResult(error=f"Permission denied: {e}")
+        return CommandResult(error=f"Permission denied: {e}", exit_code=126)
     except Exception as e:
-        return CommandResult(error=f"Execution failed: {e}")
+        return CommandResult(error=f"Execution failed: {e}", exit_code=1)
 
     try:
         stdout_bytes, stderr_bytes = await asyncio.wait_for(

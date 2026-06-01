@@ -19,7 +19,7 @@ class AzureCliRequest(BaseModel):
 
 @router.post("/cli")
 async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
-    """Execute an Azure CLI command."""
+    """Execute an Azure CLI command using Managed Identity authentication."""
     command = req.command.strip()
     if not command.startswith("az "):
         command = "az " + command
@@ -39,7 +39,7 @@ async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
 
 @router.post("/diagnose")
 async def azure_diagnose(auth: dict = Depends(api_key_auth)):
-    """Run Azure CLI diagnostics: version check and account info."""
+    """Run Azure CLI diagnostics: version check, auth, and resource access."""
     request_id = uuid.uuid4().hex[:16]
     commands = [
         "az --version",
@@ -47,8 +47,10 @@ async def azure_diagnose(auth: dict = Depends(api_key_auth)):
         "az account list --query '[].{name:name, id:id, tenantId:tenantId}' -o json",
     ]
     results = []
+    all_ok = True
     for cmd in commands:
         result = await run_command(cmd, timeout=30)
+        cmd_ok = result.exit_code == 0 and not result.error
         results.append({
             "command": cmd,
             "exit_code": result.exit_code,
@@ -56,10 +58,15 @@ async def azure_diagnose(auth: dict = Depends(api_key_auth)):
             "stderr": result.stderr[:2000] if result.stderr else "",
             "duration_ms": 0,
             "error_type": result.error[:100] if result.error else None,
-            "error_message": result.stderr[:500] if result.stderr else (result.error[:500] if result.error else None),
+            "error_message": result.error[:500] if result.error else (result.stderr[:500] if result.stderr else None),
+            "status": "success" if cmd_ok else "failed",
         })
+        if not cmd_ok:
+            all_ok = False
+
     return {
-        "status": "success" if all(r["exit_code"] == 0 for r in results) else "degraded",
+        "status": "success" if all_ok else "failed",
+        "summary": "Azure CLI diagnostics passed" if all_ok else "Azure CLI diagnostics failed",
         "connector": "azure_cli",
         "commands": results,
         "request_id": request_id,
