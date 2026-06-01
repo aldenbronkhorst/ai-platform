@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.core.database import get_db
@@ -86,13 +85,15 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         logger.error("Health: config validation failed: %s", exc)
         config_issues = []
 
+    # Always return 200 so Container App liveness/readiness probes never fail.
+    # Dependency issues are reported in the response body as informational.
     all_healthy = all(
         dep in ("reachable", "not_configured")
         for dep in status_info["dependencies"].values()
     )
     if not all_healthy:
         logger.warning("Health: dependencies degraded: %s", status_info["dependencies"])
-        return JSONResponse(status_code=503, content=status_info)
+        status_info["status"] = "degraded"
 
     return status_info
 
