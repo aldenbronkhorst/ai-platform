@@ -16,10 +16,13 @@ def _extract_report_id(record: dict[str, Any], index: int = 0) -> int:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "error": "report_resolution_invalid_shape",
-                "message": "Odoo returned an account.report record without an id field.",
+                "message": "Odoo returned an account.report record without an id field. "
+                           "This usually means the search was performed without include_ids=True.",
                 "record_index": index,
                 "record_keys": list(record.keys()),
                 "record_sample": {k: record.get(k) for k in list(record.keys())[:5]},
+                "likely_cause": "search_read called without include_ids=True, which strips id fields",
+                "model": "account.report",
             },
         )
     try:
@@ -140,7 +143,8 @@ class OdooReportService:
                 exact_res = self.client.search_read(
                     model="account.report",
                     domain=[["name", "=", report_name]],
-                    fields=["id", "name"]
+                    fields=["id", "name"],
+                    include_ids=True,
                 ) or []
                 logger.info(
                     "Odoo report exact search result | report_name=%s result_count=%d sample=%s",
@@ -162,7 +166,8 @@ class OdooReportService:
                     fuzzy_res = self.client.search_read(
                         model="account.report",
                         domain=[["name", "ilike", report_name]],
-                        fields=["id", "name"]
+                        fields=["id", "name"],
+                        include_ids=True,
                     ) or []
                     logger.info(
                         "Odoo report fuzzy search result | report_name=%s result_count=%d sample=%s",

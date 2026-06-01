@@ -39,6 +39,7 @@ async def list_reports(req: OdooListReportsRequest, auth: dict = Depends(interna
         domain=domain,
         fields=["id", "name"],
         limit=req.limit,
+        include_ids=True,
     ) or []
     logger.info(
         "Odoo report list | query=%s limit=%d result_count=%d sample=%s",
