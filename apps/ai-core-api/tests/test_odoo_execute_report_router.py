@@ -83,8 +83,8 @@ class TestOdooExecuteReportRouterAndReviewer:
         )
         tool = AITool(
             id=uuid4(),
-            name="odoo_execute_report",
-            display_name="Odoo Accounting Report",
+            name="odoo_analyze",
+            display_name="Odoo Analyze",
             input_schema={}
         )
 
@@ -122,7 +122,7 @@ class TestOdooExecuteReportRouterAndReviewer:
                         "id": "call_pnl_123",
                         "type": "function",
                         "function": {
-                            "name": "odoo_execute_report",
+                            "name": "odoo_analyze",
                             "arguments": '{"report_name": "Profit and Loss", "date_from": "2026-05-01", "date_to": "2026-05-31", "line_names": ["Revenue"]}'
                         }
                     }

@@ -723,11 +723,28 @@ async def execute_chat(
     routing_svc = ModelRoutingPolicyService(db)
 
     # Analyze risk level based on task_type and text content
+    # Simple Odoo field lookups mentioning "amount" or "total" as field references
+    # should not be classified as high-risk finance.
     user_msg_text = messages[-1]["content"] if messages else ""
     is_finance_topic = any(kw in user_msg_text.lower() for kw in [
         "revenue", "income", "expense", "profit", "loss", "balance", "invoice",
-        "bill", "payment", "amount", "total", "cost", "price", "tax", "vat", "accounting"
+        "bill", "payment", "cost", "price", "tax", "vat", "accounting",
     ])
+
+    # If finance keywords match but the query is an Odoo/ERP lookup asking for
+    # field values (amount, total), don't escalate — treat as data retrieval.
+    is_odoo_lookup = any(phrase in user_msg_text.lower() for phrase in [
+        "check odoo", "odoo", "account.move", "ir.attachment", "credit note",
+        "find", "search", "look up",
+    ])
+    if is_odoo_lookup and user_msg_text.lower().count("amount") <= 2:
+        contains_aggregate_intent = any(kw in user_msg_text.lower() for kw in [
+            "compare", "reconcile", "audit", "forecast", "budget", "analyze",
+            "trend", "variance", "total revenue", "total income", "net profit",
+        ])
+        if not contains_aggregate_intent:
+            is_finance_topic = False
+
     risk_level = "high" if is_finance_topic else "low"
 
     policy = await routing_svc.select_route(
@@ -766,7 +783,30 @@ async def execute_chat(
     tool_definitions: list[dict[str, Any]] = []
     supports_tools = model_obj.supports_tools == "true"
     if supports_tools:
-        tools = await _get_available_tools(db, user_id)
+        all_tools = await _get_available_tools(db, user_id)
+        # Dynamic tool exposure: for simple Odoo lookup queries, expose only
+        # the relevant Odoo primitives — not all tools or deprecated ones.
+        odoo_lookup_phrases = [
+            "check odoo", "odoo", "credit note", "find", "search", "look up",
+            "attachment", "pdf", "bill", "invoice",
+        ]
+        is_odoo_lookup = any(p in user_msg_text.lower() for p in odoo_lookup_phrases)
+        if is_odoo_lookup and not is_finance_topic:
+            odoo_relevant = {"odoo_query", "odoo_attachment", "odoo_schema", "odoo_health"}
+            tools = [t for t in all_tools if t.name in odoo_relevant]
+            logger.info(
+                "Dynamic tool exposure for Odoo lookup | user_id=%s tools=%s",
+                user_id, [t.name for t in tools],
+            )
+        else:
+            # Exclude deprecated tools (legacy names still registered)
+            deprecated_names = {
+                "odoo_execute_report", "odoo_search_read", "odoo_execute_kw",
+                "odoo_attachments_list", "odoo_attachments_get",
+                "odoo_messages_list", "odoo_messages_create",
+            }
+            tools = [t for t in all_tools if t.name not in deprecated_names]
+
         tool_definitions = _build_tool_definitions(tools)
         if tool_definitions:
             has_odoo_tools = any(t.name.startswith("odoo_") for t in tools)
@@ -1242,7 +1282,7 @@ async def execute_chat(
     }
 
     # If content is blank, try deterministic fallback paths
-    content = response.get("content", "")
+    content = response.get("content") or ""
     if not content.strip():
         if tool_results:
             fallback = _build_report_fallback_answer(tool_results)

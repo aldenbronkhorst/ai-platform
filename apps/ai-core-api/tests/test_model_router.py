@@ -1020,8 +1020,8 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_search_read", display_name="Odoo Search Read",
-                                description="Search Odoo",
+                                name="odoo_query", display_name="Odoo Query",
+                                description="Query Odoo records",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
                             ),
@@ -1055,7 +1055,7 @@ class TestToolExecution:
                             "id": "call_1",
                             "type": "function",
                             "function": {
-                                "name": "odoo_search_read",
+                                "name": "odoo_query",
                                 "arguments": '{"model": "res.partner"}',
                             },
                         }],
@@ -1086,7 +1086,7 @@ class TestToolExecution:
             assert result["content"] == "I found 5 partners in Odoo."
             assert result["tool_calls"] is not None
             assert len(result["tool_calls"]) == 1
-            assert result["tool_calls"][0]["tool_name"] == "odoo_search_read"
+            assert result["tool_calls"][0]["tool_name"] == "odoo_query"
             assert result["total_tokens"] == 43
 
 
