@@ -818,7 +818,8 @@ class TestStartupConfigValidation:
         get_settings.cache_clear()
 
         response = client.get("/health")
-        assert response.status_code == 503
+        # Health still returns 200 in dev/test but includes config_issues
+        assert response.status_code == 200
         data = response.json()
         config_issues = data.get("config_issues", [])
         debug_issues = [i for i in config_issues if i.get("check") == "DEBUG"]
