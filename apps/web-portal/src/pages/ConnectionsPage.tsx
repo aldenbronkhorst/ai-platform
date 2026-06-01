@@ -139,24 +139,37 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     } catch { /* ignore */ }
   };
 
-  const handleTestCli = async (connector: string) => {
+  const handleTestAzure = async () => {
     if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
-    const command = connector === "azure_cli"
-      ? "az account show -o json"
-      : "gh auth status";
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/${connector}/cli`, {
-        method: "POST", headers: headers(),
-        body: JSON.stringify({ command, purpose: `Test ${connector} connectivity` }),
-      });
+      const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json();
-      setCliTestResult({ success: res.ok && data.exit_code === 0, ...data });
-    } catch (err: any) {
-      setCliTestResult({ success: false, message: err.message });
-    } finally { setCliTesting(false); }
+      setCliTestResult({ ...data, connector: "azure_cli" });
+    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+    finally { setCliTesting(false); }
   };
 
-  const handleConnectGithub = async () => {
+  const handleTestGithub = async () => {
+    if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connector/github/diagnose`, { method: "POST", headers: headers() });
+      const data = await res.json();
+      setCliTestResult({ ...data, connector: "github_cli" });
+    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+    finally { setCliTesting(false); }
+  };
+
+  const handleGithubOAuth = async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
+      const data = await res.json();
+      if (data.auth_url) window.location.href = data.auth_url;
+      else setCliTestResult({ success: false, message: data.message || "GitHub OAuth not configured." });
+    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+  };
+
+  const handleConnectGithubToken = async () => {
     if (!accessToken || !githubToken) return; setIsConnecting(true); setCliTestResult(null);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/github_cli/connect`, {
@@ -220,11 +233,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       <div className="space-y-4">
         <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
         <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm p-3 bg-canvas rounded-xl">
-          <span className="text-muted">Status</span><span className="text-[var(--color-success)]">Active</span>
+          <span className="text-muted">Status</span><span className="text-default">Needs Verification</span>
           <span className="text-muted">Auth</span><span className="text-default">Managed Identity</span>
         </div>
-        <GlassButton size="sm" onClick={() => handleTestCli("azure_cli")} disabled={cliTesting}>
-          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Test Azure CLI
+        <GlassButton size="sm" onClick={handleTestAzure} disabled={cliTesting}>
+          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Run Azure Diagnostics
         </GlassButton>
       </div>
     );
@@ -232,28 +245,28 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (key === "github_cli") return (
       <div className="space-y-4">
         <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        {githubToken ? (
-          <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm p-3 bg-canvas rounded-xl">
-            <span className="text-muted">Status</span><span className="text-[var(--color-success)]">Connected</span>
-            <span className="text-muted">Organization</span><span className="text-default">{githubOrg}</span>
-          </div>
-        ) : (
-          <p className="text-sm text-muted">Connect your GitHub account to enable CLI access.</p>
-        )}
-        <div className="space-y-2">
-          <label className="text-xs text-muted font-medium">GitHub Token (PAT)</label>
-          <GlassInput type="password" placeholder="ghp_..." value={githubToken} onChange={e => setGithubToken(e.target.value)} />
-          <label className="text-xs text-muted font-medium">Organization / Owner</label>
-          <GlassInput type="text" value={githubOrg} onChange={e => setGithubOrg(e.target.value)} />
-          <div className="flex gap-2">
-            <GlassButton size="sm" onClick={handleConnectGithub} disabled={isConnecting || !githubToken}>
-              {isConnecting ? "Connecting..." : "Connect GitHub"}
-            </GlassButton>
-            <GlassButton size="sm" onClick={() => handleTestCli("github_cli")} disabled={cliTesting}>
-              <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Test
+        <p className="text-sm text-muted mb-2">Connect your GitHub account to enable CLI access.</p>
+
+        {/* Primary OAuth flow */}
+        <GlassButton size="sm" onClick={handleGithubOAuth} className="w-full">
+          <GitBranch className="w-4 h-4" /> Sign in with GitHub (OAuth)
+        </GlassButton>
+
+        {/* Manual token — collapsed by default */}
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted hover:text-default">Use token manually (advanced)</summary>
+          <div className="mt-3 space-y-2">
+            <GlassInput type="password" placeholder="ghp_..." value={githubToken} onChange={e => setGithubToken(e.target.value)} />
+            <GlassInput type="text" placeholder="Organization / Owner" value={githubOrg} onChange={e => setGithubOrg(e.target.value)} />
+            <GlassButton size="sm" onClick={handleConnectGithubToken} disabled={isConnecting || !githubToken}>
+              {isConnecting ? "Connecting..." : "Connect with Token"}
             </GlassButton>
           </div>
-        </div>
+        </details>
+
+        <GlassButton size="sm" onClick={handleTestGithub} disabled={cliTesting}>
+          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Test GitHub CLI
+        </GlassButton>
       </div>
     );
 
@@ -333,15 +346,33 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               )}
 
               {cliTestResult && (
-                <div className={`mt-4 p-3 rounded-xl text-sm border ${cliTestResult.success ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
-                  <p className={`font-semibold ${cliTestResult.success ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                    {cliTestResult.success ? "Success" : "Test Failed"}
+                <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${cliTestResult.status === 'success' ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
+                  <p className={`font-semibold ${cliTestResult.status === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
+                    {cliTestResult.connector === "azure_cli" ? "Azure CLI" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
                   </p>
-                  <pre className="text-xs text-muted mt-1 font-mono whitespace-pre-wrap overflow-x-auto max-h-60">
-                    {cliTestResult.stdout || cliTestResult.stderr || cliTestResult.message || "No output"}
-                  </pre>
-                  {cliTestResult.exit_code !== undefined && (
-                    <p className="text-xs text-muted mt-1">Exit code: {cliTestResult.exit_code}</p>
+                  {cliTestResult.request_id && (
+                    <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>
+                  )}
+                  {cliTestResult.commands?.length > 0 ? (
+                    <div className="space-y-2">
+                      {cliTestResult.commands.map((cmd: any, i: number) => (
+                        <details key={i} className="border border-default rounded-lg p-2 bg-surface/50">
+                          <summary className={`text-xs cursor-pointer font-mono ${cmd.exit_code === 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
+                            {cmd.exit_code === 0 ? "✓" : "✗"} {cmd.command?.substring(0, 60)}...
+                          </summary>
+                          <div className="mt-1 text-[10px] font-mono text-muted space-y-1">
+                            {cmd.stdout && <pre className="whitespace-pre-wrap">{cmd.stdout}</pre>}
+                            {cmd.stderr && <pre className="text-[var(--color-danger)] whitespace-pre-wrap">{cmd.stderr}</pre>}
+                            {cmd.error_message && <p className="text-[var(--color-danger)]">{cmd.error_message}</p>}
+                            <p>Exit code: {cmd.exit_code}</p>
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  ) : (
+                    <pre className="text-xs text-muted font-mono whitespace-pre-wrap overflow-x-auto max-h-60">
+                      {cliTestResult.stdout || cliTestResult.stderr || cliTestResult.message || "No output"}
+                    </pre>
                   )}
                 </div>
               )}

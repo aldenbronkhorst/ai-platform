@@ -1,5 +1,6 @@
-"""Azure CLI connector — executes native az commands."""
+"""Azure CLI connector — executes native az commands with structured diagnostics."""
 import logging
+import uuid
 from pydantic import BaseModel, Field
 from typing import Optional
 from fastapi import APIRouter, Depends
@@ -18,18 +19,48 @@ class AzureCliRequest(BaseModel):
 
 @router.post("/cli")
 async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
-    """Execute an Azure CLI command using Managed Identity authentication."""
+    """Execute an Azure CLI command."""
     command = req.command.strip()
     if not command.startswith("az "):
         command = "az " + command
-
     logger.info("Azure CLI | command=%.100s purpose=%.100s", command, req.purpose)
+    request_id = uuid.uuid4().hex[:16]
     result = await run_command(command, timeout=req.timeout)
     output = result.to_dict()
     output["command"] = command
     output["purpose"] = req.purpose
-
+    output["connector"] = "azure_cli"
+    output["request_id"] = request_id
+    output["status"] = "success" if result.success else "failed"
     if not result.success:
         logger.warning("Azure CLI failed | exit=%d error=%s", result.exit_code, result.error or result.stderr[:200])
-
     return output
+
+
+@router.post("/diagnose")
+async def azure_diagnose(auth: dict = Depends(api_key_auth)):
+    """Run Azure CLI diagnostics: version check and account info."""
+    request_id = uuid.uuid4().hex[:16]
+    commands = [
+        "az --version",
+        "az account show -o json",
+        "az account list --query '[].{name:name, id:id, tenantId:tenantId}' -o json",
+    ]
+    results = []
+    for cmd in commands:
+        result = await run_command(cmd, timeout=30)
+        results.append({
+            "command": cmd,
+            "exit_code": result.exit_code,
+            "stdout": result.stdout[:5000] if result.stdout else "",
+            "stderr": result.stderr[:2000] if result.stderr else "",
+            "duration_ms": 0,
+            "error_type": result.error[:100] if result.error else None,
+            "error_message": result.stderr[:500] if result.stderr else (result.error[:500] if result.error else None),
+        })
+    return {
+        "status": "success" if all(r["exit_code"] == 0 for r in results) else "degraded",
+        "connector": "azure_cli",
+        "commands": results,
+        "request_id": request_id,
+    }
