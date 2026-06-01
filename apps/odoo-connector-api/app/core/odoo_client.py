@@ -31,6 +31,13 @@ SAFE_TRANSPORT_FALLBACK_METHODS = {
     "check_access_rule",
 }
 
+# Methods that must use JSON-RPC because XML-RPC cannot marshal
+# None values in nested structures (e.g., account.report payloads).
+JSONRPC_REQUIRED_METHODS: set[tuple[str, str]] = {
+    ("account.report", "get_options"),
+    ("account.report", "get_report_information"),
+}
+
 
 class OdooError(Exception):
     pass
@@ -203,6 +210,9 @@ class OdooClient:
         if self.transport == "jsonrpc":
             return self.execute_kw_jsonrpc(model, method, args, kwargs)
         if self.transport == "auto":
+            # JSON-RPC is required for methods that return nested null values
+            if (model, method) in JSONRPC_REQUIRED_METHODS:
+                return self.execute_kw_jsonrpc(model, method, args, kwargs)
             if method not in SAFE_TRANSPORT_FALLBACK_METHODS:
                 return self.execute_kw_xmlrpc(model, method, args, kwargs)
             try:
