@@ -336,3 +336,49 @@ class AIMemoryUsageEvent(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
 
+class AITrace(Base):
+    __tablename__ = "ai_traces"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trace_id = Column(String(100), unique=True, nullable=False, index=True)
+    request_id = Column(String(100), nullable=False, index=True)
+    operation_type = Column(String(50), nullable=False, index=True)
+    operation_name = Column(String(200), nullable=True)
+    status = Column(String(20), nullable=False, default="pending")
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=True, index=True)
+    message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True)
+    connector = Column(String(50), nullable=True)
+    provider = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    route_id = Column(UUID(as_uuid=True), ForeignKey("ai_routes.id"), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    error_type = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+class AITraceSpan(Base):
+    __tablename__ = "ai_trace_spans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trace_id = Column(String(100), ForeignKey("ai_traces.trace_id"), nullable=False, index=True)
+    span_id = Column(String(100), nullable=False)
+    parent_span_id = Column(String(100), nullable=True)
+    span_type = Column(String(50), nullable=False)
+    span_name = Column(String(200), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    input_summary_json = Column(JSON, nullable=True)
+    output_summary_json = Column(JSON, nullable=True)
+    error_type = Column(String(50), nullable=True)
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+

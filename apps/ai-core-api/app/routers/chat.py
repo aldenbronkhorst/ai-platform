@@ -345,8 +345,16 @@ async def post_chat_message(
     messages = [{"role": m.role, "content": m.content} for m in previous_messages if m.id != user_msg.id]
     messages.append({"role": "user", "content": req.content})
 
+    from app.services.trace_service import TraceService
+    trace_svc = TraceService(db, request_id=request_id)
+    trace_svc.begin("chat_message", f"chat: {req.content[:60]}",
+                    user_id=user_id, chat_session_id=session_id, message_id=user_msg.id)
+    trace_svc.start_span("route_selection", "Route selected")
+    context_size_span = trace_svc.start_span("context_loading", "Context loaded")
+
     try:
         from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
+        trace_svc.start_span("model_request", "Model request")
         router_result = await execute_chat(
             db=db,
             messages=messages,
@@ -354,32 +362,41 @@ async def post_chat_message(
             chat_session_id=session_id,
             user_id=user_id,
         )
+        trace_svc.end_span("model_request", output_summary={
+            "content_length": len(router_result.get("content", "")),
+            "tool_call_count": router_result.get("tool_call_count", 0),
+        })
     except RouteNotFoundError as e:
+        await trace_svc.commit(status="failed", error_type="configuration_error", error_message=str(e))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "request_id": request_id,
+                "trace_id": trace_svc.trace_id,
                 "error_type": "configuration_error",
                 "error_message": str(e),
                 "technical_detail": "RouteNotFoundError: " + str(e),
             },
         )
     except ProviderCallError as e:
-        error_msg = str(e)
+        await trace_svc.commit(status="failed", error_type="model_error", error_message=str(e))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "request_id": request_id,
+                "trace_id": trace_svc.trace_id,
                 "error_type": "model_error",
-                "error_message": error_msg,
+                "error_message": str(e),
                 "technical_detail": f"ProviderCallError (provider={e.provider}, model={e.model}): {error_msg}",
             },
         )
     except Exception as e:
+        await trace_svc.commit(status="failed", error_type="server_error", error_message=str(e))
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
                 "request_id": request_id,
+                "trace_id": trace_svc.trace_id,
                 "error_type": "server_error",
                 "error_message": "Something went wrong while generating the response. Please try again.",
                 "technical_detail": f"Unhandled exception: {e}",
@@ -438,6 +455,7 @@ async def post_chat_message(
     # Reviewer check for finance/high-risk responses (runs after blank guard)
     reviewer_invoked = False
     reviewer_result_data = None
+    reviewer_span = trace_svc.start_span("reviewer", "Reviewer check")
     try:
         from app.services.reviewer import ReviewerAgent
         from app.schemas.schemas import ReviewRequest
@@ -463,6 +481,9 @@ async def post_chat_message(
                     "Reviewer rejected response | request_id=%s issues=%d risk=%s",
                     request_id, len(review.issues), review.risk_level,
                 )
+                trace_svc.end_span(reviewer_span, status="rejected",
+                                    output_summary={"issues": review.issues, "risk_level": review.risk_level})
+                await trace_svc.commit(status="failed", error_type="review_failed")
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail={
@@ -479,9 +500,12 @@ async def post_chat_message(
                     },
                 )
     except HTTPException:
+        await trace_svc.commit(status="failed", error_type="review_failed")
         raise
     except Exception as exc:
         logger.warning("Reviewer check failed (non-blocking): %s", exc)
+    else:
+        trace_svc.end_span(reviewer_span, output_summary=reviewer_result_data)
 
     model_provider = router_result.get("model_provider", "unknown")
     model_name = router_result.get("model_name", "unknown")
@@ -491,6 +515,15 @@ async def post_chat_message(
         "total_tokens": router_result.get("total_tokens", 0),
     }
     context_data = router_result.get("context")
+    trace_svc.add_metadata(metadata={
+        "model_provider": model_provider,
+        "model_name": model_name,
+        "prompt_tokens": token_usage["prompt_tokens"],
+        "completion_tokens": token_usage["completion_tokens"],
+        "total_tokens": token_usage["total_tokens"],
+        "tool_call_count": router_result.get("tool_call_count", 0),
+        "reviewer_invoked": reviewer_invoked,
+    })
     metadata_info: dict[str, Any] = {
         "technical_details": {
             "model_provider": model_provider,
@@ -498,6 +531,7 @@ async def post_chat_message(
             "latency_ms": router_result.get("latency_ms", 0),
             "token_usage": token_usage,
             "request_id": request_id,
+            "trace_id": trace_svc.trace_id,
             "reviewer_invoked": reviewer_invoked,
             "reviewer_result": reviewer_result_data,
             "tool_call_count": router_result.get("tool_call_count", 0),
@@ -611,4 +645,5 @@ async def post_chat_message(
         except Exception as inner_exc:
             logger.warning("Inline memory extraction failed: %s", inner_exc)
 
+    await trace_svc.commit(status="success")
     return assistant_msg
