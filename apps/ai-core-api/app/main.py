@@ -1,11 +1,30 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import health, audit, artifact, context, job, task, tool, odoo, connected_accounts, chat, ai_config, memory, rules, admin_traces
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: seed tools
+    try:
+        from scripts.seed_tools import seed_tools
+        await seed_tools()
+        logger.info("Tools seeded successfully on startup")
+    except Exception as exc:
+        logger.warning("Tool seeding on startup failed (non-fatal): %s", exc)
+    yield
+
 
 app = FastAPI(
     title="AI Platform Core API",
     version="0.1.0",
     description="Central operating layer for AI interfaces and tools",
+    lifespan=lifespan,
 )
 
 # Enforce secure CORS rules
