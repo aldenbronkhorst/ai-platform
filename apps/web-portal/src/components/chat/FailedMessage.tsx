@@ -32,6 +32,9 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
     try {
       const parsed = JSON.parse(errorMessage);
       if (parsed && typeof parsed === "object" && parsed.errorMessage) {
+        // Normalize snake_case from backend to camelCase for frontend
+        if (parsed.trace_id && !parsed.traceId) parsed.traceId = parsed.trace_id;
+        if (parsed.request_id && !parsed.requestId) parsed.requestId = parsed.request_id;
         return parsed as ChatError;
       }
     } catch {}
