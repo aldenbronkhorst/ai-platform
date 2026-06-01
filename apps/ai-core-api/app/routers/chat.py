@@ -232,7 +232,7 @@ async def post_chat_message(
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
 
-    # 2. Save User Message
+    # 2. Save User Message — persist IMMEDIATELY so it's not lost on model failure
     user_msg = AIChatMessage(
         id=uuid.uuid4(),
         chat_session_id=session_id,
@@ -242,6 +242,7 @@ async def post_chat_message(
         created_at=datetime.utcnow()
     )
     db.add(user_msg)
+    await db.flush()
 
     # Detect feedback from natural language
     content_clean = req.content.strip().lower()
@@ -380,6 +381,15 @@ async def post_chat_message(
         )
     except ProviderCallError as e:
         error_msg = str(e)
+        failed_msg = AIChatMessage(
+            id=uuid.uuid4(), chat_session_id=session_id, user_id=user_id,
+            role="assistant", content="",
+            metadata_json={"failed": True, "error_type": "model_error", "error_message": error_msg,
+                "request_id": request_id, "trace_id": trace_svc.trace_id},
+            created_at=datetime.utcnow(),
+        )
+        db.add(failed_msg)
+        await db.commit()
         await trace_svc.commit(status="failed", error_type="model_error", error_message=error_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -392,7 +402,17 @@ async def post_chat_message(
             },
         )
     except Exception as e:
-        await trace_svc.commit(status="failed", error_type="server_error", error_message=str(e))
+        error_msg = str(e)
+        failed_msg = AIChatMessage(
+            id=uuid.uuid4(), chat_session_id=session_id, user_id=user_id,
+            role="assistant", content="",
+            metadata_json={"failed": True, "error_type": "server_error", "error_message": error_msg,
+                "request_id": request_id, "trace_id": trace_svc.trace_id},
+            created_at=datetime.utcnow(),
+        )
+        db.add(failed_msg)
+        await db.commit()
+        await trace_svc.commit(status="failed", error_type="server_error", error_message=error_msg)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
