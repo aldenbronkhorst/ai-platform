@@ -26,7 +26,8 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     try:
         result = await db.execute(text("SELECT 1"))
         status_info["dependencies"]["postgresql"] = "reachable"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Health: PostgreSQL unreachable: %s", exc)
         status_info["dependencies"]["postgresql"] = "unreachable"
 
     try:
@@ -37,7 +38,8 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             status_info["dependencies"]["key_vault"] = "reachable"
         else:
             status_info["dependencies"]["key_vault"] = "not_configured"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Health: Key Vault unreachable: %s", exc)
         status_info["dependencies"]["key_vault"] = "unreachable"
 
     try:
@@ -52,7 +54,8 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             status_info["dependencies"]["blob_storage"] = "reachable"
         else:
             status_info["dependencies"]["blob_storage"] = "not_configured"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Health: Blob storage unreachable: %s", exc)
         status_info["dependencies"]["blob_storage"] = "unreachable"
 
     try:
@@ -67,22 +70,28 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             status_info["dependencies"]["service_bus"] = "reachable"
         else:
             status_info["dependencies"]["service_bus"] = "not_configured"
-    except Exception:
+    except Exception as exc:
+        logger.warning("Health: Service Bus unreachable: %s", exc)
         status_info["dependencies"]["service_bus"] = "unreachable"
 
     # Startup config validation (degrades status in production, warns in development)
-    config_issues = _validate_startup_config()
-    is_production = get_settings().app_env == "production"
-    if config_issues:
-        if is_production:
-            status_info["status"] = "degraded"
-        status_info["config_issues"] = config_issues
+    try:
+        config_issues = _validate_startup_config()
+        is_production = get_settings().app_env == "production"
+        if config_issues:
+            if is_production:
+                status_info["status"] = "degraded"
+            status_info["config_issues"] = config_issues
+    except Exception as exc:
+        logger.error("Health: config validation failed: %s", exc)
+        config_issues = []
 
     all_healthy = all(
         dep in ("reachable", "not_configured")
         for dep in status_info["dependencies"].values()
-    ) and (not config_issues or not is_production)
+    )
     if not all_healthy:
+        logger.warning("Health: dependencies degraded: %s", status_info["dependencies"])
         return JSONResponse(status_code=503, content=status_info)
 
     return status_info
