@@ -1095,6 +1095,58 @@ async def execute_chat(
                 break  # Success — stop trying more fallbacks
             fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
 
+    # If primary model failed with quota and no tool-capable fallback was found,
+    # try deterministic Odoo lookup for Odoo-related queries.
+    if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded") and not fallback_used:
+        user_query = messages[-1].get("content", "") if messages else ""
+        lookup_intent = detect_odoo_lookup_intent(user_query) if user_query else None
+        if lookup_intent:
+            fallback_reason = f"deterministic_odoo_lookup_fallback_from_{result.get('error_type')}"
+            logger.info(
+                "Using deterministic Odoo lookup fallback | user_id=%s reason=%s",
+                user_id, fallback_reason,
+            )
+            # Execute the deterministic actions
+            dr_tool_results = []
+            all_ok = True
+            for action in lookup_intent.get("actions", []):
+                try:
+                    tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"])
+                    dr_tool_results.append({
+                        "tool_call_id": f"deterministic_{action['tool']}",
+                        "tool_name": action["tool"],
+                        "arguments": action["input"],
+                        "result": tc_result,
+                    })
+                    if isinstance(tc_result, dict) and tc_result.get("error"):
+                        all_ok = False
+                        break
+                except Exception as act_exc:
+                    logger.error("Deterministic Odoo action failed: %s", act_exc)
+                    all_ok = False
+                    break
+            if dr_tool_results:
+                tool_results = dr_tool_results
+                fallback_used = True
+                # Build answer from tool results
+                dr_fallback = _build_report_fallback_answer(dr_tool_results)
+                if dr_fallback:
+                    result = {"content": dr_fallback, "finish_reason": "stop", "error": False}
+                else:
+                    # Build a simple summary from results
+                    result_parts = []
+                    for tr in dr_tool_results:
+                        r = tr.get("result", {})
+                        if isinstance(r, dict) and not r.get("error"):
+                            records = r.get("records", r.get("lines", r.get("results", [])))
+                            if records:
+                                result_parts.append(f"{tr['tool_name']}: found {len(records)} records")
+                            else:
+                                result_parts.append(f"{tr['tool_name']}: no results")
+                        elif isinstance(r, dict) and r.get("error"):
+                            result_parts.append(f"{tr['tool_name']}: error - {r.get('message', 'unknown')}")
+                    result = {"content": "; ".join(result_parts) if result_parts else "Odoo lookup completed but no results found.", "finish_reason": "stop", "error": False}
+
     # Tool-calling loop (up to 10 rounds to prevent infinite loops)
     max_tool_rounds = 10
     tool_round = 0
