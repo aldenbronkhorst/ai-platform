@@ -3,6 +3,7 @@ import { useState, useMemo } from "react";
 
 interface ChatError {
   requestId?: string;
+  traceId?: string;
   errorType?: string;
   errorMessage: string;
   technicalDetail?: string;
@@ -76,6 +77,9 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
         <div className="mt-3 p-3 rounded-xl bg-canvas border border-subtle text-[10px] font-mono text-muted whitespace-pre-wrap break-words space-y-1.5">
           {parsed.requestId && (
             <div><span className="font-semibold text-default">Request ID:</span> {parsed.requestId}</div>
+          )}
+          {parsed.traceId && (
+            <div><span className="font-semibold text-default">Trace ID:</span> {parsed.traceId}</div>
           )}
           {parsed.httpStatus ? (
             <div><span className="font-semibold text-default">Status:</span> HTTP {parsed.httpStatus}</div>

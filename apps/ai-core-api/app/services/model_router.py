@@ -990,41 +990,70 @@ async def execute_chat(
     total_completion_tokens += result.get("completion_tokens", 0)
     total_latency_ms += result.get("latency_ms", 0)
 
-    # Fallback on quota / rate-limit errors
+    # Fallback on quota / rate-limit errors — try ALL available tool-supporting models
     fallback_used = False
     primary_model_display = model_obj.display_name
     fallback_model_display = "none"
+    fallback_reason = "noneeded"
 
     if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded"):
+        fallback_reason = "primary_quota_exceeded"
+        # Collect all possible fallback models: configured fallback first, then any other enabled model
+        fallback_candidates: list[tuple[Any, Any]] = []
+        
+        # 1. Try configured fallback model first
         if route.fallback_model_id:
-            fallback_model_res = await db.execute(
+            fb_model_res = await db.execute(
                 select(AIModel).where(AIModel.id == route.fallback_model_id, AIModel.enabled == "true")
             )
-            fallback_model = fallback_model_res.scalar_one_or_none()
-            if fallback_model:
-                fallback_model_display = fallback_model.display_name
-                # Verify that fallback supports required tools (if tools are enabled/requested)
-                config_fb = fallback_model.config_json or {}
-                fb_supports_tools = fallback_model.supports_tools == "true" or config_fb.get("supports_tools") is True
+            fb_model = fb_model_res.scalar_one_or_none()
+            if fb_model:
+                fb_prov_res = await db.execute(
+                    select(AIProvider).where(AIProvider.id == fb_model.provider_id, AIProvider.enabled == "true")
+                )
+                fb_prov = fb_prov_res.scalar_one_or_none()
+                if fb_prov:
+                    fallback_candidates.append((fb_model, fb_prov))
 
-                if tool_definitions and not fb_supports_tools:
-                    logger.warning("Fallback model %s does not support required tools. Skipping fallback.", fallback_model.display_name)
-                else:
-                    fallback_prov_res = await db.execute(
-                        select(AIProvider).where(AIProvider.id == fallback_model.provider_id, AIProvider.enabled == "true")
+        # 2. If configured fallback doesn't support tools, try all other enabled models with tools
+        needs_tools = bool(tool_definitions)
+        if needs_tools and (not fallback_candidates or fallback_candidates[0][0].supports_tools != "true"):
+            all_models_res = await db.execute(
+                select(AIModel).where(
+                    AIModel.enabled == "true",
+                    AIModel.id != model_obj.id,
+                    AIModel.id != (route.fallback_model_id or UUID(int=0)),
+                ).limit(10)
+            )
+            for alt_model in all_models_res.scalars().all():
+                if alt_model.supports_tools == "true" or (alt_model.config_json or {}).get("supports_tools") is True:
+                    alt_prov_res = await db.execute(
+                        select(AIProvider).where(AIProvider.id == alt_model.provider_id, AIProvider.enabled == "true")
                     )
-                    fallback_prov = fallback_prov_res.scalar_one_or_none()
-                    if fallback_prov:
-                        logger.warning(
-                            "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
-                            model_obj.display_name, fallback_model.display_name,
-                        )
-                        fb_result, used_model, used_provider, client = await _try_model(fallback_model, fallback_prov, full_messages)
-                        total_prompt_tokens += fb_result.get("prompt_tokens", 0)
-                        total_completion_tokens += fb_result.get("completion_tokens", 0)
-                        total_latency_ms += fb_result.get("latency_ms", 0)
-                        result = fb_result
-                        fallback_used = True
+                    alt_prov = alt_prov_res.scalar_one_or_none()
+                    if alt_prov:
+                        fallback_candidates.append((alt_model, alt_prov))
+
+        for fb_model, fb_prov in fallback_candidates:
+            fb_supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
+            if needs_tools and not fb_supports_tools:
+                logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
+                continue
+
+            fallback_model_display = fb_model.display_name
+            logger.warning(
+                "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
+                model_obj.display_name, fb_model.display_name,
+            )
+            fb_result, used_model, used_provider, client = await _try_model(fb_model, fb_prov, full_messages)
+            total_prompt_tokens += fb_result.get("prompt_tokens", 0)
+            total_completion_tokens += fb_result.get("completion_tokens", 0)
+            total_latency_ms += fb_result.get("latency_ms", 0)
+            result = fb_result
+            fallback_used = True
+            if not result.get("error"):
+                break  # Success — stop trying more fallbacks
+            fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
 
     # Tool-calling loop (up to 10 rounds to prevent infinite loops)
     max_tool_rounds = 10
@@ -1192,6 +1221,7 @@ async def execute_chat(
             "primary_model": primary_model_display,
             "fallback_model": fallback_model_display,
             "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
             "routing_reason": policy.get("reason", "unknown") if "policy" in locals() else "legacy_get_enabled_route",
             "cost_tier": policy.get("cost_tier", "medium") if "policy" in locals() else "medium"
         }
