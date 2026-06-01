@@ -279,11 +279,75 @@ async def _execute_tool_call(
             try:
                 detail = response.json()
             except Exception:
-                detail = response.text
-            return {"error": str(detail), "status_code": response.status_code}
+                detail = {"error_type": "connector_http_error", "message": response.text}
+            return {
+                "error": True,
+                "status_code": response.status_code,
+                "connector_error": detail,
+                "error_type": detail.get("error_type") or detail.get("error") or "connector_error",
+                "message": detail.get("message") or detail.get("detail") or str(detail),
+            }
         return response.json()
 
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
+    """Build a fallback user-facing answer from odoo_execute_report tool results.
+    Used when the model produces blank content after a report tool call."""
+    for tr in tool_results:
+        if tr.get("tool_name") != "odoo_execute_report":
+            continue
+        result = tr.get("result", {})
+        if isinstance(result, dict) and result.get("error"):
+            err = result.get("connector_error") or result
+            err_type = err.get("error_type") or err.get("error") or "unknown"
+            err_msg = err.get("message") or str(err)
+            return (
+                f"I tried to run the Odoo report but encountered an issue. "
+                f"The report engine returned: {err_msg}. "
+                f"This may be due to report permissions, Odoo edition/version differences, "
+                f"or unsupported report options."
+            )
+        if isinstance(result, dict) and not result.get("error"):
+            lines = result.get("lines") or []
+            report_name = result.get("report_name") or "report"
+            currency_code = result.get("currency_code") or ""
+            currency_symbol = result.get("currency_symbol") or ""
+            date_from = result.get("date_from") or ""
+            date_to = result.get("date_to") or ""
+            available = result.get("available_line_names") or []
+            missing = result.get("missing_line_names") or []
+            if lines:
+                parts = [f"From the Odoo {report_name}"]
+                if date_from and date_to:
+                    parts.append(f"for {date_from} to {date_to}")
+                parts.append(":")
+                line_items = []
+                for ln in lines[:10]:
+                    name = ln.get("name", "")
+                    val = ln.get("formatted_value") or ""
+                    if name and val:
+                        sym = currency_symbol or ""
+                        line_items.append(f"{name}: {sym}{val}")
+                    elif name:
+                        line_items.append(f"{name}")
+                if line_items:
+                    parts.append("")
+                    parts.extend(f"  - {li}" for li in line_items)
+                if len(lines) > 10:
+                    parts.append(f"  ... and {len(lines) - 10} more lines")
+                if missing:
+                    parts.append(f"Note: requested lines not found in report: {', '.join(missing[:5])}")
+                return "\n".join(parts)
+            if available:
+                return (
+                    f"I opened the {report_name} report"
+                    f"{' for ' + date_from + ' to ' + date_to if date_from and date_to else ''}, "
+                    f"but could not find matching lines. "
+                    f"Available top-level lines include: {', '.join(available[:10])}."
+                )
+    return None
 
 
 def _map_odoo_tool_to_path(tool_name: str) -> str:
@@ -399,12 +463,40 @@ async def execute_chat(
         tools = await _get_available_tools(db, user_id)
         tool_definitions = _build_tool_definitions(tools)
         if tool_definitions:
+            has_report_tool = any(t.name == "odoo_execute_report" for t in tools)
             system_prompt += (
                 "\n\nYou have access to the following tools. "
                 "When the user asks about data from a connected system, call the appropriate tool "
                 "rather than saying you cannot access it. "
                 "Use tools proactively when relevant."
             )
+            if has_report_tool:
+                system_prompt += (
+                    "\n\n### Report Tool Guidance\n"
+                    "When the user asks about financial reports, use `odoo_execute_report`. "
+                    "Resolve report aliases into the full report name:\n"
+                    "  - \"P&L\" or \"PNL\" → \"Profit and Loss\"\n"
+                    "  - \"Balance Sheet\" → \"Balance Sheet\"\n"
+                    "  - \"Trial Balance\" → \"Trial Balance\"\n"
+                    "  - \"Aged Receivables\" / \"AR\" → \"Aged Receivables\"\n"
+                    "  - \"Aged Payables\" / \"AP\" → \"Aged Payables\"\n"
+                    "  - \"General Ledger\" / \"GL\" → \"General Ledger\"\n"
+                    "  - \"Partner Ledger\" → \"Partner Ledger\"\n"
+                    "  - \"Tax Report\" → \"Tax Report\"\n"
+                    "Resolve date phrases into actual dates:\n"
+                    "  - \"this month\" → first day of current month to today/last day\n"
+                    "  - \"last month\" → first to last day of previous month\n"
+                    "  - \"this year\" → Jan 1 to today\n"
+                    "  - \"last year\" → Jan 1 to Dec 31 of previous year\n"
+                    "  - \"Q1\" / \"first quarter\" → Jan 1 to Mar 31\n"
+                    "Resolve line targets into candidate line names:\n"
+                    "  - \"revenue\" → [\"Revenue\", \"Income\", \"Operating Income\", \"Sales\"]\n"
+                    "  - \"expenses\" → [\"Expenses\", \"Operating Expenses\", \"Cost of Goods Sold\", \"COGS\"]\n"
+                    "  - \"net income\" → [\"Net Income\", \"Net Profit\", \"Profit/Loss\"]\n"
+                    "  - \"gross profit\" → [\"Gross Profit\", \"Gross Margin\"]\n"
+                    "Always provide `line_names` when asking about specific line items."
+                    " If unsure about line names, omit `line_names` to get all available lines."
+                )
 
     # Inject business rules and company facts into the system prompt
     injected_rules: list[Any] = []

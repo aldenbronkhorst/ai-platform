@@ -1,6 +1,10 @@
+import os
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from uuid import uuid4
+
+os.environ.setdefault("ODOO_CONNECTOR_URL", "http://mock-connector:8000")
+os.environ.setdefault("ODOO_CONNECTOR_API_KEY", "test-key")
 
 from app.services.reviewer import ReviewerAgent
 from app.schemas.schemas import ReviewRequest
@@ -198,3 +202,117 @@ class TestOdooExecuteReportRouterAndReviewer:
              
              assert "R 150,000.00" in result["content"]
              assert result["prompt_tokens"] > 0
+
+
+class TestStructuredToolErrors:
+    """Tests for Fix 1: Preserve structured tool errors."""
+
+    @pytest.mark.asyncio
+    async def test_connector_error_json_preserved(self):
+        from app.services.model_router import _execute_tool_call
+        from unittest.mock import AsyncMock, patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {
+            "error_type": "report_not_found",
+            "message": "Report 'Profit and Loss' not found",
+        }
+        mock_resp.text = "raw fallback"
+        with patch("httpx.AsyncClient.post", return_value=mock_resp), \
+             patch("app.services.model_router._resolve_odoo_credentials_for_tool") as mc, \
+             patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), \
+             patch("app.services.model_router.ODOO_CONNECTOR_KEY", "test-key"):
+            mc.return_value = {"url": "https://test.odoo.com", "db": "test", "username": "admin", "api_key": "key"}
+            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_execute_report",
+                                              {"report_name": "Profit and Loss"})
+        assert result.get("error") is True
+        assert result.get("status_code") == 400
+        assert result.get("error_type") == "report_not_found"
+        assert isinstance(result.get("connector_error"), dict)
+
+    @pytest.mark.asyncio
+    async def test_connector_error_fallback_on_non_json(self):
+        from app.services.model_router import _execute_tool_call
+        from unittest.mock import AsyncMock, patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 502
+        mock_resp.json.side_effect = ValueError("Not JSON")
+        mock_resp.text = "Upstream connection refused"
+        with patch("httpx.AsyncClient.post", return_value=mock_resp), \
+             patch("app.services.model_router._resolve_odoo_credentials_for_tool") as mc, \
+             patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), \
+             patch("app.services.model_router.ODOO_CONNECTOR_KEY", "test-key"):
+            mc.return_value = {"url": "https://test.odoo.com", "db": "test", "username": "admin", "api_key": "key"}
+            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_execute_report",
+                                              {"report_name": "Test"})
+        assert result.get("error") is True
+        assert result.get("error_type") == "connector_http_error"
+        assert "connection refused" in result.get("message", "").lower()
+
+
+class TestReportFallbackAnswer:
+    """Tests for Fix 2/5: Fallback answer builder."""
+
+    def test_fallback_from_report_lines(self):
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_execute_report", "result": {
+                "report_name": "Profit and Loss",
+                "date_from": "2026-06-01", "date_to": "2026-06-30",
+                "currency_code": "ZAR", "currency_symbol": "R",
+                "lines": [
+                    {"name": "Revenue", "value": 150000.0, "formatted_value": "150,000.00"},
+                ],
+            }},
+        ])
+        assert result is not None
+        assert "Profit and Loss" in result
+        assert "2026-06-01" in result
+        assert "R" in result
+        assert "Revenue" in result
+
+    def test_fallback_without_matching_lines(self):
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_execute_report", "result": {
+                "report_name": "Profit and Loss",
+                "lines": [],
+                "available_line_names": ["Revenue", "Expenses", "Net Income"],
+            }},
+        ])
+        assert result is not None
+        assert "Revenue" in result and "Expenses" in result
+
+    def test_fallback_from_tool_error(self):
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_execute_report", "result": {
+                "error": True, "error_type": "report_not_found",
+                "message": "Report not found",
+            }},
+        ])
+        assert result is not None
+        assert "report" in result.lower() and "issue" in result.lower()
+
+    def test_fallback_ignores_non_report_tools(self):
+        from app.services.model_router import _build_report_fallback_answer
+        result = _build_report_fallback_answer([
+            {"tool_name": "odoo_search_read", "result": {"records": []}},
+        ])
+        assert result is None
+
+
+class TestReviewerBlankCheck:
+    """Tests for Fix 4: Reviewer must not mask tool errors."""
+
+    @pytest.mark.asyncio
+    async def test_reviewer_blank_with_tool_error(self):
+        from app.services.reviewer import ReviewerAgent
+        from app.schemas.schemas import ReviewRequest
+        reviewer = ReviewerAgent()
+        review = await reviewer.review(ReviewRequest(
+            content="",
+            user_question="What is revenue on P&L?",
+            tool_results=[{"tool_name": "odoo_execute_report", "result": {"error": True}}],
+        ))
+        assert not review.approved
