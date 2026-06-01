@@ -817,48 +817,35 @@ async def execute_chat(
                 "Use tools proactively when relevant."
             )
             if has_odoo_tools:
-                system_prompt += (
+                avail_names = [t.name for t in tools]
+                guidance = (
                     "\n\n### Odoo Tool Guidance\n"
-                    "Use these mode-based Odoo tools. Do not create or call one-off tools for "
-                    "individual reports, document types, customers, suppliers, or business questions.\n\n"
-                    "  - **odoo_health**: Verify connection/runtime status.\n"
-                    "  - **odoo_schema**: When unsure about models or fields.\n"
-                    "  - **odoo_query**: Normal record search/read/count/summary. "
-                    "Default to records mode with domain filters. Use count for totals. "
-                    "Use summary for count + sample. "
-                    "Do not request body/content/binary fields — use odoo_content instead.\n"
-                    "  - **odoo_analyze**: Aggregates, pivots, and account reports. "
-                    "Use mode=\"account_report\" with report_name for financial reports. "
-                    "P&L/PNL → \"Profit and Loss\". "
-                    "Include line_names for specific lines (e.g., [\"Revenue\", \"Income\"]). "
-                    "Resolve date phrases into YYYY-MM-DD values.\n"
-                    "  - **odoo_content**: Chatter, notes, HTML/body fields, long text. "
-                    "Use metadata mode first to find relevant records, then content mode "
-                    "with specific IDs to read full content.\n"
-                    "  - **odoo_attachment**: Attachment metadata, links, text, OCR, base64. "
-                    "Use odoo_query on ir.attachment for discovery, then odoo_attachment for reading.\n"
-                    "  - **odoo_mutation**: Structured create/write/delete/workflow. "
-                    "Delete and workflow default to dry_run=true.\n"
-                    "  - **odoo_message**: Chatter/Discuss message posting.\n"
-                    "  - **odoo_execute_kw**: Advanced escape hatch only. Disabled by default.\n\n"
-                    "**Report alias reference:**\n"
-                    "  - \"P&L\" / \"PNL\" → \"Profit and Loss\"\n"
-                    "  - \"Balance Sheet\" / \"BS\" → \"Balance Sheet\"\n"
-                    "  - \"Trial Balance\" / \"TB\" → \"Trial Balance\"\n"
-                    "  - \"General Ledger\" / \"GL\" → \"General Ledger\"\n"
-                    "  - \"Partner Ledger\" → \"Partner Ledger\"\n"
-                    "  - \"Aged Receivables\" / \"AR\" → \"Aged Receivables\"\n"
-                    "  - \"Aged Payables\" / \"AP\" → \"Aged Payables\"\n"
-                    "  - \"Tax Report\" → \"Tax Report\"\n"
-                    "**Date resolution:** \"this month\" → first day to today; "
-                    "\"last month\" → previous month; "
-                    "\"this year\" → Jan 1 to today; "
-                    "\"last year\" → Jan 1 to Dec 31.\n"
-                    "**Line name candidates:** revenue → [Revenue, Income, Sales]; "
-                    "expenses → [Expenses, Operating Expenses, COGS]; "
-                    "net income → [Net Profit, Net Income]; "
-                    "gross profit → [Gross Profit, Gross Margin]."
+                    "Use these mode-based Odoo tools. Do not create one-off tools.\n\n"
                 )
+                if "odoo_query" in avail_names:
+                    guidance += "  - **odoo_query**: Records/count/summary. Default to records with domain.\n"
+                if "odoo_analyze" in avail_names:
+                    guidance += "  - **odoo_analyze**: Aggregates and account reports. P&L→\"Profit and Loss\".\n"
+                if "odoo_content" in avail_names:
+                    guidance += "  - **odoo_content**: Chatter/notes/long text. metadata first, then content with IDs.\n"
+                if "odoo_attachment" in avail_names:
+                    guidance += "  - **odoo_attachment**: Attachment metadata and text. Use odoo_query on ir.attachment.\n"
+                if "odoo_mutation" in avail_names:
+                    guidance += "  - **odoo_mutation**: Create/write/delete/workflow. dry_run for delete/workflow.\n"
+                if "odoo_message" in avail_names:
+                    guidance += "  - **odoo_message**: Post/update chatter/Discuss messages.\n"
+                if "odoo_schema" in avail_names:
+                    guidance += "  - **odoo_schema**: Model/field discovery when unsure.\n"
+                if "odoo_health" in avail_names:
+                    guidance += "  - **odoo_health**: Connection/runtime check.\n"
+                if "odoo_analyze" in avail_names:
+                    guidance += (
+                        "\nReport aliases: P&L/PNL→Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
+                        "Dates: this month→first day to today; this year→Jan 1 to today; last month→previous month.\n"
+                        "Line names: revenue→[Revenue, Income, Sales]; expenses→[Expenses, COGS]; net income→[Net Profit, Net Income].\n"
+                    )
+                guidance += "Do not use odoo_execute_kw (disabled). Do not create one-off tools.\n"
+                system_prompt += guidance
 
     # Inject business rules and company facts into the system prompt
     injected_rules: list[Any] = []
