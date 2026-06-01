@@ -9,6 +9,8 @@ import {
   Plus,
   Trash2,
   Key,
+  Terminal,
+  GitBranch,
 } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
@@ -289,7 +291,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <BookOpen className="w-12 h-12 text-soft shrink-0" />
       </GlassPanel>
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid md:grid-cols-3 gap-6">
         <GlassPanel className="p-6 rounded-2xl flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-4">
@@ -367,6 +369,59 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           </div>
         </GlassPanel>
 
+        {/* Azure CLI connector — uses Managed Identity */}
+        <GlassPanel className="p-6 rounded-2xl flex flex-col justify-between border-dashed">
+          <div>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-surface border border-default rounded-xl">
+                <Terminal className="w-6 h-6 text-[var(--color-primary)]" />
+              </div>
+              <div>
+                <h4 className="font-bold text-default leading-tight">Azure CLI</h4>
+                <span className="text-xs text-muted font-mono">Native Azure CLI</span>
+              </div>
+            </div>
+            <p className="text-xs text-soft mb-4">
+              Run native Azure CLI commands via Managed Identity. Access Container Apps, Key Vault, Foundry deployments, and other Azure resources.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <span className="text-xs bg-surface text-muted border border-default px-3 py-1 rounded-full font-medium">
+              Managed Identity
+            </span>
+            <span className="text-xs bg-[var(--color-success)]/10 text-[var(--color-success)] border border-[var(--color-success)]/25 px-3 py-1 rounded-full font-medium flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Active
+            </span>
+          </div>
+        </GlassPanel>
+
+        {/* GitHub CLI connector — uses stored PAT */}
+        <GlassPanel className="p-6 rounded-2xl flex flex-col justify-between border-dashed">
+          <div>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-surface border border-default rounded-xl">
+                <GitBranch className="w-6 h-6 text-[var(--color-primary)]" />
+              </div>
+              <div>
+                <h4 className="font-bold text-default leading-tight">GitHub CLI</h4>
+                <span className="text-xs text-muted font-mono">Native GitHub CLI</span>
+              </div>
+            </div>
+            <p className="text-xs text-soft mb-4">
+              Run native GitHub CLI commands (gh, git, rg, jq). Access repos, workflows, PRs, issues, Actions runs, and code search.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <span className="text-xs bg-surface text-muted border border-default px-3 py-1 rounded-full font-medium">
+              Token Auth
+            </span>
+            <span className="text-xs bg-[var(--color-warning)]/10 text-[var(--color-warning)] border border-[var(--color-warning)]/25 px-3 py-1 rounded-full font-medium flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" /> Needs Token
+            </span>
+          </div>
+        </GlassPanel>
+
+        {/* Microsoft 365 — placeholder */}
         <GlassPanel className="p-6 rounded-2xl flex flex-col justify-center items-center text-center border-dashed">
           <Database className="w-8 h-8 text-soft mb-3" />
           <h4 className="font-bold text-muted mb-1">Microsoft / Microsoft 365</h4>
