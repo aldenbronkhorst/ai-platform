@@ -43,6 +43,7 @@ async def azure_diagnose(auth: dict = Depends(api_key_auth)):
     request_id = uuid.uuid4().hex[:16]
     commands = [
         "az --version",
+        "az login --identity --allow-no-subscriptions -o json",
         "az account show -o json",
         "az account list --query '[].{name:name, id:id, tenantId:tenantId}' -o json",
     ]
