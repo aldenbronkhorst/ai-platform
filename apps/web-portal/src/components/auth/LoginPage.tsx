@@ -2,6 +2,7 @@ import { AlertTriangle, User, Shield, RefreshCw } from "lucide-react";
 import type { InteractionStatus } from "@azure/msal-browser";
 import type { PopupRequest } from "@azure/msal-browser";
 
+
 interface LoginPageProps {
   inProgress: InteractionStatus;
   authError: string | null;
@@ -79,7 +80,7 @@ export function LoginPage({
         <div className="space-y-3 pt-4">
           <button
             onClick={onSignIn}
-            className="w-full py-3 bg-default text-canvas font-extrabold rounded-2xl text-sm transition-all flex items-center justify-center gap-3 shadow-xl hover:opacity-90"
+            className="w-full py-3.5 bg-accent text-white font-extrabold rounded-2xl text-sm transition-all flex items-center justify-center gap-3 shadow-xl hover:opacity-90 hover:shadow-2xl active:scale-[0.98] border border-accent/50 backdrop-blur-sm"
           >
             <div className="grid grid-cols-2 gap-0.5 shrink-0 w-4 h-4">
               <div className="bg-[#f25f22] w-1.5 h-1.5" />

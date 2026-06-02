@@ -61,6 +61,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [githubOrg, setGithubOrg] = useState("aldenbronkhorst");
   const [cliTestResult, setCliTestResult] = useState<any>(null);
   const [cliTesting, setCliTesting] = useState(false);
+  const [azureDeviceCode, setAzureDeviceCode] = useState<any>(null);
+  const [azurePolling, setAzurePolling] = useState(false);
 
   const headers = () => ({
     Authorization: `Bearer ${accessToken}`,
@@ -138,9 +140,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       fetchOdooStatus();
     } catch { /* ignore */ }
   };
-
-  const [azureDeviceCode, setAzureDeviceCode] = useState<any>(null);
-  const [azurePolling, setAzurePolling] = useState(false);
 
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
@@ -354,7 +353,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
       <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
         {CONNECTORS.map((c) => (
-          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); }}
+          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
@@ -381,7 +380,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               <h2 className="font-bold text-lg text-default">
                 {CONNECTORS.find(c => c.key === selectedConnector)?.name || selectedConnector}
               </h2>
-              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); }}
+              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>

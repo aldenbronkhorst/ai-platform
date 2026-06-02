@@ -619,7 +619,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       setLocalMockAuthenticated(false);
       setLocalMockUser(null);
     } else {
-      instance.logoutRedirect();
+      // Local app logout only — does not trigger Microsoft global sign-out
+      instance.logoutRedirect({ postLogoutRedirectUri: window.location.origin });
     }
   };
 
