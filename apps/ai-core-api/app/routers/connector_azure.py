@@ -41,9 +41,10 @@ async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
 async def azure_diagnose(auth: dict = Depends(api_key_auth)):
     """Run Azure CLI diagnostics: version check, auth, and resource access."""
     request_id = uuid.uuid4().hex[:16]
+    ms_client_id = "265d4dce-15e8-41da-aed7-889392ef3392"
     commands = [
         "az --version",
-        "az login --identity --allow-no-subscriptions -o json",
+        f"az login --identity --username {ms_client_id} --allow-no-subscriptions -o json",
         "az account show -o json",
         "az account list --query '[].{name:name, id:id, tenantId:tenantId}' -o json",
     ]
