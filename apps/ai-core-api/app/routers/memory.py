@@ -12,7 +12,7 @@ from sqlalchemy import select, or_, and_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role, require_auth_role
 from app.models.models import AIMemory, AIChatMessage
 from app.schemas.schemas import AIMemoryCreate, AIMemoryUpdate, AIMemoryResponse, MemoryCandidate, MemoryFeedbackRequest
 from app.services.audit import AuditService
@@ -21,6 +21,20 @@ from app.schemas.schemas import AIAuditEventCreate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memories", tags=["memories"])
+
+
+def _can_read_memory(auth: dict, memory: AIMemory) -> bool:
+    user_id = auth.get("user_id")
+    if memory.created_by_user_id == user_id:
+        return True
+    if memory.scope_type == "global" and memory.status == "active":
+        return True
+    return has_role(auth, DEVELOPER_ROLES | AUDIT_ROLES)
+
+
+def _can_manage_memory(auth: dict, memory: AIMemory) -> bool:
+    user_id = auth.get("user_id")
+    return memory.created_by_user_id == user_id or has_role(auth, DEVELOPER_ROLES)
 
 
 @router.get("", response_model=List[AIMemoryResponse])
@@ -36,6 +50,7 @@ async def list_memories(
 ):
     """List memories with optional filtering. Ordered by created_at descending."""
     query = select(AIMemory)
+    user_id = auth.get("user_id")
 
     if type:
         query = query.where(AIMemory.type == type)
@@ -45,6 +60,13 @@ async def list_memories(
         query = query.where(AIMemory.risk_level == risk_level)
     if scope_type:
         query = query.where(AIMemory.scope_type == scope_type)
+    if not has_role(auth, DEVELOPER_ROLES | AUDIT_ROLES):
+        query = query.where(
+            or_(
+                AIMemory.created_by_user_id == user_id,
+                and_(AIMemory.scope_type == "global", AIMemory.status == "active"),
+            )
+        )
 
     query = query.order_by(desc(AIMemory.created_at)).offset(offset).limit(limit)
     result = await db.execute(query)
@@ -61,6 +83,8 @@ async def get_memory(
     result = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
     memory = result.scalar_one_or_none()
     if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    if not _can_read_memory(auth, memory):
         raise HTTPException(status_code=404, detail="Memory not found")
     return memory
 
@@ -134,6 +158,8 @@ async def update_memory(
     memory = result.scalar_one_or_none()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
+    if not _can_manage_memory(auth, memory):
+        raise HTTPException(status_code=404, detail="Memory not found")
 
     user_id = auth.get("user_id")
     changed = []
@@ -196,6 +222,8 @@ async def approve_memory(
     memory = result.scalar_one_or_none()
     if not memory:
         raise HTTPException(status_code=404, detail="Memory not found")
+    if not _can_manage_memory(auth, memory):
+        raise HTTPException(status_code=404, detail="Memory not found")
 
     user_id = auth.get("user_id")
     previous_status = memory.status
@@ -236,6 +264,8 @@ async def archive_memory(
     result = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
     memory = result.scalar_one_or_none()
     if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    if not _can_manage_memory(auth, memory):
         raise HTTPException(status_code=404, detail="Memory not found")
 
     user_id = auth.get("user_id")
@@ -335,6 +365,7 @@ async def trigger_memory_review(
     auth=Depends(api_key_auth),
 ):
     """Triggers the memory review, conflict detection, and cleanup job."""
+    require_auth_role(auth, DEVELOPER_ROLES, "Memory review is reserved for platform maintainers.")
     from app.services.memory_review import MemoryReviewService
     svc = MemoryReviewService(db)
     result = await svc.run_review_job()
@@ -348,6 +379,7 @@ async def trigger_memory_consolidation(
     auth=Depends(api_key_auth),
 ):
     """Triggers the memory review and consolidation pipeline."""
+    require_auth_role(auth, DEVELOPER_ROLES, "Memory consolidation is reserved for platform maintainers.")
     from app.services.memory_consolidation import MemoryConsolidationService
     svc = MemoryConsolidationService(db)
     result = await svc.consolidate_memories()
@@ -372,6 +404,8 @@ async def record_memory_feedback(
     mem_q = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
     memory = mem_q.scalar_one_or_none()
     if not memory:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    if not _can_read_memory(auth, memory):
         raise HTTPException(status_code=404, detail="Memory not found.")
 
     old_confidence = memory.confidence

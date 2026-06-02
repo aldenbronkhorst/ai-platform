@@ -64,36 +64,65 @@ class TestMissingCredentials:
         assert "connected account" in data["detail"].lower()
 
 
-class TestExecuteKwGating:
-    """Test 11: execute_kw write/custom methods are gated at AI Core level"""
+class TestExecuteKwPassThrough:
+    """execute_kw authorization is delegated to the user's Odoo account."""
     
-    def test_blocks_unlink(self):
-        response = client.post("/tools/odoo/execute", json={
-            "model": "res.partner",
-            "method": "unlink",
-            "args": [[1]],
-        })
-        assert response.status_code == 403
-        data = response.json()
-        assert "blocked" in data["detail"].lower()
+    def test_unlink_passes_to_connector_when_user_has_account(self):
+        with patch("app.routers.odoo._resolve_odoo_credentials") as mock_creds, \
+             patch("app.routers.odoo._call_connector") as mock_call:
+            mock_creds.return_value = {
+                "url": "https://test.odoo.com",
+                "db": "test_db",
+                "username": "admin",
+                "api_key": "secret",
+            }
+            mock_call.return_value = {"result": True}
+
+            response = client.post("/tools/odoo/execute", json={
+                "model": "res.partner",
+                "method": "unlink",
+                "args": [[1]],
+            })
+            assert response.status_code == 200
+            mock_call.assert_called_once()
     
-    def test_blocks_sudo(self):
-        response = client.post("/tools/odoo/execute", json={
-            "model": "res.partner",
-            "method": "sudo",
-            "args": [],
-        })
-        assert response.status_code == 403
-        assert "blocked" in response.json()["detail"].lower()
+    def test_custom_method_passes_to_connector_when_user_has_account(self):
+        with patch("app.routers.odoo._resolve_odoo_credentials") as mock_creds, \
+             patch("app.routers.odoo._call_connector") as mock_call:
+            mock_creds.return_value = {
+                "url": "https://test.odoo.com",
+                "db": "test_db",
+                "username": "admin",
+                "api_key": "secret",
+            }
+            mock_call.return_value = {"result": []}
+
+            response = client.post("/tools/odoo/execute", json={
+                "model": "res.partner",
+                "method": "custom_server_method",
+                "args": [],
+            })
+            assert response.status_code == 200
+            mock_call.assert_called_once()
     
-    def test_blocks_write_without_mode(self):
-        response = client.post("/tools/odoo/execute", json={
-            "model": "res.partner",
-            "method": "write",
-            "args": [[1], {"name": "New Name"}],
-        })
-        assert response.status_code == 403
-        assert "blocked" in response.json()["detail"].lower()
+    def test_write_passes_to_connector_without_platform_operation_mode(self):
+        with patch("app.routers.odoo._resolve_odoo_credentials") as mock_creds, \
+             patch("app.routers.odoo._call_connector") as mock_call:
+            mock_creds.return_value = {
+                "url": "https://test.odoo.com",
+                "db": "test_db",
+                "username": "admin",
+                "api_key": "secret",
+            }
+            mock_call.return_value = {"result": True}
+
+            response = client.post("/tools/odoo/execute", json={
+                "model": "res.partner",
+                "method": "write",
+                "args": [[1], {"name": "New Name"}],
+            })
+            assert response.status_code == 200
+            mock_call.assert_called_once()
     
     def test_allows_read_methods(self):
         with patch("app.routers.odoo._resolve_odoo_credentials") as mock_creds, \

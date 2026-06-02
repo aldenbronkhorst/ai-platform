@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
 from app.services.tool import ToolService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIToolCreate, AIToolResponse, AIAuditEventCreate
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/tools", tags=["tools"])
 async def register_tool(
     data: AIToolCreate,
     db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
+    auth=Depends(require_role(list(DEVELOPER_ROLES))),
 ):
     svc = ToolService(db)
     existing = await svc.get_by_name(data.name)

@@ -130,14 +130,9 @@ def mutate_records(req: RecordsMutateRequest, auth: dict = Depends(internal_api_
     else:  # workflow
         if not req.record_ids:
             raise HTTPException(status_code=400, detail="record_ids required for workflow")
-        ALLOWED_WORKFLOW_METHODS = {
-            "action_confirm", "action_done", "action_cancel", "action_draft",
-            "button_approve", "button_refuse", "button_validate", "button_cancel",
-            "toggle_active", "action_archive", "action_unarchive",
-        }
         method = str(req.workflow_method or "").strip()
-        if not method or method.startswith("_") or method not in ALLOWED_WORKFLOW_METHODS:
-            raise HTTPException(status_code=400, detail=f"workflow_method must be one of: {', '.join(sorted(ALLOWED_WORKFLOW_METHODS))}")
+        if not method:
+            raise HTTPException(status_code=400, detail="workflow_method is required")
         result = client.call_with_transport(req.model, method, args=[req.record_ids], kwargs={})
         affected_ids = req.record_ids
 

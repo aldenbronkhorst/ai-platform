@@ -838,7 +838,7 @@ async def execute_chat(
                     "odoo_analyze": "Aggregates and account reports. P&L → Profit and Loss.",
                     "odoo_content": "Chatter/notes/long text. metadata first, then content with IDs.",
                     "odoo_attachment": "Attachment metadata and text. Discovery via odoo_query on ir.attachment.",
-                    "odoo_mutation": "Create/write/delete/workflow. dry_run for delete/workflow.",
+                    "odoo_mutation": "Create/write/delete/workflow. Odoo permissions decide whether the connected user can perform the action.",
                     "odoo_message": "Post/update chatter/Discuss messages.",
                     "odoo_schema": "Model/field discovery when unsure.",
                     "odoo_health": "Connection/runtime check.",
@@ -853,7 +853,7 @@ async def execute_chat(
                         "Dates: this month→first day to today; this year→Jan 1 to today; last month→previous month.\n"
                         "Line names: revenue→[Revenue, Income, Sales]; expenses→[Expenses, COGS]; net income→[Net Profit, Net Income]."
                     )
-                guidance_parts.append("Do not use odoo_execute_kw (disabled). Do not create one-off tools.")
+                guidance_parts.append("Prefer the consolidated odoo_ops_runner surface. Do not create one-off tools.")
                 system_prompt += "\n".join(guidance_parts)
 
     # Inject business rules and company facts into the system prompt

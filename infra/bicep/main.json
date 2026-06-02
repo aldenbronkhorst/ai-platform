@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "6292523336256815366"
+      "templateHash": "3139453142032622220"
     }
   },
   "parameters": {
@@ -1534,7 +1534,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "12506142444988151300"
+              "templateHash": "9837197049328451218"
             }
           },
           "parameters": {
@@ -1923,6 +1923,10 @@
                       "name": "odoo-connector-api-key",
                       "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "servicebus-keda-connection",
+                      "value": "[listKeys(resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen'), '2024-01-01').primaryConnectionString]"
                     }
                   ]
                 },
@@ -1997,7 +2001,8 @@
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+                "[resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen')]"
               ]
             },
             {
@@ -2037,6 +2042,10 @@
                       "name": "odoo-connector-api-key",
                       "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "servicebus-keda-connection",
+                      "value": "[listKeys(resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen'), '2024-01-01').primaryConnectionString]"
                     }
                   ]
                 },
@@ -2159,7 +2168,8 @@
               },
               "dependsOn": [
                 "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
-                "[resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName'))]"
+                "[resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName'))]",
+                "[resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen')]"
               ]
             }
           ],

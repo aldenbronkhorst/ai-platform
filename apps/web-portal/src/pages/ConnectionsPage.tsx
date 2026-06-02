@@ -106,7 +106,7 @@ function getStatusTone(status?: string, hasError = false): StatusTone {
   if (hasError) return "danger";
   if (status === "connected" || status === "active") return "success";
   if (status === "error") return "danger";
-  if (status === "needs_token" || status === "needs_setup" || status === "not_connected") return "warning";
+  if (status === "needs_token" || status === "needs_setup" || status === "not_connected" || status === "expired") return "warning";
   if (status === "coming_soon") return "muted";
   return "neutral";
 }
@@ -419,6 +419,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const data = await res.json() as { status?: string };
       if (data.status === "connected") {
         setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected" });
+        await fetchConnectors();
+      } else {
+        setCliTestResult({ status: "failed", connector: "azure_cli", message: `Azure status: ${formatStatusLabel(data.status || "not_connected")}` });
         await fetchConnectors();
       }
     } catch { /* ignore transient Azure status errors */ }

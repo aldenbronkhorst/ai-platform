@@ -53,11 +53,6 @@ def read_content(req: ContentRequest, auth: dict = Depends(internal_api_key_auth
         return {"model": req.model, "mode": "metadata", "records": records, "count": len(records)}
 
     if req.mode == "content":
-        if not req.ids and req.limit > 5:
-            raise HTTPException(status_code=400, detail={
-                "error": "broad_content_refused",
-                "message": "Content mode requires narrowed IDs or small limit (max 5 without IDs). Use metadata mode first to find relevant records.",
-            })
         content_fields = req.content_fields or ["body", "content", "message_body", "html_body", "note", "description"]
         all_fields = list(set(metadata_fields + content_fields))
         records = client.search_read(

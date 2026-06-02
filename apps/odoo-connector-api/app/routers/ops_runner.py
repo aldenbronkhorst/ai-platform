@@ -43,8 +43,13 @@ class OdooOpsRunnerRequest(BaseModel):
     values: Optional[dict[str, Any]] = None
     workflow_method: Optional[str] = None
     target_type: Optional[str] = None
+    record_id: Optional[int] = None
     channel_id: Optional[int] = None
     message_id: Optional[int] = None
+    message_type: Optional[str] = None
+    subtype_xmlid: Optional[str] = None
+    partner_ids: Optional[list[int]] = None
+    attachment_ids_for_message: Optional[list[int]] = None
     body: Optional[str] = None
     query: Optional[str] = None
     raw_html: bool = False
@@ -146,11 +151,6 @@ def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(internal_api
         return {"attachments": records, "count": len(records)}
 
     elif req.mode == "content":
-        if req.mode == "content" and not req.ids and req.limit > 5:
-            raise HTTPException(status_code=400, detail={
-                "error": "broad_content_refused",
-                "message": "Content mode requires narrowed IDs or small limit.",
-            })
         metadata_f = ["id", "name", "display_name", "create_date", "write_date"]
         content_f = req.content_fields or ["body", "content", "message_body", "html_body", "note", "description"]
         all_fields = list(set(metadata_f + content_f))
@@ -177,6 +177,11 @@ def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(internal_api
             kwargs = {"body": safe_body, "message_type": req.message_type or "comment"}
             if req.subtype_xmlid:
                 kwargs["subtype_xmlid"] = req.subtype_xmlid
+            if req.partner_ids:
+                kwargs["partner_ids"] = req.partner_ids
+            message_attachment_ids = req.attachment_ids_for_message or req.attachment_ids
+            if message_attachment_ids:
+                kwargs["attachment_ids"] = message_attachment_ids
             result = client.call_with_transport(req.model, "message_post", args=[req.record_id], kwargs=kwargs)
             return {"operation": "post", "result": result}
         raise HTTPException(status_code=400, detail={"error": "unsupported_operation", "message": f"message mode: {req.operation}"})

@@ -8,15 +8,6 @@ from app.core.formatting import format_mutation_response
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-ALLOWED_WORKFLOW_METHODS = {
-    "action_confirm", "action_done", "action_cancel", "action_draft",
-    "button_approve", "button_refuse", "button_validate", "button_cancel",
-    "toggle_active", "action_archive", "action_unarchive",
-}
-
-BLOCKED_PRIVATE_PREFIXES = ("_", "_private_", "_check_", "_compute_")
-
-
 def _get_client(creds):
     return OdooClient(
         credentials=OdooCredentials(
@@ -25,19 +16,6 @@ def _get_client(creds):
         ),
         transport=creds.transport,
     )
-
-
-def _validate_workflow_method(method: str):
-    if not method or method.startswith(BLOCKED_PRIVATE_PREFIXES):
-        raise HTTPException(status_code=400, detail={
-            "error": "blocked_method",
-            "message": f"Method '{method}' is private or blocked.",
-        })
-    if method not in ALLOWED_WORKFLOW_METHODS:
-        raise HTTPException(status_code=400, detail={
-            "error": "unsupported_method",
-            "message": f"Workflow method must be one of: {', '.join(sorted(ALLOWED_WORKFLOW_METHODS))}",
-        })
 
 
 def _execute_operation(client, operation, model, record_ids, values, workflow_method, dry_run, verify, verify_fields):
@@ -61,7 +39,8 @@ def _execute_operation(client, operation, model, record_ids, values, workflow_me
     else:
         if not record_ids:
             raise HTTPException(status_code=400, detail={"error": "missing_ids", "message": "record_ids required for workflow"})
-        _validate_workflow_method(workflow_method)
+        if not workflow_method:
+            raise HTTPException(status_code=400, detail={"error": "missing_method", "message": "workflow_method is required"})
         result = client.call_with_transport(model, workflow_method, args=[record_ids], kwargs={})
         affected_ids = record_ids
 
@@ -82,11 +61,6 @@ def _execute_operation(client, operation, model, record_ids, values, workflow_me
 @router.post("/mutation")
 def mutate(req: MutationRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
-
-    if req.operation in ("delete", "workflow") and not req.dry_run:
-        if req.post_workflow or req.workflow_method:
-            logger.warning("Forcing dry_run=true for destructive operation %s", req.operation)
-            req.dry_run = True
 
     if req.items:
         results = []

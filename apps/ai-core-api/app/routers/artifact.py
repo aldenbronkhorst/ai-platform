@@ -1,13 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role
 from app.services.artifact import ArtifactService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIArtifactCreate, AIArtifactResponse, AIAuditEventCreate
 from uuid import UUID
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+
+
+def _can_read_artifact(auth: dict, artifact) -> bool:
+    user_id = auth.get("user_id")
+    return artifact.created_by_user_id == user_id or has_role(auth, DEVELOPER_ROLES | AUDIT_ROLES)
 
 
 @router.post("", response_model=AIArtifactResponse, status_code=status.HTTP_201_CREATED)
@@ -73,6 +78,8 @@ async def get_artifact(
     artifact = await svc.get_by_id(artifact_id)
     if not artifact:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    if not _can_read_artifact(auth, artifact):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     return artifact
 
 
@@ -85,6 +92,8 @@ async def download_artifact(
     svc = ArtifactService(db)
     artifact = await svc.get_by_id(artifact_id)
     if not artifact:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+    if not _can_read_artifact(auth, artifact):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
     
     container = svc._get_container(artifact.artifact_type)

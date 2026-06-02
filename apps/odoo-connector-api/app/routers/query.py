@@ -7,9 +7,6 @@ from app.models.schemas import QueryRequest
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-REFUSED_FIELDS = {"body", "content", "message_body", "html_body", "note", "description"}
-
-
 def _get_client(creds):
     return OdooClient(
         credentials=OdooCredentials(
@@ -20,20 +17,8 @@ def _get_client(creds):
     )
 
 
-def _check_refused_fields(fields: list[str] | None):
-    if not fields:
-        return
-    refused = [f for f in fields if f.lower() in REFUSED_FIELDS or f.lower().endswith(("_body", "_content", "_html"))]
-    if refused:
-        raise ValueError(
-            f"Fields {refused} contain binary/content data and cannot be fetched via odoo_query. "
-            f"Use odoo_content or odoo_attachment instead."
-        )
-
-
 @router.post("/query")
 def query(req: QueryRequest, auth: dict = Depends(internal_api_key_auth)):
-    _check_refused_fields(req.fields)
     client = _get_client(req.credentials)
 
     if req.mode == "count":

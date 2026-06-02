@@ -196,6 +196,13 @@ jobs:
             --name ${{ steps.env.outputs.connector_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}"
+          az containerapp ingress enable \
+            --name ${{ steps.env.outputs.connector_app }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --type internal \
+            --target-port 8000 \
+            --transport auto \
+            --allow-insecure false
 
       - name: Set up Node.js for Portal
         uses: actions/setup-node@v4

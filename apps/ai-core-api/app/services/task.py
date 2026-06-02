@@ -1,7 +1,7 @@
 from typing import Optional, List
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
 from app.models.models import AITask
 from app.schemas.schemas import AITaskCreate, AITaskUpdate
 
@@ -11,8 +11,11 @@ class TaskService:
         self.db = db
 
     async def create(self, data: AITaskCreate, created_by_user_id: Optional[UUID] = None) -> AITask:
+        values = data.model_dump(exclude_unset=True)
+        if not values.get("owner_user_id"):
+            values["owner_user_id"] = created_by_user_id
         task = AITask(
-            **data.model_dump(exclude_unset=True),
+            **values,
             created_by_user_id=created_by_user_id,
         )
         self.db.add(task)
@@ -29,7 +32,7 @@ class TaskService:
         if status:
             filters.append(AITask.status == status)
         if owner_user_id:
-            filters.append(AITask.owner_user_id == owner_user_id)
+            filters.append(or_(AITask.owner_user_id == owner_user_id, AITask.created_by_user_id == owner_user_id))
         if filters:
             query = query.where(and_(*filters))
         query = query.limit(limit).offset(offset)

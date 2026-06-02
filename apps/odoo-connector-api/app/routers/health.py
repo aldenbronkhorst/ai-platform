@@ -65,7 +65,6 @@ def _validate_startup_config() -> list:
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
 def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
-    settings = get_settings()
     return CapabilitiesResponse(
         endpoints=[
             {"path": "/schema/models", "method": "POST", "description": "Search Odoo models"},
@@ -74,13 +73,13 @@ def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
             {"path": "/records/count", "method": "POST", "description": "Count records matching domain"},
             {"path": "/records/read", "method": "POST", "description": "Read specific record IDs"},
             {"path": "/records/mutate", "method": "POST", "description": "Create/write/delete/workflow records"},
-            {"path": "/execute-kw", "method": "POST", "description": "Generic execute_kw (gated)"},
+            {"path": "/execute-kw", "method": "POST", "description": "Generic execute_kw"},
             {"path": "/attachments/list", "method": "POST", "description": "List attachments"},
             {"path": "/attachments/get", "method": "POST", "description": "Get attachment metadata/content"},
             {"path": "/attachments/create", "method": "POST", "description": "Create attachment on record"},
             {"path": "/messages/list", "method": "POST", "description": "List messages/chatter"},
             {"path": "/messages/create", "method": "POST", "description": "Post message to record chatter"},
         ],
-        execute_kw_enabled=settings.execute_kw_allow_write_methods,
-        execute_kw_write_methods=settings.execute_kw_allow_write_methods,
+        execute_kw_enabled=True,
+        execute_kw_write_methods=True,
     )

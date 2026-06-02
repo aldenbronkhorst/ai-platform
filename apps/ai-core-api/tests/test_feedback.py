@@ -14,6 +14,7 @@ class TestMemoryFeedbackAndTracking:
     async def test_manual_feedback_worked(self):
         db = MockSession(has_config=False)
         db.refresh = AsyncMock()
+        user_id = uuid4()
 
         # Create active low confidence memory
         memory = AIMemory(
@@ -24,6 +25,7 @@ class TestMemoryFeedbackAndTracking:
             confidence="low",
             success_count=0,
             failure_count=0,
+            created_by_user_id=user_id,
         )
 
         class QueryResult:
@@ -38,7 +40,7 @@ class TestMemoryFeedbackAndTracking:
 
         # Call REST handler directly
         req = MemoryFeedbackRequest(feedback_type="worked", comment="Yes it worked!")
-        auth_data = {"user_id": uuid4()}
+        auth_data = {"user_id": user_id}
         updated_mem = await record_memory_feedback(
             memory_id=memory.id,
             req=req,
@@ -55,6 +57,7 @@ class TestMemoryFeedbackAndTracking:
     async def test_manual_feedback_wrong_repeated(self):
         db = MockSession(has_config=False)
         db.refresh = AsyncMock()
+        user_id = uuid4()
 
         # Create active medium confidence memory with 3 prior failures
         memory = AIMemory(
@@ -65,6 +68,7 @@ class TestMemoryFeedbackAndTracking:
             confidence="medium",
             success_count=5,
             failure_count=3,
+            created_by_user_id=user_id,
         )
 
         class QueryResult:
@@ -79,7 +83,7 @@ class TestMemoryFeedbackAndTracking:
 
         # Submit "wrong" feedback
         req = MemoryFeedbackRequest(feedback_type="wrong", comment="No, it failed.")
-        auth_data = {"user_id": uuid4()}
+        auth_data = {"user_id": user_id}
         updated_mem = await record_memory_feedback(
             memory_id=memory.id,
             req=req,

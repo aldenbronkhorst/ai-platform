@@ -1,29 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from app.core.config import get_settings
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
 from app.models.schemas import ExecuteKwRequest
-
-BLOCKED_EXECUTE_KW_METHODS = {"unlink", "sudo", "with_context", "env", "__import__"}
 
 router = APIRouter()
 
 
 @router.post("/")
 def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_key_auth)):
-    settings = get_settings()
-
-    if not settings.execute_kw_allow_write_methods:
-        raise HTTPException(status_code=403, detail="execute_kw is disabled. Enable EXECUTE_KW_ALLOW_WRITE to allow write operations.")
-
-    blocked = set()
-    if settings.execute_kw_blocked_methods:
-        blocked = {m.strip() for m in settings.execute_kw_blocked_methods.split(",")}
-    blocked |= BLOCKED_EXECUTE_KW_METHODS
-
-    if req.method in blocked:
-        raise HTTPException(status_code=403, detail=f"Method '{req.method}' is blocked.")
-
     settings = get_settings()
     client = OdooClient(
         credentials=OdooCredentials(

@@ -1,7 +1,7 @@
 """Shared command execution service for azure_cli and github_cli connectors.
 
-Provides secure command execution with timeout, output limits, secret redaction,
-structured error classification, command allowlist, and user token injection.
+Provides command execution with timeout, output limits, secret redaction,
+structured error classification, and connector-scoped binary validation.
 """
 import asyncio
 import logging
@@ -23,62 +23,13 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(?i)pat=\S+|token=\S+|password=\S+'),
 ]
 
-ALLOWED_OPERATIONS: dict[str, set[tuple[str, ...]]] = {
-    "az": {
-        ("account", "show"),
-        ("account", "list"),
-        ("group", "show"),
-        ("group", "list"),
-        ("resource", "show"),
-        ("resource", "list"),
-        ("containerapp", "show"),
-        ("containerapp", "list"),
-        ("acr", "repository", "list"),
-        ("acr", "repository", "show-tags"),
-        ("servicebus", "namespace", "show"),
-        ("servicebus", "queue", "show"),
-        ("servicebus", "queue", "list"),
-        ("storage", "account", "show"),
-        ("search", "service", "show"),
-    },
-    "gh": {
-        ("auth", "status"),
-        ("repo", "view"),
-        ("repo", "list"),
-        ("issue", "view"),
-        ("issue", "list"),
-        ("pr", "view"),
-        ("pr", "list"),
-        ("pr", "checks"),
-        ("run", "view"),
-        ("run", "list"),
-    },
-    "git": {
-        ("status",),
-        ("log",),
-        ("show",),
-        ("diff",),
-        ("branch",),
-        ("remote",),
-    },
-    "jq": {()},
-    "rg": {()},
-    "which": {()},
-}
+ALLOWED_BINARIES = {"az", "gh", "git", "jq", "rg", "which"}
 
 
-def _is_allowed_operation(args: list[str]) -> bool:
+def _is_allowed_binary(args: list[str]) -> bool:
     if not args:
         return False
-    binary = args[0]
-    allowed = ALLOWED_OPERATIONS.get(binary)
-    if allowed is None:
-        return False
-    if () in allowed:
-        return True
-
-    op_parts = tuple(part for part in args[1:] if not part.startswith("-"))
-    return any(op_parts[:len(prefix)] == prefix for prefix in allowed)
+    return args[0] in ALLOWED_BINARIES
 
 
 def _redact_output(text: str) -> str:
@@ -122,15 +73,15 @@ async def run_command(
     env: Optional[dict[str, str]] = None,
     cwd: Optional[str] = None,
 ) -> CommandResult:
-    """Execute a CLI command with timeout, output limits, and allowlist validation."""
+    """Execute a CLI command with timeout, output limits, and binary validation."""
     try:
         args = shlex.split(command)
     except ValueError as e:
         return CommandResult(error=f"Invalid command: {e}")
 
-    if not _is_allowed_operation(args):
-        logger.warning("Blocked command outside read-only operation policy: %.100s", command)
-        return CommandResult(error=f"Command not allowed by read-only operation policy: {args[0] if args else 'empty'}", exit_code=126)
+    if not _is_allowed_binary(args):
+        logger.warning("Blocked command outside connector binary policy: %.100s", command)
+        return CommandResult(error=f"Command binary not allowed: {args[0] if args else 'empty'}", exit_code=126)
 
     try:
         process_env = os.environ.copy()

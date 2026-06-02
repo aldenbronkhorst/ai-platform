@@ -257,6 +257,10 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
         }
+        {
+          name: 'servicebus-keda-connection'
+          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
+        }
       ]
     }
     template: {
@@ -354,6 +358,10 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
           name: 'odoo-connector-api-key'
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
+        }
+        {
+          name: 'servicebus-keda-connection'
+          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
         }
       ]
     }

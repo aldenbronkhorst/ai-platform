@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
-os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.core.config import get_settings
@@ -155,8 +154,6 @@ class TestRecordsIntegration:
 class TestExecuteKwIntegration:
     def test_execute_kw_allowed(self, mock_xmlrpc):
         from app.core.config import get_settings
-        os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
-        os.environ["EXECUTE_KW_ALLOW_WRITE_METHODS"] = "true"
         os.environ["DEBUG"] = "true"
         get_settings.cache_clear()
         response = client.post("/execute-kw/", json={
@@ -172,8 +169,7 @@ class TestExecuteKwIntegration:
         }, headers=AUTH_HEADERS)
         assert response.status_code == 200
 
-    def test_execute_kw_blocked_method(self, mock_xmlrpc):
-        os.environ["EXECUTE_KW_BLOCKED_METHODS"] = "unlink,sudo"
+    def test_execute_kw_unlink_passes_through_to_odoo(self, mock_xmlrpc):
         response = client.post("/execute-kw/", json={
             "credentials": {
                 "url": "https://odoo.example.com",
@@ -185,8 +181,7 @@ class TestExecuteKwIntegration:
             "method": "unlink",
             "args": [[1]],
         }, headers=AUTH_HEADERS)
-        assert response.status_code == 403
-        os.environ["EXECUTE_KW_BLOCKED_METHODS"] = ""
+        assert response.status_code == 200
 
 
 class TestMessagesIntegration:

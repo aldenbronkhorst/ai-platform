@@ -99,10 +99,9 @@ class TestRecords:
 
 
 class TestExecuteKw:
-    def test_execute_kw_blocked_by_default(self):
+    def test_execute_kw_passes_through_without_platform_write_flag(self):
         get_settings.cache_clear()
         os.environ["DEBUG"] = "false"
-        os.environ["EXECUTE_KW_ALLOW_WRITE"] = "false"
         os.environ["INTERNAL_API_KEY"] = "test-internal-key"
         try:
             response = client.post("/execute-kw/", json={
@@ -116,11 +115,10 @@ class TestExecuteKw:
                 "method": "search",
                 "args": [[]],
             }, headers={"X-Internal-API-Key": "test-internal-key"})
-            assert response.status_code == 403
+            assert response.status_code != 403
         finally:
             get_settings.cache_clear()
             os.environ["DEBUG"] = "true"
-            os.environ["EXECUTE_KW_ALLOW_WRITE"] = "true"
             os.environ.pop("INTERNAL_API_KEY", None)
 
 

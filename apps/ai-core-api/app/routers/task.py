@@ -2,13 +2,18 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import DEVELOPER_ROLES, api_key_auth, has_role
 from app.services.task import TaskService
 from app.services.audit import AuditService
 from app.schemas.schemas import AITaskCreate, AITaskResponse, AITaskUpdate, AIAuditEventCreate
 from uuid import UUID
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+
+def _can_manage_task(auth: dict, task) -> bool:
+    user_id = auth.get("user_id")
+    return task.owner_user_id == user_id or task.created_by_user_id == user_id or has_role(auth, DEVELOPER_ROLES)
 
 
 @router.post("", response_model=AITaskResponse, status_code=status.HTTP_201_CREATED)
@@ -55,9 +60,12 @@ async def update_task(
     auth=Depends(api_key_auth),
 ):
     svc = TaskService(db)
-    task = await svc.update(task_id, data)
-    if not task:
+    existing = await svc.get_by_id(task_id)
+    if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    if not _can_manage_task(auth, existing):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+    task = await svc.update(task_id, data)
 
     # Audit
     audit_svc = AuditService(db)

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import api_key_auth
+from app.core.security import AUTOMATION_ROLES, DEVELOPER_ROLES, api_key_auth, has_role, require_auth_role
 from app.services.job import JobService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIJobCreate, AIJobResponse, AIAuditEventCreate
@@ -10,12 +10,23 @@ from uuid import UUID
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
+def _can_read_job(auth: dict, job) -> bool:
+    user_id = auth.get("user_id")
+    return job.requested_by_user_id == user_id or has_role(auth, DEVELOPER_ROLES)
+
+
 @router.post("", response_model=AIJobResponse, status_code=status.HTTP_201_CREATED)
 async def create_job(
     data: AIJobCreate,
     db: AsyncSession = Depends(get_db),
     auth=Depends(api_key_auth),
 ):
+    if data.identity_mode == "service-account":
+        require_auth_role(
+            auth,
+            AUTOMATION_ROLES,
+            "Service account jobs are reserved for authorized automation configuration.",
+        )
     svc = JobService(db)
     job = await svc.create(data, requested_by_user_id=auth.get("user_id"))
 
@@ -55,5 +66,7 @@ async def get_job(
     svc = JobService(db)
     job = await svc.get_by_id(job_id)
     if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if not _can_read_job(auth, job):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
     return job

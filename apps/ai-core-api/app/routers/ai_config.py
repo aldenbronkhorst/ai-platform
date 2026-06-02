@@ -198,7 +198,7 @@ async def update_provider(
 async def delete_provider(
     provider_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin"])),
 ):
     await db.execute(delete(AIProvider).where(AIProvider.id == provider_id))
 
@@ -218,7 +218,7 @@ async def list_models(
 async def create_model(
     req: ModelCreate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     model = AIModel(**req.model_dump())
     db.add(model)
@@ -232,7 +232,7 @@ async def update_model(
     model_id: UUID,
     req: ModelUpdate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     result = await db.execute(select(AIModel).where(AIModel.id == model_id))
     model = result.scalar_one_or_none()
@@ -249,7 +249,7 @@ async def update_model(
 async def delete_model(
     model_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     await db.execute(delete(AIModel).where(AIModel.id == model_id))
 
@@ -269,7 +269,7 @@ async def list_routes(
 async def create_route(
     req: RouteCreate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     existing = await db.execute(select(AIRoute).where(AIRoute.task_type == req.task_type))
     if existing.scalar_one_or_none():
@@ -286,7 +286,7 @@ async def update_route(
     route_id: UUID,
     req: RouteUpdate,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     result = await db.execute(select(AIRoute).where(AIRoute.id == route_id))
     route = result.scalar_one_or_none()
@@ -303,7 +303,7 @@ async def update_route(
 async def delete_route(
     route_id: UUID,
     db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
+    auth: dict = Depends(require_role(["AIPlatform.Admin", "AIPlatform.Developer"])),
 ):
     await db.execute(delete(AIRoute).where(AIRoute.id == route_id))
 

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 from uuid import UUID
 from azure.identity import DefaultAzureCredential
@@ -78,6 +79,19 @@ async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
     token = await retrieve_token(provider, user_id)
     if not token:
         return {"status": "not_connected", "provider": provider}
+    expires_on = token.get("expires_on")
+    try:
+        expires_ts = int(expires_on) if expires_on else None
+    except (TypeError, ValueError):
+        expires_ts = None
+    if expires_ts and expires_ts <= int(time.time()):
+        return {
+            "status": "expired",
+            "provider": provider,
+            "token_type": token.get("token_type", "unknown"),
+            "expires_on": expires_on,
+            "scope": token.get("scope", ""),
+        }
     return {
         "status": "connected",
         "provider": provider,

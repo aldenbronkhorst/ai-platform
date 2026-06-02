@@ -10,9 +10,9 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional
 
 from app.core.config import get_settings
-from app.core.security import api_key_auth
+from app.core.security import AUTOMATION_ROLES, api_key_auth, require_auth_role
 from app.core.database import get_db
-from app.models.models import AIConnectedAccount, AIRule, AICompanyFact
+from app.models.models import AIConnectedAccount, AICompanyFact
 from app.services.audit import AuditService
 from app.services.job import JobService
 from app.services.artifact import ArtifactService
@@ -24,12 +24,6 @@ router = APIRouter()
 
 ODOO_CONNECTOR_URL = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
-
-# Methods that require explicit policy approval at AI Core level
-EXECUTE_KW_DANGEROUS_METHODS = {"unlink", "sudo", "with_context", "env", "__import__"}
-# Write methods that need explicit allow
-EXECUTE_KW_WRITE_METHODS = {"create", "write", "copy", "message_post"}
-
 
 class OdooToolRequest(BaseModel):
     model: Optional[str] = None
@@ -93,9 +87,17 @@ async def _log_audit(
         await db.rollback()
 
 
-async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID, identity_mode: str = "user-delegated") -> dict[str, str]:
+async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID, auth: dict, identity_mode: str = "user-delegated") -> dict[str, str]:
+    if identity_mode not in {"user-delegated", "service-account"}:
+        raise HTTPException(status_code=400, detail="identity_mode must be user-delegated or service-account.")
+
     # Service account mode: use configured service account credentials
     if identity_mode == "service-account":
+        require_auth_role(
+            auth,
+            AUTOMATION_ROLES,
+            "Service account mode is reserved for authorized automation configuration.",
+        )
         service_url = os.environ.get("ODOO_SERVICE_URL", "")
         service_db = os.environ.get("ODOO_SERVICE_DB", "")
         service_username = os.environ.get("ODOO_SERVICE_USERNAME", "")
@@ -225,58 +227,6 @@ async def _create_odoo_job(
         return {}
 
 
-async def _check_policy(db: AsyncSession, action: str, details: dict[str, Any]) -> None:
-    result = await db.execute(
-        select(AIRule).where(
-            AIRule.status == "active",
-            AIRule.scope_type.in_(["global", "odoo"]),
-        )
-    )
-    rules = result.scalars().all()
-
-    for rule in rules:
-        body_lower = (rule.body or "").lower()
-
-        if action == "message_create" and "chatter" in body_lower:
-            if "raw" in body_lower or "csv" in body_lower or "json" in body_lower or "table" in body_lower:
-                body_text = details.get("body", "")
-                if len(body_text) > 1000 or any(x in body_text.lower() for x in ["csv", "json", "table", "|"]):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Policy blocked: {rule.title}. Chatter messages must be short summaries. Raw data dumps are not allowed.",
-                    )
-
-        if action == "attachment_create" and "artifact" in body_lower:
-            filename = details.get("filename", "").lower()
-            if any(x in filename for x in [".csv", ".json", ".debug", ".tmp", ".ocr", ".parsed"]):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Policy blocked: {rule.title}. Intermediate/debug files must be stored in AI Platform Blob storage, not attached to Odoo.",
-                )
-
-        if action == "execute" and "execute_kw" in body_lower:
-            method = details.get("method", "")
-            if method == "unlink":
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Policy blocked: {rule.title}. Delete operations (unlink) require explicit policy approval.",
-                )
-
-
-def _check_execute_kw_method(method: str, allow_write: bool = False) -> None:
-    """Gate execute_kw methods at AI Core level. Dangerous methods always blocked. Write methods require explicit allow."""
-    if method in EXECUTE_KW_DANGEROUS_METHODS:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Method '{method}' is blocked. Dangerous/destructive methods require explicit policy approval.",
-        )
-    if method in EXECUTE_KW_WRITE_METHODS and not allow_write:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Write method '{method}' is blocked. Set operation_mode='write-allowed' to enable.",
-        )
-
-
 async def _call_connector(
     method: str,
     path: str,
@@ -308,7 +258,7 @@ async def odoo_schema(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "query": req.model or "",
@@ -338,7 +288,7 @@ async def odoo_search_read(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,
@@ -371,12 +321,7 @@ async def odoo_execute(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        # Gate execute_kw methods at AI Core level
-        allow_write = req.operation_mode == "write-allowed"
-        _check_execute_kw_method(req.method or "", allow_write=allow_write)
-        
-        await _check_policy(db, "execute", {"method": req.method, "model": req.model})
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,
@@ -406,7 +351,7 @@ async def odoo_attachments_list(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,
@@ -433,7 +378,7 @@ async def odoo_attachments_get(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "attachment_id": req.attachment_id,
@@ -459,8 +404,7 @@ async def odoo_attachments_create(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        await _check_policy(db, "attachment_create", {"filename": req.filename or ""})
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,
@@ -489,7 +433,7 @@ async def odoo_messages_list(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,
@@ -516,8 +460,7 @@ async def odoo_messages_create(
     auth: dict = Depends(api_key_auth),
 ):
     try:
-        await _check_policy(db, "message_create", {"body": req.body or ""})
-        credentials = await _resolve_odoo_credentials(db, auth["user_id"], req.identity_mode)
+        credentials = await _resolve_odoo_credentials(db, auth["user_id"], auth, req.identity_mode)
         payload = {
             "credentials": credentials,
             "model": req.model,

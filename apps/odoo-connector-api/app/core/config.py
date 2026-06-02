@@ -21,10 +21,6 @@ class Settings(BaseSettings):
     odoo_api_timeout_seconds: float = float(os.environ.get("ODOO_API_TIMEOUT_SECONDS", "120.0"))
     odoo_ssl_verify: bool = os.environ.get("ODOO_SSL_VERIFY", "true").lower() == "true"
 
-    # Permission gates
-    execute_kw_allow_write_methods: bool = os.environ.get("EXECUTE_KW_ALLOW_WRITE", "false").lower() == "true"
-    execute_kw_blocked_methods: str = os.environ.get("EXECUTE_KW_BLOCKED_METHODS", "")
-
     # Application Insights
     appinsights_connection_string: str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 

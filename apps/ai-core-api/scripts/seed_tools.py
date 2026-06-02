@@ -51,7 +51,7 @@ TOOLS = [
     {
         "name": "azure_cli",
         "display_name": "Azure CLI",
-        "description": "Execute native Azure CLI commands. Use for any Azure operation: container apps, revisions, logs, metrics, key vault, network, etc. Uses Managed Identity for authentication. Provide the full az command without the 'az ' prefix.",
+        "description": "Execute native Azure CLI commands. Use for any Azure operation: container apps, revisions, logs, metrics, key vault, network, etc. Uses the connected user's Azure account. Provide the full az command without the 'az ' prefix.",
         "target_system": "azure",
         "input_schema": {
             "type": "object",
