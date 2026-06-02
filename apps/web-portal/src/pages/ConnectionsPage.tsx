@@ -63,6 +63,22 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [cliTesting, setCliTesting] = useState(false);
   const [azureDeviceCode, setAzureDeviceCode] = useState<any>(null);
   const [azurePolling, setAzurePolling] = useState(false);
+  const [connectorMeta, setConnectorMeta] = useState<Record<string, any>>({});
+
+  const fetchConnectors = async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
+      if (res.ok) {
+        const data = await res.json();
+        const meta: Record<string, any> = {};
+        (data.connectors || data || []).forEach((c: any) => {
+          if (c.connector_key) meta[c.connector_key] = c;
+        });
+        setConnectorMeta(meta);
+      }
+    } catch { /* ignore */ }
+  };
 
   const headers = () => ({
     Authorization: `Bearer ${accessToken}`,
@@ -87,7 +103,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     } catch { setOdooStatus({ status: "not_connected" }); }
   };
 
-  useEffect(() => { if (accessToken) fetchOdooStatus(); }, [accessToken]);
+  useEffect(() => { if (accessToken) { fetchOdooStatus(); fetchConnectors(); } }, [accessToken]);
 
   const isKeyVaultError = (msg: string) =>
     KV_ERROR_PHRASES.some((p) => msg.toLowerCase().includes(p));
@@ -189,6 +205,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleAzureDisconnect = async () => {
     if (!accessToken) return;
     await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
+    await fetchConnectors();
     setCliTestResult({ success: true, message: "Disconnected" });
   };
 
@@ -352,7 +369,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </GlassPanel>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {CONNECTORS.map((c) => (
+        {CONNECTORS.map((c) => {
+          const meta = connectorMeta[c.key];
+          const status = meta?.status || c.status;
+          const statusLabel = meta?.status
+            ? meta.status === "connected" ? "Connected" : meta.status === "active" ? "Active" : meta.status === "needs_setup" ? "Needs Setup" : meta.status === "needs_verification" ? "Needs Verification" : meta.status === "error" ? "Error" : meta.status === "coming_soon" ? "Coming Soon" : meta.status
+            : c.statusLabel;
+          const badgeColor = status === "connected" || status === "active" ? "text-[var(--color-success)]"
+            : status === "error" ? "text-[var(--color-danger)]"
+            : status === "needs_token" || status === "needs_setup" ? "text-[var(--color-warning)]"
+            : status === "coming_soon" ? "text-soft"
+            : "text-muted";
+          return (
           <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
@@ -363,13 +391,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             </div>
             <h4 className="font-bold text-sm text-default truncate">{c.name}</h4>
             <p className="text-xs text-muted truncate mb-3">{c.subtitle}</p>
-            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${c.statusColor} bg-${c.statusColor.replace('text-', '')}/10 px-2.5 py-1 rounded-full`}>
-              {c.status === "connected" || c.status === "active" ? <CheckCircle2 className="w-3 h-3" /> : null}
-              {c.status === "error" ? <AlertTriangle className="w-3 h-3" /> : null}
-              {c.statusLabel}
+            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full ${badgeColor} ${badgeColor.includes('success') ? 'bg-[var(--color-success)]/10' : badgeColor.includes('danger') ? 'bg-[var(--color-danger)]/10' : badgeColor.includes('warning') ? 'bg-[var(--color-warning)]/10' : 'bg-surface'}`}>
+              {status === "connected" || status === "active" ? <CheckCircle2 className="w-3 h-3" /> : null}
+              {status === "error" ? <AlertTriangle className="w-3 h-3" /> : null}
+              {statusLabel}
             </span>
           </button>
-        ))}
+        );})}
       </div>
 
       {/* Detail Drawer */}

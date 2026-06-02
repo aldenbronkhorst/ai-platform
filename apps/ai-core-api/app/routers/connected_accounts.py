@@ -856,19 +856,66 @@ async def connect_odoo(
     return account
 
 
-@router.get("", response_model=List[ConnectedAccountResponse])
+@router.get("")
 async def get_connected_accounts(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    """Returns list of all connected accounts for the authenticated user."""
+    """Returns normalized connector metadata for all connectors for the authenticated user."""
     user_id = auth.get("user_id")
     result = await db.execute(
         select(AIConnectedAccount).where(
             AIConnectedAccount.user_id == user_id,
         )
     )
-    return result.scalars().all()
+    db_accounts = result.scalars().all()
+    odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
+
+    # Check CLI connector token status
+    from app.services.token_storage import token_status as get_token_status
+    azure_status = await get_token_status("azure", user_id)
+    github_status = await get_token_status("github", user_id)
+
+    connectors = [
+        {
+            "connector_key": "odoo",
+            "display_name": "Odoo Enterprise",
+            "status": odoo.status if odoo and odoo.status != "disconnected" else "not_connected",
+            "auth_method": "api_key",
+            "last_verified_at": odoo.last_verified_at.isoformat() if odoo and odoo.last_verified_at else None,
+            "actions_available": ["connect", "test", "disconnect"] if not odoo or odoo.status == "disconnected" else ["test", "disconnect"],
+            "metadata": {
+                "odoo_url": odoo.odoo_url if odoo else None,
+                "odoo_db": odoo.odoo_db if odoo else None,
+                "provider_username": odoo.provider_username if odoo else None,
+            } if odoo else {},
+        },
+        {
+            "connector_key": "azure_cli",
+            "display_name": "Azure CLI",
+            "status": azure_status.get("status", "not_connected"),
+            "auth_method": "delegated_microsoft",
+            "last_verified_at": azure_status.get("expires_on"),
+            "actions_available": ["connect", "test", "disconnect"],
+        },
+        {
+            "connector_key": "github_cli",
+            "display_name": "GitHub CLI",
+            "status": github_status.get("status", "not_connected"),
+            "auth_method": "github_oauth",
+            "last_verified_at": None,
+            "actions_available": ["connect", "test", "disconnect"],
+        },
+        {
+            "connector_key": "ms365",
+            "display_name": "Microsoft 365",
+            "status": "coming_soon",
+            "auth_method": "none",
+            "last_verified_at": None,
+            "actions_available": [],
+        },
+    ]
+    return {"connectors": connectors}
 
 
 @router.get("/odoo/status", response_model=OdooStatusResponse)

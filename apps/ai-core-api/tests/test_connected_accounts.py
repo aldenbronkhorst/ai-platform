@@ -107,7 +107,8 @@ class TestConnectedAccountsFlow:
         )
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
+        assert "connectors" in data
+        assert isinstance(data["connectors"], list)
 
     def test_get_odoo_status_not_connected(self):
         response = client.get(

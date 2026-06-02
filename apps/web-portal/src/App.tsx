@@ -619,8 +619,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       setLocalMockAuthenticated(false);
       setLocalMockUser(null);
     } else {
-      // Local app logout only — does not trigger Microsoft global sign-out
-      instance.logoutRedirect({ postLogoutRedirectUri: window.location.origin });
+      // Local app logout — clear MSAL cache, no Microsoft redirect
+      instance.setActiveAccount(null);
+      instance.clearCache?.();
+      // Clear any stored tokens
+      sessionStorage.clear();
+      localStorage.removeItem("msal.interaction.status");
+      localStorage.removeItem("msal.cache");
+      // Redirect to app root (login page)
+      window.location.href = "/";
     }
   };
 
