@@ -82,13 +82,15 @@ async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
         if "error" in data:
             return {"status": "pending" if data["error"] == "authorization_pending" else "error",
                     "error": data.get("error_description", data["error"]), "request_id": request_id}
-        await store_token("azure", user_id, {
+        stored = await store_token("azure", user_id, {
             "token_type": data.get("token_type"),
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token"),
             "scope": data.get("scope"),
             "expires_in": data.get("expires_in"),
         })
+        if not stored:
+            return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
         return {"status": "connected", "request_id": request_id}
     except Exception as e:
         return {"status": "error", "error": str(e), "request_id": request_id}

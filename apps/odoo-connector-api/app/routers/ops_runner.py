@@ -139,12 +139,10 @@ async def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(intern
         records = client.read(
             model="ir.attachment",
             ids=all_ids,
-            fields=["id", "name", "mimetype", "file_size", "res_model", "res_id", "create_date", "datas", "index_content", "type", "url", "description"],
+            fields=["id", "name", "mimetype", "file_size", "res_model", "res_id", "create_date", "type", "url", "description"],
         )
         for rec in records:
-            if rec.get("datas"):
-                rec["datas_present"] = True
-                rec["datas_size"] = len(rec["datas"])
+            rec.pop("datas", None)
         return {"attachments": records, "count": len(records)}
 
     elif req.mode == "content":

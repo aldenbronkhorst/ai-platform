@@ -51,48 +51,38 @@ async def handle_attachment(req: AttachmentRequest, auth: dict = Depends(interna
         records = client.read(
             model="ir.attachment",
             ids=all_ids,
-            fields=["id", "name", "mimetype", "file_size", "datas", "index_content", "type", "url"],
+            fields=["id", "name", "mimetype", "file_size", "index_content", "type", "url"],
         )
         for rec in records:
             if rec.get("index_content"):
                 ic = rec["index_content"]
                 if isinstance(ic, str) and len(ic) > req.max_text_chars:
                     rec["index_content"] = ic[:req.max_text_chars] + "..."
-            if rec.get("datas"):
-                rec["datas_present"] = True
-                rec["datas_size"] = len(rec["datas"])
-            if not req.include_index_content:
-                rec.pop("index_content", None)
+            rec.pop("datas", None)
         return {"attachments": records, "count": len(records)}
 
     if req.mode == "base64":
         records = client.read(
             model="ir.attachment",
             ids=all_ids,
-            fields=["id", "name", "mimetype", "file_size", "datas", "type"],
+            fields=["id", "name", "mimetype", "file_size", "type"],
         )
         for rec in records:
-            if rec.get("datas"):
-                try:
-                    decoded = b64.b64decode(rec["datas"])
-                    rec["decoded_size"] = len(decoded)
-                except Exception:
-                    rec["decode_error"] = "Could not decode base64"
+            rec.pop("datas", None)
         return {"attachments": records, "count": len(records)}
 
     if req.mode == "analyze":
         records = client.read(
             model="ir.attachment",
             ids=all_ids,
-            fields=["id", "name", "mimetype", "file_size", "datas", "index_content", "description", "res_model", "res_id", "create_date", "type", "url"],
+            fields=["id", "name", "mimetype", "file_size", "index_content", "description", "res_model", "res_id", "create_date", "type", "url"],
         )
         for rec in records:
             if rec.get("index_content"):
                 ic = rec["index_content"]
                 if isinstance(ic, str) and len(ic) > req.max_text_chars:
                     rec["index_content"] = ic[:req.max_text_chars] + "..."
-            if rec.get("datas"):
-                rec["datas_info"] = {"present": True, "size": len(rec["datas"])}
+            rec.pop("datas", None)
         return {"attachments": records, "count": len(records)}
 
     raise HTTPException(status_code=400, detail={"error": "unknown_mode", "message": f"Unknown mode: {req.mode}"})

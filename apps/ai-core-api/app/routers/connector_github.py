@@ -66,11 +66,13 @@ async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
         access_token = data.get("access_token")
         if not access_token:
             return {"status": "error", "error": "No access_token in response", "request_id": request_id}
-        await store_token("github", user_id, {
+        stored = await store_token("github", user_id, {
             "access_token": access_token,
             "token_type": data.get("token_type", "bearer"),
             "scope": data.get("scope", ""),
         })
+        if not stored:
+            return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
         return {"status": "connected", "request_id": request_id}
     except Exception as e:
         return {"status": "error", "error": str(e), "request_id": request_id}
