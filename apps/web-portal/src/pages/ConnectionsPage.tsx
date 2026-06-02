@@ -26,12 +26,6 @@ interface ConnectorDef {
   name: string;
   subtitle: string;
   icon: LucideIcon;
-  status: string;
-  statusLabel: string;
-  statusColor: string;
-  primaryAction: string;
-  authMethod?: string;
-  lastVerified?: string;
 }
 
 interface ConnectorMeta {
@@ -97,21 +91,25 @@ function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function formatStatusLabel(status: string) {
+  return status
+    .split("_")
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 const CONNECTORS: ConnectorDef[] = [
-  { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database,
-    status: "not_connected", statusLabel: "Not Connected", statusColor: "text-muted", primaryAction: "Connect" },
-  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal,
-    status: "active", statusLabel: "Active", statusColor: "text-[var(--color-success)]", primaryAction: "Open", authMethod: "Managed Identity" },
-  { key: "github_cli", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch,
-    status: "needs_token", statusLabel: "Needs Token", statusColor: "text-[var(--color-warning)]", primaryAction: "Connect", authMethod: "Token Auth" },
-  { key: "ms365", name: "Microsoft 365", subtitle: "SharePoint / Outlook / Graph", icon: BookOpen,
-    status: "coming_soon", statusLabel: "Coming Soon", statusColor: "text-soft", primaryAction: "Coming Soon" },
+  { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database },
+  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
+  { key: "github_cli", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch },
+  { key: "ms365", name: "Microsoft 365", subtitle: "SharePoint / Outlook / Graph", icon: BookOpen },
 ];
 
 interface ConnectionsPageProps { accessToken: string; }
 
 export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
-  const [odooStatus, setOdooStatus] = useState<OdooStatus>({ status: "not_connected" });
+  const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
@@ -119,15 +117,16 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
   const [odooUrl, setOdooUrl] = useState("");
   const [odooDb, setOdooDb] = useState("");
-  const [odooUsername, setOdooUsername] = useState("alden@lotslotsmore.com");
+  const [odooUsername, setOdooUsername] = useState("");
   const [odooApiKey, setOdooApiKey] = useState("");
   const [githubToken, setGithubToken] = useState("");
-  const [githubOrg, setGithubOrg] = useState("aldenbronkhorst");
+  const [githubOrg, setGithubOrg] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [cliTesting, setCliTesting] = useState(false);
   const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
-  const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta>>({});
+  const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
+  const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -146,8 +145,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           if (c.connector_key) meta[c.connector_key] = c;
         });
         setConnectorMeta(meta);
+        setConnectorStatusError(null);
+      } else {
+        setConnectorStatusError(`Could not load connector statuses (${res.status}).`);
       }
-    } catch { /* ignore transient connector status errors */ }
+    } catch (err) { setConnectorStatusError(`Could not load connector statuses: ${errorMessage(err)}`); }
   }, [accessToken, headers]);
 
   const fetchOdooStatus = useCallback(async () => {
@@ -162,10 +164,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           if (data.odoo_db) setOdooDb(data.odoo_db);
           if (data.provider_username) setOdooUsername(data.provider_username);
         }
-      } else {
-        setOdooStatus({ status: "not_connected" });
       }
-    } catch { setOdooStatus({ status: "not_connected" }); }
+    } catch { /* leave status empty until backend status can be read */ }
   }, [accessToken, headers]);
 
   useEffect(() => {
@@ -211,7 +211,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const data = await res.json() as ApiRecord;
       if (res.ok) {
         setTestResult({ success: true, message: "Odoo connection established!" });
-        setSelectedConnector(null); setOdooApiKey(""); void fetchOdooStatus();
+        setSelectedConnector(null); setOdooApiKey("");
+        void Promise.all([fetchOdooStatus(), fetchConnectors()]);
       } else {
         const rawDetail = data.detail;
         const detail = rawDetail && typeof rawDetail === "object" ? rawDetail as ApiRecord : {};
@@ -224,7 +225,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           connectionAttemptId: stringValue(detail.connection_attempt_id),
           trace: detail.trace && typeof detail.trace === "object" ? detail.trace as { trace_id?: string } : null,
         });
-        void fetchOdooStatus();
+        void Promise.all([fetchOdooStatus(), fetchConnectors()]);
       }
     } catch (err) {
       setTestResult({ success: false, message: `Could not reach backend: ${errorMessage(err)}` });
@@ -241,7 +242,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setTestResult({ success: status === "connected", message: `Connection state: ${status.toUpperCase()}` });
       }
       else setTestResult({ success: false, message: data.detail || "Verification failed." });
-      void fetchOdooStatus();
+      void Promise.all([fetchOdooStatus(), fetchConnectors()]);
     } catch (err) { setTestResult({ success: false, message: `Test failed: ${errorMessage(err)}` }); }
     finally { setIsTesting(false); }
   };
@@ -250,8 +251,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken || !confirm("Disconnect Odoo? Credentials will be permanently deleted.")) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
-      if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername("alden@lotslotsmore.com"); setOdooApiKey(""); setTestResult(null); }
-      void fetchOdooStatus();
+      if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername(""); setOdooApiKey(""); setTestResult(null); }
+      void Promise.all([fetchOdooStatus(), fetchConnectors()]);
     } catch { /* ignore transient disconnect errors */ }
   };
 
@@ -276,6 +277,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               setAzurePolling(false);
               setAzureDeviceCode(null);
               setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected!" });
+              void fetchConnectors();
             } else if (pd.status === "pending") {
               setTimeout(poll, (data.interval || 5) * 1000);
             } else {
@@ -296,7 +298,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/status`, { method: "GET", headers: headers() });
       const data = await res.json() as { status?: string };
-      if (data.status === "connected") setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected" });
+      if (data.status === "connected") {
+        setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected" });
+        await fetchConnectors();
+      }
     } catch { /* ignore transient Azure status errors */ }
   };
 
@@ -332,7 +337,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/github/status`, { method: "GET", headers: headers() });
       const data = await res.json() as { status?: string };
-      if (data.status === "connected") setCliTestResult({ status: "success", connector: "github_cli", message: "GitHub connected" });
+      if (data.status === "connected") {
+        setCliTestResult({ status: "success", connector: "github_cli", message: "GitHub connected" });
+        await fetchConnectors();
+      }
     } catch { /* ignore transient GitHub status errors */ }
   };
 
@@ -357,10 +365,16 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     const c = CONNECTORS.find(x => x.key === key);
     if (!c) return null;
 
-    if (key === "odoo") return (
+    if (key === "odoo") {
+      const isOdooStatusLoaded = odooStatus !== null;
+      const isOdooDisconnected = odooStatus?.status === "not_connected";
+
+      return (
       <div className="space-y-4">
         <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        {odooStatus.status !== "not_connected" ? (
+        {!isOdooStatusLoaded ? (
+          <p className="text-sm text-muted">Loading connection details...</p>
+        ) : !isOdooDisconnected ? (
           <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm p-3 bg-canvas rounded-xl">
             <span className="text-muted">Status</span>
             <span className="text-default">{odooStatus.status}</span>
@@ -379,7 +393,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           <p className="text-sm text-muted">Not connected.</p>
         )}
         <div className="flex flex-wrap gap-2">
-          {odooStatus.status !== "not_connected" ? (
+          {isOdooStatusLoaded && !isOdooDisconnected ? (
             <>
               <GlassButton size="sm" onClick={handleTestOdoo} disabled={isTesting}>
                 <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? "animate-spin" : ""}`} /> Test
@@ -388,7 +402,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             </>
           ) : null}
         </div>
-        {key === "odoo" && odooStatus.status === "not_connected" && (
+        {isOdooStatusLoaded && isOdooDisconnected && (
           <form onSubmit={handleConnectOdoo} className="space-y-3 pt-2">
             <GlassInput type="url" required placeholder="Odoo Instance URL" value={odooUrl} onChange={e => setOdooUrl(e.target.value)} />
             <GlassInput type="text" required placeholder="Odoo Database Name" value={odooDb} onChange={e => setOdooDb(e.target.value)} />
@@ -399,6 +413,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         )}
       </div>
     );
+    }
 
     if (key === "azure_cli") return (
       <div className="space-y-4">
@@ -472,15 +487,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
       <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
         {CONNECTORS.map((c) => {
-          const meta = connectorMeta[c.key];
-          const status = meta?.status || c.status;
-          const statusLabel = meta?.status
-            ? meta.status === "connected" ? "Connected" : meta.status === "active" ? "Active" : meta.status === "needs_setup" ? "Needs Setup" : meta.status === "needs_verification" ? "Needs Verification" : meta.status === "error" ? "Error" : meta.status === "coming_soon" ? "Coming Soon" : meta.status
-            : c.statusLabel;
+          const meta = connectorMeta?.[c.key];
+          const status = meta?.status;
+          const statusLabel = status ? formatStatusLabel(status) : connectorStatusError ? "Status Unavailable" : "Checking...";
           const badgeColor = status === "connected" || status === "active" ? "text-[var(--color-success)]"
             : status === "error" ? "text-[var(--color-danger)]"
             : status === "needs_token" || status === "needs_setup" ? "text-[var(--color-warning)]"
             : status === "coming_soon" ? "text-soft"
+            : connectorStatusError ? "text-[var(--color-danger)]"
             : "text-muted";
           return (
           <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
@@ -495,7 +509,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             <p className="text-xs text-muted truncate mb-3">{c.subtitle}</p>
             <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full ${badgeColor} ${badgeColor.includes('success') ? 'bg-[var(--color-success)]/10' : badgeColor.includes('danger') ? 'bg-[var(--color-danger)]/10' : badgeColor.includes('warning') ? 'bg-[var(--color-warning)]/10' : 'bg-surface'}`}>
               {status === "connected" || status === "active" ? <CheckCircle2 className="w-3 h-3" /> : null}
-              {status === "error" ? <AlertTriangle className="w-3 h-3" /> : null}
+              {status === "error" || (!status && connectorStatusError) ? <AlertTriangle className="w-3 h-3" /> : null}
               {statusLabel}
             </span>
           </button>

@@ -70,6 +70,12 @@ function isAbortError(err: unknown) {
     && (err as { name?: string }).name === "AbortError";
 }
 
+function clearMsalStorage(storage: Storage) {
+  const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+    .filter((key): key is string => typeof key === "string" && key.startsWith("msal."));
+  keys.forEach(key => storage.removeItem(key));
+}
+
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
   const { instance, accounts, inProgress } = useMsal();
 
@@ -662,20 +668,21 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   const handleRemoveFile = (id: string) => setAttachedFiles(prev => prev.filter(f => f.id !== id));
 
-  const handleSignOut = () => {
+  const handleSignOut = async () => {
     if (localMockAuthenticated) {
       setLocalMockAuthenticated(false);
       setLocalMockUser(null);
     } else {
-      // Local app logout — clear MSAL cache, no Microsoft redirect
       instance.setActiveAccount(null);
-      instance.clearCache?.();
-      // Clear any stored tokens
-      sessionStorage.clear();
-      localStorage.removeItem("msal.interaction.status");
-      localStorage.removeItem("msal.cache");
-      // Redirect to app root (login page)
-      window.location.href = "/";
+      try {
+        await instance.clearCache();
+      } catch {
+        // Fall back to explicit browser cache cleanup below.
+      } finally {
+        clearMsalStorage(sessionStorage);
+        clearMsalStorage(localStorage);
+        window.location.href = "/";
+      }
     }
   };
 

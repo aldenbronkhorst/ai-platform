@@ -12,7 +12,7 @@ export const msalConfig: Configuration = {
     postLogoutRedirectUri: typeof window !== "undefined" ? window.location.origin : "https://ai.lotslotsmore.com",
   },
   cache: {
-    cacheLocation: "sessionStorage",
+    cacheLocation: "localStorage",
   }
 };
 
