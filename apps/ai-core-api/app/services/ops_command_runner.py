@@ -1,7 +1,7 @@
 """Shared command execution service for azure_cli and github_cli connectors.
 
 Provides secure command execution with timeout, output limits, secret redaction,
-structured error classification, and trace span logging.
+structured error classification, command allowlist, and user token injection.
 """
 import asyncio
 import logging
@@ -20,6 +20,16 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(?i)(-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----.*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----)'),
     re.compile(r'(?i)(ghp_|gho_|ghu_|ghs_|ghr_)[\w-]+'),
     re.compile(r'(?i)pat=\S+|token=\S+|password=\S+'),
+]
+
+# Command allowlist — only these commands/binary prefixes are permitted
+ALLOWED_COMMAND_PREFIXES: list[str] = [
+    "az ",
+    "gh ",
+    "git ",
+    "jq ",
+    "rg ",
+    "which ",
 ]
 
 
@@ -64,7 +74,13 @@ async def run_command(
     env: Optional[dict[str, str]] = None,
     cwd: Optional[str] = None,
 ) -> CommandResult:
-    """Execute a CLI command with timeout and output limits."""
+    """Execute a CLI command with timeout, output limits, and allowlist validation."""
+    # Validate against command allowlist
+    cmd_stripped = command.strip()
+    if not any(cmd_stripped.startswith(prefix) for prefix in ALLOWED_COMMAND_PREFIXES):
+        logger.warning("Blocked command not in allowlist: %.100s", command)
+        return CommandResult(error=f"Command not allowed: {cmd_stripped.split()[0] if cmd_stripped else 'empty'}", exit_code=126)
+
     try:
         args = shlex.split(command)
     except ValueError as e:

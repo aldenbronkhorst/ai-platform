@@ -517,10 +517,19 @@ async def _verify_odoo_credentials_via_connector(
 def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
     """Stores the secret in Azure Key Vault if Key Vault is configured.
     Raises HTTPException on failure, with a user-friendly message for
-    ObjectIsDeletedButRecoverable conflicts."""
+    ObjectIsDeletedButRecoverable conflicts.
+    If KEY_VAULT_URI is not configured, raises so callers know storage failed."""
     kv_uri = os.environ.get("KEY_VAULT_URI", "")
     if not kv_uri:
-        return
+        raise HTTPException(
+            status_code=500,
+            detail=ConnectErrorDetail(
+                error_type="key_vault_write_failed",
+                stage="store_secret",
+                message="Key Vault is not configured. Credentials cannot be stored securely.",
+                technical_detail="KEY_VAULT_URI environment variable is not set.",
+            ).model_dump()
+        )
 
     try:
         from azure.identity import DefaultAzureCredential
@@ -587,11 +596,11 @@ def _delete_key_vault_secret(secret_name: str) -> None:
 
 
 async def _retrieve_key_vault_secret(secret_name: str) -> str:
-    """Retrieves the secret from Azure Key Vault."""
+    """Retrieves the secret from Azure Key Vault.
+    Raises HTTPException if Key Vault is not configured or secret not found."""
     kv_uri = os.environ.get("KEY_VAULT_URI", "")
     if not kv_uri:
-        # Safe fallback for local/debug env if KEY_VAULT_URI is missing
-        return "mock-local-secret"
+        raise HTTPException(status_code=500, detail="Key Vault is not configured. Cannot retrieve credentials.")
 
     try:
         from azure.identity import DefaultAzureCredential
