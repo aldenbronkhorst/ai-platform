@@ -140,11 +140,28 @@ interface WorkflowsPageProps {
   onLaunchChat: (workflowId: string) => void;
 }
 
+interface WorkflowOutcome {
+  success: boolean;
+  message: string;
+  details?: unknown;
+  jobId?: string;
+  artifactId?: string;
+}
+
+type WorkflowPayload = {
+  create_job: boolean;
+  job_title: string;
+  identity_mode: string;
+  model?: string;
+  domain?: unknown[];
+  limit?: number;
+};
+
 export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps) {
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowCardData | null>(null);
   const [workflowInputs, setWorkflowInputs] = useState<Record<string, string>>({});
   const [isWorkflowRunning, setIsWorkflowRunning] = useState(false);
-  const [workflowOutcome, setWorkflowOutcome] = useState<any | null>(null);
+  const [workflowOutcome, setWorkflowOutcome] = useState<WorkflowOutcome | null>(null);
 
   const handleRunWorkflow = async () => {
     if (!selectedWorkflow || !accessToken) return;
@@ -154,8 +171,8 @@ export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps)
     const APIM = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
 
     try {
-      let endpoint = "/tools/odoo/search-read";
-      let payload: Record<string, any> = {
+      const endpoint = "/tools/odoo/search-read";
+      const payload: WorkflowPayload = {
         create_job: true,
         job_title: `${selectedWorkflow.title}: ${Object.values(workflowInputs).join(", ")}`,
         identity_mode: "user-delegated",
@@ -185,7 +202,14 @@ export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps)
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
+      const data = await response.json() as {
+        records?: unknown;
+        detail?: string;
+        _job?: {
+          job_id?: string;
+          artifact_id?: string;
+        };
+      };
       if (response.ok) {
         setWorkflowOutcome({
           success: true,
@@ -200,8 +224,8 @@ export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps)
           message: data.detail || "Workflow execution failed. Ensure Odoo is connected.",
         });
       }
-    } catch (err: any) {
-      setWorkflowOutcome({ success: false, message: `Connection error: ${err.message}` });
+    } catch (err: unknown) {
+      setWorkflowOutcome({ success: false, message: `Connection error: ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       setIsWorkflowRunning(false);
     }

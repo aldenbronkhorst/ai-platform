@@ -2,12 +2,13 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 interface TechnicalDetailsProps {
-  data: any;
+  data: unknown;
 }
 
 export function TechnicalDetails({ data }: TechnicalDetailsProps) {
   const [isOpen, setIsOpen] = useState(false);
   if (!hasMeaningfulContent(data)) return null;
+  const details = data;
 
   return (
     <div className="mt-3 pt-3 border-t border-default">
@@ -21,14 +22,14 @@ export function TechnicalDetails({ data }: TechnicalDetailsProps) {
 
       {isOpen && (
         <div className="mt-2 space-y-3">
-          {data.tools_used && (
-            <Section label="Tools used" content={data.tools_used} />
+          {Boolean(details.tools_used) && (
+            <Section label="Tools used" content={details.tools_used} />
           )}
-          {data.actions_taken && (
-            <Section label="Actions taken" content={data.actions_taken} />
+          {Boolean(details.actions_taken) && (
+            <Section label="Actions taken" content={details.actions_taken} />
           )}
-          {data.documents_created && (
-            <Section label="Documents created" content={data.documents_created} />
+          {Boolean(details.documents_created) && (
+            <Section label="Documents created" content={details.documents_created} />
           )}
         </div>
       )}
@@ -50,17 +51,18 @@ function Section({ label, content }: { label: string; content: unknown }) {
   );
 }
 
-function hasMeaningfulContent(data: any): boolean {
+function hasMeaningfulContent(data: unknown): data is Record<string, unknown> {
   if (!data || typeof data !== "object") return false;
-  if (Object.keys(data).length === 0) return false;
-  const toolCall = data.tools_used && (
-    (Array.isArray(data.tools_used) && data.tools_used.length > 0) ||
-    (typeof data.tools_used === "string" && data.tools_used.trim())
+  const record = data as Record<string, unknown>;
+  if (Object.keys(record).length === 0) return false;
+  const toolCall = record.tools_used && (
+    (Array.isArray(record.tools_used) && record.tools_used.length > 0) ||
+    (typeof record.tools_used === "string" && record.tools_used.trim())
   );
-  const action = data.actions_taken && typeof data.actions_taken === "string" && data.actions_taken.trim().length > 0;
-  const doc = data.documents_created && (
-    (Array.isArray(data.documents_created) && data.documents_created.length > 0) ||
-    (typeof data.documents_created === "string" && data.documents_created.trim())
+  const action = record.actions_taken && typeof record.actions_taken === "string" && record.actions_taken.trim().length > 0;
+  const doc = record.documents_created && (
+    (Array.isArray(record.documents_created) && record.documents_created.length > 0) ||
+    (typeof record.documents_created === "string" && record.documents_created.trim())
   );
   return !!(toolCall || action || doc);
 }

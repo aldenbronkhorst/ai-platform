@@ -65,7 +65,7 @@ def _get_client(creds):
 
 
 @router.post("/run")
-async def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(internal_api_key_auth)):
+def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(internal_api_key_auth)):
     """Consolidated Odoo command center. Routes by mode to the appropriate internal handler."""
     client = _get_client(req.credentials)
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import re
@@ -56,7 +57,7 @@ class FoundryClient:
         self.use_managed_identity = use_managed_identity
         self._credential: Optional[DefaultAzureCredential] = None
 
-    def _get_headers(self) -> dict:
+    async def _get_headers(self) -> dict:
         if self.api_key:
             return {
                 "Content-Type": "application/json",
@@ -65,7 +66,7 @@ class FoundryClient:
         if self.use_managed_identity:
             if not self._credential:
                 self._credential = DefaultAzureCredential()
-            token = self._credential.get_token(COGNITIVE_SERVICES_SCOPE)
+            token = await asyncio.to_thread(self._credential.get_token, COGNITIVE_SERVICES_SCOPE)
             return {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {token.token}",
@@ -93,7 +94,7 @@ class FoundryClient:
 
         start = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=self._get_headers(), json=payload)
+            response = await client.post(url, headers=await self._get_headers(), json=payload)
         elapsed = int((time.monotonic() - start) * 1000)
 
         if response.status_code != 200:

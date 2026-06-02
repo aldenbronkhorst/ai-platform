@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/health")
-async def health_check():
+def health_check():
     settings = get_settings()
     config_issues = _validate_startup_config()
 
@@ -64,7 +64,7 @@ def _validate_startup_config() -> list:
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
-async def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
+def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
     settings = get_settings()
     return CapabilitiesResponse(
         endpoints=[

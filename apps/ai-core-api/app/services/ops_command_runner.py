@@ -5,6 +5,7 @@ structured error classification, command allowlist, and user token injection.
 """
 import asyncio
 import logging
+import os
 import re
 import shlex
 from typing import Any, Optional
@@ -22,15 +23,62 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(?i)pat=\S+|token=\S+|password=\S+'),
 ]
 
-# Command allowlist — only these commands/binary prefixes are permitted
-ALLOWED_COMMAND_PREFIXES: list[str] = [
-    "az ",
-    "gh ",
-    "git ",
-    "jq ",
-    "rg ",
-    "which ",
-]
+ALLOWED_OPERATIONS: dict[str, set[tuple[str, ...]]] = {
+    "az": {
+        ("account", "show"),
+        ("account", "list"),
+        ("group", "show"),
+        ("group", "list"),
+        ("resource", "show"),
+        ("resource", "list"),
+        ("containerapp", "show"),
+        ("containerapp", "list"),
+        ("acr", "repository", "list"),
+        ("acr", "repository", "show-tags"),
+        ("servicebus", "namespace", "show"),
+        ("servicebus", "queue", "show"),
+        ("servicebus", "queue", "list"),
+        ("storage", "account", "show"),
+        ("search", "service", "show"),
+    },
+    "gh": {
+        ("auth", "status"),
+        ("repo", "view"),
+        ("repo", "list"),
+        ("issue", "view"),
+        ("issue", "list"),
+        ("pr", "view"),
+        ("pr", "list"),
+        ("pr", "checks"),
+        ("run", "view"),
+        ("run", "list"),
+    },
+    "git": {
+        ("status",),
+        ("log",),
+        ("show",),
+        ("diff",),
+        ("branch",),
+        ("remote",),
+    },
+    "jq": {()},
+    "rg": {()},
+    "which": {()},
+}
+
+
+def _is_allowed_operation(args: list[str]) -> bool:
+    if not args:
+        return False
+    binary = args[0]
+    allowed = ALLOWED_OPERATIONS.get(binary)
+    if allowed is None:
+        return False
+    if () in allowed:
+        return True
+
+    op_parts = tuple(part for part in args[1:] if not part.startswith("-"))
+    return any(op_parts[:len(prefix)] == prefix for prefix in allowed)
 
 
 def _redact_output(text: str) -> str:
@@ -75,23 +123,24 @@ async def run_command(
     cwd: Optional[str] = None,
 ) -> CommandResult:
     """Execute a CLI command with timeout, output limits, and allowlist validation."""
-    # Validate against command allowlist
-    cmd_stripped = command.strip()
-    if not any(cmd_stripped.startswith(prefix) for prefix in ALLOWED_COMMAND_PREFIXES):
-        logger.warning("Blocked command not in allowlist: %.100s", command)
-        return CommandResult(error=f"Command not allowed: {cmd_stripped.split()[0] if cmd_stripped else 'empty'}", exit_code=126)
-
     try:
         args = shlex.split(command)
     except ValueError as e:
         return CommandResult(error=f"Invalid command: {e}")
 
+    if not _is_allowed_operation(args):
+        logger.warning("Blocked command outside read-only operation policy: %.100s", command)
+        return CommandResult(error=f"Command not allowed by read-only operation policy: {args[0] if args else 'empty'}", exit_code=126)
+
     try:
+        process_env = os.environ.copy()
+        if env:
+            process_env.update(env)
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env,
+            env=process_env,
             cwd=cwd,
         )
     except FileNotFoundError as e:

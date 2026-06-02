@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Shield } from "lucide-react";
 
 interface AIMemory {
@@ -39,35 +39,42 @@ export function AdminPage({ accessToken }: { accessToken: string }) {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterType, setFilterType] = useState("");
 
-  useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      fetchMemories(),
-      fetchRules(),
-    ]).finally(() => setLoading(false));
-  }, [filterStatus, filterType]);
-
-  const headers = {
+  const headers = useMemo(() => ({
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
-  };
+  }), [accessToken]);
 
-  const fetchMemories = async () => {
+  const fetchMemories = useCallback(async () => {
     try {
       const q = new URLSearchParams({ limit: "100" });
       if (filterStatus) q.set("status", filterStatus);
       if (filterType) q.set("type", filterType);
       const res = await fetch(`${APIM_BASE_URL}/memories?${q}`, { headers });
       if (res.ok) setMemories(await res.json());
-    } catch {}
-  };
+    } catch { /* ignore transient memory load errors */ }
+  }, [filterStatus, filterType, headers]);
 
-  const fetchRules = async () => {
+  const fetchRules = useCallback(async () => {
     try {
       const res = await fetch(`${APIM_BASE_URL}/context/rules`, { headers });
       if (res.ok) setRules(await res.json());
-    } catch {}
-  };
+    } catch { /* ignore transient rule load errors */ }
+  }, [headers]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(async () => {
+      setLoading(true);
+      await Promise.all([
+        fetchMemories(),
+        fetchRules(),
+      ]);
+      if (!cancelled) setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchMemories, fetchRules]);
 
   const doApprove = async (id: string) => {
     try {
@@ -80,7 +87,7 @@ export function AdminPage({ accessToken }: { accessToken: string }) {
           prev.map((m) => (m.id === id ? { ...m, status: "active" } : m))
         );
       }
-    } catch {}
+    } catch { /* ignore transient approve errors */ }
   };
 
   const doArchive = async (id: string) => {
@@ -92,7 +99,7 @@ export function AdminPage({ accessToken }: { accessToken: string }) {
       if (res.ok) {
         setMemories((prev) => prev.filter((m) => m.id !== id));
       }
-    } catch {}
+    } catch { /* ignore transient archive errors */ }
   };
 
   const statusColor: Record<string, string> = {

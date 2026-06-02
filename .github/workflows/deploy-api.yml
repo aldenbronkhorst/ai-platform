@@ -76,6 +76,7 @@ jobs:
         run: |
           cd apps/web-portal
           npm install --legacy-peer-deps
+          npm run lint
           npm run build
 
       - name: Set up Python
@@ -115,9 +116,9 @@ jobs:
           echo "resource_group=rg-ai-platform-prod-san-001" >> $GITHUB_OUTPUT
           echo "acr_name=acraiplatformprodsan001" >> $GITHUB_OUTPUT
           echo "container_app=ca-ai-platform-api-prod-san-001" >> $GITHUB_OUTPUT
-          echo "connector_app=ca-odoo-connector-prod-san-001" >> $GITHUB_OUTPUT
-          echo "worker_app=ca-ai-worker-prod" >> $GITHUB_OUTPUT
-          CONNECTOR_FQDN=$(az containerapp show --name ca-odoo-connector-prod-san-001 --resource-group rg-ai-platform-prod-san-001 --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "connector_app=ca-ai-platform-odoo-connector-prod-san-001" >> $GITHUB_OUTPUT
+          echo "worker_app=ca-ai-platform-worker-prod-san-001" >> $GITHUB_OUTPUT
+          CONNECTOR_FQDN=$(az containerapp show --name ca-ai-platform-odoo-connector-prod-san-001 --resource-group rg-ai-platform-prod-san-001 --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "connector_url=https://${CONNECTOR_FQDN}" >> $GITHUB_OUTPUT
 
       - name: ACR Login
@@ -156,11 +157,13 @@ jobs:
           az containerapp update \
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
-            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}"
+            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
+            --set-env-vars ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
           az containerapp update \
             --name ${{ steps.env.outputs.worker_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
-            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}"
+            --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
+            --set-env-vars ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
 
       - name: Deploy Odoo Connector
         run: |

@@ -37,7 +37,7 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
         if (parsed.request_id && !parsed.requestId) parsed.requestId = parsed.request_id;
         return parsed as ChatError;
       }
-    } catch {}
+    } catch { /* ignore malformed error payloads */ }
     return null;
   }, [errorMessage]);
 

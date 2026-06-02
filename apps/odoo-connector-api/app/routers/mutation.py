@@ -80,7 +80,7 @@ def _execute_operation(client, operation, model, record_ids, values, workflow_me
 
 
 @router.post("/mutation")
-async def mutate(req: MutationRequest, auth: dict = Depends(internal_api_key_auth)):
+def mutate(req: MutationRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.operation in ("delete", "workflow") and not req.dry_run:

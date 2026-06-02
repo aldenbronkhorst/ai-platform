@@ -20,7 +20,7 @@ def _get_client(creds):
 
 
 @router.post("/analyze")
-async def analyze(req: AnalyzeRequest, auth: dict = Depends(internal_api_key_auth)):
+def analyze(req: AnalyzeRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.mode == "aggregate":

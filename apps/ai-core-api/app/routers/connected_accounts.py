@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -514,7 +515,7 @@ async def _verify_odoo_credentials_via_connector(
         )
 
 
-def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
+async def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
     """Stores the secret in Azure Key Vault if Key Vault is configured.
     Raises HTTPException on failure, with a user-friendly message for
     ObjectIsDeletedButRecoverable conflicts.
@@ -531,12 +532,15 @@ def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
             ).model_dump()
         )
 
-    try:
+    def _store_sync() -> None:
         from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
         credential = DefaultAzureCredential()
         kv_client = SecretClient(vault_url=kv_uri, credential=credential)
         kv_client.set_secret(secret_name, secret_value)
+
+    try:
+        await asyncio.to_thread(_store_sync)
     except Exception as e:
         error_str = str(e)
         if "ObjectIsDeletedButRecoverable" in error_str or "Conflict" in error_str:
@@ -567,21 +571,23 @@ def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
         )
 
 
-def _delete_key_vault_secret(secret_name: str) -> None:
+async def _delete_key_vault_secret(secret_name: str) -> None:
     """Deletes the secret in Azure Key Vault if Key Vault is configured.
     Does not raise if the secret doesn't exist (already deleted or never created)."""
     kv_uri = os.environ.get("KEY_VAULT_URI", "")
     if not kv_uri:
         return
 
-    try:
+    def _delete_sync() -> None:
         from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
         credential = DefaultAzureCredential()
         kv_client = SecretClient(vault_url=kv_uri, credential=credential)
-        # Delete secret
         poller = kv_client.begin_delete_secret(secret_name)
         poller.wait()
+
+    try:
+        await asyncio.to_thread(_delete_sync)
     except Exception as e:
         error_str = str(e)
         # If secret doesn't exist, just log and continue - don't fail the disconnect
@@ -602,13 +608,16 @@ async def _retrieve_key_vault_secret(secret_name: str) -> str:
     if not kv_uri:
         raise HTTPException(status_code=500, detail="Key Vault is not configured. Cannot retrieve credentials.")
 
-    try:
+    def _retrieve_sync() -> str:
         from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
         credential = DefaultAzureCredential()
         kv_client = SecretClient(vault_url=kv_uri, credential=credential)
         secret = kv_client.get_secret(secret_name)
         return secret.value or ""
+
+    try:
+        return await asyncio.to_thread(_retrieve_sync)
     except Exception as e:
         error_str = str(e)
         if "SecretNotFound" in error_str or "NotFound" in error_str:
@@ -706,7 +715,7 @@ async def connect_odoo(
     secret_name = _generate_secret_name(connected_account_id)
 
     # 2. Store the Odoo API key in Key Vault FIRST (gate: if this fails, nothing is saved)
-    _store_key_vault_secret(secret_name, req.odoo_api_key)
+    await _store_key_vault_secret(secret_name, req.odoo_api_key)
     trace.stages["key_vault_store"] = StageTrace(status="success")
 
     # 3. Verify credentials (failure does NOT block saving the account)
@@ -1123,7 +1132,7 @@ async def rotate_odoo_credentials(
 
     # Generate a new unique secret name for the rotated key
     new_secret_name = _generate_secret_name(account.id)
-    _store_key_vault_secret(new_secret_name, req.odoo_api_key)
+    await _store_key_vault_secret(new_secret_name, req.odoo_api_key)
 
     # Update metadata and point to the new secret
     account.secret_reference = new_secret_name
@@ -1175,7 +1184,7 @@ async def disconnect_odoo(
 
     # 1. Delete Key Vault secret for security
     if account.secret_reference:
-        _delete_key_vault_secret(account.secret_reference)
+        await _delete_key_vault_secret(account.secret_reference)
 
     # 2. Clear all connection metadata and credentials
     account.status = "disconnected"

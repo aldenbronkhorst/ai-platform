@@ -135,6 +135,40 @@ CREATE TABLE IF NOT EXISTS ai_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_ai_artifacts_job_id ON ai_artifacts(job_id);
 
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES ai_users(id),
+    title VARCHAR(255) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active' NOT NULL,
+    workflow_context VARCHAR(100),
+    last_message_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    metadata_json JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_user_id ON ai_chat_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_status ON ai_chat_sessions(status);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chat_session_id UUID NOT NULL REFERENCES ai_chat_sessions(id),
+    user_id UUID NOT NULL REFERENCES ai_users(id),
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    model_provider VARCHAR(100),
+    model_name VARCHAR(100),
+    token_usage_json JSONB,
+    tool_call_json JSONB,
+    metadata_json JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_chat_session_id ON ai_chat_messages(chat_session_id);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_user_id ON ai_chat_messages(user_id);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_role ON ai_chat_messages(role);
+
 CREATE TABLE IF NOT EXISTS ai_tools (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) UNIQUE NOT NULL,

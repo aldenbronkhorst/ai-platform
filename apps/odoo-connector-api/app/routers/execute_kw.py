@@ -10,7 +10,7 @@ router = APIRouter()
 
 
 @router.post("/")
-async def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_key_auth)):
+def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_key_auth)):
     settings = get_settings()
 
     if not settings.execute_kw_allow_write_methods:

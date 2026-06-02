@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Database, BookOpen, RefreshCw, CheckCircle2,
   AlertTriangle, Trash2, Terminal, GitBranch,
   ChevronRight, X,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
 import { GlassInput } from "../components/ui/GlassInput";
@@ -24,13 +25,76 @@ interface ConnectorDef {
   key: string;
   name: string;
   subtitle: string;
-  icon: any;
+  icon: LucideIcon;
   status: string;
   statusLabel: string;
   statusColor: string;
   primaryAction: string;
   authMethod?: string;
   lastVerified?: string;
+}
+
+interface ConnectorMeta {
+  connector_key?: string;
+  status?: string;
+}
+
+interface OdooStatus {
+  status: string;
+  odoo_url?: string;
+  odoo_db?: string;
+  provider_username?: string;
+  target_environment?: string;
+  last_verified_at?: string;
+}
+
+interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  isKeyVaultError?: boolean;
+  errorType?: string;
+  stage?: string;
+  technicalDetail?: string;
+  requestId?: string;
+  connectionAttemptId?: string;
+  trace?: { trace_id?: string } | null;
+}
+
+interface CliCommandResult {
+  command?: string;
+  stdout?: string;
+  stderr?: string;
+  error_message?: string;
+  exit_code?: number;
+}
+
+interface CliTestResult {
+  success?: boolean;
+  status?: string;
+  connector?: string;
+  message?: string;
+  stdout?: string;
+  stderr?: string;
+  request_id?: string;
+  commands?: CliCommandResult[];
+}
+
+interface AzureDeviceCode {
+  status: string;
+  device_code: string;
+  user_code: string;
+  verification_url: string;
+  interval?: number;
+}
+
+type ApiRecord = Record<string, unknown>;
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function stringValue(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
 }
 
 const CONNECTORS: ConnectorDef[] = [
@@ -47,10 +111,10 @@ const CONNECTORS: ConnectorDef[] = [
 interface ConnectionsPageProps { accessToken: string; }
 
 export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
-  const [odooStatus, setOdooStatus] = useState<any>({ status: "not_connected" });
+  const [odooStatus, setOdooStatus] = useState<OdooStatus>({ status: "not_connected" });
   const [isConnecting, setIsConnecting] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<any>(null);
+  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [showTechDetails, setShowTechDetails] = useState(false);
   const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
   const [odooUrl, setOdooUrl] = useState("");
@@ -59,38 +123,39 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooApiKey, setOdooApiKey] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [githubOrg, setGithubOrg] = useState("aldenbronkhorst");
-  const [cliTestResult, setCliTestResult] = useState<any>(null);
+  const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [cliTesting, setCliTesting] = useState(false);
-  const [azureDeviceCode, setAzureDeviceCode] = useState<any>(null);
+  const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
-  const [connectorMeta, setConnectorMeta] = useState<Record<string, any>>({});
+  const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta>>({});
 
-  const fetchConnectors = async () => {
+  const headers = useCallback(() => ({
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+  }), [accessToken]);
+
+  const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
       if (res.ok) {
-        const data = await res.json();
-        const meta: Record<string, any> = {};
-        (data.connectors || data || []).forEach((c: any) => {
+        const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
+        const meta: Record<string, ConnectorMeta> = {};
+        const connectors = Array.isArray(data) ? data : data.connectors || [];
+        connectors.forEach((c) => {
           if (c.connector_key) meta[c.connector_key] = c;
         });
         setConnectorMeta(meta);
       }
-    } catch { /* ignore */ }
-  };
+    } catch { /* ignore transient connector status errors */ }
+  }, [accessToken, headers]);
 
-  const headers = () => ({
-    Authorization: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-  });
-
-  const fetchOdooStatus = async () => {
+  const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as OdooStatus;
         setOdooStatus(data);
         if (data.status === "connected" || data.status === "error") {
           if (data.odoo_url) setOdooUrl(data.odoo_url);
@@ -101,9 +166,36 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setOdooStatus({ status: "not_connected" });
       }
     } catch { setOdooStatus({ status: "not_connected" }); }
-  };
+  }, [accessToken, headers]);
 
-  useEffect(() => { if (accessToken) { fetchOdooStatus(); fetchConnectors(); } }, [accessToken]);
+  useEffect(() => {
+    if (!accessToken) return;
+    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors()]));
+  }, [accessToken, fetchOdooStatus, fetchConnectors]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code) return;
+    void (async () => {
+      try {
+        const res = await fetch(`${APIM_BASE_URL}/connector/github/oauth-callback`, {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ code, state }),
+        });
+        const data = await res.json() as CliTestResult;
+        setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github_cli" });
+        await fetchConnectors();
+      } catch (err) {
+        setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) });
+      } finally {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    })();
+  }, [accessToken, fetchConnectors, headers]);
 
   const isKeyVaultError = (msg: string) =>
     KV_ERROR_PHRASES.some((p) => msg.toLowerCase().includes(p));
@@ -116,23 +208,26 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         method: "POST", headers: headers(),
         body: JSON.stringify({ odoo_url: odooUrl, odoo_db: odooDb, odoo_username: odooUsername, odoo_api_key: odooApiKey }),
       });
-      const data = await res.json();
+      const data = await res.json() as ApiRecord;
       if (res.ok) {
         setTestResult({ success: true, message: "Odoo connection established!" });
-        setSelectedConnector(null); setOdooApiKey(""); fetchOdooStatus();
+        setSelectedConnector(null); setOdooApiKey(""); void fetchOdooStatus();
       } else {
-        const detail = data.detail || {};
+        const rawDetail = data.detail;
+        const detail = rawDetail && typeof rawDetail === "object" ? rawDetail as ApiRecord : {};
+        const detailMessage = typeof rawDetail === "string" ? rawDetail : stringValue(detail.message, "Connection failed.");
         setTestResult({
-          success: false, message: detail.message || data.detail || "Connection failed.",
-          isKeyVaultError: isKeyVaultError(detail.message || ""),
-          errorType: detail.error_type || "", stage: detail.stage || "",
-          technicalDetail: detail.technical_detail || "", requestId: detail.request_id || "",
-          connectionAttemptId: detail.connection_attempt_id || "", trace: detail.trace || null,
+          success: false, message: detailMessage,
+          isKeyVaultError: isKeyVaultError(detailMessage),
+          errorType: stringValue(detail.error_type), stage: stringValue(detail.stage),
+          technicalDetail: stringValue(detail.technical_detail), requestId: stringValue(detail.request_id),
+          connectionAttemptId: stringValue(detail.connection_attempt_id),
+          trace: detail.trace && typeof detail.trace === "object" ? detail.trace as { trace_id?: string } : null,
         });
-        fetchOdooStatus();
+        void fetchOdooStatus();
       }
-    } catch (err: any) {
-      setTestResult({ success: false, message: `Could not reach backend: ${err.message}` });
+    } catch (err) {
+      setTestResult({ success: false, message: `Could not reach backend: ${errorMessage(err)}` });
     } finally { setIsConnecting(false); }
   };
 
@@ -140,11 +235,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return; setIsTesting(true); setTestResult(null);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/test`, { method: "POST", headers: headers() });
-      const data = await res.json();
-      if (res.ok) setTestResult({ success: data.status === "connected", message: `Connection state: ${data.status.toUpperCase()}` });
+      const data = await res.json() as { status?: string; detail?: string };
+      if (res.ok) {
+        const status = data.status || "unknown";
+        setTestResult({ success: status === "connected", message: `Connection state: ${status.toUpperCase()}` });
+      }
       else setTestResult({ success: false, message: data.detail || "Verification failed." });
-      fetchOdooStatus();
-    } catch (err: any) { setTestResult({ success: false, message: `Test failed: ${err.message}` }); }
+      void fetchOdooStatus();
+    } catch (err) { setTestResult({ success: false, message: `Test failed: ${errorMessage(err)}` }); }
     finally { setIsTesting(false); }
   };
 
@@ -153,15 +251,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     try {
       const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
       if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername("alden@lotslotsmore.com"); setOdooApiKey(""); setTestResult(null); }
-      fetchOdooStatus();
-    } catch { /* ignore */ }
+      void fetchOdooStatus();
+    } catch { /* ignore transient disconnect errors */ }
   };
 
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, { method: "POST", headers: headers() });
-      const data = await res.json();
+      const data = await res.json() as AzureDeviceCode & { error?: string };
       if (data.status === "device_code_ready") {
         setAzureDeviceCode(data);
         setAzurePolling(true);
@@ -173,49 +271,49 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               method: "POST", headers: headers(),
               body: JSON.stringify({ device_code: data.device_code }),
             });
-            const pd = await pr.json();
+            const pd = await pr.json() as { status: string; error?: string };
             if (pd.status === "connected") {
               setAzurePolling(false);
               setAzureDeviceCode(null);
-              setCliTestResult({ success: true, message: "Azure connected!" });
+              setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected!" });
             } else if (pd.status === "pending") {
               setTimeout(poll, (data.interval || 5) * 1000);
             } else {
               setAzurePolling(false);
-              setCliTestResult({ success: false, message: pd.error || "Auth failed" });
+              setCliTestResult({ status: "failed", connector: "azure_cli", message: pd.error || "Auth failed" });
             }
           } catch { setAzurePolling(false); }
         };
         setTimeout(poll, (data.interval || 5) * 1000);
       } else {
-        setCliTestResult({ success: false, message: data.error || "Failed to start device code flow" });
+        setCliTestResult({ status: "failed", connector: "azure_cli", message: data.error || "Failed to start device code flow" });
       }
-    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+    } catch (err) { setCliTestResult({ status: "failed", connector: "azure_cli", message: errorMessage(err) }); }
   };
 
   const handleAzureStatus = async () => {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/status`, { method: "GET", headers: headers() });
-      const data = await res.json();
-      if (data.status === "connected") setCliTestResult({ success: true, message: "Azure connected" });
-    } catch { /* ignore */ }
+      const data = await res.json() as { status?: string };
+      if (data.status === "connected") setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected" });
+    } catch { /* ignore transient Azure status errors */ }
   };
 
   const handleAzureDisconnect = async () => {
     if (!accessToken) return;
     await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
-    setCliTestResult({ success: true, message: "Disconnected" });
+    setCliTestResult({ status: "success", connector: "azure_cli", message: "Disconnected" });
   };
 
   const handleTestAzure = async () => {
     if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json();
+      const data = await res.json() as CliTestResult;
       setCliTestResult({ ...data, connector: "azure_cli" });
-    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+    } catch (err) { setCliTestResult({ status: "failed", connector: "azure_cli", message: errorMessage(err) }); }
     finally { setCliTesting(false); }
   };
 
@@ -223,31 +321,35 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
-      const data = await res.json();
+      const data = await res.json() as { auth_url?: string; message?: string };
       if (data.auth_url) window.location.href = data.auth_url;
-      else setCliTestResult({ success: false, message: data.message || "GitHub OAuth not configured." });
-    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+      else setCliTestResult({ status: "failed", connector: "github_cli", message: data.message || "GitHub OAuth not configured." });
+    } catch (err) { setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) }); }
   };
 
   const handleGithubStatus = async () => {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/github/status`, { method: "GET", headers: headers() });
-      const data = await res.json();
-      if (data.status === "connected") setCliTestResult({ success: true, message: "GitHub connected" });
-    } catch { /* ignore */ }
+      const data = await res.json() as { status?: string };
+      if (data.status === "connected") setCliTestResult({ status: "success", connector: "github_cli", message: "GitHub connected" });
+    } catch { /* ignore transient GitHub status errors */ }
   };
 
   const handleConnectGithubToken = async () => {
     if (!accessToken || !githubToken) return; setIsConnecting(true); setCliTestResult(null);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/github_cli/connect`, {
+      const res = await fetch(`${APIM_BASE_URL}/connector/github/token-connect`, {
         method: "POST", headers: headers(),
         body: JSON.stringify({ token: githubToken, org: githubOrg }),
       });
-      const data = await res.json();
-      setCliTestResult({ success: res.ok, ...data });
-    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+      const data = await res.json() as CliTestResult;
+      setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github_cli" });
+      if (res.ok) {
+        setGithubToken("");
+        await fetchConnectors();
+      }
+    } catch (err) { setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) }); }
     finally { setIsConnecting(false); }
   };
 
@@ -447,9 +549,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {cliTestResult.request_id && (
                     <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>
                   )}
-                  {cliTestResult.commands?.length > 0 ? (
+                  {(cliTestResult.commands?.length ?? 0) > 0 ? (
                     <div className="space-y-2">
-                      {cliTestResult.commands.map((cmd: any, i: number) => (
+                      {(cliTestResult.commands ?? []).map((cmd, i) => (
                         <details key={i} className="border border-default rounded-lg p-2 bg-surface/50">
                           <summary className={`text-xs cursor-pointer font-mono ${cmd.exit_code === 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
                             {cmd.exit_code === 0 ? "✓" : "✗"} {cmd.command?.substring(0, 60)}...

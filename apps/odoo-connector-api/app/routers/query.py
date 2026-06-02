@@ -32,7 +32,7 @@ def _check_refused_fields(fields: list[str] | None):
 
 
 @router.post("/query")
-async def query(req: QueryRequest, auth: dict = Depends(internal_api_key_auth)):
+def query(req: QueryRequest, auth: dict = Depends(internal_api_key_auth)):
     _check_refused_fields(req.fields)
     client = _get_client(req.credentials)
 

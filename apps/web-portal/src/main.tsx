@@ -52,8 +52,8 @@ msalInstance.initialize().then(async () => {
         msalInstance.setActiveAccount(accounts[0]);
       }
     }
-  } catch (err: any) {
-    startupAuthError = err.message || String(err);
+  } catch (err: unknown) {
+    startupAuthError = err instanceof Error ? err.message : String(err);
     console.error("MSAL redirect processing failed:", err);
   }
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import api_key_auth
@@ -52,6 +52,17 @@ async def create_artifact(
     return artifact
 
 
+@router.get("", response_model=list[AIArtifactResponse])
+async def list_artifacts(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    auth=Depends(api_key_auth),
+):
+    svc = ArtifactService(db)
+    return await svc.list_for_user(auth.get("user_id"), limit=limit, offset=offset)
+
+
 @router.get("/{artifact_id}", response_model=AIArtifactResponse)
 async def get_artifact(
     artifact_id: UUID,
@@ -78,7 +89,6 @@ async def download_artifact(
     
     container = svc._get_container(artifact.artifact_type)
     blob_name = f"{artifact.job_id or 'standalone'}/{artifact.filename}"
-    sas_url = svc.generate_sas_url(container, blob_name)
+    sas_url = await svc.generate_sas_url(container, blob_name)
     
     return {"download_url": sas_url}
-

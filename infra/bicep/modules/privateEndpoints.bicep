@@ -29,6 +29,96 @@ resource subnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' existing 
   name: subnetName
 }
 
+resource privateDnsKeyVault 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.vaultcore.azure.net'
+  location: 'global'
+  tags: tags
+}
+
+resource privateDnsBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.blob.core.windows.net'
+  location: 'global'
+  tags: tags
+}
+
+resource privateDnsServiceBus 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.servicebus.windows.net'
+  location: 'global'
+  tags: tags
+}
+
+resource privateDnsPostgres 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.postgres.database.azure.com'
+  location: 'global'
+  tags: tags
+}
+
+resource privateDnsSearch 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deploySearch) {
+  name: 'privatelink.search.windows.net'
+  location: 'global'
+  tags: tags
+}
+
+resource privateDnsKeyVaultLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsKeyVault
+  name: '${namePrefix}-vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource privateDnsBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsBlob
+  name: '${namePrefix}-vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource privateDnsServiceBusLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsServiceBus
+  name: '${namePrefix}-vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource privateDnsPostgresLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsPostgres
+  name: '${namePrefix}-vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource privateDnsSearchLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deploySearch) {
+  parent: privateDnsSearch
+  name: '${namePrefix}-vnet-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
 resource privateEndpointKeyVault 'Microsoft.Network/privateEndpoints@2023-11-01' = {
   name: 'pe-${namePrefix}-kv'
   location: location
@@ -43,6 +133,21 @@ resource privateEndpointKeyVault 'Microsoft.Network/privateEndpoints@2023-11-01'
         properties: {
           privateLinkServiceId: keyVaultId
           groupIds: ['vault']
+        }
+      }
+    ]
+  }
+}
+
+resource privateEndpointKeyVaultDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: privateEndpointKeyVault
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'keyvault'
+        properties: {
+          privateDnsZoneId: privateDnsKeyVault.id
         }
       }
     ]
@@ -69,6 +174,21 @@ resource privateEndpointStorageBlob 'Microsoft.Network/privateEndpoints@2023-11-
   }
 }
 
+resource privateEndpointStorageBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: privateEndpointStorageBlob
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'storageblob'
+        properties: {
+          privateDnsZoneId: privateDnsBlob.id
+        }
+      }
+    ]
+  }
+}
+
 resource privateEndpointServiceBus 'Microsoft.Network/privateEndpoints@2023-11-01' = {
   name: 'pe-${namePrefix}-sb'
   location: location
@@ -83,6 +203,21 @@ resource privateEndpointServiceBus 'Microsoft.Network/privateEndpoints@2023-11-0
         properties: {
           privateLinkServiceId: serviceBusNamespaceId
           groupIds: ['namespace']
+        }
+      }
+    ]
+  }
+}
+
+resource privateEndpointServiceBusDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: privateEndpointServiceBus
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'servicebus'
+        properties: {
+          privateDnsZoneId: privateDnsServiceBus.id
         }
       }
     ]
@@ -109,6 +244,21 @@ resource privateEndpointAIsearch 'Microsoft.Network/privateEndpoints@2023-11-01'
   }
 }
 
+resource privateEndpointAIsearchDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (deploySearch) {
+  parent: privateEndpointAIsearch
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'search'
+        properties: {
+          privateDnsZoneId: privateDnsSearch.id
+        }
+      }
+    ]
+  }
+}
+
 resource privateEndpointPostgres 'Microsoft.Network/privateEndpoints@2023-11-01' = {
   name: 'pe-${namePrefix}-psql'
   location: location
@@ -123,6 +273,21 @@ resource privateEndpointPostgres 'Microsoft.Network/privateEndpoints@2023-11-01'
         properties: {
           privateLinkServiceId: postgresServerId
           groupIds: ['postgresqlServer']
+        }
+      }
+    ]
+  }
+}
+
+resource privateEndpointPostgresDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: privateEndpointPostgres
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'postgres'
+        properties: {
+          privateDnsZoneId: privateDnsPostgres.id
         }
       }
     ]

@@ -23,7 +23,7 @@ export interface ChatMessage {
   content: string;
   created_at: string;
   model_name?: string;
-  metadata_json?: any;
+  metadata_json?: unknown;
   status?: MessageStatus;
   error_message?: string;
 }

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -101,7 +102,7 @@ class SearchService:
 
         try:
             logger.info("Idempotently creating/updating index '%s'...", self.index_name)
-            client.create_or_update_index(index)
+            await asyncio.to_thread(client.create_or_update_index, index)
             logger.info("Successfully created/updated search index '%s'", self.index_name)
             return True
         except Exception as e:
@@ -132,7 +133,7 @@ class SearchService:
 
         try:
             logger.info("Uploading %d documents to index '%s'...", len(sanitized_docs), self.index_name)
-            results = client.upload_documents(documents=sanitized_docs)
+            results = await asyncio.to_thread(client.upload_documents, documents=sanitized_docs)
             success_count = sum(1 for r in results if r.succeeded)
             logger.info("Successfully uploaded %d/%d documents to index '%s'", success_count, len(sanitized_docs), self.index_name)
             return success_count == len(sanitized_docs)
@@ -151,7 +152,7 @@ class SearchService:
         payload = [{"id": doc_id} for doc_id in document_ids]
         try:
             logger.info("Deleting %d documents from index '%s'...", len(document_ids), self.index_name)
-            results = client.delete_documents(documents=payload)
+            results = await asyncio.to_thread(client.delete_documents, documents=payload)
             success_count = sum(1 for r in results if r.succeeded)
             logger.info("Successfully deleted %d/%d documents from index '%s'", success_count, len(document_ids), self.index_name)
             return success_count == len(document_ids)
@@ -216,24 +217,26 @@ class SearchService:
         )
 
         try:
-            results = client.search(
-                search_text=query,
-                filter=filter_string,
-                top=search_limit,
-                select=[
-                    "id", "source_type", "source_id", "memory_id", "document_id",
-                    "title", "chunk_text", "summary", "type", "scope_type",
-                    "scope_value", "department", "customer", "supplier",
-                    "status", "risk_level", "confidence", "tags"
-                ]
-            )
+            def _search_sync() -> list[dict[str, Any]]:
+                results = client.search(
+                    search_text=query,
+                    filter=filter_string,
+                    top=search_limit,
+                    select=[
+                        "id", "source_type", "source_id", "memory_id", "document_id",
+                        "title", "chunk_text", "summary", "type", "scope_type",
+                        "scope_value", "department", "customer", "supplier",
+                        "status", "risk_level", "confidence", "tags"
+                    ]
+                )
+                hits: list[dict[str, Any]] = []
+                for hit in results:
+                    doc = {key: hit[key] for key in hit.keys() if key != "@search.score"}
+                    doc["score"] = hit.get("@search.score", 0.0)
+                    hits.append(doc)
+                return hits
 
-            hits = []
-            for hit in results:
-                # Extract clean dict and include search score
-                doc = {key: hit[key] for key in hit.keys() if key != "@search.score"}
-                doc["score"] = hit.get("@search.score", 0.0)
-                hits.append(doc)
+            hits = await asyncio.to_thread(_search_sync)
 
             logger.info("Search complete | index='%s' results_count=%d", self.index_name, len(hits))
             return hits

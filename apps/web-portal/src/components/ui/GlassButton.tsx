@@ -14,10 +14,15 @@ export function GlassButton({
   ...props
 }: GlassButtonProps) {
   const sizeClass = size === "sm" ? "px-3 py-1.5 text-[11px]" : "px-4 py-2.5 text-xs";
+  const variantClass = variant === "danger"
+    ? "text-[var(--color-danger)]"
+    : variant === "primary"
+      ? "text-default"
+      : "";
 
   return (
     <button
-      className={`glass-btn font-bold tracking-wide transition-all flex items-center justify-center gap-2 ${sizeClass} ${className}`}
+      className={`glass-btn font-bold tracking-wide transition-all flex items-center justify-center gap-2 ${sizeClass} ${variantClass} ${className}`}
       {...props}
     >
       {children}

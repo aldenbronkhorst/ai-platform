@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 import httpx
@@ -133,12 +134,15 @@ async def _resolve_odoo_credentials(db: AsyncSession, user_id: UUID, identity_mo
     api_key = ""
     if account.secret_reference and os.environ.get("KEY_VAULT_URI"):
         try:
-            from azure.identity import DefaultAzureCredential
-            from azure.keyvault.secrets import SecretClient
-            credential = DefaultAzureCredential()
-            client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
-            secret = client.get_secret(account.secret_reference)
-            api_key = secret.value or ""
+            def _get_secret() -> str:
+                from azure.identity import DefaultAzureCredential
+                from azure.keyvault.secrets import SecretClient
+                credential = DefaultAzureCredential()
+                client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
+                secret = client.get_secret(account.secret_reference)
+                return secret.value or ""
+
+            api_key = await asyncio.to_thread(_get_secret)
         except Exception as e:
             raise HTTPException(
                 status_code=500,

@@ -175,6 +175,20 @@ module serviceBus 'modules/serviceBus.bicep' = {
   }
 }
 
+// Module: Virtual Network for private dependencies and Container Apps egress
+module network 'modules/network.bicep' = {
+  name: 'networkDeploy'
+  scope: rg
+  params: {
+    workload: workload
+    environment: environment
+    regionCode: regionCode
+    instance: instance
+    location: location
+    tags: tags
+  }
+}
+
 // Module: Container Apps Environment and API App
 module containerApps 'modules/containerApps.bicep' = {
   name: 'containerAppsDeploy'
@@ -196,6 +210,7 @@ module containerApps 'modules/containerApps.bicep' = {
     keyVaultUri: keyVault.outputs.vaultUri
     storageAccountName: storage.outputs.storageAccountName
     serviceBusNamespace: serviceBus.outputs.namespaceName
+    containerAppsInfrastructureSubnetId: network.outputs.containerAppsSubnetId
     postgresHost: postgres.outputs.fqdn
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
@@ -233,7 +248,7 @@ module apiManagement 'modules/apiManagement.bicep' = {
   }
 }
 
-// Module: Private Endpoints (requires pre-existing VNet with private-endpoints subnet)
+// Module: Private Endpoints and Private DNS
 module privateEndpoints 'modules/privateEndpoints.bicep' = {
   name: 'privateEndpointsDeploy'
   scope: rg
@@ -244,8 +259,9 @@ module privateEndpoints 'modules/privateEndpoints.bicep' = {
     instance: instance
     location: location
     tags: tags
-    vnetName: 'vnet-${workload}-${environment}-${regionCode}-${instance}'
+    vnetName: network.outputs.vnetName
     vnetResourceGroupName: resourceGroupName
+    subnetName: network.outputs.privateEndpointsSubnetName
     keyVaultId: keyVault.outputs.id
     storageAccountId: storage.outputs.id
     serviceBusNamespaceId: serviceBus.outputs.id
@@ -298,6 +314,7 @@ output appInsightsName string = monitoring.outputs.name
 output serviceBusNamespace string = serviceBus.outputs.namespaceName
 output containerAppName string = containerApps.outputs.containerAppName
 output containerAppsEnvironmentName string = containerApps.outputs.environmentName
+output vnetName string = network.outputs.vnetName
 #disable-next-line BCP318
 output aiSearchName string = deploySearch ? aiSearch.outputs.name : ''
 output apiManagementName string = apiManagement.outputs.name

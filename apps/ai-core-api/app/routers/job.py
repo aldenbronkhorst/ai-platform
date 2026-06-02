@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import api_key_auth
@@ -33,6 +33,17 @@ async def create_job(
     ))
 
     return job
+
+
+@router.get("", response_model=list[AIJobResponse])
+async def list_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    auth=Depends(api_key_auth),
+):
+    svc = JobService(db)
+    return await svc.list_for_user(auth.get("user_id"), limit=limit, offset=offset)
 
 
 @router.get("/{job_id}", response_model=AIJobResponse)

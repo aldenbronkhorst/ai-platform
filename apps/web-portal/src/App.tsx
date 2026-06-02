@@ -23,6 +23,53 @@ const ENABLE_LOCAL_MOCK =
   (typeof window !== "undefined" && 
     (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"));
 
+interface TokenClaims {
+  roles?: string[];
+}
+
+interface SpeechRecognitionResultLike {
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
+  };
+}
+
+interface SpeechRecognitionErrorLike {
+  error: string;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionResultLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorLike) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+};
+
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isAbortError(err: unknown) {
+  return typeof err === "object" && err !== null && "name" in err
+    && (err as { name?: string }).name === "AbortError";
+}
+
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
   const { instance, accounts, inProgress } = useMsal();
 
@@ -47,7 +94,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const getHeaders = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -63,7 +110,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   useEffect(() => {
     const activeAccount = instance.getActiveAccount() || (accounts.length > 0 ? accounts[0] : null);
     if (activeAccount) {
-      const idTokenClaims = activeAccount.idTokenClaims as any;
+      const idTokenClaims = activeAccount.idTokenClaims as TokenClaims | undefined;
       const roles = idTokenClaims?.roles || ["AIPlatform.User"];
       setActiveUser({
         email: activeAccount.username,
@@ -77,7 +124,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       const refreshInterval = setInterval(() => {
         instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
           .then(response => setAccessToken(response.accessToken))
-          .catch(() => {});
+          .catch(() => { /* ignore token refresh failures until next user action */ });
       }, 30 * 60 * 1000);
       return () => clearInterval(refreshInterval);
     } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
@@ -138,7 +185,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     return null;
   }, [accessToken, getHeaders]);
 
-  const fetchSessionMessages = async (sid: string) => {
+  const fetchSessionMessages = useCallback(async (sid: string) => {
     setIsMessagesLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
@@ -148,7 +195,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } finally {
       setIsMessagesLoading(false);
     }
-  };
+  }, [getHeaders]);
 
   const deleteChatSession = async (sid: string) => {
     if (!confirm("Archive/delete this chat session?")) return;
@@ -174,10 +221,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } else {
       setChatMessages([]);
     }
-  }, [activeSession, accessToken]);
+  }, [activeSession, accessToken, fetchSessionMessages]);
 
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const speechWindow = window as SpeechRecognitionWindow;
+    const SpeechRecognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       setVoiceState("unsupported");
     } else {
@@ -186,12 +234,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       rec.interimResults = false;
       rec.lang = "en-US";
       rec.onstart = () => setVoiceState("listening");
-      rec.onresult = (event: any) => {
+      rec.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         setChatInput(prev => (prev ? prev + " " + transcript : transcript));
         setVoiceState("processing");
       };
-      rec.onerror = (e: any) => {
+      rec.onerror = (e) => {
         setVoiceState(e.error === "not-allowed" ? "denied" : "idle");
       };
       rec.onend = () => {
@@ -201,7 +249,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
     return () => {
       if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch {}
+        try { recognitionRef.current.abort(); } catch { /* ignore abort races */ }
         recognitionRef.current = null;
       }
     };
@@ -310,8 +358,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           ));
         }
       }
-    } catch (err: any) {
-      const isTimeout = err?.name === "AbortError";
+    } catch (err: unknown) {
+      const isTimeout = isAbortError(err);
       setChatMessages(prev => prev.map(m =>
         m.id === pendingMsgId
           ? {
@@ -325,7 +373,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   : "The AI service could not be reached. Please check your connection and try again.",
                 technicalDetail: isTimeout
                   ? "Request timed out after 180 seconds"
-                  : err instanceof Error ? err.message : "Network error",
+                  : errorMessage(err),
                 httpStatus: 0,
               }),
             }
@@ -426,8 +474,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           ));
         }
       }
-    } catch (err: any) {
-      const isTimeout = err?.name === "AbortError";
+    } catch (err: unknown) {
+      const isTimeout = isAbortError(err);
       setChatMessages(prev => prev.map(m =>
         m.id === newPendingId
           ? {
@@ -441,7 +489,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   : "The AI service could not be reached. Please check your connection and try again.",
                 technicalDetail: isTimeout
                   ? "Request timed out after 180 seconds"
-                  : err instanceof Error ? err.message : "Network error",
+                  : errorMessage(err),
                 httpStatus: 0,
               }),
             }
@@ -546,8 +594,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           ));
         }
       }
-    } catch (err: any) {
-      const isTimeout = err?.name === "AbortError";
+    } catch (err: unknown) {
+      const isTimeout = isAbortError(err);
       setChatMessages(prev => prev.map(m =>
         m.id === pendingMsgId
           ? {
@@ -561,7 +609,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
                   : "The AI service could not be reached. Please check your connection and try again.",
                 technicalDetail: isTimeout
                   ? "Request timed out after 180 seconds"
-                  : err instanceof Error ? err.message : "Network error",
+                  : errorMessage(err),
                 httpStatus: 0,
               }),
             }
@@ -636,7 +684,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (voiceState === "listening") {
       recognitionRef.current?.stop();
     } else {
-      try { recognitionRef.current?.start(); } catch {}
+      try { recognitionRef.current?.start(); } catch { /* ignore duplicate start requests */ }
     }
   };
 

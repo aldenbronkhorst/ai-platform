@@ -7,7 +7,7 @@ router = APIRouter()
 
 
 @router.post("/models")
-async def search_models(req: SchemaModelsRequest, auth: dict = Depends(internal_api_key_auth)):
+def search_models(req: SchemaModelsRequest, auth: dict = Depends(internal_api_key_auth)):
     client = OdooClient(
         credentials=OdooCredentials(
             url=req.credentials.url,
@@ -31,7 +31,7 @@ async def search_models(req: SchemaModelsRequest, auth: dict = Depends(internal_
 
 
 @router.post("/fields")
-async def inspect_fields(req: SchemaFieldsRequest, auth: dict = Depends(internal_api_key_auth)):
+def inspect_fields(req: SchemaFieldsRequest, auth: dict = Depends(internal_api_key_auth)):
     client = OdooClient(
         credentials=OdooCredentials(
             url=req.credentials.url,

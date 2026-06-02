@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import json
@@ -97,7 +98,7 @@ async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
         try:
             client = _get_kv_client()
             if client:
-                secret = client.get_secret(provider.secret_reference)
+                secret = await asyncio.to_thread(client.get_secret, provider.secret_reference)
                 if secret and secret.value:
                     return secret.value
         except Exception as exc:
@@ -216,10 +217,13 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     api_key = ""
     if account.secret_reference and os.environ.get("KEY_VAULT_URI"):
         try:
-            credential = DefaultAzureCredential()
-            kv_client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
-            secret = kv_client.get_secret(account.secret_reference)
-            api_key = secret.value or ""
+            def _get_secret() -> str:
+                credential = DefaultAzureCredential()
+                kv_client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
+                secret = kv_client.get_secret(account.secret_reference)
+                return secret.value or ""
+
+            api_key = await asyncio.to_thread(_get_secret)
         except Exception as e:
             raise RuntimeError(f"Failed to retrieve Odoo credentials from Key Vault: {e}")
 
@@ -292,30 +296,13 @@ async def _execute_tool_call(
         return response.json()
 
     if tool_name in ("azure_cli", "github_cli"):
-        path = _map_odoo_tool_to_path(tool_name)
-        if not path:
-            return {"error_type": "unknown_tool", "tool_name": tool_name}
-        from app.core.config import get_settings
-        settings = get_settings()
-        base_url = f"http://localhost:{os.environ.get('PORT', '8000')}"
-        url = f"{base_url}{path}"
-        payload = {**arguments}
-        headers = {"X-API-Key": settings.api_key, "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-        if response.status_code >= 400:
-            try:
-                detail = response.json()
-            except Exception:
-                detail = {"error_type": "connector_http_error", "message": response.text}
-            return {
-                "error": True,
-                "status_code": response.status_code,
-                "connector_error": detail,
-                "error_type": "cli_error",
-                "message": detail.get("message") or detail.get("detail") or str(detail),
-            }
-        return response.json()
+        from app.services.connector_commands import run_azure_cli_command, run_github_cli_command
+
+        command = str(arguments.get("command", ""))
+        timeout = int(arguments.get("timeout", 60))
+        if tool_name == "azure_cli":
+            return await run_azure_cli_command(command, user_id, timeout=timeout)
+        return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {"error": f"Unknown tool: {tool_name}"}
 

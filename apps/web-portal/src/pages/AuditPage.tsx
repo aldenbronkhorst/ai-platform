@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Shield, Search, Eye, RefreshCw } from "lucide-react";
 
 const APIM_BASE_URL =
@@ -9,14 +9,26 @@ interface AuditPageProps {
   accessToken: string;
 }
 
+interface AuditLog {
+  id: string;
+  action_type: string;
+  target_model?: string | null;
+  status: string;
+  risk_level: string;
+  timestamp: string;
+  actor_user_id?: string | null;
+  identity_mode?: string | null;
+}
+
 export function AuditPage({ accessToken }: AuditPageProps) {
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [filter, setFilter] = useState("");
-  const [inspectLog, setInspectLog] = useState<any | null>(null);
+  const [inspectLog, setInspectLog] = useState<AuditLog | null>(null);
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     if (!accessToken) return;
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/audit`, {
@@ -28,11 +40,11 @@ export function AuditPage({ accessToken }: AuditPageProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [accessToken]);
 
   useEffect(() => {
-    if (accessToken) fetchLogs();
-  }, [accessToken]);
+    if (accessToken) void Promise.resolve().then(fetchLogs);
+  }, [accessToken, fetchLogs]);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">

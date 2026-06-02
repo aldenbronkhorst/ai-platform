@@ -3,11 +3,10 @@ import logging
 import uuid
 import os
 from pydantic import BaseModel, Field
-from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
-from app.services.ops_command_runner import run_command
 from app.services.token_storage import store_token, retrieve_token, delete_token, token_status
+from app.services.connector_commands import diagnose_azure_connection, run_azure_cli_command
 
 router = APIRouter(prefix="/connector/azure", tags=["Connector"])
 logger = logging.getLogger(__name__)
@@ -26,17 +25,7 @@ class AzureCliRequest(BaseModel):
 async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
     """Execute an Azure CLI command as the connected user."""
     user_id = auth.get("user_id")
-    token_data = await retrieve_token("azure", user_id) if user_id else None
-    command = req.command.strip()
-    if not command.startswith("az "):
-        command = "az " + command
-    request_id = uuid.uuid4().hex[:16]
-    result = await run_command(command, timeout=req.timeout)
-    output = result.to_dict()
-    output.update({"command": command, "connector": "azure_cli", "request_id": request_id,
-                    "status": "success" if result.success else "failed",
-                    "auth_method": "oauth" if token_data else "managed_identity"})
-    return output
+    return await run_azure_cli_command(req.command, user_id, timeout=req.timeout)
 
 
 @router.post("/device-code")
@@ -45,11 +34,11 @@ async def start_device_code(auth: dict = Depends(api_key_auth)):
     request_id = uuid.uuid4().hex[:16]
     try:
         import httpx
-        resp = httpx.post(
-            f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode",
-            data={"client_id": AZURE_CLIENT_ID, "scope": "https://management.azure.com/user_impersonation offline_access openid profile"},
-            timeout=30,
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode",
+                data={"client_id": AZURE_CLIENT_ID, "scope": "https://management.azure.com/user_impersonation offline_access openid profile"},
+            )
         data = resp.json()
         if "error" in data:
             return {"status": "error", "error": data.get("error_description", data["error"]), "request_id": request_id}
@@ -72,12 +61,12 @@ async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
     request_id = uuid.uuid4().hex[:16]
     try:
         import httpx
-        resp = httpx.post(
-            f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
-            data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                  "client_id": AZURE_CLIENT_ID, "device_code": device_code},
-            timeout=30,
-        )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
+                data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                      "client_id": AZURE_CLIENT_ID, "device_code": device_code},
+            )
         data = resp.json()
         if "error" in data:
             return {"status": "pending" if data["error"] == "authorization_pending" else "error",
@@ -101,6 +90,12 @@ async def azure_status(auth: dict = Depends(api_key_auth)):
     """Check Azure connection status for the current user."""
     user_id = auth.get("user_id")
     return await token_status("azure", user_id) if user_id else {"status": "not_connected"}
+
+
+@router.post("/diagnose")
+async def azure_diagnose(auth: dict = Depends(api_key_auth)):
+    """Validate the stored Azure delegated token without shelling out to az."""
+    return await diagnose_azure_connection(auth.get("user_id"))
 
 
 @router.post("/disconnect")

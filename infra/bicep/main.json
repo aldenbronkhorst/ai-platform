@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.43.8.12551",
-      "templateHash": "9229437771164442542"
+      "templateHash": "6292523336256815366"
     }
   },
   "parameters": {
@@ -78,7 +78,7 @@
     },
     "budgetAmount": {
       "type": "int",
-      "defaultValue": 3000,
+      "defaultValue": 250,
       "metadata": {
         "description": "Budget amount"
       }
@@ -442,7 +442,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "297101713648802487"
+              "templateHash": "5014438649005620235"
             }
           },
           "parameters": {
@@ -493,6 +493,20 @@
               "metadata": {
                 "description": "PostgreSQL admin password to store in Key Vault"
               }
+            },
+            "apiKey": {
+              "type": "securestring",
+              "defaultValue": "[newGuid()]",
+              "metadata": {
+                "description": "API key for AI Core API authentication"
+              }
+            },
+            "odooConnectorApiKey": {
+              "type": "securestring",
+              "defaultValue": "[newGuid()]",
+              "metadata": {
+                "description": "API key for Odoo Connector internal authentication"
+              }
             }
           },
           "variables": {
@@ -516,7 +530,7 @@
                 "enabledForTemplateDeployment": true,
                 "publicNetworkAccess": "Enabled",
                 "networkAcls": {
-                  "defaultAction": "Allow",
+                  "defaultAction": "Deny",
                   "bypass": "AzureServices"
                 }
               }
@@ -541,6 +555,28 @@
               "name": "[format('{0}/{1}', variables('keyVaultName'), 'postgres-admin-password')]",
               "properties": {
                 "value": "[parameters('postgresAdminPassword')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', variables('keyVaultName'), 'api-key')]",
+              "properties": {
+                "value": "[parameters('apiKey')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', variables('keyVaultName'), 'odoo-connector-api-key')]",
+              "properties": {
+                "value": "[parameters('odooConnectorApiKey')]"
               },
               "dependsOn": [
                 "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
@@ -608,7 +644,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "8639643890565161724"
+              "templateHash": "4031790116496861183"
             }
           },
           "parameters": {
@@ -686,7 +722,7 @@
                 "minimumTlsVersion": "TLS1_2",
                 "supportsHttpsTrafficOnly": true,
                 "networkAcls": {
-                  "defaultAction": "Allow",
+                  "defaultAction": "Deny",
                   "bypass": "AzureServices"
                 }
               }
@@ -799,7 +835,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "11268180522709316578"
+              "templateHash": "14019724415829143292"
             }
           },
           "parameters": {
@@ -881,6 +917,9 @@
                 },
                 "highAvailability": {
                   "mode": "Disabled"
+                },
+                "network": {
+                  "publicNetworkAccess": "Disabled"
                 }
               }
             },
@@ -1118,7 +1157,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "4564603698042173146"
+              "templateHash": "4858302566086420911"
             }
           },
           "parameters": {
@@ -1180,7 +1219,7 @@
           "resources": [
             {
               "type": "Microsoft.ServiceBus/namespaces",
-              "apiVersion": "2022-10-01-preview",
+              "apiVersion": "2024-01-01",
               "name": "[variables('serviceBusName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
@@ -1188,7 +1227,10 @@
                 "name": "Standard",
                 "tier": "Standard"
               },
-              "properties": {}
+              "properties": {
+                "publicNetworkAccess": "Disabled",
+                "minimumTlsVersion": "1.2"
+              }
             },
             {
               "copy": {
@@ -1196,7 +1238,7 @@
                 "count": "[length(variables('queueNames'))]"
               },
               "type": "Microsoft.ServiceBus/namespaces/queues",
-              "apiVersion": "2022-10-01-preview",
+              "apiVersion": "2024-01-01",
               "name": "[format('{0}/{1}', variables('serviceBusName'), variables('queueNames')[copyIndex()])]",
               "properties": {
                 "lockDuration": "PT5M",
@@ -1252,7 +1294,7 @@
             },
             "namespaceEndpoint": {
               "type": "string",
-              "value": "[reference(resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusName')), '2022-10-01-preview').serviceBusEndpoint]"
+              "value": "[reference(resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusName')), '2024-01-01').serviceBusEndpoint]"
             },
             "queueNames": {
               "type": "array",
@@ -1263,6 +1305,150 @@
       },
       "dependsOn": [
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy')]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "networkDeploy",
+      "resourceGroup": "[variables('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "workload": {
+            "value": "[parameters('workload')]"
+          },
+          "environment": {
+            "value": "[parameters('environment')]"
+          },
+          "regionCode": {
+            "value": "[parameters('regionCode')]"
+          },
+          "instance": {
+            "value": "[parameters('instance')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "tags": {
+            "value": "[parameters('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "15864211032535906941"
+            }
+          },
+          "parameters": {
+            "workload": {
+              "type": "string",
+              "metadata": {
+                "description": "Workload name"
+              }
+            },
+            "environment": {
+              "type": "string",
+              "metadata": {
+                "description": "Environment name"
+              }
+            },
+            "regionCode": {
+              "type": "string",
+              "metadata": {
+                "description": "Region code"
+              }
+            },
+            "instance": {
+              "type": "string",
+              "metadata": {
+                "description": "Instance number"
+              }
+            },
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Tags for resources"
+              }
+            }
+          },
+          "variables": {
+            "vnetName": "[format('vnet-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2023-11-01",
+              "name": "[variables('vnetName')]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "10.42.0.0/16"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "container-apps",
+                    "properties": {
+                      "addressPrefix": "10.42.0.0/23",
+                      "delegations": [
+                        {
+                          "name": "container-apps-delegation",
+                          "properties": {
+                            "serviceName": "Microsoft.App/environments"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "private-endpoints",
+                    "properties": {
+                      "addressPrefix": "10.42.2.0/24",
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "outputs": {
+            "vnetName": {
+              "type": "string",
+              "value": "[variables('vnetName')]"
+            },
+            "vnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+            },
+            "containerAppsSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), '2023-11-01').subnets[0].id]"
+            },
+            "privateEndpointsSubnetName": {
+              "type": "string",
+              "value": "private-endpoints"
+            }
+          }
+        }
+      },
+      "dependsOn": [
         "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]"
       ]
     },
@@ -1325,6 +1511,9 @@
           "serviceBusNamespace": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy'), '2025-04-01').outputs.namespaceName.value]"
           },
+          "containerAppsInfrastructureSubnetId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy'), '2025-04-01').outputs.containerAppsSubnetId.value]"
+          },
           "postgresHost": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy'), '2025-04-01').outputs.fqdn.value]"
           },
@@ -1345,7 +1534,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "8338059121706654306"
+              "templateHash": "12506142444988151300"
             }
           },
           "parameters": {
@@ -1447,6 +1636,12 @@
                 "description": "Service Bus namespace"
               }
             },
+            "containerAppsInfrastructureSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Infrastructure subnet ID for Container Apps VNet integration"
+              }
+            },
             "postgresHost": {
               "type": "string",
               "metadata": {
@@ -1482,6 +1677,16 @@
           },
           "resources": [
             {
+              "type": "Microsoft.ServiceBus/namespaces/AuthorizationRules",
+              "apiVersion": "2024-01-01",
+              "name": "[format('{0}/{1}', parameters('serviceBusNamespace'), 'keda-listen')]",
+              "properties": {
+                "rights": [
+                  "Listen"
+                ]
+              }
+            },
+            {
               "type": "Microsoft.App/managedEnvironments",
               "apiVersion": "2023-05-01",
               "name": "[variables('environmentName')]",
@@ -1494,6 +1699,10 @@
                     "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName')), '2022-10-01').customerId]",
                     "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName')), '2022-10-01').primarySharedKey]"
                   }
+                },
+                "vnetConfiguration": {
+                  "infrastructureSubnetId": "[parameters('containerAppsInfrastructureSubnetId')]",
+                  "internal": false
                 }
               }
             },
@@ -1539,6 +1748,10 @@
                       "name": "odoo-connector-api-key",
                       "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    },
+                    {
+                      "name": "servicebus-keda-connection",
+                      "value": "[listKeys(resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen'), '2024-01-01').primaryConnectionString]"
                     }
                   ]
                 },
@@ -1553,11 +1766,11 @@
                           "value": "[parameters('postgresHost')]"
                         },
                         {
-                          "name": "POSTGRES_DATABASE",
+                          "name": "POSTGRES_DB",
                           "value": "[parameters('postgresDatabaseName')]"
                         },
                         {
-                          "name": "POSTGRES_USERNAME",
+                          "name": "POSTGRES_USER",
                           "value": "[parameters('postgresAdminUsername')]"
                         },
                         {
@@ -1573,7 +1786,7 @@
                           "value": "[parameters('apiManagedIdentityClientId')]"
                         },
                         {
-                          "name": "AZURE_STORAGE_ACCOUNT",
+                          "name": "STORAGE_ACCOUNT_NAME",
                           "value": "[parameters('storageAccountName')]"
                         },
                         {
@@ -1586,7 +1799,7 @@
                         },
                         {
                           "name": "VERSION",
-                          "value": "1.0.0"
+                          "value": "[parameters('apiImageTag')]"
                         },
                         {
                           "name": "API_KEY",
@@ -1594,7 +1807,7 @@
                         },
                         {
                           "name": "ODOO_CONNECTOR_URL",
-                          "value": "[format('https://{0}.nicefield-638716c4.southafricanorth.azurecontainerapps.io', variables('odooConnectorAppName'))]"
+                          "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName')), '2023-05-01').configuration.ingress.fqdn)]"
                         },
                         {
                           "name": "ODOO_CONNECTOR_API_KEY",
@@ -1673,7 +1886,9 @@
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+                "[resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName'))]",
+                "[resourceId('Microsoft.ServiceBus/namespaces/AuthorizationRules', parameters('serviceBusNamespace'), 'keda-listen')]"
               ]
             },
             {
@@ -1692,7 +1907,7 @@
                 "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
                 "configuration": {
                   "ingress": {
-                    "external": true,
+                    "external": false,
                     "targetPort": 8000,
                     "transport": "auto",
                     "allowInsecure": false
@@ -1700,6 +1915,13 @@
                   "registries": [
                     {
                       "server": "[parameters('acrLoginServer')]",
+                      "identity": "[parameters('apiManagedIdentityResourceId')]"
+                    }
+                  ],
+                  "secrets": [
+                    {
+                      "name": "odoo-connector-api-key",
+                      "keyVaultUrl": "[format('{0}secrets/odoo-connector-api-key', parameters('keyVaultUri'))]",
                       "identity": "[parameters('apiManagedIdentityResourceId')]"
                     }
                   ]
@@ -1720,7 +1942,11 @@
                         },
                         {
                           "name": "VERSION",
-                          "value": "1.0.0"
+                          "value": "[parameters('odooConnectorImageTag')]"
+                        },
+                        {
+                          "name": "INTERNAL_API_KEY",
+                          "secretRef": "odoo-connector-api-key"
                         }
                       ],
                       "resources": {
@@ -1754,7 +1980,7 @@
                     }
                   ],
                   "scale": {
-                    "minReplicas": 0,
+                    "minReplicas": 1,
                     "maxReplicas": 2,
                     "rules": [
                       {
@@ -1777,7 +2003,7 @@
             {
               "type": "Microsoft.App/containerApps",
               "apiVersion": "2023-05-01",
-              "name": "[format('ca-ai-worker-{0}', parameters('environment'))]",
+              "name": "[format('ca-{0}-worker-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
               "identity": {
@@ -1828,11 +2054,11 @@
                           "value": "[parameters('postgresHost')]"
                         },
                         {
-                          "name": "POSTGRES_DATABASE",
+                          "name": "POSTGRES_DB",
                           "value": "[parameters('postgresDatabaseName')]"
                         },
                         {
-                          "name": "POSTGRES_USERNAME",
+                          "name": "POSTGRES_USER",
                           "value": "[parameters('postgresAdminUsername')]"
                         },
                         {
@@ -1848,7 +2074,7 @@
                           "value": "[parameters('apiManagedIdentityClientId')]"
                         },
                         {
-                          "name": "AZURE_STORAGE_ACCOUNT",
+                          "name": "STORAGE_ACCOUNT_NAME",
                           "value": "[parameters('storageAccountName')]"
                         },
                         {
@@ -1861,7 +2087,7 @@
                         },
                         {
                           "name": "VERSION",
-                          "value": "1.0.0"
+                          "value": "[parameters('apiImageTag')]"
                         },
                         {
                           "name": "API_KEY",
@@ -1869,7 +2095,7 @@
                         },
                         {
                           "name": "ODOO_CONNECTOR_URL",
-                          "value": "[format('https://{0}.nicefield-638716c4.southafricanorth.azurecontainerapps.io', variables('odooConnectorAppName'))]"
+                          "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName')), '2023-05-01').configuration.ingress.fqdn)]"
                         },
                         {
                           "name": "ODOO_CONNECTOR_API_KEY",
@@ -1918,7 +2144,13 @@
                             "queueName": "ai-jobs",
                             "messageCount": "1",
                             "namespace": "[parameters('serviceBusNamespace')]"
-                          }
+                          },
+                          "auth": [
+                            {
+                              "secretRef": "servicebus-keda-connection",
+                              "triggerParameter": "connection"
+                            }
+                          ]
                         }
                       }
                     ]
@@ -1926,7 +2158,8 @@
                 }
               },
               "dependsOn": [
-                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]"
+                "[resourceId('Microsoft.App/managedEnvironments', variables('environmentName'))]",
+                "[resourceId('Microsoft.App/containerApps', variables('odooConnectorAppName'))]"
               ]
             }
           ],
@@ -1967,6 +2200,7 @@
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'managedIdentityDeploy')]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy')]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'monitoringDeploy')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy')]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy')]",
         "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy')]",
@@ -2017,7 +2251,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "10614992166024371805"
+              "templateHash": "10459600127715481333"
             }
           },
           "parameters": {
@@ -2092,7 +2326,7 @@
               "properties": {
                 "replicaCount": 1,
                 "partitionCount": 1,
-                "publicNetworkAccess": "enabled",
+                "publicNetworkAccess": "disabled",
                 "networkRuleSet": {
                   "ipRules": []
                 },
@@ -2316,10 +2550,13 @@
             "value": "[parameters('tags')]"
           },
           "vnetName": {
-            "value": "[format('vnet-{0}-{1}-{2}-{3}', parameters('workload'), parameters('environment'), parameters('regionCode'), parameters('instance'))]"
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy'), '2025-04-01').outputs.vnetName.value]"
           },
           "vnetResourceGroupName": {
             "value": "[variables('resourceGroupName')]"
+          },
+          "subnetName": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy'), '2025-04-01').outputs.privateEndpointsSubnetName.value]"
           },
           "keyVaultId": {
             "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy'), '2025-04-01').outputs.id.value]"
@@ -2345,7 +2582,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "10856149186699084322"
+              "templateHash": "7356278171625605410"
             }
           },
           "parameters": {
@@ -2404,6 +2641,118 @@
           },
           "resources": [
             {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "privatelink.vaultcore.azure.net",
+              "location": "global",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "privatelink.blob.core.windows.net",
+              "location": "global",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "privatelink.servicebus.windows.net",
+              "location": "global",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "privatelink.postgres.database.azure.com",
+              "location": "global",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "condition": "[parameters('deploySearch')]",
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "privatelink.search.windows.net",
+              "location": "global",
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.vaultcore.azure.net', format('{0}-vnet-link', variables('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.vaultcore.azure.net')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.blob.core.windows.net', format('{0}-vnet-link', variables('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.blob.core.windows.net')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.servicebus.windows.net', format('{0}-vnet-link', variables('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.servicebus.windows.net')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.postgres.database.azure.com', format('{0}-vnet-link', variables('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.postgres.database.azure.com')]"
+              ]
+            },
+            {
+              "condition": "[parameters('deploySearch')]",
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', 'privatelink.search.windows.net', format('{0}-vnet-link', variables('namePrefix')))]",
+              "location": "global",
+              "properties": {
+                "registrationEnabled": false,
+                "virtualNetwork": {
+                  "id": "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('vnetResourceGroupName')), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.search.windows.net')]"
+              ]
+            },
+            {
               "type": "Microsoft.Network/privateEndpoints",
               "apiVersion": "2023-11-01",
               "name": "[format('pe-{0}-kv', variables('namePrefix'))]",
@@ -2425,6 +2774,25 @@
                   }
                 ]
               }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-11-01",
+              "name": "[format('{0}/{1}', format('pe-{0}-kv', variables('namePrefix')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "keyvault",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.vaultcore.azure.net')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.vaultcore.azure.net')]",
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-kv', variables('namePrefix')))]"
+              ]
             },
             {
               "type": "Microsoft.Network/privateEndpoints",
@@ -2450,6 +2818,25 @@
               }
             },
             {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-11-01",
+              "name": "[format('{0}/{1}', format('pe-{0}-st-blob', variables('namePrefix')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "storageblob",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.blob.core.windows.net')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.blob.core.windows.net')]",
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-st-blob', variables('namePrefix')))]"
+              ]
+            },
+            {
               "type": "Microsoft.Network/privateEndpoints",
               "apiVersion": "2023-11-01",
               "name": "[format('pe-{0}-sb', variables('namePrefix'))]",
@@ -2471,6 +2858,25 @@
                   }
                 ]
               }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-11-01",
+              "name": "[format('{0}/{1}', format('pe-{0}-sb', variables('namePrefix')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "servicebus",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.servicebus.windows.net')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.servicebus.windows.net')]",
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-sb', variables('namePrefix')))]"
+              ]
             },
             {
               "condition": "[parameters('deploySearch')]",
@@ -2497,6 +2903,26 @@
               }
             },
             {
+              "condition": "[parameters('deploySearch')]",
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-11-01",
+              "name": "[format('{0}/{1}', format('pe-{0}-srch', variables('namePrefix')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "search",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.search.windows.net')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.search.windows.net')]",
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-srch', variables('namePrefix')))]"
+              ]
+            },
+            {
               "type": "Microsoft.Network/privateEndpoints",
               "apiVersion": "2023-11-01",
               "name": "[format('pe-{0}-psql', variables('namePrefix'))]",
@@ -2518,6 +2944,25 @@
                   }
                 ]
               }
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-11-01",
+              "name": "[format('{0}/{1}', format('pe-{0}-psql', variables('namePrefix')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "postgres",
+                    "properties": {
+                      "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.postgres.database.azure.com')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.postgres.database.azure.com')]",
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}-psql', variables('namePrefix')))]"
+              ]
             }
           ]
         }
@@ -2525,6 +2970,7 @@
       "dependsOn": [
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'aiSearchDeploy')]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'keyVaultDeploy')]",
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy')]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'postgresDeploy')]",
         "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('resourceGroupName'))]",
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'serviceBusDeploy')]",
@@ -2571,7 +3017,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.43.8.12551",
-              "templateHash": "9403058738403970637"
+              "templateHash": "4968445556361114138"
             }
           },
           "parameters": {
@@ -2635,6 +3081,17 @@
                   "endDate": "[parameters('endDate')]"
                 },
                 "notifications": {
+                  "50Percent": {
+                    "enabled": true,
+                    "operator": "GreaterThan",
+                    "threshold": 50,
+                    "contactEmails": [
+                      "alden@lotslotsmore.com"
+                    ],
+                    "contactRoles": [
+                      "Owner"
+                    ]
+                  },
                   "80Percent": {
                     "enabled": true,
                     "operator": "GreaterThan",
@@ -2837,6 +3294,10 @@
     "containerAppsEnvironmentName": {
       "type": "string",
       "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'containerAppsDeploy'), '2025-04-01').outputs.environmentName.value]"
+    },
+    "vnetName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('resourceGroupName')), 'Microsoft.Resources/deployments', 'networkDeploy'), '2025-04-01').outputs.vnetName.value]"
     },
     "aiSearchName": {
       "type": "string",

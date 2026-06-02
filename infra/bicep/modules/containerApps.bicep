@@ -46,6 +46,9 @@ param storageAccountName string
 @description('Service Bus namespace')
 param serviceBusNamespace string
 
+@description('Infrastructure subnet ID for Container Apps VNet integration')
+param containerAppsInfrastructureSubnetId string
+
 @description('PostgreSQL host')
 param postgresHost string
 
@@ -68,6 +71,20 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' exis
   name: logAnalyticsWorkspaceName
 }
 
+resource serviceBusNamespaceResource 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = {
+  name: serviceBusNamespace
+}
+
+resource serviceBusKedaListenRule 'Microsoft.ServiceBus/namespaces/authorizationRules@2024-01-01' = {
+  parent: serviceBusNamespaceResource
+  name: 'keda-listen'
+  properties: {
+    rights: [
+      'Listen'
+    ]
+  }
+}
+
 resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
   name: environmentName
   location: location
@@ -79,6 +96,10 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01'
         customerId: logAnalytics.properties.customerId
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
+    }
+    vnetConfiguration: {
+      infrastructureSubnetId: containerAppsInfrastructureSubnetId
+      internal: false
     }
   }
 }
@@ -124,6 +145,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
         }
+        {
+          name: 'servicebus-keda-connection'
+          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
+        }
       ]
     }
     template: {
@@ -143,7 +168,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'ENVIRONMENT', value: environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
@@ -352,7 +377,7 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'ENVIRONMENT', value: environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorAppName}' }
+            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
@@ -382,7 +407,7 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
               }
               auth: [
                 {
-                  secretRef: 'keyvault-dsn'
+                  secretRef: 'servicebus-keda-connection'
                   triggerParameter: 'connection'
                 }
               ]

@@ -9,7 +9,7 @@ export function getHeaders(accessToken: string) {
   };
 }
 
-export function apiFetch<T = any>(
+export function apiFetch<T = unknown>(
   path: string,
   accessToken: string,
   options?: RequestInit

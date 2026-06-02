@@ -70,7 +70,9 @@ export function MessageBubble({
     return <FailedMessage errorMessage={message.error_message} onRetry={onRetry} />;
   }
 
-  const metadata = message.metadata_json;
+  const metadata = message.metadata_json && typeof message.metadata_json === "object"
+    ? message.metadata_json as Record<string, unknown>
+    : null;
   const technicalDetails = metadata?.technical_details;
 
   return (
@@ -88,7 +90,7 @@ export function MessageBubble({
           />
         </div>
 
-        {technicalDetails && (
+        {Boolean(technicalDetails) && (
           <TechnicalDetails data={technicalDetails} />
         )}
       </div>

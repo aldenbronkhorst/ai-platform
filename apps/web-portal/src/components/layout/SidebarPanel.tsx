@@ -14,6 +14,7 @@ import {
   Settings,
   LogOut,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { ChatSession, UserProfile, ActiveTab } from "../../types";
 
 interface SidebarPanelProps {
@@ -79,7 +80,7 @@ export function SidebarPanel({
     return () => ac.abort();
   }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
 
-  const navItems: { tab: ActiveTab; icon: any; label: string }[] = [
+  const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
     { tab: "workflows", icon: Layers, label: "Workflows" },
     { tab: "tasks", icon: ClipboardList, label: "Tasks Tracker" },
     { tab: "artifacts", icon: FileText, label: "Documents Vault" },

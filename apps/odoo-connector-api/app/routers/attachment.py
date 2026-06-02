@@ -20,7 +20,7 @@ def _get_client(creds):
 
 
 @router.post("/attachment")
-async def handle_attachment(req: AttachmentRequest, auth: dict = Depends(internal_api_key_auth)):
+def handle_attachment(req: AttachmentRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     all_ids = []
     if req.attachment_id:

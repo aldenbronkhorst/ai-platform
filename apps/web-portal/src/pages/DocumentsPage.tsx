@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { FileText, HardDrive, ExternalLink, RefreshCw } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { FileText, HardDrive, Download, RefreshCw } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 
 const APIM_BASE_URL =
@@ -10,12 +10,21 @@ interface DocumentsPageProps {
   accessToken: string;
 }
 
+interface Artifact {
+  id: string;
+  job_id: string | null;
+  artifact_type: string;
+  filename: string;
+  mime_type: string;
+}
+
 export function DocumentsPage({ accessToken }: DocumentsPageProps) {
-  const [artifacts, setArtifacts] = useState<any[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const fetchArtifacts = async () => {
+  const fetchArtifacts = useCallback(async () => {
     if (!accessToken) return;
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/artifacts`, {
@@ -30,11 +39,24 @@ export function DocumentsPage({ accessToken }: DocumentsPageProps) {
     } finally {
       setIsLoading(false);
     }
+  }, [accessToken]);
+
+  const handleDownload = async (artifactId: string) => {
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/artifacts/${artifactId}/download`, {
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      });
+      if (!res.ok) return;
+      const data = await res.json() as { download_url?: string };
+      if (data.download_url) window.open(data.download_url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      console.error("Failed to download artifact:", err);
+    }
   };
 
   useEffect(() => {
-    if (accessToken) fetchArtifacts();
-  }, [accessToken]);
+    if (accessToken) void Promise.resolve().then(fetchArtifacts);
+  }, [accessToken, fetchArtifacts]);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
@@ -84,15 +106,13 @@ export function DocumentsPage({ accessToken }: DocumentsPageProps) {
                 <span className="text-muted font-mono text-[10px]">
                   Job: {art.job_id?.slice(0, 8)}...
                 </span>
-                <a
-                  href={art.storage_uri}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  onClick={() => void handleDownload(art.id)}
                   className="text-muted hover:text-default font-semibold tracking-wide flex items-center gap-1 hover:underline"
                 >
-                  Raw URL
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
+                  Download
+                  <Download className="w-3.5 h-3.5" />
+                </button>
               </div>
             </GlassPanel>
           ))}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { ClipboardList, RefreshCw } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 
@@ -10,12 +10,20 @@ interface TasksPageProps {
   accessToken: string;
 }
 
+interface Job {
+  id: string;
+  title: string;
+  status: string;
+  created_at: string;
+}
+
 export function TasksPage({ accessToken }: TasksPageProps) {
-  const [jobs, setJobs] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const fetchJobs = async () => {
+  const fetchJobs = useCallback(async () => {
     if (!accessToken) return;
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/jobs`, {
@@ -30,11 +38,11 @@ export function TasksPage({ accessToken }: TasksPageProps) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [accessToken]);
 
   useEffect(() => {
-    if (accessToken) fetchJobs();
-  }, [accessToken]);
+    if (accessToken) void Promise.resolve().then(fetchJobs);
+  }, [accessToken, fetchJobs]);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">

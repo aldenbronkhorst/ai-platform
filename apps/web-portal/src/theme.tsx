@@ -14,9 +14,11 @@ const ThemeContext = createContext<ThemeContextType>({
   setTheme: () => {},
 });
 
-export function useTheme() {
+function useTheme() {
   return useContext(ThemeContext);
 }
+
+void useTheme;
 
 function resolveTheme(theme: Theme): "light" | "dark" {
   if (theme === "light") return "light";
@@ -40,7 +42,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const resolvedTheme = applyTheme(theme);
-    setResolved(resolvedTheme);
+    queueMicrotask(() => setResolved(resolvedTheme));
     localStorage.setItem("ai-platform-theme", theme);
 
     if (theme === "system") {

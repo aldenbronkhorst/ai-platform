@@ -20,7 +20,7 @@ def _get_client(creds):
 
 
 @router.post("/message")
-async def handle_message(req: MessageRequest, auth: dict = Depends(internal_api_key_auth)):
+def handle_message(req: MessageRequest, auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.operation == "post":

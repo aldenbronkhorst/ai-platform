@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { User, RefreshCw, CheckCircle2, XCircle, Play, Database, Activity, Cpu } from "lucide-react";
 
 const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
@@ -8,29 +8,77 @@ interface AiConfigViewProps {
   activeUser: { displayName: string; email: string; roles: string[] };
 }
 
+type SubTab = "profile" | "ai-config" | "test" | "usage";
+
+interface ProviderSummary {
+  id: string;
+  name: string;
+  provider_type: string;
+  enabled: string;
+}
+
+interface ModelSummary {
+  id: string;
+  display_name: string;
+  deployment_name: string;
+  model_family?: string | null;
+  context_window?: number | null;
+  supports_tools: string;
+  enabled: string;
+}
+
+interface RouteSummary {
+  id: string;
+  task_type: string;
+  temperature: number;
+  max_tokens: number;
+  enabled: string;
+}
+
+interface UsageLog {
+  id: string;
+  timestamp: string;
+  status: string;
+  task_type?: string | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  latency_ms?: number | null;
+  cost_estimate?: string | number | null;
+  error_message?: string | null;
+}
+
+interface TestResult {
+  success: boolean;
+  response?: string;
+  error?: string;
+  model_provider?: string;
+  model_name?: string;
+  latency_ms?: number;
+  total_tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
 function getHeaders(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
 export function AiConfigView({ accessToken, activeUser }: AiConfigViewProps) {
-  const [subTab, setSubTab] = useState<"profile" | "ai-config" | "test" | "usage">("profile");
+  const [subTab, setSubTab] = useState<SubTab>("profile");
 
-  const [providers, setProviders] = useState<any[]>([]);
-  const [models, setModels] = useState<any[]>([]);
-  const [routes, setRoutes] = useState<any[]>([]);
-  const [usageLogs, setUsageLogs] = useState<any[]>([]);
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [models, setModels] = useState<ModelSummary[]>([]);
+  const [routes, setRoutes] = useState<RouteSummary[]>([]);
+  const [usageLogs, setUsageLogs] = useState<UsageLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const [testPrompt, setTestPrompt] = useState("Say hello and confirm the model route is working.");
-  const [testResult, setTestResult] = useState<any>(null);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [isTesting, setIsTesting] = useState(false);
 
-  useEffect(() => {
-    if (subTab === "ai-config") fetchSummary();
-    if (subTab === "usage") fetchUsage();
-  }, [subTab]);
-
-  const fetchSummary = async () => {
+  const fetchSummary = useCallback(async () => {
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/ai-config/summary`, { headers: getHeaders(accessToken) });
@@ -40,18 +88,27 @@ export function AiConfigView({ accessToken, activeUser }: AiConfigViewProps) {
         setModels(data.models || []);
         setRoutes(data.routes || []);
       }
-    } catch { /* ignore */ }
+    } catch { /* ignore transient config load errors */ }
     setIsLoading(false);
-  };
+  }, [accessToken]);
 
-  const fetchUsage = async () => {
+  const fetchUsage = useCallback(async () => {
+    await Promise.resolve();
     setIsLoading(true);
     try {
       const res = await fetch(`${APIM_BASE_URL}/ai-config/usage?limit=20`, { headers: getHeaders(accessToken) });
       if (res.ok) setUsageLogs(await res.json());
-    } catch { /* ignore */ }
+    } catch { /* ignore transient usage load errors */ }
     setIsLoading(false);
-  };
+  }, [accessToken]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => {
+      if (subTab === "ai-config") return fetchSummary();
+      if (subTab === "usage") return fetchUsage();
+      return undefined;
+    });
+  }, [subTab, fetchSummary, fetchUsage]);
 
   const handleTest = async () => {
     setIsTesting(true);
@@ -72,7 +129,7 @@ export function AiConfigView({ accessToken, activeUser }: AiConfigViewProps) {
     { key: "ai-config", label: "AI Configuration" },
     { key: "test", label: "Test Console" },
     { key: "usage", label: "Usage" },
-  ];
+  ] satisfies Array<{ key: SubTab; label: string }>;
 
   const enabledBadge = (enabled: string) => (
     <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -90,7 +147,7 @@ export function AiConfigView({ accessToken, activeUser }: AiConfigViewProps) {
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setSubTab(tab.key as any)}
+            onClick={() => setSubTab(tab.key)}
             className={`px-4 py-2 text-xs font-bold rounded-lg transition-all ${
               subTab === tab.key ? "bg-surface border border-default text-default" : "text-muted hover:text-default"
             }`}

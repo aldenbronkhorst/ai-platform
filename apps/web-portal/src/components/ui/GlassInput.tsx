@@ -14,16 +14,18 @@ export function GlassInput(props: Props) {
   const base = "w-full px-4 py-3 bg-transparent border border-default rounded-xl focus:outline-none focus:border-soft text-xs text-default placeholder-soft transition-all";
 
   if (props.multiline) {
-    const { multiline: _, ...rest } = props as GlassTextareaProps;
+    const { multiline, ...rest } = props;
+    void multiline;
     return (
       <textarea
         className={`${base} resize-none`}
-        {...(rest as any)}
+        {...rest}
       />
     );
   }
 
-  const { multiline: _, ...rest } = props as GlassInputProps;
+  const { multiline, ...rest } = props;
+  void multiline;
   return (
     <input
       className={base}
