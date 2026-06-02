@@ -1,24 +1,32 @@
-"""Azure CLI connector — hybrid az CLI + Azure SDK diagnostics."""
+"""Azure connector — user-delegated OAuth device code flow + az CLI execution."""
 import logging
 import uuid
-from typing import Any
+import os
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends
+from typing import Optional, Any
+from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
 from app.services.ops_command_runner import run_command
+from app.services.token_storage import store_token, retrieve_token, delete_token, token_status
 
 router = APIRouter(prefix="/connector/azure", tags=["Connector"])
 logger = logging.getLogger(__name__)
 
+AZURE_CLIENT_ID = os.environ.get("AZURE_CLIENT_ID", "fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208")
+TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
+
 
 class AzureCliRequest(BaseModel):
     command: str = Field(..., description="Azure CLI command")
-    purpose: str = Field("", description="Why this command is needed")
-    timeout: int = Field(60, description="Command timeout", le=300)
+    purpose: str = Field("", description="Purpose")
+    timeout: int = Field(60, description="Timeout", le=300)
 
 
 @router.post("/cli")
 async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
+    """Execute an Azure CLI command as the connected user."""
+    user_id = auth.get("user_id")
+    token_data = await retrieve_token("azure", user_id) if user_id else None
     command = req.command.strip()
     if not command.startswith("az "):
         command = "az " + command
@@ -26,74 +34,77 @@ async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
     result = await run_command(command, timeout=req.timeout)
     output = result.to_dict()
     output.update({"command": command, "connector": "azure_cli", "request_id": request_id,
-                    "status": "success" if result.success else "failed"})
+                    "status": "success" if result.success else "failed",
+                    "auth_method": "oauth" if token_data else "managed_identity"})
     return output
 
 
-@router.post("/diagnose")
-async def azure_diagnose(auth: dict = Depends(api_key_auth)):
-    """Run Azure diagnostics using az CLI + Azure SDK for account info."""
+@router.post("/device-code")
+async def start_device_code(auth: dict = Depends(api_key_auth)):
+    """Start Azure OAuth device code flow for user-delegated auth."""
     request_id = uuid.uuid4().hex[:16]
-    commands = []
-    all_ok = True
-
-    # 1. Check az CLI availability
-    r = await run_command("az --version", timeout=15)
-    ok = r.exit_code == 0 and not r.error
-    commands.append({"command": "az --version", "exit_code": r.exit_code, "stdout": r.stdout[:2000], "stderr": r.stderr[:1000],
-                      "error_type": r.error[:100] if r.error else None,
-                      "error_message": r.stderr[:300] if r.stderr else (r.error[:300] if r.error else None),
-                      "status": "success" if ok else "failed"})
-    all_ok = all_ok and ok
-
-    # 2. Try az login with Managed Identity via env var
-    r = await run_command("az login --identity --allow-no-subscriptions -o json", timeout=30)
-    ok = r.exit_code == 0 and not r.error
-    commands.append({"command": "az login --identity", "exit_code": r.exit_code,
-                      "stdout": r.stdout[:2000], "stderr": r.stderr[:1000],
-                      "error_type": r.error[:100] if r.error else None,
-                      "error_message": r.stderr[:300] if r.stderr else (r.error[:300] if r.error else None),
-                      "status": "success" if ok else "failed"})
-    all_ok = all_ok and ok
-
-    # 3. If az login succeeded, show account
-    if ok:
-        r = await run_command("az account show -o json", timeout=15)
-        ok2 = r.exit_code == 0
-        commands.append({"command": "az account show", "exit_code": r.exit_code, "stdout": r.stdout[:2000], "stderr": r.stderr[:1000],
-                          "status": "success" if ok2 else "failed"})
-        all_ok = all_ok and ok2
-
-    # 4. SDK-based diagnostic (works without az login)
     try:
-        from azure.identity import DefaultAzureCredential
-        cred = DefaultAzureCredential()
-        token = cred.get_token("https://management.azure.com/.default")
-        commands.append({"command": "SDK DefaultAzureCredential (Management API)", "exit_code": 0,
-                          "stdout": f"Token acquired: type={type(token).__name__}", "stderr": "",
-                          "status": "success"})
+        import httpx
+        resp = httpx.post(
+            f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/devicecode",
+            data={"client_id": AZURE_CLIENT_ID, "scope": "https://management.azure.com/user_impersonation offline_access openid profile"},
+            timeout=30,
+        )
+        data = resp.json()
+        if "error" in data:
+            return {"status": "error", "error": data.get("error_description", data["error"]), "request_id": request_id}
+        return {"status": "device_code_ready", "device_code": data["device_code"],
+                "user_code": data["user_code"], "verification_uri": data["verification_uri"],
+                "verification_url": data.get("verification_uri", "https://microsoft.com/devicelogin"),
+                "interval": data.get("interval", 5), "expires_in": data.get("expires_in", 900),
+                "request_id": request_id}
     except Exception as e:
-        commands.append({"command": "SDK DefaultAzureCredential", "exit_code": 1, "stdout": "", "stderr": str(e)[:500],
-                          "error_type": "sdk_auth_error", "error_message": str(e)[:300],
-                          "status": "failed"})
-        all_ok = False
+        return {"status": "error", "error": str(e), "request_id": request_id}
 
-    # 5. Key Vault access check
-    import os
-    kv_uri = os.environ.get("KEY_VAULT_URI", "")
-    if kv_uri:
-        try:
-            from azure.keyvault.secrets import SecretClient
-            cred = DefaultAzureCredential()
-            client = SecretClient(vault_url=kv_uri, credential=cred)
-            props = list(client.list_properties_of_secrets(max_page_size=3))
-            commands.append({"command": f"Key Vault list secrets", "exit_code": 0,
-                              "stdout": f"Connected. Found {len(props)} secrets.", "stderr": "", "status": "success"})
-        except Exception as e:
-            commands.append({"command": "Key Vault list secrets", "exit_code": 1, "stdout": "", "stderr": str(e)[:500],
-                              "error_type": "kv_error", "error_message": str(e)[:300], "status": "failed"})
-            all_ok = False
 
-    return {"status": "success" if all_ok else "failed",
-            "summary": "Azure diagnostics passed" if all_ok else "Azure diagnostics: some checks failed",
-            "connector": "azure_cli", "commands": commands, "request_id": request_id}
+@router.post("/token-callback")
+async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
+    """Poll device code and store resulting token."""
+    user_id = auth.get("user_id")
+    device_code = req.get("device_code", "")
+    if not device_code or not user_id:
+        raise HTTPException(status_code=400, detail="Missing device_code or auth")
+    request_id = uuid.uuid4().hex[:16]
+    try:
+        import httpx
+        resp = httpx.post(
+            f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token",
+            data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                  "client_id": AZURE_CLIENT_ID, "device_code": device_code},
+            timeout=30,
+        )
+        data = resp.json()
+        if "error" in data:
+            return {"status": "pending" if data["error"] == "authorization_pending" else "error",
+                    "error": data.get("error_description", data["error"]), "request_id": request_id}
+        await store_token("azure", user_id, {
+            "token_type": data.get("token_type"),
+            "access_token": data.get("access_token"),
+            "refresh_token": data.get("refresh_token"),
+            "scope": data.get("scope"),
+            "expires_in": data.get("expires_in"),
+        })
+        return {"status": "connected", "request_id": request_id}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "request_id": request_id}
+
+
+@router.get("/status")
+async def azure_status(auth: dict = Depends(api_key_auth)):
+    """Check Azure connection status for the current user."""
+    user_id = auth.get("user_id")
+    return await token_status("azure", user_id) if user_id else {"status": "not_connected"}
+
+
+@router.post("/disconnect")
+async def azure_disconnect(auth: dict = Depends(api_key_auth)):
+    """Disconnect Azure for the current user."""
+    user_id = auth.get("user_id")
+    if user_id:
+        await delete_token("azure", user_id)
+    return {"status": "disconnected"}

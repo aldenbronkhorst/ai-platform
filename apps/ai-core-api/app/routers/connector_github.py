@@ -1,4 +1,4 @@
-"""GitHub CLI connector — OAuth flow and native gh/git commands with diagnostics."""
+"""GitHub connector — user-delegated OAuth flow + gh CLI execution."""
 import logging
 import uuid
 import os
@@ -7,70 +7,86 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
 from app.services.ops_command_runner import run_command
+from app.services.token_storage import store_token, retrieve_token, delete_token, token_status
 
 router = APIRouter(prefix="/connector/github", tags=["Connector"])
 logger = logging.getLogger(__name__)
 
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "https://ai.lotslotsmore.com/settings/connections")
 
 
 class GithubCliRequest(BaseModel):
     command: str = Field(..., description="GitHub CLI command (gh, git, rg, jq)")
-    purpose: str = Field("", description="Why this command is needed")
-    timeout: int = Field(60, description="Command timeout in seconds", le=300)
+    purpose: str = Field("", description="Purpose")
+    timeout: int = Field(60, description="Timeout", le=300)
 
 
 @router.post("/cli")
 async def github_cli(req: GithubCliRequest, auth: dict = Depends(api_key_auth)):
-    """Execute a GitHub CLI command."""
+    """Execute a GitHub CLI command as the connected user."""
     command = req.command.strip()
     request_id = uuid.uuid4().hex[:16]
     result = await run_command(command, timeout=req.timeout)
     output = result.to_dict()
-    output["command"] = command
-    output["purpose"] = req.purpose
-    output["connector"] = "github_cli"
-    output["request_id"] = request_id
-    output["status"] = "success" if result.success else "failed"
-    if not result.success:
-        logger.warning("GitHub CLI failed | exit=%d error=%s", result.exit_code, result.error or result.stderr[:200])
+    output.update({"command": command, "connector": "github_cli", "request_id": request_id,
+                    "status": "success" if result.success else "failed"})
     return output
 
 
 @router.get("/auth-url")
 async def github_auth_url(auth: dict = Depends(api_key_auth)):
-    """Return GitHub OAuth app authorization URL."""
+    """Return GitHub OAuth authorization URL for the current user."""
     if not GITHUB_CLIENT_ID:
         return {"status": "not_configured", "message": "GitHub OAuth client ID not configured."}
-    url = f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&redirect_uri={GITHUB_REDIRECT_URI}&scope=repo,workflow,admin:org,read:org,admin:repo_hook"
-    return {"status": "ready", "auth_url": url, "client_id": GITHUB_CLIENT_ID}
+    state = uuid.uuid4().hex[:16]
+    url = (f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}"
+           f"&redirect_uri={GITHUB_REDIRECT_URI}&state={state}&scope=repo,workflow,read:org,admin:repo_hook")
+    return {"status": "ready", "auth_url": url, "state": state}
 
 
-@router.post("/diagnose")
-async def github_diagnose(auth: dict = Depends(api_key_auth)):
-    """Run GitHub CLI diagnostics."""
+@router.post("/oauth-callback")
+async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
+    """Handle GitHub OAuth callback: exchange code for token, store in KV."""
+    user_id = auth.get("user_id")
+    code = req.get("code", "")
+    if not code or not user_id or not GITHUB_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="Missing code or configuration")
     request_id = uuid.uuid4().hex[:16]
-    commands = [
-        "gh --version",
-        "gh auth status",
-    ]
-    results = []
-    for cmd in commands:
-        result = await run_command(cmd, timeout=30)
-        results.append({
-            "command": cmd,
-            "exit_code": result.exit_code,
-            "stdout": result.stdout[:5000] if result.stdout else "",
-            "stderr": result.stderr[:2000] if result.stderr else "",
-            "duration_ms": 0,
-            "error_type": result.error[:100] if result.error else None,
-            "error_message": result.stderr[:500] if result.stderr else (result.error[:500] if result.error else None),
+    try:
+        import httpx
+        resp = httpx.post("https://github.com/login/oauth/access_token",
+                          data={"client_id": GITHUB_CLIENT_ID, "client_secret": GITHUB_CLIENT_SECRET,
+                                "code": code, "redirect_uri": GITHUB_REDIRECT_URI},
+                          headers={"Accept": "application/json"}, timeout=30)
+        data = resp.json()
+        if "error" in data:
+            return {"status": "error", "error": data.get("error_description", data["error"]), "request_id": request_id}
+        access_token = data.get("access_token")
+        if not access_token:
+            return {"status": "error", "error": "No access_token in response", "request_id": request_id}
+        await store_token("github", user_id, {
+            "access_token": access_token,
+            "token_type": data.get("token_type", "bearer"),
+            "scope": data.get("scope", ""),
         })
-    return {
-        "status": "success" if all(r["exit_code"] == 0 for r in results) else "degraded",
-        "connector": "github_cli",
-        "commands": results,
-        "request_id": request_id,
-        "github_client_id_configured": bool(GITHUB_CLIENT_ID),
-    }
+        return {"status": "connected", "request_id": request_id}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "request_id": request_id}
+
+
+@router.get("/status")
+async def github_status(auth: dict = Depends(api_key_auth)):
+    """Check GitHub connection status for the current user."""
+    user_id = auth.get("user_id")
+    return await token_status("github", user_id) if user_id else {"status": "not_connected"}
+
+
+@router.post("/disconnect")
+async def github_disconnect(auth: dict = Depends(api_key_auth)):
+    """Disconnect GitHub for the current user."""
+    user_id = auth.get("user_id")
+    if user_id:
+        await delete_token("github", user_id)
+    return {"status": "disconnected"}

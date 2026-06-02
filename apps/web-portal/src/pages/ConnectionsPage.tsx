@@ -139,22 +139,66 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     } catch { /* ignore */ }
   };
 
+  const [azureDeviceCode, setAzureDeviceCode] = useState<any>(null);
+  const [azurePolling, setAzurePolling] = useState(false);
+
+  const handleConnectAzure = async () => {
+    if (!accessToken) return; setCliTestResult(null);
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, { method: "POST", headers: headers() });
+      const data = await res.json();
+      if (data.status === "device_code_ready") {
+        setAzureDeviceCode(data);
+        setAzurePolling(true);
+        window.open(data.verification_url, "_blank");
+        // Start polling
+        const poll = async () => {
+          try {
+            const pr = await fetch(`${APIM_BASE_URL}/connector/azure/token-callback`, {
+              method: "POST", headers: headers(),
+              body: JSON.stringify({ device_code: data.device_code }),
+            });
+            const pd = await pr.json();
+            if (pd.status === "connected") {
+              setAzurePolling(false);
+              setAzureDeviceCode(null);
+              setCliTestResult({ success: true, message: "Azure connected!" });
+            } else if (pd.status === "pending") {
+              setTimeout(poll, (data.interval || 5) * 1000);
+            } else {
+              setAzurePolling(false);
+              setCliTestResult({ success: false, message: pd.error || "Auth failed" });
+            }
+          } catch { setAzurePolling(false); }
+        };
+        setTimeout(poll, (data.interval || 5) * 1000);
+      } else {
+        setCliTestResult({ success: false, message: data.error || "Failed to start device code flow" });
+      }
+    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+  };
+
+  const handleAzureStatus = async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connector/azure/status`, { method: "GET", headers: headers() });
+      const data = await res.json();
+      if (data.status === "connected") setCliTestResult({ success: true, message: "Azure connected" });
+    } catch { /* ignore */ }
+  };
+
+  const handleAzureDisconnect = async () => {
+    if (!accessToken) return;
+    await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
+    setCliTestResult({ success: true, message: "Disconnected" });
+  };
+
   const handleTestAzure = async () => {
     if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json();
       setCliTestResult({ ...data, connector: "azure_cli" });
-    } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
-    finally { setCliTesting(false); }
-  };
-
-  const handleTestGithub = async () => {
-    if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/github/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json();
-      setCliTestResult({ ...data, connector: "github_cli" });
     } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
     finally { setCliTesting(false); }
   };
@@ -167,6 +211,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       if (data.auth_url) window.location.href = data.auth_url;
       else setCliTestResult({ success: false, message: data.message || "GitHub OAuth not configured." });
     } catch (err: any) { setCliTestResult({ success: false, message: err.message }); }
+  };
+
+  const handleGithubStatus = async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/connector/github/status`, { method: "GET", headers: headers() });
+      const data = await res.json();
+      if (data.status === "connected") setCliTestResult({ success: true, message: "GitHub connected" });
+    } catch { /* ignore */ }
   };
 
   const handleConnectGithubToken = async () => {
@@ -232,12 +285,27 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (key === "azure_cli") return (
       <div className="space-y-4">
         <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm p-3 bg-canvas rounded-xl">
-          <span className="text-muted">Status</span><span className="text-default">Needs Verification</span>
-          <span className="text-muted">Auth</span><span className="text-default">Managed Identity</span>
-        </div>
+        <p className="text-sm text-muted mb-2">Connect your Microsoft Azure account to run Azure CLI commands.</p>
+
+        <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
+          {azurePolling ? "Waiting for authentication..." : "Connect with Microsoft"}
+        </GlassButton>
+
+        {azureDeviceCode && (
+          <div className="p-3 rounded-xl bg-canvas border border-default text-sm space-y-2">
+            <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
+            <p className="text-muted text-xs">Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.</p>
+          </div>
+        )}
+
+        <GlassButton size="sm" onClick={handleAzureStatus}>
+          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
+        </GlassButton>
         <GlassButton size="sm" onClick={handleTestAzure} disabled={cliTesting}>
-          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Run Azure Diagnostics
+          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Run Diagnostics
+        </GlassButton>
+        <GlassButton size="sm" variant="danger" onClick={handleAzureDisconnect}>
+          <Trash2 className="w-3.5 h-3.5" /> Disconnect
         </GlassButton>
       </div>
     );
@@ -245,11 +313,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (key === "github_cli") return (
       <div className="space-y-4">
         <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        <p className="text-sm text-muted mb-2">Connect your GitHub account to enable CLI access.</p>
+        <p className="text-sm text-muted mb-2">Connect your GitHub account to run GitHub CLI commands.</p>
 
-        {/* Primary OAuth flow */}
         <GlassButton size="sm" onClick={handleGithubOAuth} className="w-full">
-          <GitBranch className="w-4 h-4" /> Sign in with GitHub (OAuth)
+          <GitBranch className="w-4 h-4" /> Connect with GitHub
+        </GlassButton>
+
+        <GlassButton size="sm" onClick={handleGithubStatus}>
+          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
         </GlassButton>
 
         {/* Manual token — collapsed by default */}
@@ -263,10 +334,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             </GlassButton>
           </div>
         </details>
-
-        <GlassButton size="sm" onClick={handleTestGithub} disabled={cliTesting}>
-          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Test GitHub CLI
-        </GlassButton>
       </div>
     );
 
