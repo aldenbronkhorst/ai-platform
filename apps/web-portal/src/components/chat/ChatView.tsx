@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useLayoutEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useLayoutEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import type { ChatMessage, ChatSession, AttachedFile, VoiceState } from "../../types";
 import { ChatComposer } from "./ChatComposer";
@@ -55,12 +55,20 @@ export function ChatView({
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isEditSaving, setIsEditSaving] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
+  const [isScrollbarVisible, setIsScrollbarVisible] = useState(false);
+  const scrollbarTimerRef = useRef<number | null>(null);
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const isNearBottom = el.scrollTop < 100;
     setIsUserScrolledUp(!isNearBottom);
+    setIsScrollbarVisible(true);
+    if (scrollbarTimerRef.current) window.clearTimeout(scrollbarTimerRef.current);
+    scrollbarTimerRef.current = window.setTimeout(() => {
+      setIsScrollbarVisible(false);
+      scrollbarTimerRef.current = null;
+    }, 900);
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -86,6 +94,10 @@ export function ChatView({
     return () => observer.disconnect();
   }, []);
 
+  useEffect(() => () => {
+    if (scrollbarTimerRef.current) window.clearTimeout(scrollbarTimerRef.current);
+  }, []);
+
   if (isMessagesLoading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -105,7 +117,7 @@ export function ChatView({
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4"
+          className={`flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4 scrollbar-transient ${isScrollbarVisible ? "scrollbar-visible" : ""}`}
         >
           <div ref={messagesEndRef} />
           {[...chatMessages].reverse().map((msg) => (

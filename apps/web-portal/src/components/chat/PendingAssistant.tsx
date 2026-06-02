@@ -35,9 +35,8 @@ export function PendingAssistant({ toolHint }: PendingAssistantProps) {
     <div className="w-full flex justify-start">
       <div className="group w-full max-w-none min-w-0">
         <div className="flex items-center gap-2 text-muted text-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
           <span className="font-medium">{message}</span>
-          <span className="flex gap-0.5">
+          <span className="flex gap-0.5" aria-hidden="true">
             <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "0ms" }} />
             <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "150ms" }} />
             <span className="w-1 h-1 rounded-full bg-muted animate-bounce" style={{ animationDelay: "300ms" }} />

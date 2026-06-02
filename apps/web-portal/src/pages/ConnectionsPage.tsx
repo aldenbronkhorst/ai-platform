@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import type { ReactNode } from "react";
 import {
   Database, BookOpen, RefreshCw, CheckCircle2,
   AlertTriangle, Trash2, Terminal, GitBranch,
@@ -99,6 +100,125 @@ function formatStatusLabel(status: string) {
     .join(" ");
 }
 
+type StatusTone = "success" | "danger" | "warning" | "muted" | "neutral";
+
+function getStatusTone(status?: string, hasError = false): StatusTone {
+  if (hasError) return "danger";
+  if (status === "connected" || status === "active") return "success";
+  if (status === "error") return "danger";
+  if (status === "needs_token" || status === "needs_setup" || status === "not_connected") return "warning";
+  if (status === "coming_soon") return "muted";
+  return "neutral";
+}
+
+function statusBadgeClass(tone: StatusTone) {
+  switch (tone) {
+    case "success":
+      return "text-[var(--color-success)] bg-[var(--color-success)]/10";
+    case "danger":
+      return "text-[var(--color-danger)] bg-[var(--color-danger)]/10";
+    case "warning":
+      return "text-[var(--color-warning)] bg-[var(--color-warning)]/10";
+    case "muted":
+      return "text-soft bg-surface";
+    default:
+      return "text-muted bg-surface";
+  }
+}
+
+function StatusBadge({
+  status,
+  fallback,
+  hasError,
+}: {
+  status?: string;
+  fallback: string;
+  hasError?: boolean;
+}) {
+  const tone = getStatusTone(status, hasError);
+  const label = status ? formatStatusLabel(status) : fallback;
+
+  return (
+    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full ${statusBadgeClass(tone)}`}>
+      {tone === "success" ? <CheckCircle2 className="w-3 h-3" /> : null}
+      {tone === "danger" ? <AlertTriangle className="w-3 h-3" /> : null}
+      {label}
+    </span>
+  );
+}
+
+function ActionGroup({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap gap-2 pt-1">
+      {children}
+    </div>
+  );
+}
+
+function FormField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="text-[11px] font-bold uppercase tracking-wide text-muted">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function DetailCard({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-default bg-canvas p-4">
+      {children}
+    </div>
+  );
+}
+
+function InfoGrid({ rows }: { rows: { label: string; value: ReactNode }[] }) {
+  return (
+    <DetailCard>
+      <dl className="grid grid-cols-[128px_1fr] gap-x-4 gap-y-2 text-sm">
+        {rows.map((row) => (
+          <div key={row.label} className="contents">
+            <dt className="text-muted">{row.label}</dt>
+            <dd className="text-default min-w-0 break-words">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </DetailCard>
+  );
+}
+
+function ConnectorDetailShell({
+  connector,
+  status,
+  fallback,
+  hasStatusError,
+  children,
+}: {
+  connector: ConnectorDef;
+  status?: string;
+  fallback: string;
+  hasStatusError?: boolean;
+  children: ReactNode;
+}) {
+  const Icon = connector.icon;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start gap-3">
+        <div className="p-2.5 rounded-xl bg-canvas border border-default shrink-0">
+          <Icon className="w-5 h-5 text-muted" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-bold text-base text-default">{connector.name}</h3>
+          <p className="text-xs text-muted mt-0.5">{connector.subtitle}</p>
+        </div>
+        <StatusBadge status={status} fallback={fallback} hasError={hasStatusError} />
+      </div>
+      {children}
+    </div>
+  );
+}
+
 const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database },
   { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
@@ -122,7 +242,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [githubToken, setGithubToken] = useState("");
   const [githubOrg, setGithubOrg] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
-  const [cliTesting, setCliTesting] = useState(false);
   const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
@@ -312,16 +431,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     setCliTestResult({ status: "success", connector: "azure_cli", message: "Disconnected" });
   };
 
-  const handleTestAzure = async () => {
-    if (!accessToken) return; setCliTesting(true); setCliTestResult(null);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json() as CliTestResult;
-      setCliTestResult({ ...data, connector: "azure_cli" });
-    } catch (err) { setCliTestResult({ status: "failed", connector: "azure_cli", message: errorMessage(err) }); }
-    finally { setCliTesting(false); }
-  };
-
   const handleGithubOAuth = async () => {
     if (!accessToken) return;
     try {
@@ -364,110 +473,150 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const connectorDetail = (key: string) => {
     const c = CONNECTORS.find(x => x.key === key);
     if (!c) return null;
+    const metaStatus = connectorMeta?.[key]?.status;
+    const statusFallback = connectorStatusError ? "Status Unavailable" : "Checking...";
+    const hasStatusError = Boolean(connectorStatusError && !metaStatus);
 
     if (key === "odoo") {
       const isOdooStatusLoaded = odooStatus !== null;
       const isOdooDisconnected = odooStatus?.status === "not_connected";
+      const detailStatus = metaStatus || odooStatus?.status;
 
       return (
-      <div className="space-y-4">
-        <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        {!isOdooStatusLoaded ? (
-          <p className="text-sm text-muted">Loading connection details...</p>
-        ) : !isOdooDisconnected ? (
-          <div className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm p-3 bg-canvas rounded-xl">
-            <span className="text-muted">Status</span>
-            <span className="text-default">{odooStatus.status}</span>
-            <span className="text-muted">Instance URL</span>
-            <span className="text-default break-all">{odooStatus.odoo_url || "—"}</span>
-            <span className="text-muted">Database</span>
-            <span className="text-default">{odooStatus.odoo_db || "—"}</span>
-            <span className="text-muted">Username</span>
-            <span className="text-default">{odooStatus.provider_username || "—"}</span>
-            <span className="text-muted">Environment</span>
-            <span className="text-default">{odooStatus.target_environment || "—"}</span>
-            <span className="text-muted">Last Verified</span>
-            <span className="text-default">{odooStatus.last_verified_at ? new Date(odooStatus.last_verified_at).toLocaleString() : "—"}</span>
-          </div>
-        ) : (
-          <p className="text-sm text-muted">Not connected.</p>
-        )}
-        <div className="flex flex-wrap gap-2">
+        <ConnectorDetailShell connector={c} status={detailStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+          {!isOdooStatusLoaded ? (
+            <DetailCard>
+              <p className="text-sm text-muted">Loading connection details...</p>
+            </DetailCard>
+          ) : !isOdooDisconnected ? (
+            <InfoGrid
+              rows={[
+                { label: "Status", value: formatStatusLabel(odooStatus.status) },
+                { label: "Instance URL", value: <span className="break-all">{odooStatus.odoo_url || "—"}</span> },
+                { label: "Database", value: odooStatus.odoo_db || "—" },
+                { label: "Username", value: odooStatus.provider_username || "—" },
+                { label: "Environment", value: odooStatus.target_environment || "—" },
+                {
+                  label: "Last Verified",
+                  value: odooStatus.last_verified_at ? new Date(odooStatus.last_verified_at).toLocaleString() : "—",
+                },
+              ]}
+            />
+          ) : (
+            <DetailCard>
+              <p className="text-sm text-muted">Not connected.</p>
+            </DetailCard>
+          )}
+
           {isOdooStatusLoaded && !isOdooDisconnected ? (
-            <>
+            <ActionGroup>
               <GlassButton size="sm" onClick={handleTestOdoo} disabled={isTesting}>
                 <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? "animate-spin" : ""}`} /> Test
               </GlassButton>
-              <GlassButton size="sm" variant="danger" onClick={handleDisconnectOdoo}><Trash2 className="w-3.5 h-3.5" /> Disconnect</GlassButton>
-            </>
+              <GlassButton size="sm" variant="danger" onClick={handleDisconnectOdoo}>
+                <Trash2 className="w-3.5 h-3.5" /> Disconnect
+              </GlassButton>
+            </ActionGroup>
           ) : null}
-        </div>
-        {isOdooStatusLoaded && isOdooDisconnected && (
-          <form onSubmit={handleConnectOdoo} className="space-y-3 pt-2">
-            <GlassInput type="url" required placeholder="Odoo Instance URL" value={odooUrl} onChange={e => setOdooUrl(e.target.value)} />
-            <GlassInput type="text" required placeholder="Odoo Database Name" value={odooDb} onChange={e => setOdooDb(e.target.value)} />
-            <GlassInput type="email" required placeholder="Odoo Username / Email" value={odooUsername} onChange={e => setOdooUsername(e.target.value)} />
-            <GlassInput type="password" required placeholder="Odoo API Key" value={odooApiKey} onChange={e => setOdooApiKey(e.target.value)} />
-            <GlassButton type="submit" disabled={isConnecting}>{isConnecting ? "Connecting..." : "Verify & Save"}</GlassButton>
-          </form>
-        )}
-      </div>
-    );
+
+          {isOdooStatusLoaded && isOdooDisconnected && (
+            <form onSubmit={handleConnectOdoo} className="space-y-4">
+              <div className="grid gap-3">
+                <FormField label="Instance URL">
+                  <GlassInput type="url" required placeholder="https://your-odoo-instance.com" value={odooUrl} onChange={e => setOdooUrl(e.target.value)} />
+                </FormField>
+                <FormField label="Database">
+                  <GlassInput type="text" required placeholder="Database name" value={odooDb} onChange={e => setOdooDb(e.target.value)} />
+                </FormField>
+                <FormField label="Username">
+                  <GlassInput type="email" required placeholder="user@example.com" value={odooUsername} onChange={e => setOdooUsername(e.target.value)} />
+                </FormField>
+                <FormField label="API Key">
+                  <GlassInput type="password" required placeholder="Odoo API key" value={odooApiKey} onChange={e => setOdooApiKey(e.target.value)} />
+                </FormField>
+              </div>
+              <ActionGroup>
+                <GlassButton type="submit" disabled={isConnecting}>
+                  {isConnecting ? "Connecting..." : "Verify & Save"}
+                </GlassButton>
+              </ActionGroup>
+            </form>
+          )}
+        </ConnectorDetailShell>
+      );
     }
 
     if (key === "azure_cli") return (
-      <div className="space-y-4">
-        <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        <p className="text-sm text-muted mb-2">Connect your Microsoft Azure account to run Azure CLI commands.</p>
+      <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+        <DetailCard>
+          <p className="text-sm text-muted">Connect with Microsoft device authentication.</p>
+        </DetailCard>
 
-        <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
-          {azurePolling ? "Waiting for authentication..." : "Connect with Microsoft"}
-        </GlassButton>
+        <ActionGroup>
+          <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
+            {azurePolling ? "Waiting for authentication..." : "Connect with Microsoft"}
+          </GlassButton>
+          <GlassButton size="sm" onClick={handleAzureStatus}>
+            <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
+          </GlassButton>
+          <GlassButton size="sm" variant="danger" onClick={handleAzureDisconnect}>
+            <Trash2 className="w-3.5 h-3.5" /> Disconnect
+          </GlassButton>
+        </ActionGroup>
 
         {azureDeviceCode && (
-          <div className="p-3 rounded-xl bg-canvas border border-default text-sm space-y-2">
-            <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
-            <p className="text-muted text-xs">Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.</p>
-          </div>
+          <DetailCard>
+            <div className="text-sm space-y-2">
+              <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
+              <p className="text-muted text-xs">
+                Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.
+              </p>
+            </div>
+          </DetailCard>
         )}
-
-        <GlassButton size="sm" onClick={handleAzureStatus}>
-          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
-        </GlassButton>
-        <GlassButton size="sm" onClick={handleTestAzure} disabled={cliTesting}>
-          <RefreshCw className={`w-3.5 h-3.5 ${cliTesting ? "animate-spin" : ""}`} /> Run Diagnostics
-        </GlassButton>
-        <GlassButton size="sm" variant="danger" onClick={handleAzureDisconnect}>
-          <Trash2 className="w-3.5 h-3.5" /> Disconnect
-        </GlassButton>
-      </div>
+      </ConnectorDetailShell>
     );
 
     if (key === "github_cli") return (
-      <div className="space-y-4">
-        <h3 className="font-bold text-lg text-default mb-2">{c.name}</h3>
-        <p className="text-sm text-muted mb-2">Connect your GitHub account to run GitHub CLI commands.</p>
+      <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+        <DetailCard>
+          <p className="text-sm text-muted">Connect with GitHub OAuth or a personal access token.</p>
+        </DetailCard>
 
-        <GlassButton size="sm" onClick={handleGithubOAuth} className="w-full">
-          <GitBranch className="w-4 h-4" /> Connect with GitHub
-        </GlassButton>
+        <ActionGroup>
+          <GlassButton size="sm" onClick={handleGithubOAuth}>
+            <GitBranch className="w-4 h-4" /> Connect with GitHub
+          </GlassButton>
+          <GlassButton size="sm" onClick={handleGithubStatus}>
+            <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
+          </GlassButton>
+        </ActionGroup>
 
-        <GlassButton size="sm" onClick={handleGithubStatus}>
-          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
-        </GlassButton>
-
-        {/* Manual token — collapsed by default */}
-        <details className="text-sm">
-          <summary className="cursor-pointer text-muted hover:text-default">Use token manually (advanced)</summary>
-          <div className="mt-3 space-y-2">
-            <GlassInput type="password" placeholder="ghp_..." value={githubToken} onChange={e => setGithubToken(e.target.value)} />
-            <GlassInput type="text" placeholder="Organization / Owner" value={githubOrg} onChange={e => setGithubOrg(e.target.value)} />
-            <GlassButton size="sm" onClick={handleConnectGithubToken} disabled={isConnecting || !githubToken}>
-              {isConnecting ? "Connecting..." : "Connect with Token"}
-            </GlassButton>
+        <details className="rounded-2xl border border-default bg-canvas p-4 text-sm">
+          <summary className="cursor-pointer text-muted hover:text-default font-semibold">Use token manually</summary>
+          <div className="mt-4 grid gap-3">
+            <FormField label="Personal Access Token">
+              <GlassInput type="password" placeholder="ghp_..." value={githubToken} onChange={e => setGithubToken(e.target.value)} />
+            </FormField>
+            <FormField label="Organization / Owner">
+              <GlassInput type="text" placeholder="Optional owner" value={githubOrg} onChange={e => setGithubOrg(e.target.value)} />
+            </FormField>
+            <ActionGroup>
+              <GlassButton size="sm" onClick={handleConnectGithubToken} disabled={isConnecting || !githubToken}>
+                {isConnecting ? "Connecting..." : "Connect with Token"}
+              </GlassButton>
+            </ActionGroup>
           </div>
         </details>
-      </div>
+      </ConnectorDetailShell>
+    );
+
+    if (key === "ms365") return (
+      <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+        <DetailCard>
+          <p className="text-sm text-muted">No setup actions are available for this connector yet.</p>
+        </DetailCard>
+      </ConnectorDetailShell>
     );
 
     return null;
@@ -489,13 +638,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         {CONNECTORS.map((c) => {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
-          const statusLabel = status ? formatStatusLabel(status) : connectorStatusError ? "Status Unavailable" : "Checking...";
-          const badgeColor = status === "connected" || status === "active" ? "text-[var(--color-success)]"
-            : status === "error" ? "text-[var(--color-danger)]"
-            : status === "needs_token" || status === "needs_setup" ? "text-[var(--color-warning)]"
-            : status === "coming_soon" ? "text-soft"
-            : connectorStatusError ? "text-[var(--color-danger)]"
-            : "text-muted";
           return (
           <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
@@ -507,11 +649,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             </div>
             <h4 className="font-bold text-sm text-default truncate">{c.name}</h4>
             <p className="text-xs text-muted truncate mb-3">{c.subtitle}</p>
-            <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full ${badgeColor} ${badgeColor.includes('success') ? 'bg-[var(--color-success)]/10' : badgeColor.includes('danger') ? 'bg-[var(--color-danger)]/10' : badgeColor.includes('warning') ? 'bg-[var(--color-warning)]/10' : 'bg-surface'}`}>
-              {status === "connected" || status === "active" ? <CheckCircle2 className="w-3 h-3" /> : null}
-              {status === "error" || (!status && connectorStatusError) ? <AlertTriangle className="w-3 h-3" /> : null}
-              {statusLabel}
-            </span>
+            <StatusBadge
+              status={status}
+              fallback={connectorStatusError ? "Status Unavailable" : "Checking..."}
+              hasError={Boolean(connectorStatusError && !status)}
+            />
           </button>
         );})}
       </div>

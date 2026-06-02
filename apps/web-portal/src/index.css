@@ -230,6 +230,32 @@
   background: var(--glass-border-bright);
 }
 
+.scrollbar-transient {
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+}
+
+.scrollbar-transient::-webkit-scrollbar-thumb {
+  background: transparent;
+  transition: background 160ms ease;
+}
+
+.scrollbar-transient::-webkit-scrollbar-thumb:hover {
+  background: transparent;
+}
+
+.scrollbar-transient.scrollbar-visible {
+  scrollbar-color: var(--glass-border) transparent;
+}
+
+.scrollbar-transient.scrollbar-visible::-webkit-scrollbar-thumb {
+  background: var(--glass-border);
+}
+
+.scrollbar-transient.scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background: var(--glass-border-bright);
+}
+
 .markdown-body p {
   margin: 0 0 0.5em;
 }
