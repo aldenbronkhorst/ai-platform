@@ -75,9 +75,9 @@ jobs:
       - name: Install portal dependencies & build
         run: |
           cd apps/web-portal
-          npm ci
-          npm run lint
-          npm run build
+          npm ci --workspaces=false
+          npm run lint --workspaces=false
+          npm run build --workspaces=false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -212,8 +212,8 @@ jobs:
       - name: Build Web Portal
         run: |
           cd apps/web-portal
-          npm ci
-          VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build
+          npm ci --workspaces=false
+          VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build --workspaces=false
 
       - name: Deploy Web Portal to SWA
         uses: Azure/static-web-apps-deploy@v1
