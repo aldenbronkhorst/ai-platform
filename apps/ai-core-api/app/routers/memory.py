@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role, require_auth_role
-from app.models.models import AIMemory, AIChatMessage
+from app.models.models import AIMemory, AIChatMessage, AIMemoryUsageEvent, AITask
 from app.schemas.schemas import AIMemoryCreate, AIMemoryUpdate, AIMemoryResponse, MemoryCandidate, MemoryFeedbackRequest
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
@@ -387,6 +387,133 @@ async def trigger_memory_consolidation(
     return result
 
 
+async def _get_feedback_memory(db: AsyncSession, memory_id: UUID, auth: dict) -> AIMemory:
+    mem_q = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
+    memory = mem_q.scalar_one_or_none()
+    if not memory or not _can_read_memory(auth, memory):
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return memory
+
+
+async def _upsert_memory_usage_event(
+    db: AsyncSession,
+    *,
+    memory_id: UUID,
+    req: MemoryFeedbackRequest,
+    user_id: str,
+    feedback_type: str,
+) -> None:
+    usage_event = None
+    if req.chat_message_id:
+        evt_q = await db.execute(
+            select(AIMemoryUsageEvent).where(
+                AIMemoryUsageEvent.memory_id == memory_id,
+                AIMemoryUsageEvent.chat_message_id == req.chat_message_id,
+            )
+        )
+        usage_event = evt_q.scalars().first()
+
+    if usage_event:
+        usage_event.feedback_type = feedback_type
+        usage_event.feedback_value = req.comment
+        return
+
+    db.add(AIMemoryUsageEvent(
+        id=uuid4(),
+        memory_id=memory_id,
+        chat_message_id=req.chat_message_id,
+        user_id=user_id,
+        feedback_type=feedback_type,
+        feedback_value=req.comment,
+        created_at=datetime.utcnow(),
+    ))
+
+
+def _increase_memory_confidence(memory: AIMemory) -> str:
+    if memory.confidence in {"low", "medium"}:
+        memory.confidence = "medium" if memory.confidence == "low" else "high"
+        return "memory_confidence_increased"
+    return "memory_feedback_recorded"
+
+
+def _decrease_memory_confidence(memory: AIMemory) -> str:
+    if memory.confidence in {"high", "medium"}:
+        memory.confidence = "medium" if memory.confidence == "high" else "low"
+        return "memory_confidence_decreased"
+    return "memory_feedback_recorded"
+
+
+def _feedback_requires_review(memory: AIMemory, feedback_type: str) -> bool:
+    return feedback_type in {"needs_review", "outdated"} or (memory.failure_count or 0) > 3
+
+
+def _apply_memory_feedback(memory: AIMemory, feedback_type: str) -> tuple[str, bool]:
+    if feedback_type in {"helpful", "worked"}:
+        memory.success_count = (memory.success_count or 0) + 1
+        memory.last_confirmed_at = datetime.utcnow()
+        return _increase_memory_confidence(memory), False
+
+    if feedback_type in {"wrong", "outdated", "do_not_use", "needs_review"}:
+        memory.failure_count = (memory.failure_count or 0) + 1
+        audit_action = _decrease_memory_confidence(memory)
+        if _feedback_requires_review(memory, feedback_type):
+            memory.status = "needs_review"
+            return "memory_flagged_for_review", True
+        return audit_action, False
+
+    if feedback_type == "not_relevant":
+        return _decrease_memory_confidence(memory), False
+
+    return "memory_feedback_recorded", False
+
+
+def _add_memory_review_task(db: AsyncSession, memory: AIMemory, feedback_type: str, comment: str | None) -> None:
+    db.add(AITask(
+        id=uuid4(),
+        title=f"Memory Review Required: {memory.title}",
+        description=f"Memory (id={memory.id}) has been flagged as '{feedback_type}' by user feedback. Comment: '{comment or ''}'.",
+        status="open",
+        priority="high",
+        linked_model="ai_memories",
+        linked_record_id=str(memory.id),
+    ))
+
+
+async def _log_memory_feedback(
+    db: AsyncSession,
+    *,
+    memory: AIMemory,
+    user_id: str,
+    feedback_type: str,
+    audit_action: str,
+    old_confidence: str,
+    old_status: str,
+    create_review_task: bool,
+) -> None:
+    await AuditService(db).log_event(AIAuditEventCreate(
+        action_type=audit_action,
+        target_model="ai_memories",
+        target_record_id=str(memory.id),
+        actor_user_id=user_id,
+        input_summary=(
+            f"Memory feedback '{feedback_type}' received. Confidence: {old_confidence} -> {memory.confidence}. "
+            f"Status: {old_status} -> {memory.status}."
+        ),
+        risk_level="medium" if create_review_task else "low",
+        status="success",
+    ))
+
+
+async def _delete_memory_from_search_if_inactive(memory: AIMemory) -> None:
+    if memory.status == "active":
+        return
+    try:
+        from app.services.search_service import SearchService
+        await SearchService().delete_memory_record(memory.id)
+    except Exception as e:
+        logger.warning("Failed to delete memory from search index during feedback: %s", e)
+
+
 @router.post("/{memory_id}/feedback", response_model=AIMemoryResponse)
 async def record_memory_feedback(
     memory_id: UUID,
@@ -400,122 +527,29 @@ async def record_memory_feedback(
     """
     user_id = auth.get("user_id")
 
-    # 1. Fetch memory record
-    mem_q = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
-    memory = mem_q.scalar_one_or_none()
-    if not memory:
-        raise HTTPException(status_code=404, detail="Memory not found.")
-    if not _can_read_memory(auth, memory):
-        raise HTTPException(status_code=404, detail="Memory not found.")
-
+    memory = await _get_feedback_memory(db, memory_id, auth)
     old_confidence = memory.confidence
     old_status = memory.status
     f_type = req.feedback_type.strip().lower()
 
-    # 2. Record memory usage event (or update existing event if message ID provided)
-    from app.models.models import AIMemoryUsageEvent, AITask
-    usage_event = None
-    if req.chat_message_id:
-        evt_q = await db.execute(
-            select(AIMemoryUsageEvent).where(
-                AIMemoryUsageEvent.memory_id == memory_id,
-                AIMemoryUsageEvent.chat_message_id == req.chat_message_id,
-            )
-        )
-        usage_event = evt_q.scalars().first()
-
-    if not usage_event:
-        usage_event = AIMemoryUsageEvent(
-            id=uuid4(),
-            memory_id=memory_id,
-            chat_message_id=req.chat_message_id,
-            user_id=user_id,
-            feedback_type=f_type,
-            feedback_value=req.comment,
-            created_at=datetime.utcnow()
-        )
-        db.add(usage_event)
-    else:
-        usage_event.feedback_type = f_type
-        usage_event.feedback_value = req.comment
-
-    # 3. Apply feedback rules to memory
-    audit_action = "memory_feedback_recorded"
-    create_review_task = False
-    task_title = ""
-    task_desc = ""
-
-    if f_type in ("helpful", "worked"):
-        memory.success_count = (memory.success_count or 0) + 1
-        memory.last_confirmed_at = datetime.utcnow()
-        # Raise confidence if applicable
-        if memory.confidence == "low":
-            memory.confidence = "medium"
-            audit_action = "memory_confidence_increased"
-        elif memory.confidence == "medium":
-            memory.confidence = "high"
-            audit_action = "memory_confidence_increased"
-
-    elif f_type in ("wrong", "outdated", "do_not_use", "needs_review"):
-        memory.failure_count = (memory.failure_count or 0) + 1
-        # Lower confidence
-        if memory.confidence == "high":
-            memory.confidence = "medium"
-            audit_action = "memory_confidence_decreased"
-        elif memory.confidence == "medium":
-            memory.confidence = "low"
-            audit_action = "memory_confidence_decreased"
-
-        # Flag for review if repeated failure or requested
-        if f_type == "needs_review" or (memory.failure_count or 0) > 3 or f_type == "outdated":
-            memory.status = "needs_review"
-            create_review_task = True
-            audit_action = "memory_flagged_for_review"
-            task_title = f"Memory Review Required: {memory.title}"
-            task_desc = f"Memory (id={memory.id}) has been flagged as '{f_type}' by user feedback. Comment: '{req.comment or ''}'."
-
-    elif f_type == "not_relevant":
-        # Keep counts, maybe lower confidence slightly
-        if memory.confidence == "high":
-            memory.confidence = "medium"
-            audit_action = "memory_confidence_decreased"
-
+    await _upsert_memory_usage_event(db, memory_id=memory_id, req=req, user_id=user_id, feedback_type=f_type)
+    audit_action, create_review_task = _apply_memory_feedback(memory, f_type)
     memory.updated_at = datetime.utcnow()
 
-    # 4. Create review task if needed
     if create_review_task:
-        task = AITask(
-            id=uuid4(),
-            title=task_title,
-            description=task_desc,
-            status="open",
-            priority="high" if f_type != "not_relevant" else "medium",
-            linked_model="ai_memories",
-            linked_record_id=str(memory.id),
-        )
-        db.add(task)
+        _add_memory_review_task(db, memory, f_type, req.comment)
 
-    # 5. Log audit event
-    audit_svc = AuditService(db)
-    await audit_svc.log_event(AIAuditEventCreate(
-        action_type=audit_action,
-        target_model="ai_memories",
-        target_record_id=str(memory.id),
-        actor_user_id=user_id,
-        input_summary=f"Memory feedback '{f_type}' received. Confidence: {old_confidence} -> {memory.confidence}. Status: {old_status} -> {memory.status}.",
-        risk_level="medium" if create_review_task else "low",
-        status="success",
-    ))
-
-    # Soft-sync with search (remove from search index if no longer active)
-    if memory.status != "active":
-        try:
-            from app.services.search_service import SearchService
-            search_svc = SearchService()
-            await search_svc.delete_memory_record(memory.id)
-        except Exception as e:
-            logger.warning("Failed to delete memory from search index during feedback: %s", e)
-
+    await _log_memory_feedback(
+        db,
+        memory=memory,
+        user_id=user_id,
+        feedback_type=f_type,
+        audit_action=audit_action,
+        old_confidence=old_confidence,
+        old_status=old_status,
+        create_review_task=create_review_task,
+    )
+    await _delete_memory_from_search_if_inactive(memory)
     await db.commit()
     await db.refresh(memory)
     return memory

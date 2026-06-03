@@ -1,13 +1,27 @@
 import os
 from functools import lru_cache
 from urllib.parse import quote_plus
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
+
+
+def _default_app_env() -> str:
+    return os.environ.get("APP_ENV") or os.environ.get("ENVIRONMENT", "development")
+
+
+def _normalize_app_env(value: str | None) -> str:
+    normalized = (value or "development").strip().lower()
+    if normalized in {"prod", "production"}:
+        return "production"
+    if normalized in {"dev", "local", "development"}:
+        return "development"
+    return normalized
 
 
 class Settings(BaseSettings):
     app_name: str = "AI Platform Core API"
     app_version: str = "0.1.0"
-    app_env: str = os.environ.get("APP_ENV", "development")
+    app_env: str = Field(default_factory=_default_app_env)
     debug: bool = os.environ.get("DEBUG", "false").lower() == "true"
 
     # Database
@@ -31,6 +45,11 @@ class Settings(BaseSettings):
 
     # Auth (temporary — replace with Entra ID / JWT)
     api_key: str = os.environ.get("API_KEY", "")
+
+    @field_validator("app_env", mode="before")
+    @classmethod
+    def normalize_app_env(_cls, value: str | None) -> str:
+        return _normalize_app_env(value)
 
     @property
     def database_url(self) -> str:

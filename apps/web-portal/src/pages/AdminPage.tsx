@@ -1,21 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Shield } from "lucide-react";
-
-interface AIMemory {
-  id: string;
-  type: string;
-  title: string;
-  body: string | null;
-  summary: string | null;
-  scope_type: string | null;
-  scope_value: string | null;
-  confidence: string;
-  risk_level: string;
-  status: string;
-  priority: number;
-  created_at: string;
-  updated_at: string;
-}
+import { APIM_BASE_URL } from "../hooks/useApi";
+import type { AIMemory } from "../types";
 
 interface AIRule {
   id: string;
@@ -26,8 +12,6 @@ interface AIRule {
   scope_type: string | null;
   scope_value: string | null;
 }
-
-const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
 
 type Tab = "memories" | "rules";
 

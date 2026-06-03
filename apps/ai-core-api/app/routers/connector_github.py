@@ -16,6 +16,11 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "https://ai.lotslotsmore.com/settings/connections")
 
 
+def _is_configured_value(value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    return bool(normalized and not normalized.startswith("your-") and normalized not in {"placeholder", "changeme", "todo"})
+
+
 class GithubCliRequest(BaseModel):
     command: str = Field(..., description="GitHub CLI command (gh, git, rg, jq)")
     purpose: str = Field("", description="Purpose")
@@ -36,7 +41,7 @@ async def github_cli(req: GithubCliRequest, auth: dict = Depends(api_key_auth)):
 @router.get("/auth-url")
 async def github_auth_url(auth: dict = Depends(api_key_auth)):
     """Return GitHub OAuth authorization URL for the current user."""
-    if not GITHUB_CLIENT_ID:
+    if not _is_configured_value(GITHUB_CLIENT_ID):
         return {"status": "not_configured", "message": "GitHub OAuth client ID not configured."}
     state = uuid.uuid4().hex[:16]
     url = (f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}"
@@ -49,8 +54,10 @@ async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
     """Handle GitHub OAuth callback: exchange code for token, store in KV."""
     user_id = auth.get("user_id")
     code = req.get("code", "")
-    if not code or not user_id or not GITHUB_CLIENT_SECRET:
+    if not code or not user_id:
         raise HTTPException(status_code=400, detail="Missing code or configuration")
+    if not _is_configured_value(GITHUB_CLIENT_ID) or not _is_configured_value(GITHUB_CLIENT_SECRET):
+        raise HTTPException(status_code=400, detail="GitHub OAuth is not configured.")
     request_id = uuid.uuid4().hex[:16]
     try:
         import httpx

@@ -71,21 +71,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' exis
   name: logAnalyticsWorkspaceName
 }
 
-resource serviceBusNamespaceResource 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = {
-  name: serviceBusNamespace
-}
-
-resource serviceBusKedaListenRule 'Microsoft.ServiceBus/namespaces/authorizationRules@2024-01-01' = {
-  parent: serviceBusNamespaceResource
-  name: 'keda-listen'
-  properties: {
-    rights: [
-      'Listen'
-    ]
-  }
-}
-
-resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01' = {
+resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
   tags: tags
@@ -104,7 +90,7 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2023-05-01'
   }
 }
 
-resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
+resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: containerAppName
   location: location
   tags: tags
@@ -145,10 +131,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
         }
-        {
-          name: 'servicebus-keda-connection'
-          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
-        }
       ]
     }
     template: {
@@ -166,6 +148,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'STORAGE_ACCOUNT_NAME', value: storageAccountName }
             { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
             { name: 'ENVIRONMENT', value: environment }
+            { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
             { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
@@ -226,7 +209,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
+resource odooConnectorApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: odooConnectorAppName
   location: location
   tags: tags
@@ -257,10 +240,6 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
         }
-        {
-          name: 'servicebus-keda-connection'
-          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
-        }
       ]
     }
     template: {
@@ -271,6 +250,7 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
           env: [
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
             { name: 'ENVIRONMENT', value: environment }
+            { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
             { name: 'VERSION', value: odooConnectorImageTag }
             { name: 'INTERNAL_API_KEY', secretRef: 'odoo-connector-api-key' }
           ]
@@ -323,7 +303,7 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
+resource containerAppWorker 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'ca-${workload}-worker-${environment}-${regionCode}-${instance}'
   location: location
   tags: tags
@@ -359,10 +339,6 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
           keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
           identity: apiManagedIdentityResourceId
         }
-        {
-          name: 'servicebus-keda-connection'
-          value: serviceBusKedaListenRule.listKeys().primaryConnectionString
-        }
       ]
     }
     template: {
@@ -383,6 +359,7 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
             { name: 'STORAGE_ACCOUNT_NAME', value: storageAccountName }
             { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
             { name: 'ENVIRONMENT', value: environment }
+            { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
             { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
@@ -408,17 +385,13 @@ resource containerAppWorker 'Microsoft.App/containerApps@2023-05-01' = {
             name: 'queue-rule'
             custom: {
               type: 'azure-servicebus'
+#disable-next-line BCP037
+              identity: apiManagedIdentityResourceId
               metadata: {
                 queueName: 'ai-jobs'
                 messageCount: '1'
                 namespace: serviceBusNamespace
               }
-              auth: [
-                {
-                  secretRef: 'servicebus-keda-connection'
-                  triggerParameter: 'connection'
-                }
-              ]
             }
           }
         ]

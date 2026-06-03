@@ -22,7 +22,7 @@ def _get_client(creds):
 
 
 @router.post("/execute")
-def execute_report(req: OdooExecuteReportRequest, auth: dict = Depends(internal_api_key_auth)):
+def execute_report(req: OdooExecuteReportRequest, _auth: dict = Depends(internal_api_key_auth)):
     """Generic endpoint to execute any Odoo accounting report using OdooReportService."""
     client = _get_client(req.credentials)
     service = OdooReportService(client)
@@ -30,7 +30,7 @@ def execute_report(req: OdooExecuteReportRequest, auth: dict = Depends(internal_
 
 
 @router.post("/list")
-def list_reports(req: OdooListReportsRequest, auth: dict = Depends(internal_api_key_auth)):
+def list_reports(req: OdooListReportsRequest, _auth: dict = Depends(internal_api_key_auth)):
     """List available Odoo account.report records for report discovery."""
     client = _get_client(req.credentials)
     domain = [["name", "ilike", req.query]] if req.query else []

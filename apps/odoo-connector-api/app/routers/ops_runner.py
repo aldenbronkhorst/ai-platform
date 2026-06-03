@@ -1,17 +1,17 @@
 """Odoo operations runner — consolidated command center for all Odoo operations."""
+import html
 import logging
+import re
 from pydantic import BaseModel, Field
-from typing import Any, Optional, Literal
+from typing import Any, Optional, Callable
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
-from app.models.schemas import OdooCredentialsRequest
+from app.models.schemas import OdooCredentialsRequest, OdooExecuteReportRequest
 from app.services.odoo_report_service import OdooReportService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-REFUSED_CONTENT_FIELDS = {"body", "content", "message_body", "html_body", "note", "description"}
 
 
 class OdooOpsRunnerRequest(BaseModel):
@@ -69,151 +69,215 @@ def _get_client(creds):
     )
 
 
-@router.post("/run")
-def odoo_ops_runner(req: OdooOpsRunnerRequest, auth: dict = Depends(internal_api_key_auth)):
-    """Consolidated Odoo command center. Routes by mode to the appropriate internal handler."""
-    client = _get_client(req.credentials)
+def _run_health(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    try:
+        uid = client.authenticate()
+        return {"status": "healthy", "authenticated": True, "user_id": uid, "database": req.credentials.db}
+    except Exception as exc:
+        return {"status": "error", "authenticated": False, "error": str(exc)}
 
-    if req.mode == "health":
-        try:
-            uid = client.authenticate()
-            return {"status": "healthy", "authenticated": True, "user_id": uid, "database": req.credentials.db}
-        except Exception as e:
-            return {"status": "error", "authenticated": False, "error": str(e)}
 
-    elif req.mode == "schema":
-        if req.query:
-            models = client.call_with_transport("ir.model", "search_read",
-                args=[[["model", "ilike", req.query]], ["model", "name"]],
-                kwargs={"limit": req.limit}) or []
-            return {"models": models}
-        if req.model and req.fields:
-            fields_info = client.fields_get(req.model, fields=req.fields)
-            return {"model": req.model, "fields": fields_info}
-        if req.model:
-            fields_info = client.fields_get(req.model)
-            return {"model": req.model, "fields": fields_info}
-        return {"warning": "Provide model or query for schema inspection."}
+def _run_schema(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if req.query:
+        models = client.call_with_transport(
+            "ir.model",
+            "search_read",
+            args=[[["model", "ilike", req.query]], ["model", "name"]],
+            kwargs={"limit": req.limit},
+        ) or []
+        return {"models": models}
+    if req.model:
+        return {"model": req.model, "fields": client.fields_get(req.model, fields=req.fields)}
+    return {"warning": "Provide model or query for schema inspection."}
 
-    elif req.mode in ("query", "records"):
-        if req.ids:
-            records = client.read(model=req.model, ids=req.ids, fields=req.fields)
-            return {"model": req.model, "records": records, "count": len(records)}
+
+def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if req.ids:
+        records = client.read(model=req.model, ids=req.ids, fields=req.fields)
+    else:
         records = client.search_read(
-            model=req.model, domain=req.domain or [],
-            fields=req.fields, limit=req.limit, offset=req.offset,
-            order=req.order, include_ids=req.include_ids,
+            model=req.model,
+            domain=req.domain or [],
+            fields=req.fields,
+            limit=req.limit,
+            offset=req.offset,
+            order=req.order,
+            include_ids=req.include_ids,
         )
-        return {"model": req.model, "records": records, "count": len(records)}
+    return {"model": req.model, "records": records, "count": len(records)}
 
-    elif req.mode == "count":
-        count = client.search_count(model=req.model, domain=req.domain or [])
-        return {"model": req.model, "count": count}
 
-    elif req.mode == "aggregate":
-        if not req.model or not req.fields or not req.args:
-            raise HTTPException(status_code=400, detail={"error": "aggregate requires model, fields, and groupby"})
-        result = client.call_with_transport(req.model, "read_group",
-            args=[req.domain or [], req.fields, req.args],
-            kwargs={"lazy": True})
-        return {"model": req.model, "groups": result}
+def _run_count(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    return {"model": req.model, "count": client.search_count(model=req.model, domain=req.domain or [])}
 
-    elif req.mode in ("report", "account_report"):
-        from app.models.schemas import OdooExecuteReportRequest
-        report_req = OdooExecuteReportRequest(
-            credentials=req.credentials,
-            report_name=req.report_name or "",
-            report_id=req.report_id,
-            date_from=req.date_from, date_to=req.date_to,
-            company_id=req.company_id,
-            timezone=req.timezone, lang=req.lang,
-            line_names=req.line_names,
-            include_raw_lines=req.include_raw_lines,
-        )
-        service = OdooReportService(client)
-        return service.execute(report_req)
 
-    elif req.mode == "attachment":
-        all_ids = []
-        if req.attachment_id:
-            all_ids.append(req.attachment_id)
-        if req.attachment_ids:
-            all_ids.extend(req.attachment_ids)
-        if not all_ids:
-            raise HTTPException(status_code=400, detail={"error": "attachment_id or attachment_ids required"})
-        records = client.read(
-            model="ir.attachment",
-            ids=all_ids,
-            fields=["id", "name", "mimetype", "file_size", "res_model", "res_id", "create_date", "type", "url", "description"],
-        )
-        for rec in records:
-            rec.pop("datas", None)
-        return {"attachments": records, "count": len(records)}
+def _run_aggregate(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if not req.model or not req.fields or not req.args:
+        raise HTTPException(status_code=400, detail={"error": "aggregate requires model, fields, and groupby"})
+    result = client.call_with_transport(
+        req.model,
+        "read_group",
+        args=[req.domain or [], req.fields, req.args],
+        kwargs={"lazy": True},
+    )
+    return {"model": req.model, "groups": result}
 
-    elif req.mode == "content":
-        metadata_f = ["id", "name", "display_name", "create_date", "write_date"]
-        content_f = req.content_fields or ["body", "content", "message_body", "html_body", "note", "description"]
-        all_fields = list(set(metadata_f + content_f))
-        records = client.search_read(
-            model=req.model, domain=req.domain or [],
-            fields=all_fields, limit=req.limit, offset=req.offset,
-            order=req.order, include_ids=True,
-        )
-        if req.mode == "content":
-            for rec in records:
-                for f in content_f:
-                    if f in rec and isinstance(rec[f], str):
-                        if not req.raw_html:
-                            import re as _re
-                            rec[f] = _re.sub(r'<[^>]+>', '', rec[f])
-                        if len(rec[f]) > req.max_content_chars:
-                            rec[f] = rec[f][:req.max_content_chars] + "..."
-        return {"model": req.model, "records": records, "count": len(records)}
 
-    elif req.mode == "message":
-        import html as _html
-        if req.operation == "post":
-            safe_body = _html.escape(req.body or "").replace("\n", "<br/>")
-            kwargs = {"body": safe_body, "message_type": req.message_type or "comment"}
-            if req.subtype_xmlid:
-                kwargs["subtype_xmlid"] = req.subtype_xmlid
-            if req.partner_ids:
-                kwargs["partner_ids"] = req.partner_ids
-            message_attachment_ids = req.attachment_ids_for_message or req.attachment_ids
-            if message_attachment_ids:
-                kwargs["attachment_ids"] = message_attachment_ids
-            result = client.call_with_transport(req.model, "message_post", args=[req.record_id], kwargs=kwargs)
-            return {"operation": "post", "result": result}
+def _run_report(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    report_req = OdooExecuteReportRequest(
+        credentials=req.credentials,
+        report_name=req.report_name or "",
+        report_id=req.report_id,
+        date_from=req.date_from,
+        date_to=req.date_to,
+        company_id=req.company_id,
+        timezone=req.timezone,
+        lang=req.lang,
+        line_names=req.line_names,
+        include_raw_lines=req.include_raw_lines,
+    )
+    return OdooReportService(client).execute(report_req)
+
+
+def _requested_attachment_ids(req: OdooOpsRunnerRequest) -> list[int]:
+    attachment_ids = []
+    if req.attachment_id:
+        attachment_ids.append(req.attachment_id)
+    if req.attachment_ids:
+        attachment_ids.extend(req.attachment_ids)
+    if not attachment_ids:
+        raise HTTPException(status_code=400, detail={"error": "attachment_id or attachment_ids required"})
+    return attachment_ids
+
+
+def _run_attachment(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    records = client.read(
+        model="ir.attachment",
+        ids=_requested_attachment_ids(req),
+        fields=["id", "name", "mimetype", "file_size", "res_model", "res_id", "create_date", "type", "url", "description"],
+    )
+    for record in records:
+        record.pop("datas", None)
+    return {"attachments": records, "count": len(records)}
+
+
+def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    metadata_fields = ["id", "name", "display_name", "create_date", "write_date"]
+    content_fields = req.content_fields or ["body", "content", "message_body", "html_body", "note", "description"]
+    records = client.search_read(
+        model=req.model,
+        domain=req.domain or [],
+        fields=list(set(metadata_fields + content_fields)),
+        limit=req.limit,
+        offset=req.offset,
+        order=req.order,
+        include_ids=True,
+    )
+    for record in records:
+        for field in content_fields:
+            value = record.get(field)
+            if not isinstance(value, str):
+                continue
+            if not req.raw_html:
+                value = re.sub(r"<[^>]+>", "", value)
+            record[field] = value[:req.max_content_chars] + "..." if len(value) > req.max_content_chars else value
+    return {"model": req.model, "records": records, "count": len(records)}
+
+
+def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if req.operation != "post":
         raise HTTPException(status_code=400, detail={"error": "unsupported_operation", "message": f"message mode: {req.operation}"})
 
-    elif req.mode in ("mutation", "write", "create"):
-        if req.operation == "create":
-            result = client.call_with_transport(req.model, "create", args=[req.values or {}], kwargs={})
-            affected_ids = [int(result)] if isinstance(result, int) else []
-        elif req.operation == "write":
-            if not req.ids:
-                raise HTTPException(status_code=400, detail={"error": "write requires ids"})
-            result = client.call_with_transport(req.model, "write", args=[req.ids, req.values or {}], kwargs={})
-            affected_ids = req.ids
-        elif req.operation == "delete":
-            if not req.ids:
-                raise HTTPException(status_code=400, detail={"error": "delete requires ids"})
-            result = client.call_with_transport(req.model, "unlink", args=[req.ids], kwargs={})
-            affected_ids = req.ids
-        else:
-            raise HTTPException(status_code=400, detail={"error": f"unknown mutation operation: {req.operation}"})
-        verified = None
-        if affected_ids and req.operation != "delete":
-            try:
-                verified = client.read(req.model, affected_ids, ["id", "display_name"])
-            except Exception:
-                pass
-        return {"operation": req.operation, "affected_ids": affected_ids, "result": result, "verified": verified}
+    kwargs: dict[str, Any] = {
+        "body": html.escape(req.body or "").replace("\n", "<br/>"),
+        "message_type": req.message_type or "comment",
+    }
+    if req.subtype_xmlid:
+        kwargs["subtype_xmlid"] = req.subtype_xmlid
+    if req.partner_ids:
+        kwargs["partner_ids"] = req.partner_ids
+    message_attachment_ids = req.attachment_ids_for_message or req.attachment_ids
+    if message_attachment_ids:
+        kwargs["attachment_ids"] = message_attachment_ids
 
-    elif req.mode == "execute":
-        if not req.model or not req.method:
-            raise HTTPException(status_code=400, detail={"error": "execute requires model and method"})
-        result = client.call_with_transport(req.model, req.method, args=req.args or [], kwargs=req.kwargs or {})
-        return {"model": req.model, "method": req.method, "result": result}
+    result = client.call_with_transport(req.model, "message_post", args=[req.record_id], kwargs=kwargs)
+    return {"operation": "post", "result": result}
 
-    raise HTTPException(status_code=400, detail={"error": "unknown_mode", "message": f"Unknown mode: {req.mode}"})
+
+def _create_record(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
+    result = client.call_with_transport(req.model, "create", args=[req.values or {}], kwargs={})
+    return result, [int(result)] if isinstance(result, int) else []
+
+
+def _write_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
+    if not req.ids:
+        raise HTTPException(status_code=400, detail={"error": "write requires ids"})
+    return client.call_with_transport(req.model, "write", args=[req.ids, req.values or {}], kwargs={}), req.ids
+
+
+def _delete_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
+    if not req.ids:
+        raise HTTPException(status_code=400, detail={"error": "delete requires ids"})
+    return client.call_with_transport(req.model, "unlink", args=[req.ids], kwargs={}), req.ids
+
+
+def _verify_mutation(client: OdooClient, req: OdooOpsRunnerRequest, operation: str, affected_ids: list[int]) -> Any:
+    if not affected_ids or operation == "delete":
+        return None
+    try:
+        return client.read(req.model, affected_ids, ["id", "display_name"])
+    except Exception:
+        return None
+
+
+def _run_mutation(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    operation = req.operation or (req.mode if req.mode in ("create", "write") else None)
+    if operation == "create":
+        result, affected_ids = _create_record(client, req)
+    elif operation == "write":
+        result, affected_ids = _write_records(client, req)
+    elif operation == "delete":
+        result, affected_ids = _delete_records(client, req)
+    else:
+        raise HTTPException(status_code=400, detail={"error": f"unknown mutation operation: {req.operation}"})
+    return {
+        "operation": operation,
+        "affected_ids": affected_ids,
+        "result": result,
+        "verified": _verify_mutation(client, req, operation, affected_ids),
+    }
+
+
+def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if not req.model or not req.method:
+        raise HTTPException(status_code=400, detail={"error": "execute requires model and method"})
+    result = client.call_with_transport(req.model, req.method, args=req.args or [], kwargs=req.kwargs or {})
+    return {"model": req.model, "method": req.method, "result": result}
+
+
+MODE_HANDLERS: dict[str, Callable[[OdooClient, OdooOpsRunnerRequest], dict[str, Any]]] = {
+    "health": _run_health,
+    "schema": _run_schema,
+    "query": _run_query,
+    "records": _run_query,
+    "count": _run_count,
+    "aggregate": _run_aggregate,
+    "report": _run_report,
+    "account_report": _run_report,
+    "attachment": _run_attachment,
+    "content": _run_content,
+    "message": _run_message,
+    "mutation": _run_mutation,
+    "write": _run_mutation,
+    "create": _run_mutation,
+    "execute": _run_execute,
+}
+
+
+@router.post("/run")
+def odoo_ops_runner(req: OdooOpsRunnerRequest, _auth: dict = Depends(internal_api_key_auth)):
+    """Consolidated Odoo command center. Routes by mode to the appropriate internal handler."""
+    handler = MODE_HANDLERS.get(req.mode)
+    if not handler:
+        raise HTTPException(status_code=400, detail={"error": "unknown_mode", "message": f"Unknown mode: {req.mode}"})
+    return handler(_get_client(req.credentials), req)

@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "npm --workspace web-portal run dev",
-    "build": "npm --workspace web-portal run build",
-    "preview": "npm --workspace web-portal run preview",
-    "lint": "npm --workspace web-portal run lint"
+    "dev": "npm --workspace apps/web-portal run dev",
+    "build": "npm --workspace apps/web-portal run build",
+    "preview": "npm --workspace apps/web-portal run preview",
+    "lint": "npm --workspace apps/web-portal run lint"
   },
   "workspaces": [
     "apps/web-portal"

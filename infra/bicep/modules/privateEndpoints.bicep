@@ -36,7 +36,7 @@ resource privateDnsKeyVault 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 }
 
 resource privateDnsBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.blob.core.windows.net'
+  name: 'privatelink.blob.${az.environment().suffixes.storage}'
   location: 'global'
   tags: tags
 }

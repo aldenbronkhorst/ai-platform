@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useMsal } from "@azure/msal-react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
-import type { UserProfile, ChatSession, ChatMessage } from "./types";
-import type { VoiceState, AttachedFile } from "./types";
+import type { ChatSession, ChatMessage, AttachedFile } from "./types";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
 import { ChatView } from "./components/chat/ChatView";
@@ -15,51 +13,9 @@ import { AuditPage } from "./pages/AuditPage";
 import { AiConfigView } from "./AiConfigView";
 import { AdminPage } from "./pages/AdminPage";
 import type { ActiveTab } from "./types";
-
-const APIM_BASE_URL = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
-
-const ENABLE_LOCAL_MOCK = 
-  import.meta.env.VITE_ENABLE_LOCAL_MOCK_AUTH === "true" && 
-  (typeof window !== "undefined" && 
-    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"));
-
-interface TokenClaims {
-  roles?: string[];
-}
-
-interface SpeechRecognitionResultLike {
-  results: {
-    [index: number]: {
-      [index: number]: {
-        transcript: string;
-      };
-    };
-  };
-}
-
-interface SpeechRecognitionErrorLike {
-  error: string;
-}
-
-interface SpeechRecognitionLike {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onstart: (() => void) | null;
-  onresult: ((event: SpeechRecognitionResultLike) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorLike) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-}
-
-type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
-
-type SpeechRecognitionWindow = Window & {
-  SpeechRecognition?: SpeechRecognitionConstructor;
-  webkitSpeechRecognition?: SpeechRecognitionConstructor;
-};
+import { APIM_BASE_URL } from "./hooks/useApi";
+import { usePortalAuth } from "./hooks/usePortalAuth";
+import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
@@ -70,24 +26,23 @@ function isAbortError(err: unknown) {
     && (err as { name?: string }).name === "AbortError";
 }
 
-function clearMsalStorage(storage: Storage) {
-  const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
-    .filter((key): key is string => typeof key === "string" && key.startsWith("msal."));
-  keys.forEach(key => storage.removeItem(key));
-}
-
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
-  const { instance, accounts, inProgress } = useMsal();
+  const {
+    accessToken,
+    accounts,
+    activeUser,
+    authError,
+    enableLocalMock,
+    inProgress,
+    instance,
+    signInLocalMock,
+    signOut,
+  } = usePortalAuth();
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("workflows");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [localMockAuthenticated, setLocalMockAuthenticated] = useState(false);
-  const [localMockUser, setLocalMockUser] = useState<UserProfile | null>(null);
-  const [activeUser, setActiveUser] = useState<UserProfile | null>(null);
-  const [accessToken, setAccessToken] = useState("");
 
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
@@ -99,8 +54,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const handleTranscript = useCallback((transcript: string) => {
+    setChatInput(prev => (prev ? prev + " " + transcript : transcript));
+  }, []);
+  const { voiceState, toggleVoice: handleToggleVoice } = useSpeechRecognition(handleTranscript);
 
   const getHeaders = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -112,36 +69,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (activeUser.roles.includes("AIPlatform.Admin")) return true;
     return activeUser.roles.some(r => allowedRoles.includes(r));
   };
-
-  useEffect(() => {
-    const activeAccount = instance.getActiveAccount() || (accounts.length > 0 ? accounts[0] : null);
-    if (activeAccount) {
-      const idTokenClaims = activeAccount.idTokenClaims as TokenClaims | undefined;
-      const roles = idTokenClaims?.roles || ["AIPlatform.User"];
-      setActiveUser({
-        email: activeAccount.username,
-        displayName: activeAccount.name || activeAccount.username,
-        roles,
-      });
-      setAuthError(null);
-      instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
-        .then(response => setAccessToken(response.accessToken))
-        .catch(() => setAuthError("Token acquisition failed. Please sign in again."));
-      const refreshInterval = setInterval(() => {
-        instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
-          .then(response => setAccessToken(response.accessToken))
-          .catch(() => { /* ignore token refresh failures until next user action */ });
-      }, 30 * 60 * 1000);
-      return () => clearInterval(refreshInterval);
-    } else if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
-      setActiveUser(localMockUser);
-      setAccessToken("mock-local-token");
-      setAuthError(null);
-    } else {
-      setActiveUser(null);
-      setAccessToken("");
-    }
-  }, [accounts, localMockAuthenticated, localMockUser, instance]);
 
   const fetchChatSessions = useCallback(async () => {
     if (!accessToken) return;
@@ -228,38 +155,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       setChatMessages([]);
     }
   }, [activeSession, accessToken, fetchSessionMessages]);
-
-  useEffect(() => {
-    const speechWindow = window as SpeechRecognitionWindow;
-    const SpeechRecognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceState("unsupported");
-    } else {
-      const rec = new SpeechRecognition();
-      rec.continuous = false;
-      rec.interimResults = false;
-      rec.lang = "en-US";
-      rec.onstart = () => setVoiceState("listening");
-      rec.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        setChatInput(prev => (prev ? prev + " " + transcript : transcript));
-        setVoiceState("processing");
-      };
-      rec.onerror = (e) => {
-        setVoiceState(e.error === "not-allowed" ? "denied" : "idle");
-      };
-      rec.onend = () => {
-        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
-      };
-      recognitionRef.current = rec;
-    }
-    return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch { /* ignore abort races */ }
-        recognitionRef.current = null;
-      }
-    };
-  }, []);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -668,33 +563,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   const handleRemoveFile = (id: string) => setAttachedFiles(prev => prev.filter(f => f.id !== id));
 
-  const handleSignOut = async () => {
-    if (localMockAuthenticated) {
-      setLocalMockAuthenticated(false);
-      setLocalMockUser(null);
-    } else {
-      instance.setActiveAccount(null);
-      try {
-        await instance.clearCache();
-      } catch {
-        // Fall back to explicit browser cache cleanup below.
-      } finally {
-        clearMsalStorage(sessionStorage);
-        clearMsalStorage(localStorage);
-        window.location.href = "/";
-      }
-    }
-  };
-
-  const handleToggleVoice = () => {
-    if (voiceState === "unsupported") return;
-    if (voiceState === "listening") {
-      recognitionRef.current?.stop();
-    } else {
-      try { recognitionRef.current?.start(); } catch { /* ignore duplicate start requests */ }
-    }
-  };
-
   const handleTabChange = (tab: ActiveTab) => {
     setActiveTab(tab);
   };
@@ -717,16 +585,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         authError={authError}
         startupAuthError={startupAuthError}
         showDiagnostics={showDiagnostics}
-        enableLocalMock={ENABLE_LOCAL_MOCK}
+        enableLocalMock={enableLocalMock}
         onSignIn={() => instance.loginRedirect(loginRequest)}
-        onLocalMockSignIn={() => {
-          setLocalMockUser({
-            email: "alden@lotslotsmore.com",
-            displayName: "Alden Bronkhorst (Local Mock)",
-            roles: ["AIPlatform.Admin", "AIPlatform.User", "AIPlatform.Developer", "AIPlatform.Auditor"],
-          });
-          setLocalMockAuthenticated(true);
-        }}
+        onLocalMockSignIn={signInLocalMock}
         onToggleDiagnostics={() => setShowDiagnostics(!showDiagnostics)}
         instance={instance}
         loginRequest={loginRequest}
@@ -810,7 +671,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         onDeleteSession={deleteChatSession}
         onToggleCollapse={setIsSidebarCollapsed}
         onToggleProfileMenu={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
-        onSignOut={handleSignOut}
+        onSignOut={signOut}
         hasRole={hasRole}
       >
         {renderContent()}

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric
-from sqlalchemy.dialects.postgresql import UUID, ENUM
+from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
 
@@ -217,15 +217,6 @@ class AIChatArtifact(Base, AuditMixin):
     linked_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True, index=True)
 
 
-class AIChatJob(Base, AuditMixin):
-    __tablename__ = "ai_chat_jobs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("ai_jobs.id"), nullable=False, index=True)
-    linked_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True, index=True)
-
-
 class AIProvider(Base, AuditMixin):
     __tablename__ = "ai_providers"
 
@@ -380,5 +371,3 @@ class AITraceSpan(Base):
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-
-

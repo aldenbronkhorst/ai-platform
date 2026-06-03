@@ -26,7 +26,7 @@ def _sanitize_html(text: str) -> str:
 
 
 @router.post("/content")
-def read_content(req: ContentRequest, auth: dict = Depends(internal_api_key_auth)):
+def read_content(req: ContentRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.mode == "thread":

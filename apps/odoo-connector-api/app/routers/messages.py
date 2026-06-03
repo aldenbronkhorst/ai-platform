@@ -21,7 +21,7 @@ def _get_client(creds):
 
 
 @router.post("/list")
-def list_messages(req: MessageListRequest, auth: dict = Depends(internal_api_key_auth)):
+def list_messages(req: MessageListRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     domain = req.domain or []
     if req.model and req.record_id:
@@ -39,7 +39,7 @@ def list_messages(req: MessageListRequest, auth: dict = Depends(internal_api_key
 
 
 @router.post("/create")
-def create_message(req: MessageCreateRequest, auth: dict = Depends(internal_api_key_auth)):
+def create_message(req: MessageCreateRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     rendered_body = "<br/>".join(html.escape(req.body).splitlines())

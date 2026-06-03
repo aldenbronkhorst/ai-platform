@@ -18,7 +18,7 @@ def _get_client(creds):
 
 
 @router.post("/query")
-def query(req: QueryRequest, auth: dict = Depends(internal_api_key_auth)):
+def query(req: QueryRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.mode == "count":

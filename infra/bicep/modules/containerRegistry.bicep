@@ -1,4 +1,5 @@
 @description('Workload name')
+@minLength(3)
 param workload string
 
 @description('Environment name')
@@ -23,6 +24,7 @@ var sanitizedWorkload = replace(workload, '-', '')
 var acrName = 'acr${sanitizedWorkload}${environment}${regionCode}${instance}'
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+#disable-next-line BCP334
   name: acrName
   location: location
   tags: tags

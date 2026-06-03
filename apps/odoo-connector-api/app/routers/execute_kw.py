@@ -8,7 +8,7 @@ router = APIRouter()
 
 
 @router.post("/")
-def execute_kw(req: ExecuteKwRequest, auth: dict = Depends(internal_api_key_auth)):
+def execute_kw(req: ExecuteKwRequest, _auth: dict = Depends(internal_api_key_auth)):
     settings = get_settings()
     client = OdooClient(
         credentials=OdooCredentials(

@@ -5,7 +5,6 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from azure.identity import DefaultAzureCredential
-from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (

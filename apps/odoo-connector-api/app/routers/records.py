@@ -34,7 +34,7 @@ def _get_client(creds):
 @router.post("/search-read")
 def search_read(
     req: RecordsSearchReadRequest,
-    auth: dict = Depends(internal_api_key_auth),
+    _auth: dict = Depends(internal_api_key_auth),
     x_connection_attempt_id: Optional[str] = Header(None, alias="X-Connection-Attempt-Id"),
 ):
     conn_id = x_connection_attempt_id or "unknown"
@@ -75,14 +75,14 @@ def search_read(
 
 
 @router.post("/count")
-def count_records(req: RecordsCountRequest, auth: dict = Depends(internal_api_key_auth)):
+def count_records(req: RecordsCountRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     count = client.search_count(model=req.model, domain=req.domain)
     return {"model": req.model, "count": count}
 
 
 @router.post("/read")
-def read_records(req: RecordsReadRequest, auth: dict = Depends(internal_api_key_auth)):
+def read_records(req: RecordsReadRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     records = client.read(model=req.model, ids=req.ids, fields=req.fields)
 
@@ -102,7 +102,7 @@ def read_records(req: RecordsReadRequest, auth: dict = Depends(internal_api_key_
 
 
 @router.post("/mutate")
-def mutate_records(req: RecordsMutateRequest, auth: dict = Depends(internal_api_key_auth)):
+def mutate_records(req: RecordsMutateRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
 
     if req.dry_run:

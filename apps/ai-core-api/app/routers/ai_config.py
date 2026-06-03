@@ -4,7 +4,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict
 
 from app.core.security import api_key_auth, require_role
 from app.core.database import get_db
@@ -15,6 +15,9 @@ router = APIRouter(prefix="/ai-config", tags=["AI Configuration"])
 
 
 # ── Schemas ──
+MODEL_FIELD_CONFIG = ConfigDict(protected_namespaces=())
+MODEL_FIELD_RESPONSE_CONFIG = ConfigDict(from_attributes=True, protected_namespaces=())
+
 
 class ProviderCreate(BaseModel):
     name: str
@@ -45,6 +48,8 @@ class ProviderResponse(BaseModel):
     updated_at: Optional[datetime]
 
 class ModelCreate(BaseModel):
+    model_config = MODEL_FIELD_CONFIG
+
     provider_id: UUID
     display_name: str
     model_name: str
@@ -61,7 +66,7 @@ class ModelUpdate(BaseModel):
     enabled: Optional[str] = None
 
 class ModelResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = MODEL_FIELD_RESPONSE_CONFIG
 
     id: UUID
     provider_id: UUID
@@ -78,6 +83,8 @@ class ModelResponse(BaseModel):
     updated_at: Optional[datetime]
 
 class RouteCreate(BaseModel):
+    model_config = MODEL_FIELD_CONFIG
+
     task_type: str
     primary_model_id: UUID
     fallback_model_id: Optional[UUID] = None
@@ -87,6 +94,8 @@ class RouteCreate(BaseModel):
     enabled: str = "true"
 
 class RouteUpdate(BaseModel):
+    model_config = MODEL_FIELD_CONFIG
+
     primary_model_id: Optional[UUID] = None
     fallback_model_id: Optional[UUID] = None
     temperature: Optional[float] = None
@@ -95,7 +104,7 @@ class RouteUpdate(BaseModel):
     enabled: Optional[str] = None
 
 class RouteResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = MODEL_FIELD_RESPONSE_CONFIG
 
     id: UUID
     task_type: str
@@ -113,7 +122,7 @@ class TestConsoleRequest(BaseModel):
     prompt: str = "Say hello and confirm the model route is working."
 
 class TestConsoleResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = MODEL_FIELD_RESPONSE_CONFIG
 
     success: bool
     response: Optional[str] = None
@@ -126,7 +135,7 @@ class TestConsoleResponse(BaseModel):
     error: Optional[str] = None
 
 class UsageLogResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = MODEL_FIELD_RESPONSE_CONFIG
 
     id: UUID
     timestamp: Optional[datetime]

@@ -15,6 +15,7 @@ import { WorkflowCard } from "../components/ui/WorkflowCard";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
 import { GlassInput } from "../components/ui/GlassInput";
+import { APIM_BASE_URL } from "../hooks/useApi";
 
 const BUSINESS_WORKFLOWS: WorkflowCardData[] = [
   {
@@ -168,8 +169,6 @@ export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps)
     setIsWorkflowRunning(true);
     setWorkflowOutcome(null);
 
-    const APIM = import.meta.env.VITE_APIM_BASE_URL || "https://apim-ai-platform-prod-san-001.azure-api.net";
-
     try {
       const endpoint = "/tools/odoo/search-read";
       const payload: WorkflowPayload = {
@@ -193,7 +192,7 @@ export function WorkflowsPage({ accessToken, onLaunchChat }: WorkflowsPageProps)
         payload.limit = 1;
       }
 
-      const response = await fetch(`${APIM}${endpoint}`, {
+      const response = await fetch(`${APIM_BASE_URL}${endpoint}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,

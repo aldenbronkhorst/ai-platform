@@ -9,13 +9,7 @@ import type { LucideIcon } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
 import { GlassInput } from "../components/ui/GlassInput";
-
-const APIM_BASE_URL =
-  import.meta.env.VITE_APIM_BASE_URL ||
-  "https://apim-ai-platform-prod-san-001.azure-api.net";
-
-const APP_COMMIT_SHA = import.meta.env.VITE_APP_COMMIT_SHA || "dev";
-console.debug("[App Version] commit_sha:", APP_COMMIT_SHA);
+import { APIM_BASE_URL } from "../hooks/useApi";
 
 const KV_ERROR_PHRASES = [
   "forbiddenbyrbac", "setsecret/action", "key vault secrets officer",

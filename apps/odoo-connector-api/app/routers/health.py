@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.security import internal_api_key_auth
-from app.models.schemas import HealthResponse, CapabilitiesResponse
+from app.models.schemas import CapabilitiesResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def _validate_startup_config() -> list:
 
 
 @router.get("/capabilities", response_model=CapabilitiesResponse)
-def get_capabilities(auth: dict = Depends(internal_api_key_auth)):
+def get_capabilities(_auth: dict = Depends(internal_api_key_auth)):
     return CapabilitiesResponse(
         endpoints=[
             {"path": "/schema/models", "method": "POST", "description": "Search Odoo models"},

@@ -30,7 +30,7 @@ logger = logging.getLogger("memory_worker")
 _shutdown_requested = False
 
 
-def _handle_signal(signum, frame):
+def _handle_signal(signum, _frame):
     global _shutdown_requested
     logger.info("Shutdown signal received (%s), finishing current batch...", signum)
     _shutdown_requested = True

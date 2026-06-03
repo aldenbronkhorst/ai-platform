@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shlex
+from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -38,14 +39,13 @@ def _redact_output(text: str) -> str:
     return text
 
 
+@dataclass
 class CommandResult:
-    def __init__(self, stdout: str = "", stderr: str = "", exit_code: int = 0,
-                 timed_out: bool = False, error: Optional[str] = None):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.exit_code = exit_code
-        self.timed_out = timed_out
-        self.error = error
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int = 0
+    timed_out: bool = False
+    error: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         stdout_redacted = _redact_output(self.stdout)

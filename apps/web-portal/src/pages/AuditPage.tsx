@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Shield, Search, Eye, RefreshCw } from "lucide-react";
-
-const APIM_BASE_URL =
-  import.meta.env.VITE_APIM_BASE_URL ||
-  "https://apim-ai-platform-prod-san-001.azure-api.net";
+import { APIM_BASE_URL } from "../hooks/useApi";
 
 interface AuditPageProps {
   accessToken: string;

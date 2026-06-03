@@ -516,11 +516,11 @@ class TestSeedIdempotent:
     @pytest.mark.asyncio
     async def test_seed_creates_provider(self):
         """Seed creates provider when none exists."""
-        from scripts.seed_providers import PROVIDER_DATA, MODEL_DATA, ROUTE_DATA, CANONICAL_SYSTEM_PROMPT
-        assert PROVIDER_DATA["name"] == "Microsoft Foundry"
-        assert MODEL_DATA["model_name"] == "Kimi-K2.6"
-        assert ROUTE_DATA["task_type"] == "general_chat"
-        assert ROUTE_DATA["system_prompt"] == CANONICAL_SYSTEM_PROMPT
+        from scripts.seed_providers import PROVIDERS_TO_SEED, MODELS_TO_SEED, ROUTES_TO_SEED, CANONICAL_SYSTEM_PROMPT
+        assert PROVIDERS_TO_SEED[0]["name"] == "Microsoft Foundry"
+        assert MODELS_TO_SEED[0]["model_name"] == "Kimi-K2.6"
+        assert ROUTES_TO_SEED[0]["task_type"] == "general_chat"
+        assert ROUTES_TO_SEED[0]["system_prompt"] == CANONICAL_SYSTEM_PROMPT
 
     def test_seed_providers_uses_canonical_prompt(self):
         from scripts.seed_providers import CANONICAL_SYSTEM_PROMPT
@@ -680,7 +680,6 @@ class TestGreetingIdentity:
     def test_no_hardcoded_odoo_assistant_in_backend(self):
         """Verify no 'Odoo assistant' or 'ERP assistant' string in backend code."""
         import sys
-        import ast
         import os as os_module
 
         backend_root = os_module.path.join(os_module.path.dirname(__file__), "..", "app")
@@ -988,20 +987,6 @@ class TestProviderErrorHandling:
 
 
 class TestToolExecution:
-    @pytest.mark.asyncio
-    async def test_get_available_tools_no_user(self):
-        from app.services.model_router import _get_available_tools
-        db = MockSession(has_config=False)
-        result = await _get_available_tools(db, user_id=None)
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_get_available_tools_no_connected_accounts(self):
-        from app.services.model_router import _get_available_tools
-        db = MockSession(has_config=False, connected_accounts=[])
-        result = await _get_available_tools(db, user_id=uuid.uuid4())
-        assert result == []
-
     @pytest.mark.asyncio
     async def test_execute_chat_with_tools(self):
         """When model supports tools and tools are registered, they should be

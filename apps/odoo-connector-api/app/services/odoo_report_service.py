@@ -133,149 +133,172 @@ class OdooReportService:
 
         return None, None, "unknown"
 
+    @staticmethod
+    def _raise_report_ambiguity(report_name: str, candidates: List[Dict[str, Any]], match_type: str) -> None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "report_ambiguity",
+                "message": f"Multiple reports {match_type} match the name '{report_name}'. Please specify exact report ID.",
+                "candidates": candidates,
+                "available_report_names": [report.get("name") for report in candidates if report.get("name")],
+            }
+        )
+
+    @staticmethod
+    def _raise_report_not_found(report_name: str, exact_res: List[Dict[str, Any]]) -> None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "report_not_found",
+                "message": f"No official Odoo report matching name '{report_name}' was found.",
+                "attempted_report_name": report_name,
+                "available_report_names": [report.get("name") for report in exact_res if report.get("name")],
+            }
+        )
+
+    def _search_reports(self, report_name: str, operator: str) -> List[Dict[str, Any]]:
+        result = self.client.search_read(
+            model="account.report",
+            domain=[["name", operator, report_name]],
+            fields=["id", "name"],
+            include_ids=True,
+        ) or []
+        logger.info(
+            "Odoo report %s search result | report_name=%s result_count=%d sample=%s",
+            "exact" if operator == "=" else "fuzzy",
+            report_name,
+            len(result),
+            result[:5],
+        )
+        return result
+
+    def _resolve_report_id(self, report_name: str, report_id: Optional[int]) -> int:
+        if report_id:
+            return report_id
+
+        exact_res = self._search_reports(report_name, "=")
+        if len(exact_res) == 1:
+            return _extract_report_id(exact_res[0], 0)
+        if len(exact_res) > 1:
+            self._raise_report_ambiguity(report_name, exact_res, "exactly")
+
+        fuzzy_res = self._search_reports(report_name, "ilike")
+        if len(fuzzy_res) == 1:
+            return _extract_report_id(fuzzy_res[0], 0)
+        if len(fuzzy_res) > 1:
+            self._raise_report_ambiguity(report_name, fuzzy_res, "partially")
+        self._raise_report_not_found(report_name, exact_res)
+
+    @staticmethod
+    def _previous_options(req: OdooExecuteReportRequest) -> Dict[str, Any]:
+        previous_options: Dict[str, Any] = {}
+        if req.date_from and req.date_to:
+            previous_options["date"] = {
+                "date_from": req.date_from,
+                "date_to": req.date_to,
+                "filter": "custom"
+            }
+        if req.company_id:
+            previous_options["company_id"] = req.company_id
+        return previous_options
+
+    def _report_information(self, report_id: int, req: OdooExecuteReportRequest) -> Dict[str, Any]:
+        options = self.client.call_with_transport(
+            "account.report",
+            "get_options",
+            [report_id, self._previous_options(req)]
+        )
+        return self.client.call_with_transport(
+            "account.report",
+            "get_report_information",
+            [report_id, options]
+        )
+
+    @staticmethod
+    def _filter_lines(
+        flat_lines: List[Dict[str, Any]],
+        line_names: Optional[List[str]],
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        if not line_names:
+            return flat_lines, []
+
+        filtered_lines = []
+        missing_line_names = []
+        for line_name in line_names:
+            line_name_lower = line_name.lower()
+            matched = [line for line in flat_lines if line_name_lower in str(line["name"]).lower()]
+            if matched:
+                filtered_lines.extend(matched)
+            else:
+                missing_line_names.append(line_name)
+        return filtered_lines, missing_line_names
+
+    def _response_payload(
+        self,
+        *,
+        req: OdooExecuteReportRequest,
+        report_name: str,
+        report_id: int,
+        report_info: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        lines = report_info.get("lines", [])
+        flat_lines = self._flatten_lines(lines)
+        filtered_lines, missing_line_names = self._filter_lines(flat_lines, req.line_names)
+        currency_code, currency_symbol, currency_source = self._resolve_currency(req.company_id, report_info)
+        response_payload = {
+            "report_name": report_name,
+            "report_id": report_id,
+            "date_from": req.date_from,
+            "date_to": req.date_to,
+            "currency_code": currency_code,
+            "currency_symbol": currency_symbol,
+            "currency_source": currency_source,
+            "source": "odoo_account_report",
+            "line_count": len(filtered_lines),
+            "available_line_names": list({line["name"] for line in flat_lines if line.get("name")}),
+            "missing_line_names": missing_line_names,
+            "lines": filtered_lines,
+        }
+        if req.include_raw_lines:
+            response_payload["raw_lines"] = lines
+        return response_payload
+
+    @staticmethod
+    def _raise_report_unavailable(report_name: str, report_id: Optional[int], exc: Exception) -> None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "report_unavailable",
+                "message": f"Could not execute Odoo account report '{report_name}'. Technical error: {str(exc)}",
+                "attempted_report_name": report_name,
+                "attempted_report_id": report_id,
+                "attempted_model": "account.report",
+                "attempted_methods": ["get_options", "get_report_information"],
+                "likely_causes": [
+                    "Missing Accounting access rights",
+                    "Odoo Community vs Enterprise edition/version mismatch",
+                    "The specific account report module is not installed",
+                    "Options payload not supported by this Odoo version"
+                ]
+            }
+        )
+
     def execute(self, req: OdooExecuteReportRequest) -> Dict[str, Any]:
         report_name = self._map_report_name(req.report_name)
         report_id = req.report_id
-        
+
         try:
-            # Step 1. Resolve account.report by ID or name with ambiguity checks
-            if not report_id:
-                exact_res = self.client.search_read(
-                    model="account.report",
-                    domain=[["name", "=", report_name]],
-                    fields=["id", "name"],
-                    include_ids=True,
-                ) or []
-                logger.info(
-                    "Odoo report exact search result | report_name=%s result_count=%d sample=%s",
-                    report_name, len(exact_res), exact_res[:3],
-                )
-                if len(exact_res) == 1:
-                    report_id = _extract_report_id(exact_res[0], 0)
-                elif len(exact_res) > 1:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": "report_ambiguity",
-                            "message": f"Multiple reports exactly match the name '{report_name}'. Please specify exact report ID.",
-                            "candidates": exact_res,
-                            "available_report_names": [r.get("name") for r in exact_res if r.get("name")],
-                        }
-                    )
-                else:
-                    fuzzy_res = self.client.search_read(
-                        model="account.report",
-                        domain=[["name", "ilike", report_name]],
-                        fields=["id", "name"],
-                        include_ids=True,
-                    ) or []
-                    logger.info(
-                        "Odoo report fuzzy search result | report_name=%s result_count=%d sample=%s",
-                        report_name, len(fuzzy_res), fuzzy_res[:5],
-                    )
-                    if len(fuzzy_res) == 1:
-                        report_id = _extract_report_id(fuzzy_res[0], 0)
-                    elif len(fuzzy_res) > 1:
-                        raise HTTPException(
-                            status_code=400,
-                            detail={
-                                "error": "report_ambiguity",
-                                "message": f"Multiple reports partially match the name '{report_name}'. Please specify exact report ID.",
-                                "candidates": fuzzy_res,
-                                "available_report_names": [r.get("name") for r in fuzzy_res if r.get("name")],
-                            }
-                        )
-                    else:
-                        raise HTTPException(
-                            status_code=404,
-                            detail={
-                                "error": "report_not_found",
-                                "message": f"No official Odoo report matching name '{report_name}' was found.",
-                                "attempted_report_name": report_name,
-                                "available_report_names": [r.get("name") for r in exact_res if r.get("name")],
-                            }
-                        )
-
-            # Step 2. Build previous options
-            previous_options = {}
-            if req.date_from and req.date_to:
-                previous_options["date"] = {
-                    "date_from": req.date_from,
-                    "date_to": req.date_to,
-                    "filter": "custom"
-                }
-            if req.company_id:
-                previous_options["company_id"] = req.company_id
-
-            # Step 3. Call get_options
-            options = self.client.call_with_transport(
-                "account.report",
-                "get_options",
-                [report_id, previous_options]
+            resolved_report_id = self._resolve_report_id(report_name, report_id)
+            report_info = self._report_information(resolved_report_id, req)
+            return self._response_payload(
+                req=req,
+                report_name=report_name,
+                report_id=resolved_report_id,
+                report_info=report_info,
             )
-
-            # Step 4. Call get_report_information
-            report_info = self.client.call_with_transport(
-                "account.report",
-                "get_report_information",
-                [report_id, options]
-            )
-
-            lines = report_info.get("lines", [])
-            flat_lines = self._flatten_lines(lines)
-            available_line_names = [line["name"] for line in flat_lines if line.get("name")]
-
-            # Filter by line names if requested
-            filtered_lines = flat_lines
-            missing_line_names = []
-            if req.line_names:
-                filtered_lines = []
-                for ln in req.line_names:
-                    ln_lower = ln.lower()
-                    matched = [l for l in flat_lines if ln_lower in str(l["name"]).lower()]
-                    if matched:
-                        filtered_lines.extend(matched)
-                    else:
-                        missing_line_names.append(ln)
-
-            # Step 5. Resolve currency
-            currency_code, currency_symbol, currency_source = self._resolve_currency(req.company_id, report_info)
-
-            response_payload = {
-                "report_name": report_name,
-                "report_id": report_id,
-                "date_from": req.date_from,
-                "date_to": req.date_to,
-                "currency_code": currency_code,
-                "currency_symbol": currency_symbol,
-                "currency_source": currency_source,
-                "source": "odoo_account_report",
-                "line_count": len(filtered_lines),
-                "available_line_names": list(set(available_line_names)),
-                "missing_line_names": missing_line_names,
-                "lines": filtered_lines,
-            }
-            if req.include_raw_lines:
-                response_payload["raw_lines"] = lines
-            return response_payload
 
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "report_unavailable",
-                    "message": f"Could not execute Odoo account report '{report_name}'. Technical error: {str(e)}",
-                    "attempted_report_name": report_name,
-                    "attempted_report_id": report_id,
-                    "attempted_model": "account.report",
-                    "attempted_methods": ["get_options", "get_report_information"],
-                    "likely_causes": [
-                        "Missing Accounting access rights",
-                        "Odoo Community vs Enterprise edition/version mismatch",
-                        "The specific account report module is not installed",
-                        "Options payload not supported by this Odoo version"
-                    ]
-                }
-            )
+            self._raise_report_unavailable(report_name, report_id, e)

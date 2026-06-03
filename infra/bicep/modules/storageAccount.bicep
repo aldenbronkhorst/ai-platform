@@ -1,4 +1,5 @@
 @description('Workload name')
+@minLength(3)
 param workload string
 
 @description('Environment name')
@@ -23,6 +24,7 @@ var sanitizedWorkload = replace(workload, '-', '')
 var storageName = 'st${sanitizedWorkload}${environment}${regionCode}${instance}'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+#disable-next-line BCP334
   name: storageName
   location: location
   tags: tags

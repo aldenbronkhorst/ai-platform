@@ -75,7 +75,7 @@ jobs:
       - name: Install portal dependencies & build
         run: |
           cd apps/web-portal
-          npm install --legacy-peer-deps
+          npm ci
           npm run lint
           npm run build
 
@@ -212,7 +212,7 @@ jobs:
       - name: Build Web Portal
         run: |
           cd apps/web-portal
-          npm install --legacy-peer-deps
+          npm ci
           VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build
 
       - name: Deploy Web Portal to SWA

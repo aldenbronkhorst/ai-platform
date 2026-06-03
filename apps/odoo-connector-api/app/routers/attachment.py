@@ -1,5 +1,4 @@
 import logging
-import base64 as b64
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
 from app.core.odoo_client import OdooClient, OdooCredentials
@@ -20,7 +19,7 @@ def _get_client(creds):
 
 
 @router.post("/attachment")
-def handle_attachment(req: AttachmentRequest, auth: dict = Depends(internal_api_key_auth)):
+def handle_attachment(req: AttachmentRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     all_ids = []
     if req.attachment_id:

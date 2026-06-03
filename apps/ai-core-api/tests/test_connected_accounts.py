@@ -23,6 +23,7 @@ async def mock_get_db():
     result_mock.scalar_one_or_none = lambda self=None: None
     result_mock.scalars = lambda self=None: result_mock
     result_mock.all = lambda self=None: []
+    session.add = MagicMock()
     session.execute = AsyncMock(return_value=result_mock)
     yield session
 
@@ -554,7 +555,7 @@ class TestSaveAsUnverified:
     def test_account_saved_as_error_on_verify_fail(self, mock_store, mock_verify, mock_fetch):
         """Account must be saved with status='error' when verification fails after KV save."""
         from fastapi import HTTPException
-        from unittest.mock import AsyncMock, patch as _patch
+        from unittest.mock import AsyncMock
         mock_store.return_value = None
         mock_verify.side_effect = HTTPException(status_code=400, detail="Verification failed")
         mock_fetch.return_value = {}
@@ -565,6 +566,7 @@ class TestSaveAsUnverified:
         result_mock.scalar_one_or_none = lambda self=None: None
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        mock_session.add = MagicMock()
         mock_session.execute = AsyncMock(return_value=result_mock)
 
         async def mock_get_db():
@@ -616,6 +618,7 @@ class TestSaveAsUnverified:
         result_mock.scalar_one_or_none = lambda self=None: None
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        mock_session.add = MagicMock()
         mock_session.execute = AsyncMock(return_value=result_mock)
 
         async def mock_get_db():
@@ -680,6 +683,7 @@ class TestSaveAsUnverified:
         result_mock.scalar_one_or_none = MagicMock(return_value=saved_account)
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        mock_session.add = MagicMock()
         mock_session.execute = AsyncMock(return_value=result_mock)
 
         async def mock_get_db():
@@ -889,11 +893,12 @@ class TestDisconnectCleanup:
         result_mock.scalar_one_or_none = MagicMock(return_value=account)
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        mock_session.add = MagicMock()
         mock_session.execute = AsyncMock(return_value=result_mock)
         return mock_session
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_secret_reference(self, mock_delete):
+    def test_disconnect_clears_secret_reference(self, _mock_delete):
         """Disconnect must clear secret_reference on the DB model."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -919,7 +924,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_provider_username(self, mock_delete):
+    def test_disconnect_clears_provider_username(self, _mock_delete):
         """Disconnect must clear provider_username."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -944,7 +949,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_odoo_url(self, mock_delete):
+    def test_disconnect_clears_odoo_url(self, _mock_delete):
         """Disconnect must clear odoo_url."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -968,7 +973,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_odoo_db(self, mock_delete):
+    def test_disconnect_clears_odoo_db(self, _mock_delete):
         """Disconnect must clear odoo_db."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -992,7 +997,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_company_currency_metadata(self, mock_delete):
+    def test_disconnect_clears_company_currency_metadata(self, _mock_delete):
         """Disconnect must clear company_id, company_name, currency_code, currency_symbol."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -1022,7 +1027,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_provider_user_id_and_display_name(self, mock_delete):
+    def test_disconnect_clears_provider_user_id_and_display_name(self, _mock_delete):
         """Disconnect must clear provider_user_id, provider_display_name, permission_summary."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -1048,7 +1053,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_clears_last_verified_at(self, mock_delete):
+    def test_disconnect_clears_last_verified_at(self, _mock_delete):
         """Disconnect must clear last_verified_at."""
         from unittest.mock import AsyncMock
         from datetime import datetime
@@ -1074,7 +1079,7 @@ class TestDisconnectCleanup:
             app.dependency_overrides.pop(get_db, None)
 
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_creates_audit_event(self, mock_delete):
+    def test_disconnect_creates_audit_event(self, _mock_delete):
         """Disconnect must still create an audit event."""
         from unittest.mock import AsyncMock
         account = self._make_account()
@@ -1136,6 +1141,7 @@ class TestDisconnectedAccountStatus:
         result_mock.scalar_one_or_none = MagicMock(return_value=account)
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        mock_session.add = MagicMock()
         mock_session.execute = AsyncMock(return_value=result_mock)
         return mock_session
 

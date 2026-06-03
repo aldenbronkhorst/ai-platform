@@ -21,7 +21,7 @@ def _get_client(creds):
 
 
 @router.post("/list")
-def list_attachments(req: AttachmentListRequest, auth: dict = Depends(internal_api_key_auth)):
+def list_attachments(req: AttachmentListRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     domain = req.domain or []
     if req.model and req.record_id:
@@ -39,7 +39,7 @@ def list_attachments(req: AttachmentListRequest, auth: dict = Depends(internal_a
 
 
 @router.post("/get")
-def get_attachment(req: AttachmentGetRequest, auth: dict = Depends(internal_api_key_auth)):
+def get_attachment(req: AttachmentGetRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     records = client.read(
         "ir.attachment",
@@ -53,7 +53,7 @@ def get_attachment(req: AttachmentGetRequest, auth: dict = Depends(internal_api_
 
 
 @router.post("/create")
-def create_attachment(req: AttachmentCreateRequest, auth: dict = Depends(internal_api_key_auth)):
+def create_attachment(req: AttachmentCreateRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     values = {
         "name": req.filename,

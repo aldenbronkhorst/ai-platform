@@ -173,6 +173,16 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        'ai_chat_artifacts',
+        sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
+        sa.Column('chat_session_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('ai_chat_sessions.id'), nullable=False, index=True),
+        sa.Column('artifact_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('ai_artifacts.id'), nullable=False, index=True),
+        sa.Column('linked_message_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('ai_chat_messages.id'), nullable=True, index=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    )
+
+    op.create_table(
         'ai_tools',
         sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text('gen_random_uuid()')),
         sa.Column('name', sa.String(100), unique=True, nullable=False, index=True),
@@ -214,6 +224,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table('ai_audit_events')
     op.drop_table('ai_tools')
+    op.drop_table('ai_chat_artifacts')
     op.drop_table('ai_chat_messages')
     op.drop_table('ai_chat_sessions')
     op.drop_table('ai_artifacts')

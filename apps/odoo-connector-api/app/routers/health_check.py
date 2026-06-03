@@ -19,7 +19,7 @@ def _get_client(creds):
 
 
 @router.post("/check")
-def odoo_health_check(req: HealthCheckRequest, auth: dict = Depends(internal_api_key_auth)):
+def odoo_health_check(req: HealthCheckRequest, _auth: dict = Depends(internal_api_key_auth)):
     """Check Odoo connection health, authenticated user, database, and version."""
     try:
         client = _get_client(req.credentials)

@@ -1,9 +1,9 @@
 import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from unittest.mock import patch, MagicMock, AsyncMock
 from uuid import uuid4
 
-from app.models.models import AIMemory, AIMemoryUsageEvent, AITask, AIChatMessage, AIUser
+from app.models.models import AIMemory, AIMemoryUsageEvent, AITask, AIChatMessage
 from app.schemas.schemas import MemoryFeedbackRequest
 from app.routers.memory import record_memory_feedback
 from tests.test_model_router import MockSession

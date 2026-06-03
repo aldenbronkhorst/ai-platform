@@ -199,7 +199,7 @@ class TestModelRoutingPolicy:
             "latency_ms": 100
         })
 
-        def mock_build_client(prov, model_obj):
+        def mock_build_client(_prov, model_obj):
             if model_obj.id == primary_model.id:
                 return primary_client
             return fallback_client

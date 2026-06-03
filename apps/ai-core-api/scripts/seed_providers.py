@@ -29,9 +29,6 @@ PROVIDERS_TO_SEED = [
     }
 ]
 
-# Legacy compatibility aliases for unit tests
-PROVIDER_DATA = PROVIDERS_TO_SEED[0]
-
 MODELS_TO_SEED = [
     {
         "provider_name": "Microsoft Foundry",
@@ -102,24 +99,6 @@ MODELS_TO_SEED = [
         }
     }
 ]
-
-# Legacy compatibility aliases for unit tests
-MODEL_DATA = MODELS_TO_SEED[0]
-
-ROUTES_TO_SEED = [
-    {
-        "task_type": "general_chat",
-        "primary_model_name": "Kimi-K2.6",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.3,
-        "max_tokens": 2000,
-        "system_prompt": CANONICAL_SYSTEM_PROMPT,
-        "enabled": "true"
-    },
-]
-
-# Legacy compatibility aliases for unit tests
-ROUTE_DATA = ROUTES_TO_SEED[0]
 
 ROUTES_TO_SEED = [
     {

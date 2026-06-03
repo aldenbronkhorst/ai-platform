@@ -1,6 +1,6 @@
 import os
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 # Enable debug mode for tests
@@ -22,6 +22,7 @@ def _mock_db():
         result_mock.scalar_one_or_none = lambda self=None: None
         result_mock.scalars = lambda self=None: result_mock
         result_mock.all = lambda self=None: []
+        session.add = MagicMock()
         session.execute = AsyncMock(return_value=result_mock)
         session.refresh = AsyncMock()
         yield session

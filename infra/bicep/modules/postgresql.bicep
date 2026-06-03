@@ -55,15 +55,6 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-preview'
   }
 }
 
-resource firewallRuleAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-06-01-preview' = {
-  parent: postgres
-  name: 'AllowAllAzureServicesAndResourcesWithinAzureIps'
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-}
-
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-06-01-preview' = {
   parent: postgres
   name: postgresDatabaseName

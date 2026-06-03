@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
 
 # Register UUID type support for SQLite DDL compiler (models use PostgreSQL UUID)
-def visit_uuid(self, type_, **kw):
+def visit_uuid(self, _type_, **kw):
     return "CHAR(36)"
 
 SQLiteTypeCompiler.visit_UUID = visit_uuid

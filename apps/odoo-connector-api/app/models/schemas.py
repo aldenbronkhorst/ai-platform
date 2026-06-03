@@ -12,7 +12,7 @@ class OdooCredentialsRequest(BaseModel):
 
     @field_validator("url")
     @classmethod
-    def validate_url(cls, v: str) -> str:
+    def validate_url(_cls, v: str) -> str:
         parsed = urlparse(v)
         if parsed.scheme not in ("http", "https"):
             raise ValueError("URL must use http or https scheme")

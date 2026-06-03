@@ -18,7 +18,6 @@ class ModelRoutingPolicyService:
         task_type: str,
         risk_level: str = "low",
         requires_tools: bool = False,
-        requires_large_context: bool = False,
     ) -> Dict[str, Any]:
         """Determines the optimal model routing and fallback route based on request requirements.
 

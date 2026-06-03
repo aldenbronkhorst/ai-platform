@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional
 from urllib.parse import urlparse
 
 from app.core.security import api_key_auth, require_role
@@ -28,6 +28,14 @@ ODOO_CONNECTOR_URL = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 
 logger = logging.getLogger(__name__)
+
+DNS_FAILURE_PHRASES = [
+    "name or service not known",
+    "nodename nor servname provided",
+    "temporary failure in name resolution",
+    "no address associated with hostname",
+    "no such host is known",
+]
 
 
 # ── Connection Trace Infrastructure ──
@@ -349,29 +357,83 @@ async def _verify_odoo_credentials_via_connector(
     """
     logger.info("Verifying Odoo credentials for user=%s at host=%s db=%s", username, url, db)
     if not ODOO_CONNECTOR_URL:
-        if trace and trace.connection_attempt_id:
-            trace.stages["ai_core_verify_payload"] = StageTrace(
-                status="failed",
-                error_type="odoo_connector_url_missing",
-                technical_detail="ODOO_CONNECTOR_URL environment variable is not set.",
-            )
-        raise HTTPException(
+        _mark_trace_failed(
+            trace,
+            "ai_core_verify_payload",
+            "odoo_connector_url_missing",
+            "ODOO_CONNECTOR_URL environment variable is not set.",
+        )
+        _raise_connect_error(
             status_code=500,
-            detail=ConnectErrorDetail(
-                error_type="odoo_connector_url_missing",
-                stage="verify_connector",
-                message="Odoo Connector is not configured.",
-                technical_detail="ODOO_CONNECTOR_URL environment variable is not set.",
-            ).model_dump()
+            error_type="odoo_connector_url_missing",
+            stage="verify_connector",
+            message="Odoo Connector is not configured.",
+            technical_detail="ODOO_CONNECTOR_URL environment variable is not set.",
         )
 
+    try:
+        response = await _post_odoo_verify_request(url, db, username, api_key, trace)
+    except httpx.ConnectError as e:
+        _raise_connector_connect_error(e, trace)
+    except httpx.TimeoutException as e:
+        _mark_trace_failed(trace, "connector_received", "odoo_timeout", str(e))
+        _raise_connect_error(
+            status_code=504,
+            error_type="odoo_timeout",
+            stage="verify_connector",
+            message="Odoo Connector timed out. Check network connectivity.",
+            technical_detail=f"Connection timeout: {e}",
+        )
+    except httpx.RequestError as e:
+        _mark_trace_failed(trace, "connector_received", "odoo_connector_unreachable", str(e))
+        _raise_connect_error(
+            status_code=502,
+            error_type="odoo_connector_unreachable",
+            stage="verify_connector",
+            message="Could not connect to Odoo Connector.",
+            technical_detail=f"Request error: {e}",
+        )
+
+    if response.status_code >= 400:
+        _raise_verify_response_error(response, trace)
+
+
+def _mark_trace_failed(trace: Optional[ConnectTrace], stage: str, error_type: str, technical_detail: str) -> None:
+    if trace and trace.connection_attempt_id:
+        trace.stages[stage] = StageTrace(status="failed", error_type=error_type, technical_detail=technical_detail)
+
+
+def _raise_connect_error(
+    *,
+    status_code: int,
+    error_type: str,
+    stage: str,
+    message: str,
+    technical_detail: str,
+) -> None:
+    raise HTTPException(
+        status_code=status_code,
+        detail=ConnectErrorDetail(
+            error_type=error_type,
+            stage=stage,
+            message=message,
+            technical_detail=technical_detail,
+        ).model_dump()
+    )
+
+
+def _odoo_verify_headers(trace: Optional[ConnectTrace]) -> dict:
     headers = {
         "X-Internal-API-Key": ODOO_CONNECTOR_KEY,
         "Content-Type": "application/json",
     }
     if trace and trace.connection_attempt_id:
         headers["X-Connection-Attempt-Id"] = trace.connection_attempt_id
-    payload = {
+    return headers
+
+
+def _odoo_verify_payload(url: str, db: str, username: str, api_key: str) -> dict:
+    return {
         "credentials": {
             "url": url,
             "db": db,
@@ -384,135 +446,99 @@ async def _verify_odoo_credentials_via_connector(
         "limit": 1
     }
 
+
+async def _post_odoo_verify_request(
+    url: str,
+    db: str,
+    username: str,
+    api_key: str,
+    trace: Optional[ConnectTrace],
+) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        return await client.post(
+            f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
+            json=_odoo_verify_payload(url, db, username, api_key),
+            headers=_odoo_verify_headers(trace),
+        )
+
+
+def _is_dns_failure(error_str: str) -> bool:
+    return any(phrase in error_str.lower() for phrase in DNS_FAILURE_PHRASES)
+
+
+def _raise_connector_connect_error(exc: httpx.ConnectError, trace: Optional[ConnectTrace]) -> None:
+    error_str = str(exc)
+    dns_failure = _is_dns_failure(error_str)
+    err_type = "odoo_connector_dns_failed" if dns_failure else "odoo_connector_unreachable"
+    err_msg = (
+        "The AI Platform API could not resolve the Odoo Connector service hostname."
+        if dns_failure
+        else "Could not reach the Odoo Connector service. Check network connectivity."
+    )
+    _mark_trace_failed(trace, "connector_received", err_type, error_str)
+    _raise_connect_error(
+        status_code=502,
+        error_type=err_type,
+        stage="verify_connector",
+        message=err_msg,
+        technical_detail=error_str,
+    )
+
+
+def _response_error_body(response: httpx.Response) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
-                json=payload,
-                headers=headers,
-            )
-    except httpx.ConnectError as e:
-        error_str = str(e)
-        is_dns_failure = any(
-            phrase in error_str.lower()
-            for phrase in [
-                "name or service not known",
-                "nodename nor servname provided",
-                "temporary failure in name resolution",
-                "no address associated with hostname",
-                "no such host is known",
-            ]
-        )
-        err_type = "odoo_connector_dns_failed" if is_dns_failure else "odoo_connector_unreachable"
-        err_msg = (
-            "The AI Platform API could not resolve the Odoo Connector service hostname."
-            if is_dns_failure
-            else "Could not reach the Odoo Connector service. Check network connectivity."
-        )
-        if trace and trace.connection_attempt_id:
-            trace.stages["connector_received"] = StageTrace(status="failed", error_type=err_type, technical_detail=error_str)
-        raise HTTPException(
-            status_code=502,
-            detail=ConnectErrorDetail(
-                error_type=err_type,
-                stage="verify_connector",
-                message=err_msg,
-                technical_detail=error_str,
-            ).model_dump()
-        )
-    except httpx.TimeoutException as e:
-        if trace and trace.connection_attempt_id:
-            trace.stages["connector_received"] = StageTrace(status="failed", error_type="odoo_timeout", technical_detail=str(e))
-        raise HTTPException(
-            status_code=504,
-            detail=ConnectErrorDetail(
-                error_type="odoo_timeout",
-                stage="verify_connector",
-                message="Odoo Connector timed out. Check network connectivity.",
-                technical_detail=f"Connection timeout: {e}",
-            ).model_dump()
-        )
-    except httpx.RequestError as e:
-        if trace and trace.connection_attempt_id:
-            trace.stages["connector_received"] = StageTrace(status="failed", error_type="odoo_connector_unreachable", technical_detail=str(e))
-        raise HTTPException(
-            status_code=502,
-            detail=ConnectErrorDetail(
-                error_type="odoo_connector_unreachable",
-                stage="verify_connector",
-                message="Could not connect to Odoo Connector.",
-                technical_detail=f"Request error: {e}",
-            ).model_dump()
-        )
+        return response.json()
+    except Exception:
+        return {"raw": response.text}
 
-    if response.status_code >= 400:
-        try:
-            err_body = response.json()
-        except Exception:
-            err_body = {"raw": response.text}
 
-        raw_detail = str(err_body.get("message", err_body.get("detail", str(err_body))))
-        classified = _classify_odoo_error(raw_detail, response.status_code)
+def _raise_odoo_auth_error(classified: str, err_body: dict, trace: Optional[ConnectTrace]) -> None:
+    err_msg = str(err_body.get("detail", err_body))
+    technical_detail = err_body.get("message", err_msg)
+    _mark_trace_failed(trace, "odoo_rpc_result", classified, technical_detail)
+    _raise_connect_error(
+        status_code=400,
+        error_type=classified,
+        stage="verify_odoo",
+        message="Odoo credentials are invalid. Check your URL, database, username, and API key.",
+        technical_detail=f"Odoo auth error: {technical_detail}",
+    )
 
-        if response.status_code == 401:
-            err_msg = str(err_body.get("detail", err_body))
-            if err_body.get("error") == "odoo_auth_failed":
-                if trace and trace.connection_attempt_id:
-                    trace.stages["odoo_rpc_result"] = StageTrace(
-                        status="failed", error_type=classified, technical_detail=err_body.get("message", err_msg),
-                    )
-                raise HTTPException(
-                    status_code=400,
-                    detail=ConnectErrorDetail(
-                        error_type=classified,
-                        stage="verify_odoo",
-                        message="Odoo credentials are invalid. Check your URL, database, username, and API key.",
-                        technical_detail=f"Odoo auth error: {err_body.get('message', err_msg)}",
-                    ).model_dump()
-                )
-            else:
-                if trace and trace.connection_attempt_id:
-                    trace.stages["connector_received"] = StageTrace(
-                        status="failed", error_type="odoo_connector_auth_failed", technical_detail=f"Connector returned 401: {err_msg}",
-                    )
-                raise HTTPException(
-                    status_code=401,
-                    detail=ConnectErrorDetail(
-                        error_type="odoo_connector_auth_failed",
-                        stage="verify_connector",
-                        message="Internal connector API key mismatch. Contact an administrator.",
-                        technical_detail=f"Connector returned 401: {err_msg}",
-                    ).model_dump()
-                )
 
-        if response.status_code == 400 and err_body.get("error") == "odoo_auth_failed":
-            if trace and trace.connection_attempt_id:
-                trace.stages["odoo_rpc_result"] = StageTrace(
-                    status="failed", error_type=classified, technical_detail=err_body.get("message", str(err_body)),
-                )
-            raise HTTPException(
-                status_code=400,
-                detail=ConnectErrorDetail(
-                    error_type=classified,
-                    stage="verify_odoo",
-                    message="Odoo credentials are invalid. Check your URL, database, username, and API key.",
-                    technical_detail=f"Odoo auth error: {err_body.get('message', str(err_body))}",
-                ).model_dump()
-            )
+def _raise_connector_auth_error(err_body: dict, trace: Optional[ConnectTrace]) -> None:
+    err_msg = str(err_body.get("detail", err_body))
+    technical_detail = f"Connector returned 401: {err_msg}"
+    _mark_trace_failed(trace, "connector_received", "odoo_connector_auth_failed", technical_detail)
+    _raise_connect_error(
+        status_code=401,
+        error_type="odoo_connector_auth_failed",
+        stage="verify_connector",
+        message="Internal connector API key mismatch. Contact an administrator.",
+        technical_detail=technical_detail,
+    )
 
-        if trace and trace.connection_attempt_id:
-            trace.stages["odoo_rpc_result"] = StageTrace(
-                status="failed", error_type=classified, technical_detail=raw_detail,
-            )
-        raise HTTPException(
-            status_code=400,
-            detail=ConnectErrorDetail(
-                error_type=classified,
-                stage="verify_odoo",
-                message="Odoo verification failed. Check permissions or contact support.",
-                technical_detail=raw_detail,
-            ).model_dump()
-        )
+
+def _raise_verify_response_error(response: httpx.Response, trace: Optional[ConnectTrace]) -> None:
+    err_body = _response_error_body(response)
+    raw_detail = str(err_body.get("message", err_body.get("detail", str(err_body))))
+    classified = _classify_odoo_error(raw_detail, response.status_code)
+
+    if response.status_code == 401:
+        if err_body.get("error") == "odoo_auth_failed":
+            _raise_odoo_auth_error(classified, err_body, trace)
+        _raise_connector_auth_error(err_body, trace)
+
+    if response.status_code == 400 and err_body.get("error") == "odoo_auth_failed":
+        _raise_odoo_auth_error(classified, err_body, trace)
+
+    _mark_trace_failed(trace, "odoo_rpc_result", classified, raw_detail)
+    _raise_connect_error(
+        status_code=400,
+        error_type=classified,
+        stage="verify_odoo",
+        message="Odoo verification failed. Check permissions or contact support.",
+        technical_detail=raw_detail,
+    )
 
 
 async def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
@@ -650,29 +676,8 @@ def serialize_trace(trace: ConnectTrace, status: str, stage: str, message: str, 
     return result
 
 
-@router.post("/odoo/connect")
-async def connect_odoo(
-    req: OdooConnectRequest,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    """Saves/creates Odoo connection.
-
-    Flow:
-    1. Normalize URL
-    2. Store API key in Key Vault FIRST (if this fails, nothing is saved)
-    3. Verify credentials against Odoo Connector
-    4. If verification fails, save account with status=\"error\" to preserve user-entered details
-    5. If verification succeeds, fetch metadata and save as status=\"connected\"
-    """
-    user_id = auth.get("user_id")
-    request_id = _get_request_id()
-    connection_attempt_id = _generate_connection_attempt_id()
-    trace = ConnectTrace(
-        request_id=request_id,
-        connection_attempt_id=connection_attempt_id,
-        stages={},
-    )
+def _new_connect_trace(req: OdooConnectRequest, request_id: str, connection_attempt_id: str) -> ConnectTrace:
+    trace = ConnectTrace(request_id=request_id, connection_attempt_id=connection_attempt_id, stages={})
     trace.stages["ai_core_received"] = StageTrace(
         odoo_url=req.odoo_url,
         odoo_host=_host_from_url(req.odoo_url),
@@ -686,42 +691,10 @@ async def connect_odoo(
         internal_key_fingerprint=_key_fingerprint(ODOO_CONNECTOR_KEY),
         status="received",
     )
+    return trace
 
-    logger.info(
-        "Odoo connect request received user_id=%s url=%s db=%s username=%s api_key_present=%s connection_attempt_id=%s",
-        user_id,
-        req.odoo_url,
-        req.odoo_db,
-        req.odoo_username,
-        bool(req.odoo_api_key),
-        connection_attempt_id,
-    )
 
-    # Normalize and validate the Odoo URL
-    normalized_url = _normalize_odoo_url(req.odoo_url)
-
-    # 1. Resolve account identity before any mutation
-    result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            AIConnectedAccount.provider == "odoo",
-        )
-    )
-    existing_account = result.scalar_one_or_none()
-    connected_account_id = existing_account.id if existing_account else uuid.uuid4()
-
-    # Use a unique secret name per connection to avoid conflicts with
-    # soft-deleted secrets in Key Vault (ObjectIsDeletedButRecoverable).
-    secret_name = _generate_secret_name(connected_account_id)
-
-    # 2. Store the Odoo API key in Key Vault FIRST (gate: if this fails, nothing is saved)
-    await _store_key_vault_secret(secret_name, req.odoo_api_key)
-    trace.stages["key_vault_store"] = StageTrace(status="success")
-
-    # 3. Verify credentials (failure does NOT block saving the account)
-    verified = False
-    company_meta = {}
-    verify_error = None
+def _set_verify_payload_trace(trace: ConnectTrace, req: OdooConnectRequest, normalized_url: str) -> None:
     trace.stages["ai_core_verify_payload"] = StageTrace(
         odoo_url=normalized_url,
         odoo_host=_host_from_url(normalized_url),
@@ -741,6 +714,25 @@ async def connect_odoo(
         limit=1,
         status="pending",
     )
+
+
+async def _existing_odoo_account(db: AsyncSession, user_id) -> Optional[AIConnectedAccount]:
+    result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == user_id,
+            AIConnectedAccount.provider == "odoo",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _verify_odoo_connect_request(
+    req: OdooConnectRequest,
+    normalized_url: str,
+    trace: ConnectTrace,
+    connection_attempt_id: str,
+) -> tuple[bool, dict, Optional[dict]]:
+    _set_verify_payload_trace(trace, req, normalized_url)
     logger.info(
         "Verifying Odoo via connector url=%s db=%s username=%s connection_attempt_id=%s",
         normalized_url, req.odoo_db, req.odoo_username, connection_attempt_id,
@@ -753,64 +745,121 @@ async def connect_odoo(
             api_key=req.odoo_api_key,
             trace=trace,
         )
-        verified = True
         trace.stages["odoo_rpc_result"] = StageTrace(status="success")
-        # 3b. Fetch company metadata on successful verification
         company_meta = await _fetch_odoo_company_metadata(
             url=normalized_url,
             db=req.odoo_db,
             username=req.odoo_username,
             api_key=req.odoo_api_key,
         )
+        return True, company_meta, None
     except HTTPException as e:
-        verify_error = e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
+        return False, {}, e.detail if isinstance(e.detail, dict) else {"message": str(e.detail)}
     except Exception as e:
-        verify_error = {"message": str(e), "technical_detail": str(e)}
+        return False, {}, {"message": str(e), "technical_detail": str(e)}
 
-    # 4. Save/update the database record with whatever state we have
+
+def _apply_odoo_company_metadata(account: AIConnectedAccount, company_meta: dict) -> None:
+    if not company_meta.get("odoo_company_id"):
+        return
+    account.odoo_company_id = company_meta["odoo_company_id"]
+    account.odoo_company_name = company_meta.get("odoo_company_name")
+    account.odoo_currency_code = company_meta.get("odoo_currency_code")
+    account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
+
+
+def _update_odoo_account(
+    account: AIConnectedAccount,
+    *,
+    req: OdooConnectRequest,
+    normalized_url: str,
+    secret_name: str,
+    verified: bool,
+    company_meta: dict,
+    now: datetime,
+) -> AIConnectedAccount:
+    account.provider_username = req.odoo_username
+    account.secret_reference = secret_name
+    account.status = "connected" if verified else "error"
+    account.last_verified_at = now if verified else account.last_verified_at
+    account.disconnected_at = None
+    account.updated_at = now
+    account.odoo_url = normalized_url
+    account.odoo_db = req.odoo_db
+    _apply_odoo_company_metadata(account, company_meta)
+    return account
+
+
+def _new_odoo_account(
+    *,
+    account_id: UUID,
+    user_id,
+    req: OdooConnectRequest,
+    normalized_url: str,
+    secret_name: str,
+    verified: bool,
+    company_meta: dict,
+    now: datetime,
+) -> AIConnectedAccount:
+    return AIConnectedAccount(
+        id=account_id,
+        user_id=user_id,
+        provider="odoo",
+        provider_username=req.odoo_username,
+        secret_reference=secret_name,
+        status="connected" if verified else "error",
+        last_verified_at=now if verified else None,
+        target_environment="production",
+        created_at=now,
+        updated_at=now,
+        odoo_url=normalized_url,
+        odoo_db=req.odoo_db,
+        odoo_company_id=company_meta.get("odoo_company_id"),
+        odoo_company_name=company_meta.get("odoo_company_name"),
+        odoo_currency_code=company_meta.get("odoo_currency_code"),
+        odoo_currency_symbol=company_meta.get("odoo_currency_symbol"),
+    )
+
+
+def _upsert_odoo_account(
+    db: AsyncSession,
+    *,
+    existing_account: Optional[AIConnectedAccount],
+    account_id: UUID,
+    user_id,
+    req: OdooConnectRequest,
+    normalized_url: str,
+    secret_name: str,
+    verified: bool,
+    company_meta: dict,
+) -> AIConnectedAccount:
     now = datetime.utcnow()
     if existing_account:
-        existing_account.provider_username = req.odoo_username
-        existing_account.secret_reference = secret_name
-        existing_account.status = "connected" if verified else "error"
-        existing_account.last_verified_at = now if verified else existing_account.last_verified_at
-        existing_account.disconnected_at = None
-        existing_account.updated_at = now
-        existing_account.odoo_url = normalized_url
-        existing_account.odoo_db = req.odoo_db
-        if company_meta.get("odoo_company_id"):
-            existing_account.odoo_company_id = company_meta["odoo_company_id"]
-            existing_account.odoo_company_name = company_meta.get("odoo_company_name")
-            existing_account.odoo_currency_code = company_meta.get("odoo_currency_code")
-            existing_account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
-        account = existing_account
-    else:
-        account = AIConnectedAccount(
-            id=connected_account_id,
-            user_id=user_id,
-            provider="odoo",
-            provider_username=req.odoo_username,
-            secret_reference=secret_name,
-            status="connected" if verified else "error",
-            last_verified_at=now if verified else None,
-            target_environment="production",
-            created_at=now,
-            updated_at=now,
-            odoo_url=normalized_url,
-            odoo_db=req.odoo_db,
-            odoo_company_id=company_meta.get("odoo_company_id"),
-            odoo_company_name=company_meta.get("odoo_company_name"),
-            odoo_currency_code=company_meta.get("odoo_currency_code"),
-            odoo_currency_symbol=company_meta.get("odoo_currency_symbol"),
+        return _update_odoo_account(
+            existing_account,
+            req=req,
+            normalized_url=normalized_url,
+            secret_name=secret_name,
+            verified=verified,
+            company_meta=company_meta,
+            now=now,
         )
-        db.add(account)
+    account = _new_odoo_account(
+        account_id=account_id,
+        user_id=user_id,
+        req=req,
+        normalized_url=normalized_url,
+        secret_name=secret_name,
+        verified=verified,
+        company_meta=company_meta,
+        now=now,
+    )
+    db.add(account)
+    return account
 
-    await db.commit()
-    await db.refresh(account)
 
-    # 5. Log audit event
-    audit_svc = AuditService(db)
-    await audit_svc.log_event(AIAuditEventCreate(
+async def _log_odoo_connect_audit(db: AsyncSession, account: AIConnectedAccount, req: OdooConnectRequest, user_id, verified: bool) -> None:
+    await AuditService(db).log_event(AIAuditEventCreate(
         action_type="connect",
         target_system="odoo",
         target_model="ai_connected_accounts",
@@ -823,54 +872,122 @@ async def connect_odoo(
         risk_level="medium",
         status="success" if verified else "error",
     ))
-    await db.commit()
 
-    # 6. If verification failed, return structured error with full trace (account IS saved)
-    if not verified:
-        err_type = (
-            (verify_error or {}).get("error_type")
-            or "odoo_credentials_invalid"
-        )
-        err_stage = (
-            (verify_error or {}).get("stage")
-            or "verify_odoo"
-        )
-        err_msg = (
-            (verify_error or {}).get("message")
-            or "Odoo credentials could not be verified. Your details have been saved with status 'error'."
-        )
-        tech_detail = (
-            (verify_error or {}).get("technical_detail")
-            or str(verify_error or "")
-        )
-        # Build serializable trace for the error response
-        trace_dict = serialize_trace(trace, err_type, err_stage, err_msg, tech_detail)
-        logger.warning(
-            "Odoo connect failed connection_attempt_id=%s user_id=%s error_type=%s stage=%s trace=%s",
-            connection_attempt_id, user_id, err_type, err_stage,
-            json.dumps(trace_dict, default=str),
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=ConnectErrorDetail(
-                error_type=err_type,
-                stage=err_stage,
-                message=err_msg,
-                technical_detail=tech_detail,
-                request_id=request_id,
-                connection_attempt_id=connection_attempt_id,
-                trace=trace_dict,
-            ).model_dump()
-        )
 
-    # 7. On success, log the completed trace
+def _verification_error_field(verify_error: Optional[dict], field: str, default: str) -> str:
+    return (verify_error or {}).get(field) or default
+
+
+def _raise_failed_odoo_connect(
+    *,
+    verify_error: Optional[dict],
+    trace: ConnectTrace,
+    request_id: str,
+    connection_attempt_id: str,
+    user_id,
+) -> None:
+    err_type = _verification_error_field(verify_error, "error_type", "odoo_credentials_invalid")
+    err_stage = _verification_error_field(verify_error, "stage", "verify_odoo")
+    err_msg = _verification_error_field(
+        verify_error,
+        "message",
+        "Odoo credentials could not be verified. Your details have been saved with status 'error'.",
+    )
+    tech_detail = _verification_error_field(verify_error, "technical_detail", str(verify_error or ""))
+    trace_dict = serialize_trace(trace, err_type, err_stage, err_msg, tech_detail)
+    logger.warning(
+        "Odoo connect failed connection_attempt_id=%s user_id=%s error_type=%s stage=%s trace=%s",
+        connection_attempt_id, user_id, err_type, err_stage, json.dumps(trace_dict, default=str),
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=ConnectErrorDetail(
+            error_type=err_type,
+            stage=err_stage,
+            message=err_msg,
+            technical_detail=tech_detail,
+            request_id=request_id,
+            connection_attempt_id=connection_attempt_id,
+            trace=trace_dict,
+        ).model_dump()
+    )
+
+
+def _log_successful_odoo_connect(trace: ConnectTrace, connection_attempt_id: str, user_id) -> None:
     trace_dict = serialize_trace(trace, "success", "db_save", "Connection saved", "")
     logger.info(
         "Odoo connect succeeded connection_attempt_id=%s user_id=%s trace=%s",
-        connection_attempt_id, user_id,
-        json.dumps(trace_dict, default=str),
+        connection_attempt_id, user_id, json.dumps(trace_dict, default=str),
     )
 
+
+@router.post("/odoo/connect")
+async def connect_odoo(
+    req: OdooConnectRequest,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Saves/creates Odoo connection.
+
+    Flow:
+    1. Normalize URL
+    2. Store API key in Key Vault FIRST (if this fails, nothing is saved)
+    3. Verify credentials against Odoo Connector
+    4. If verification fails, save account with status=\"error\" to preserve user-entered details
+    5. If verification succeeds, fetch metadata and save as status=\"connected\"
+    """
+    user_id = auth.get("user_id")
+    request_id = _get_request_id()
+    connection_attempt_id = _generate_connection_attempt_id()
+    trace = _new_connect_trace(req, request_id, connection_attempt_id)
+    logger.info(
+        "Odoo connect request received user_id=%s url=%s db=%s username=%s api_key_present=%s connection_attempt_id=%s",
+        user_id,
+        req.odoo_url,
+        req.odoo_db,
+        req.odoo_username,
+        bool(req.odoo_api_key),
+        connection_attempt_id,
+    )
+
+    normalized_url = _normalize_odoo_url(req.odoo_url)
+    existing_account = await _existing_odoo_account(db, user_id)
+    connected_account_id = existing_account.id if existing_account else uuid.uuid4()
+    secret_name = _generate_secret_name(connected_account_id)
+
+    await _store_key_vault_secret(secret_name, req.odoo_api_key)
+    trace.stages["key_vault_store"] = StageTrace(status="success")
+
+    verified, company_meta, verify_error = await _verify_odoo_connect_request(
+        req, normalized_url, trace, connection_attempt_id,
+    )
+    account = _upsert_odoo_account(
+        db,
+        existing_account=existing_account,
+        account_id=connected_account_id,
+        user_id=user_id,
+        req=req,
+        normalized_url=normalized_url,
+        secret_name=secret_name,
+        verified=verified,
+        company_meta=company_meta,
+    )
+
+    await db.commit()
+    await db.refresh(account)
+    await _log_odoo_connect_audit(db, account, req, user_id, verified)
+    await db.commit()
+
+    if not verified:
+        _raise_failed_odoo_connect(
+            verify_error=verify_error,
+            trace=trace,
+            request_id=request_id,
+            connection_attempt_id=connection_attempt_id,
+            user_id=user_id,
+        )
+
+    _log_successful_odoo_connect(trace, connection_attempt_id, user_id)
     return account
 
 

@@ -4,6 +4,7 @@ import re
 import json
 import logging
 from calendar import monthrange
+from dataclasses import dataclass, field
 from uuid import UUID
 from datetime import datetime, timedelta
 from typing import Optional, Any
@@ -39,6 +40,47 @@ CANONICAL_SYSTEM_PROMPT = (
     "the user to Connected Accounts. "
     "Keep responses practical, business-focused, and clear."
 )
+
+
+@dataclass
+class InjectedContext:
+    system_prompt: str
+    rules: list[Any] = field(default_factory=list)
+    facts: list[Any] = field(default_factory=list)
+    memories: list[Any] = field(default_factory=list)
+    search_results: list[dict[str, Any]] = field(default_factory=list)
+    subtasks: list[dict[str, Any]] = field(default_factory=list)
+    currency_source: str = "none"
+    currency_text: str | None = None
+
+
+@dataclass
+class ModelCallStats:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: int = 0
+    tool_calls: int = 0
+
+    def add_result(self, result: dict[str, Any]) -> None:
+        self.prompt_tokens += result.get("prompt_tokens", 0)
+        self.completion_tokens += result.get("completion_tokens", 0)
+        self.latency_ms += result.get("latency_ms", 0)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass
+class ModelCallState:
+    result: dict[str, Any]
+    used_model: AIModel
+    used_provider: AIProvider
+    client: FoundryClient
+    stats: ModelCallStats
+    fallback_used: bool = False
+    fallback_model_display: str = "none"
+    fallback_reason: str = "noneeded"
 
 
 class RouteNotFoundError(Exception):
@@ -134,38 +176,8 @@ CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "teams": "Microsoft Teams",
 }
 
-TOOL_CONNECTOR_MAP = {
-    "odoo": {
-        "connector_url_env": "ODOO_CONNECTOR_URL",
-        "connector_key_env": "ODOO_CONNECTOR_API_KEY",
-    },
-}
-
 ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
-
-
-async def _get_available_tools(db: AsyncSession, user_id: Optional[UUID]) -> list[AITool]:
-    """Get active tools for systems the user has connected accounts for."""
-    if not user_id:
-        return []
-    result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-        )
-    )
-    accounts = result.scalars().all()
-    connected_systems = {a.provider for a in accounts}
-    if not connected_systems:
-        return []
-    result = await db.execute(
-        select(AITool).where(
-            AITool.status == "active",
-            AITool.target_system.in_(connected_systems),
-        ).order_by(AITool.name)
-    )
-    return result.scalars().all()
 
 
 def _normalize_tool_name(name: str) -> str:
@@ -403,28 +415,6 @@ def _detect_line_names(query: str) -> Optional[list[str]]:
     return list(matched) if matched else None
 
 
-ODOO_LOOKUP_PATTERNS: list[tuple[re.Pattern, str, dict[str, Any]]] = [
-    # "latest posted bills" / "posted bills" / "vendor bills"
-    (re.compile(r'(latest\s+)?(posted\s+)?(vendor\s+)?(bill|bills|invoice|invoices)\s*', re.IGNORECASE), "bills", {
-        "model": "account.move",
-        "domain": [["move_type", "in", ["in_invoice", "in_receipt"]], ["state", "=", "posted"]],
-        "order": "invoice_date desc",
-        "limit": 10,
-    }),
-    # "credit note" / "credit notes" / "refund" for a partner
-    (re.compile(r'(credit\s+note|credit\s+notes|refund)\s*(for|from|of)?\s*(.+?)(\?|$)', re.IGNORECASE), "credit_note", {
-        "model": "account.move",
-        "domain": [["move_type", "in", ["out_refund", "in_refund"]]],
-        "order": "invoice_date desc",
-        "limit": 10,
-    }),
-    # generic "find X" / "search for X" / "do you see X"
-    (re.compile(r'(find|search|see|locate|look\s+(for|up))\s+(.+?)(\?|$)', re.IGNORECASE), "generic_search", {}),
-    # attachment pattern: "attachments" / "PDF" / "files" on a record
-    (re.compile(r'(attachment|pdf|file|document)s?\s*(on|for|attached|of)?', re.IGNORECASE), "attachment_check", {}),
-]
-
-
 def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
     """Detect common Odoo lookup patterns and return deterministic actions.
     
@@ -514,13 +504,6 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
             ],
         }
 
-    # Check for attachment pattern on a known record
-    attach_match = re.search(r'(?:attachment|pdf|file|document)s?\s*(?:on|for|attached|of)?\s*(.+?)(?:\?|$)', q, re.IGNORECASE)
-    if attach_match and "attachment" in q.lower() or "pdf" in q.lower() or "attached" in q.lower():
-        # If we're asking about attachments, we need to first find the record
-        # This is handled by the model, not deterministically
-        pass
-
     return None
 
 
@@ -559,85 +542,100 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
     return {"tool": "odoo_ops_runner", "input": {"mode": "report", **args}}
 
 
-def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
-    """Build a fallback user-facing answer from odoo_execute_report tool results.
-    Used when the model produces blank content after a report tool call.
-    All user-facing strings are clean — no raw dicts or Python repr."""
-    for tr in tool_results:
-        if tr.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports"):
-            continue
-        result = tr.get("result", {})
-        if isinstance(result, dict) and result.get("error"):
-            connector_err = result.get("connector_error") or result
-            detail = connector_err.get("detail", connector_err) if isinstance(connector_err, dict) else {}
-            raw_message = detail.get("message") or detail.get("detail") or connector_err.get("message") or str(connector_err)
-            err_type = (
-                detail.get("error_type")
-                or (detail.get("error") if isinstance(detail.get("error"), str) else None)
-                or connector_err.get("error_type")
-                or "report_error"
-            )
+def _report_error_message(tool_result: dict[str, Any], result: dict[str, Any]) -> str:
+    connector_err = result.get("connector_error") or result
+    detail = connector_err.get("detail", connector_err) if isinstance(connector_err, dict) else {}
+    raw_message = detail.get("message") or detail.get("detail") or connector_err.get("message") or str(connector_err)
+    err_type = (
+        detail.get("error_type")
+        or (detail.get("error") if isinstance(detail.get("error"), str) else None)
+        or connector_err.get("error_type")
+        or "report_error"
+    )
 
-            if err_type == "report_not_found":
-                report_name = tr.get("arguments", {}).get("report_name", "unknown")
-                return (
-                    f"I could not find a report named \"{report_name}\" in Odoo. "
-                    f"This may be because the report module is not installed or the name is different. "
-                    f"Try using the report discovery tool to list available reports."
-                )
-            if "Technical error" in raw_message:
-                return (
-                    f"I reached Odoo, but could not execute the report. "
-                    f"The report engine encountered an internal issue: {raw_message}. "
-                    f"This usually means the report could not be resolved or executed "
-                    f"with the current Odoo account. Please check Accounting report access, "
-                    f"Odoo edition/version, or use the report discovery diagnostic "
-                    f"to confirm the available report names."
-                )
-            return (
-                f"I reached Odoo, but could not execute the report. "
-                f"Reason: {raw_message}. "
-                f"This may be due to report permissions, Odoo edition/version differences, "
-                f"or unsupported report options."
-            )
-        if isinstance(result, dict) and not result.get("error"):
-            lines = result.get("lines") or []
-            report_name = result.get("report_name") or "report"
-            currency_code = result.get("currency_code") or ""
-            currency_symbol = result.get("currency_symbol") or ""
-            date_from = result.get("date_from") or ""
-            date_to = result.get("date_to") or ""
-            available = result.get("available_line_names") or []
-            missing = result.get("missing_line_names") or []
-            if lines:
-                parts = [f"From the Odoo {report_name}"]
-                if date_from and date_to:
-                    parts.append(f"for {date_from} to {date_to}")
-                parts.append(":")
-                line_items = []
-                for ln in lines[:10]:
-                    name = ln.get("name", "")
-                    val = ln.get("formatted_value") or ""
-                    if name and val:
-                        sym = currency_symbol or ""
-                        line_items.append(f"{name}: {sym}{val}")
-                    elif name:
-                        line_items.append(f"{name}")
-                if line_items:
-                    parts.append("")
-                    parts.extend(f"  - {li}" for li in line_items)
-                if len(lines) > 10:
-                    parts.append(f"  ... and {len(lines) - 10} more lines")
-                if missing:
-                    parts.append(f"Note: requested lines not found in report: {', '.join(missing[:5])}")
-                return "\n".join(parts)
-            if available:
-                return (
-                    f"I opened the {report_name} report"
-                    f"{' for ' + date_from + ' to ' + date_to if date_from and date_to else ''}, "
-                    f"but could not find matching lines. "
-                    f"Available top-level lines include: {', '.join(available[:10])}."
-                )
+    if err_type == "report_not_found":
+        report_name = tool_result.get("arguments", {}).get("report_name", "unknown")
+        return (
+            f"I could not find a report named \"{report_name}\" in Odoo. "
+            "This may be because the report module is not installed or the name is different. "
+            "Try using the report discovery tool to list available reports."
+        )
+    if "Technical error" in raw_message:
+        return (
+            "I reached Odoo, but could not execute the report. "
+            f"The report engine encountered an internal issue: {raw_message}. "
+            "This usually means the report could not be resolved or executed "
+            "with the current Odoo account. Please check Accounting report access, "
+            "Odoo edition/version, or use the report discovery diagnostic "
+            "to confirm the available report names."
+        )
+    return (
+        "I reached Odoo, but could not execute the report. "
+        f"Reason: {raw_message}. "
+        "This may be due to report permissions, Odoo edition/version differences, "
+        "or unsupported report options."
+    )
+
+
+def _report_line_items(lines: list[dict[str, Any]], currency_symbol: str) -> list[str]:
+    items = []
+    for line in lines[:10]:
+        name = line.get("name", "")
+        value = line.get("formatted_value") or ""
+        if name and value:
+            items.append(f"{name}: {currency_symbol}{value}")
+        elif name:
+            items.append(name)
+    return items
+
+
+def _report_success_message(result: dict[str, Any]) -> str | None:
+    lines = result.get("lines") or []
+    report_name = result.get("report_name") or "report"
+    currency_symbol = result.get("currency_symbol") or ""
+    date_from = result.get("date_from") or ""
+    date_to = result.get("date_to") or ""
+    available = result.get("available_line_names") or []
+    missing = result.get("missing_line_names") or []
+
+    if not lines:
+        if not available:
+            return None
+        period = f" for {date_from} to {date_to}" if date_from and date_to else ""
+        return (
+            f"I opened the {report_name} report{period}, but could not find matching lines. "
+            f"Available top-level lines include: {', '.join(available[:10])}."
+        )
+
+    parts = [f"From the Odoo {report_name}"]
+    if date_from and date_to:
+        parts.append(f"for {date_from} to {date_to}")
+    parts.append(":")
+
+    items = _report_line_items(lines, currency_symbol)
+    if items:
+        parts.append("")
+        parts.extend(f"  - {item}" for item in items)
+    if len(lines) > 10:
+        parts.append(f"  ... and {len(lines) - 10} more lines")
+    if missing:
+        parts.append(f"Note: requested lines not found in report: {', '.join(missing[:5])}")
+    return "\n".join(parts)
+
+
+def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
+    """Build a clean user-facing answer when report tool output needs summarising."""
+    for tool_result in tool_results:
+        if tool_result.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports"):
+            continue
+        result = tool_result.get("result", {})
+        if not isinstance(result, dict):
+            continue
+        if result.get("error"):
+            return _report_error_message(tool_result, result)
+        message = _report_success_message(result)
+        if message:
+            return message
     return None
 
 
@@ -655,13 +653,6 @@ def _log_deprecated_tool(tool_name: str):
     replacement = DEPRECATED_TOOL_ALIASES.get(tool_name)
     if replacement:
         logger.warning("Deprecated tool '%s' called — delegate to '%s' instead", tool_name, replacement)
-
-
-def _get_connector_url_for_tool(tool_name: str) -> str:
-    """Return the Odoo Connector URL for Odoo tools, or empty for native tools."""
-    if tool_name.startswith("odoo_"):
-        return ODOO_CONNECTOR_URL
-    return ""
 
 
 def _map_odoo_tool_to_path(tool_name: str) -> str:
@@ -685,9 +676,6 @@ def _map_odoo_tool_to_path(tool_name: str) -> str:
         "odoo_attachments_get": "/attachments/get",
         "odoo_messages_list": "/messages/list",
         "odoo_messages_create": "/messages/create",
-        # Native connectors (routed differently)
-        "azure_cli": "/connector/azure/cli",
-        "github_cli": "/connector/github/cli",
     }
     return mapping.get(tool_name, "")
 
@@ -732,6 +720,714 @@ async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> s
     return "\n".join(lines)
 
 
+def _last_user_message(messages: list) -> str:
+    if not messages:
+        return ""
+    latest = messages[-1]
+    if isinstance(latest, dict):
+        return str(latest.get("content") or "")
+    return ""
+
+
+def _risk_level_for_message(user_msg_text: str) -> str:
+    q = user_msg_text.lower()
+    is_finance_topic = any(kw in q for kw in [
+        "revenue", "income", "expense", "profit", "loss", "balance", "invoice",
+        "bill", "payment", "cost", "price", "tax", "vat", "accounting",
+    ])
+
+    is_odoo_lookup = any(phrase in q for phrase in [
+        "check odoo", "odoo", "account.move", "ir.attachment", "credit note",
+        "find", "search", "look up",
+    ])
+    if is_odoo_lookup and q.count("amount") <= 2:
+        contains_aggregate_intent = any(kw in q for kw in [
+            "compare", "reconcile", "audit", "forecast", "budget", "analyze",
+            "trend", "variance", "total revenue", "total income", "net profit",
+        ])
+        if not contains_aggregate_intent:
+            is_finance_topic = False
+
+    return "high" if is_finance_topic else "low"
+
+
+async def _select_route_model_provider(
+    db: AsyncSession,
+    task_type: str,
+    risk_level: str,
+) -> tuple[AIRoute, AIModel, AIProvider, dict[str, Any]]:
+    from app.services.model_routing_policy import ModelRoutingPolicyService
+
+    policy = await ModelRoutingPolicyService(db).select_route(
+        task_type=task_type,
+        risk_level=risk_level,
+        requires_tools=task_type == "general_chat",
+    )
+    route_id = policy.get("selected_route_id")
+    model_id = policy.get("selected_model_id")
+
+    if route_id and model_id:
+        route_res = await db.execute(select(AIRoute).where(AIRoute.id == UUID(route_id)))
+        route = route_res.scalar_one_or_none()
+        model_res = await db.execute(select(AIModel).where(AIModel.id == UUID(model_id)))
+        model = model_res.scalar_one_or_none()
+        if route and model:
+            prov_res = await db.execute(select(AIProvider).where(AIProvider.id == model.provider_id))
+            provider = prov_res.scalar_one_or_none()
+            if provider:
+                return route, model, provider, policy
+
+    route, model, provider = await get_enabled_route(db, task_type)
+    return route, model, provider, policy
+
+
+def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definitions: list[dict[str, Any]]) -> str:
+    if not tool_definitions:
+        return system_prompt
+
+    available_names = [tool.name for tool in tools]
+    system_prompt += (
+        "\n\nYou have access to the following tools. "
+        "When the user asks about data from a connected system, call the appropriate tool "
+        "rather than saying you cannot access it. "
+        "Use tools proactively when relevant."
+    )
+
+    odoo_available = [name for name in available_names if name.startswith("odoo_")]
+    if not odoo_available:
+        return system_prompt
+
+    guidance_parts = ["\n\n### Odoo Tool Guidance\nUse these mode-based Odoo tools. Do not create one-off tools.\n"]
+    tool_descriptions = {
+        "odoo_query": "Records/count/summary. Default to records with domain.",
+        "odoo_analyze": "Aggregates and account reports. P&L -> Profit and Loss.",
+        "odoo_content": "Chatter/notes/long text. metadata first, then content with IDs.",
+        "odoo_attachment": "Attachment metadata and text. Discovery via odoo_query on ir.attachment.",
+        "odoo_mutation": "Create/write/delete/workflow. Odoo permissions decide whether the connected user can perform the action.",
+        "odoo_message": "Post/update chatter/Discuss messages.",
+        "odoo_schema": "Model/field discovery when unsure.",
+        "odoo_health": "Connection/runtime check.",
+    }
+    for name in odoo_available:
+        desc = tool_descriptions.get(name, "")
+        if desc:
+            guidance_parts.append(f"  - **{name}**: {desc}")
+    if "odoo_analyze" in odoo_available:
+        guidance_parts.append(
+            "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
+            "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
+            "Line names: revenue -> [Revenue, Income, Sales]; expenses -> [Expenses, COGS]; net income -> [Net Profit, Net Income]."
+        )
+    guidance_parts.append("Prefer the consolidated odoo_ops_runner surface. Do not create one-off tools.")
+    return system_prompt + "\n".join(guidance_parts)
+
+
+async def _select_tools_for_model(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    user_msg_text: str,
+    task_type: str,
+    risk_level: str,
+    model: AIModel,
+    system_prompt: str,
+) -> tuple[list[AITool], list[dict[str, Any]], str]:
+    if model.supports_tools != "true":
+        return [], [], system_prompt
+
+    from app.services.tool_selection import get_tool_selection
+
+    selection = await get_tool_selection(db, user_id, user_msg_text, task_type, risk_level)
+    tools = selection.selected
+    tool_definitions = _build_tool_definitions(tools)
+    if selection.selected:
+        logger.info(
+            "Tool selection | intent=%s selected=%d excluded=%d schema_before=%d schema_after=%d reason=%s",
+            selection.intent,
+            len(selection.selected),
+            len(selection.excluded),
+            selection.schema_size_before,
+            selection.schema_size_after,
+            selection.selection_reason,
+        )
+    return tools, tool_definitions, _append_tool_guidance(system_prompt, tools, tool_definitions)
+
+
+async def _connected_systems_for_context(db: AsyncSession, user_id: Optional[UUID]) -> set[str]:
+    if not user_id:
+        return set()
+    acct_result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == user_id,
+            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+        )
+    )
+    return {acct.provider for acct in acct_result.scalars().all()}
+
+
+async def _business_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, list[Any], list[Any]]:
+    connected_systems = await _connected_systems_for_context(db, user_id)
+    context = await ContextService(db).get_context(
+        ContextRequest(
+            task="general_chat",
+            systems=list(connected_systems) if connected_systems else None,
+            limit=50,
+        ),
+        user_id=user_id,
+    )
+    rules = context.get("rules", [])
+    facts = context.get("facts", [])
+    prompt_parts: list[str] = []
+    if rules:
+        rules_text = "\n".join(f"- [Priority {rule.priority}] {rule.body}" for rule in rules)
+        prompt_parts.append(f"## Active Business Rules\n{rules_text}")
+    if facts:
+        facts_text = "\n".join(f"- {fact.key}: {fact.value}" for fact in facts)
+        prompt_parts.append(f"## Company Facts\n{facts_text}")
+    return ("\n\n".join(prompt_parts), rules, facts)
+
+
+async def _odoo_currency_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, str, str | None]:
+    if not user_id:
+        return "", "none", None
+    acct_result = await db.execute(
+        select(AIConnectedAccount).where(
+            AIConnectedAccount.user_id == user_id,
+            AIConnectedAccount.provider == "odoo",
+            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+        )
+    )
+    account = acct_result.scalars().first()
+    if not account or not account.odoo_currency_code:
+        return "", "none", None
+
+    code = account.odoo_currency_code
+    symbol = account.odoo_currency_symbol or code
+    company = account.odoo_company_name or "your company"
+    currency_text = f"{company} uses {code} ({symbol})"
+    return f"## Connected Odoo Currency\n{currency_text}", "odoo_connected_account", currency_text
+
+
+async def _memory_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, list[Any]]:
+    if not user_id:
+        return "", []
+    mem_result = await db.execute(
+        select(AIMemory).where(
+            AIMemory.created_by_user_id == user_id,
+            AIMemory.status == "active",
+        )
+        .order_by(AIMemory.priority.asc(), AIMemory.last_used_at.desc().nullslast())
+        .limit(30)
+    )
+    memories = mem_result.scalars().all()
+    if not memories:
+        return "", []
+
+    blocks: list[str] = []
+    for memory in memories:
+        formatted = f"- [{memory.type}] {memory.title}"
+        if memory.summary:
+            formatted += f": {memory.summary}"
+        if memory.body:
+            formatted += f"\n  Detail: {memory.body[:300]}"
+        blocks.append(formatted)
+    return "## Learned from Past Interactions\n" + "\n".join(blocks), memories
+
+
+async def _search_context(messages: list, user_id: Optional[UUID]) -> tuple[str, list[dict[str, Any]]]:
+    if not messages:
+        return "", []
+    from app.services.search_service import SearchService
+    from app.core.config import get_settings
+
+    search_svc = SearchService()
+    if not search_svc.enabled:
+        return "", []
+
+    hits = await search_svc.search_memories(
+        query=_last_user_message(messages),
+        user_id=user_id,
+        status="active",
+    )
+    chunks = hits[:get_settings().azure_search_max_injected_chunks]
+    if not chunks:
+        return "", []
+
+    blocks = []
+    for hit in chunks:
+        source_type = hit.get("type") or hit.get("source_type") or "reference"
+        title = hit.get("title") or "Untitled Document"
+        chunk_text = hit.get("chunk_text") or hit.get("summary") or ""
+        block = f"- [{source_type}] {title}"
+        if chunk_text:
+            block += f"\n  Details: {chunk_text[:350]}"
+        blocks.append(block)
+    return "## Relevant Reference Materials\n" + "\n".join(blocks), chunks
+
+
+async def _subtask_context(messages: list, db: AsyncSession) -> tuple[str, list[dict[str, Any]]]:
+    user_query = _last_user_message(messages)
+    if not user_query:
+        return "", []
+    is_reconciliation = any(kw in user_query.lower() for kw in ["compare", "reconcile", "reconciliation", "credit note", "pdf"])
+    if not is_reconciliation:
+        return "", []
+
+    from app.services.task_graph import TaskGraphExecutor
+
+    subtasks = await TaskGraphExecutor().execute_all(user_query, db=db)
+    summary = [f"- Subtask '{task['name']}' ({task['status']}): Result={task['result']}" for task in subtasks]
+    return "## Ephemeral Sub-Agent / Task Worker Results\n" + "\n".join(summary), subtasks
+
+
+def _append_context_section(system_prompt: str, section: str) -> str:
+    return system_prompt.rstrip() + "\n\n" + section if section else system_prompt
+
+
+async def _inject_context_sections(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    messages: list,
+    system_prompt: str,
+) -> InjectedContext:
+    injected = InjectedContext(system_prompt=system_prompt)
+
+    try:
+        section, injected.rules, injected.facts = await _business_context(db, user_id)
+        injected.system_prompt = _append_context_section(injected.system_prompt, section)
+    except Exception as exc:
+        logger.warning("Failed to inject business context: %s", exc)
+
+    try:
+        section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id)
+        injected.system_prompt = _append_context_section(injected.system_prompt, section)
+    except Exception as exc:
+        logger.warning("Failed to inject Odoo currency context: %s", exc)
+
+    try:
+        section, injected.memories = await _memory_context(db, user_id)
+        injected.system_prompt = _append_context_section(injected.system_prompt, section)
+    except Exception as exc:
+        logger.warning("Failed to inject memories: %s", exc)
+
+    try:
+        section, injected.search_results = await _search_context(messages, user_id)
+        injected.system_prompt = _append_context_section(injected.system_prompt, section)
+    except Exception as exc:
+        logger.warning("Failed to retrieve or inject search results: %s", exc)
+
+    try:
+        section, injected.subtasks = await _subtask_context(messages, db)
+        injected.system_prompt = _append_context_section(injected.system_prompt, section)
+    except Exception as exc:
+        logger.warning("Failed to execute Task Graph nodes: %s", exc)
+
+    logger.info(
+        "Context injected | rules=%d facts=%d memories=%d search_results=%d subtasks=%d user_id=%s currency=%s",
+        len(injected.rules),
+        len(injected.facts),
+        len(injected.memories),
+        len(injected.search_results),
+        len(injected.subtasks),
+        user_id,
+        injected.currency_text or "none",
+    )
+    return injected
+
+
+async def _call_model(
+    model: AIModel,
+    provider: AIProvider,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    tool_definitions: list[dict[str, Any]],
+) -> tuple[dict[str, Any], FoundryClient]:
+    client = await build_foundry_client(provider, model)
+    result = await client.chat_completion(
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tool_definitions if tool_definitions else None,
+    )
+    return result, client
+
+
+async def _fallback_candidates(
+    db: AsyncSession,
+    route: AIRoute,
+    primary_model: AIModel,
+    needs_tools: bool,
+) -> list[tuple[AIModel, AIProvider]]:
+    candidates: list[tuple[AIModel, AIProvider]] = []
+    if route.fallback_model_id:
+        fb_model_res = await db.execute(
+            select(AIModel).where(AIModel.id == route.fallback_model_id, AIModel.enabled == "true")
+        )
+        fb_model = fb_model_res.scalar_one_or_none()
+        if fb_model:
+            fb_prov_res = await db.execute(
+                select(AIProvider).where(AIProvider.id == fb_model.provider_id, AIProvider.enabled == "true")
+            )
+            fb_prov = fb_prov_res.scalar_one_or_none()
+            if fb_prov:
+                candidates.append((fb_model, fb_prov))
+
+    first_candidate_supports_tools = bool(candidates) and (
+        candidates[0][0].supports_tools == "true" or (candidates[0][0].config_json or {}).get("supports_tools") is True
+    )
+    if not needs_tools or first_candidate_supports_tools:
+        return candidates
+
+    all_models_res = await db.execute(
+        select(AIModel).where(
+            AIModel.enabled == "true",
+            AIModel.id != primary_model.id,
+            AIModel.id != (route.fallback_model_id or UUID(int=0)),
+        ).limit(10)
+    )
+    for alt_model in all_models_res.scalars().all():
+        supports_tools = alt_model.supports_tools == "true" or (alt_model.config_json or {}).get("supports_tools") is True
+        if not supports_tools:
+            continue
+        alt_prov_res = await db.execute(
+            select(AIProvider).where(AIProvider.id == alt_model.provider_id, AIProvider.enabled == "true")
+        )
+        alt_prov = alt_prov_res.scalar_one_or_none()
+        if alt_prov:
+            candidates.append((alt_model, alt_prov))
+    return candidates
+
+
+async def _run_model_with_fallbacks(
+    db: AsyncSession,
+    route: AIRoute,
+    primary_model: AIModel,
+    primary_provider: AIProvider,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    tool_definitions: list[dict[str, Any]],
+) -> ModelCallState:
+    stats = ModelCallStats()
+    result, client = await _call_model(primary_model, primary_provider, messages, temperature, max_tokens, tool_definitions)
+    stats.add_result(result)
+    state = ModelCallState(result=result, used_model=primary_model, used_provider=primary_provider, client=client, stats=stats)
+
+    if not (result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded")):
+        return state
+
+    state.fallback_reason = "primary_quota_exceeded"
+    for fb_model, fb_provider in await _fallback_candidates(db, route, primary_model, bool(tool_definitions)):
+        supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
+        if tool_definitions and not supports_tools:
+            logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
+            continue
+
+        state.fallback_model_display = fb_model.display_name
+        logger.warning(
+            "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
+            primary_model.display_name,
+            fb_model.display_name,
+        )
+        fb_result, fb_client = await _call_model(fb_model, fb_provider, messages, temperature, max_tokens, tool_definitions)
+        stats.add_result(fb_result)
+        state.result = fb_result
+        state.used_model = fb_model
+        state.used_provider = fb_provider
+        state.client = fb_client
+        state.fallback_used = True
+        if not fb_result.get("error"):
+            break
+        state.fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
+    return state
+
+
+async def _run_deterministic_lookup_fallback(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    messages: list,
+    state: ModelCallState,
+) -> list[dict[str, Any]]:
+    if state.fallback_used:
+        return []
+    if not (state.result.get("error") and state.result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded")):
+        return []
+
+    user_query = _last_user_message(messages)
+    lookup_intent = detect_odoo_lookup_intent(user_query) if user_query else None
+    if not lookup_intent:
+        return []
+
+    state.fallback_reason = f"deterministic_odoo_lookup_fallback_from_{state.result.get('error_type')}"
+    logger.info("Using deterministic Odoo lookup fallback | user_id=%s reason=%s", user_id, state.fallback_reason)
+    tool_results: list[dict[str, Any]] = []
+    for action in lookup_intent.get("actions", []):
+        try:
+            tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"])
+        except Exception as exc:
+            logger.error("Deterministic Odoo action failed: %s", exc)
+            break
+        tool_results.append({
+            "tool_call_id": f"deterministic_{action['tool']}",
+            "tool_name": action["tool"],
+            "arguments": action["input"],
+            "result": tc_result,
+        })
+        if isinstance(tc_result, dict) and tc_result.get("error"):
+            break
+
+    if not tool_results:
+        return []
+
+    state.fallback_used = True
+    report_fallback = _build_report_fallback_answer(tool_results)
+    if report_fallback:
+        state.result = {"content": report_fallback, "finish_reason": "stop", "error": False}
+        return tool_results
+
+    result_parts = []
+    for tool_result in tool_results:
+        result = tool_result.get("result", {})
+        if isinstance(result, dict) and not result.get("error"):
+            records = result.get("records", result.get("lines", result.get("results", [])))
+            result_parts.append(f"{tool_result['tool_name']}: found {len(records)} records" if records else f"{tool_result['tool_name']}: no results")
+        elif isinstance(result, dict) and result.get("error"):
+            result_parts.append(f"{tool_result['tool_name']}: error - {result.get('message', 'unknown')}")
+    state.result = {
+        "content": "; ".join(result_parts) if result_parts else "Odoo lookup completed but no results found.",
+        "finish_reason": "stop",
+        "error": False,
+    }
+    return tool_results
+
+
+async def _run_tool_loop(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    state: ModelCallState,
+    messages: list[dict[str, Any]],
+    tools: list[AITool],
+    tool_definitions: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    tool_results: list[dict[str, Any]] = []
+    for _ in range(10):
+        if state.result.get("error"):
+            break
+        tool_calls = state.result.get("tool_calls")
+        if not tool_calls or not tools:
+            break
+
+        state.stats.tool_calls += len(tool_calls)
+        messages.append({
+            "role": "assistant",
+            "content": state.result.get("content") or None,
+            "tool_calls": [
+                {"id": call["id"], "type": call["type"], "function": call["function"]}
+                for call in tool_calls
+            ],
+        })
+
+        for call in tool_calls:
+            if call.get("type") != "function":
+                continue
+            function = call.get("function", {})
+            name = function.get("name", "")
+            try:
+                args = json.loads(function.get("arguments", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+            result = await _execute_tool_call(db, user_id, name, args)
+            tool_results.append({
+                "tool_call_id": call.get("id", ""),
+                "tool_name": name,
+                "arguments": args,
+                "result": result,
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.get("id", ""),
+                "content": json.dumps(result),
+            })
+
+        state.result = await state.client.chat_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tool_definitions if tool_definitions else None,
+        )
+        state.stats.add_result(state.result)
+    return tool_results
+
+
+async def _log_usage(
+    db: AsyncSession,
+    route: AIRoute,
+    task_type: str,
+    chat_session_id: Optional[UUID],
+    user_id: Optional[UUID],
+    state: ModelCallState,
+) -> None:
+    db.add(AIUsageLog(
+        provider_id=state.used_provider.id,
+        model_id=state.used_model.id,
+        route_id=route.id,
+        task_type=task_type,
+        chat_session_id=chat_session_id,
+        user_id=user_id,
+        prompt_tokens=state.stats.prompt_tokens,
+        completion_tokens=state.stats.completion_tokens,
+        total_tokens=state.stats.total_tokens,
+        latency_ms=state.stats.latency_ms,
+        status="failed" if state.result.get("error") else "success",
+        error_message=state.result.get("message") if state.result.get("error") else None,
+    ))
+    await db.flush()
+
+
+def _provider_error_message(
+    result: dict[str, Any],
+    state: ModelCallState,
+    primary_model_display: str,
+) -> str:
+    error_type = result.get("error_type", "unknown")
+    if error_type in ("rate_limit_exceeded", "quota_exceeded"):
+        if state.fallback_used:
+            return (
+                "The AI service is temporarily unavailable because all models "
+                "reached their quota or rate limit. "
+                f"Tried: {primary_model_display} (primary) and {state.fallback_model_display} (fallback). "
+                "Please try again shortly, or contact support if this continues."
+            )
+        fallback_note = f" (fallback model: {state.fallback_model_display})" if state.fallback_model_display != "none" else ""
+        return (
+            "The AI service is temporarily unavailable because the model "
+            "quota or rate limit has been reached. "
+            f"Primary: {primary_model_display}{fallback_note}. "
+            "Please try again shortly, or contact support if this continues."
+        )
+
+    return {
+        "authentication_error": "The AI service is unavailable due to an authentication issue. Please contact support.",
+        "authorization_error": "The AI service is unavailable due to an authorization issue. Please contact support.",
+        "model_not_found": "The configured AI model could not be found. Please contact support.",
+        "server_error": "The AI service is temporarily unavailable. Please try again shortly, or contact support if this continues.",
+        "bad_request": "The AI service received an invalid request. Please try again, or contact support if this continues.",
+    }.get(error_type, "The AI service is temporarily unavailable. Please try again shortly, or contact support if this continues.")
+
+
+def _raise_if_provider_failed(
+    state: ModelCallState,
+    primary_model: AIModel,
+    primary_provider: AIProvider,
+    user_id: Optional[UUID],
+    chat_session_id: Optional[UUID],
+    tools_enabled: bool,
+) -> None:
+    if not state.result.get("error"):
+        return
+
+    error_type = state.result.get("error_type", "unknown")
+    raw_message = state.result.get("message", "Provider returned an error")
+    status_code = state.result.get("status_code", 0)
+    logger.error(
+        "Provider call failed | primary_model=%s primary_provider=%s used_model=%s used_provider=%s "
+        "error_type=%s status_code=%s raw_message=%s fallback_used=%s fallback_model=%s "
+        "user_id=%s chat_session_id=%s tools_enabled=%s",
+        primary_model.display_name,
+        primary_provider.name,
+        state.used_model.display_name,
+        state.used_provider.name,
+        error_type,
+        status_code,
+        raw_message,
+        state.fallback_used,
+        state.fallback_model_display,
+        user_id,
+        chat_session_id,
+        tools_enabled,
+    )
+    raise ProviderCallError(
+        _provider_error_message(state.result, state, primary_model.display_name),
+        state.used_provider.name,
+        state.used_model.display_name,
+    )
+
+
+def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any], primary_model: AIModel) -> dict[str, Any]:
+    return {
+        "rules_injected": [{"id": str(rule.id), "title": rule.title, "priority": rule.priority} for rule in injected.rules],
+        "facts_injected": [{"key": fact.key, "value": fact.value} for fact in injected.facts],
+        "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
+        "search_results_injected": [
+            {
+                "id": hit.get("id"),
+                "title": hit.get("title"),
+                "type": hit.get("type"),
+                "score": hit.get("score"),
+            }
+            for hit in injected.search_results
+        ],
+        "currency_source": injected.currency_source,
+        "subtasks": injected.subtasks,
+        "model_routing": {
+            "primary_model": primary_model.display_name,
+            "fallback_model": state.fallback_model_display,
+            "fallback_used": state.fallback_used,
+            "fallback_reason": state.fallback_reason,
+            "routing_reason": policy.get("reason", "unknown"),
+            "cost_tier": policy.get("cost_tier", "medium"),
+        },
+    }
+
+
+async def _apply_blank_content_fallback(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    messages: list,
+    response: dict[str, Any],
+    tool_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    content = response.get("content") or ""
+    if content.strip():
+        return response
+
+    if tool_results:
+        fallback = _build_report_fallback_answer(tool_results)
+        if fallback:
+            logger.info("Used report fallback answer (from tool results) | user_id=%s tool_calls=%d", user_id, len(tool_results))
+            response["content"] = fallback
+        return response
+
+    user_query = _last_user_message(messages)
+    report_intent = detect_odoo_report_intent(user_query) if user_query else None
+    if not report_intent:
+        return response
+
+    logger.info("Deterministic report intent detected | user_id=%s intent=%s", user_id, report_intent)
+    try:
+        tc_result = await _execute_tool_call(db, user_id, "odoo_analyze", report_intent["input"])
+    except Exception as exc:
+        logger.error("Deterministic report execution failed: %s", exc)
+        return response
+
+    deterministic_results = [{
+        "tool_call_id": "deterministic_report",
+        "tool_name": "odoo_execute_report",
+        "arguments": report_intent["input"],
+        "result": tc_result,
+    }]
+    fallback = _build_report_fallback_answer(deterministic_results)
+    if fallback:
+        response["content"] = fallback
+        response["tool_calls"] = deterministic_results
+        response["deterministic_report"] = True
+        logger.info("Used deterministic report answer | user_id=%s", user_id)
+    return response
+
+
 async def execute_chat(
     db: AsyncSession,
     messages: list,
@@ -739,632 +1435,45 @@ async def execute_chat(
     chat_session_id: Optional[UUID] = None,
     user_id: Optional[UUID] = None,
 ) -> dict:
-    # Use ModelRoutingPolicyService to determine primary route and fallback properties
-    from app.services.model_routing_policy import ModelRoutingPolicyService
-    from app.core.config import get_settings
-    routing_svc = ModelRoutingPolicyService(db)
+    user_msg_text = _last_user_message(messages)
+    risk_level = _risk_level_for_message(user_msg_text)
+    route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
 
-    # Analyze risk level based on task_type and text content
-    # Simple Odoo field lookups mentioning "amount" or "total" as field references
-    # should not be classified as high-risk finance.
-    user_msg_text = messages[-1]["content"] if messages else ""
-    is_finance_topic = any(kw in user_msg_text.lower() for kw in [
-        "revenue", "income", "expense", "profit", "loss", "balance", "invoice",
-        "bill", "payment", "cost", "price", "tax", "vat", "accounting",
-    ])
-
-    # If finance keywords match but the query is an Odoo/ERP lookup asking for
-    # field values (amount, total), don't escalate — treat as data retrieval.
-    is_odoo_lookup = any(phrase in user_msg_text.lower() for phrase in [
-        "check odoo", "odoo", "account.move", "ir.attachment", "credit note",
-        "find", "search", "look up",
-    ])
-    if is_odoo_lookup and user_msg_text.lower().count("amount") <= 2:
-        contains_aggregate_intent = any(kw in user_msg_text.lower() for kw in [
-            "compare", "reconcile", "audit", "forecast", "budget", "analyze",
-            "trend", "variance", "total revenue", "total income", "net profit",
-        ])
-        if not contains_aggregate_intent:
-            is_finance_topic = False
-
-    risk_level = "high" if is_finance_topic else "low"
-
-    policy = await routing_svc.select_route(
-        task_type=task_type,
-        risk_level=risk_level,
-        requires_tools=True if task_type == "general_chat" else False
-    )
-
-    route_id_str = policy.get("selected_route_id")
-    model_id_str = policy.get("selected_model_id")
-
-    if route_id_str and model_id_str:
-        # Load selected route
-        route_res = await db.execute(select(AIRoute).where(AIRoute.id == UUID(route_id_str)))
-        route = route_res.scalar_one_or_none()
-
-        # Load selected model
-        model_res = await db.execute(select(AIModel).where(AIModel.id == UUID(model_id_str)))
-        model_obj = model_res.scalar_one_or_none()
-
-        # Load provider
-        prov_res = await db.execute(select(AIProvider).where(AIProvider.id == model_obj.provider_id))
-        provider = prov_res.scalar_one_or_none()
-    else:
-        # Fallback to legacy get_enabled_route if none found in DB
-        route, model_obj, provider = await get_enabled_route(db, task_type)
-
-    # Build system prompt with dynamic connector context
     system_prompt = route.system_prompt or ""
     connector_context = await _get_connector_context(db, user_id)
     if connector_context:
         system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
 
-    # Fetch available tools for connected systems using generic ToolSelectionService
-    tools: list[AITool] = []
-    tool_definitions: list[dict[str, Any]] = []
-    tool_selection_result = None
-    supports_tools = model_obj.supports_tools == "true"
-    if supports_tools:
-        from app.services.tool_selection import get_tool_selection
-        tool_selection_result = await get_tool_selection(
-            db, user_id, user_msg_text, task_type, risk_level,
-        )
-        tools = tool_selection_result.selected
-        tool_definitions = _build_tool_definitions(tools)
-        if tool_selection_result.selected:
-            logger.info(
-                "Tool selection | intent=%s selected=%d excluded=%d schema_before=%d schema_after=%d reason=%s",
-                tool_selection_result.intent,
-                len(tool_selection_result.selected),
-                len(tool_selection_result.excluded),
-                tool_selection_result.schema_size_before,
-                tool_selection_result.schema_size_after,
-                tool_selection_result.selection_reason,
-            )
-        if tool_definitions:
-            avail_names = [t.name for t in tools]
-            system_prompt += (
-                "\n\nYou have access to the following tools. "
-                "When the user asks about data from a connected system, call the appropriate tool "
-                "rather than saying you cannot access it. "
-                "Use tools proactively when relevant."
-            )
-            odoo_avail = [n for n in avail_names if n.startswith("odoo_")]
-            if odoo_avail:
-                guidance_parts = ["\n\n### Odoo Tool Guidance\nUse these mode-based Odoo tools. Do not create one-off tools.\n"]
-                tool_descriptions = {
-                    "odoo_query": "Records/count/summary. Default to records with domain.",
-                    "odoo_analyze": "Aggregates and account reports. P&L → Profit and Loss.",
-                    "odoo_content": "Chatter/notes/long text. metadata first, then content with IDs.",
-                    "odoo_attachment": "Attachment metadata and text. Discovery via odoo_query on ir.attachment.",
-                    "odoo_mutation": "Create/write/delete/workflow. Odoo permissions decide whether the connected user can perform the action.",
-                    "odoo_message": "Post/update chatter/Discuss messages.",
-                    "odoo_schema": "Model/field discovery when unsure.",
-                    "odoo_health": "Connection/runtime check.",
-                }
-                for name in odoo_avail:
-                    desc = tool_descriptions.get(name, "")
-                    if desc:
-                        guidance_parts.append(f"  - **{name}**: {desc}")
-                if "odoo_analyze" in odoo_avail:
-                    guidance_parts.append(
-                        "Report aliases: P&L/PNL→Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
-                        "Dates: this month→first day to today; this year→Jan 1 to today; last month→previous month.\n"
-                        "Line names: revenue→[Revenue, Income, Sales]; expenses→[Expenses, COGS]; net income→[Net Profit, Net Income]."
-                    )
-                guidance_parts.append("Prefer the consolidated odoo_ops_runner surface. Do not create one-off tools.")
-                system_prompt += "\n".join(guidance_parts)
-
-    # Inject business rules and company facts into the system prompt
-    injected_rules: list[Any] = []
-    injected_facts: list[Any] = []
-    try:
-        connected_systems: set[str] = set()
-        if user_id:
-            acct_result = await db.execute(
-                select(AIConnectedAccount).where(
-                    AIConnectedAccount.user_id == user_id,
-                    or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-                )
-            )
-            connected_systems = {a.provider for a in acct_result.scalars().all()}
-        context_svc = ContextService(db)
-        context = await context_svc.get_context(
-            ContextRequest(
-                task="general_chat",
-                systems=list(connected_systems) if connected_systems else None,
-                limit=50,
-            ),
-            user_id=user_id,
-        )
-        injected_rules = context.get("rules", [])
-        injected_facts = context.get("facts", [])
-        if injected_rules:
-            rules_text = "\n".join(
-                f"- [Priority {r.priority}] {r.body}" for r in injected_rules
-            )
-            system_prompt += f"\n\n## Active Business Rules\n{rules_text}"
-        if injected_facts:
-            facts_text = "\n".join(
-                f"- {f.key}: {f.value}" for f in injected_facts
-            )
-            system_prompt += f"\n\n## Company Facts\n{facts_text}"
-        # Inject Odoo company currency if available
-        odoo_currency_str = None
-        currency_source = "none"
-        if user_id:
-            acct_result2 = await db.execute(
-                select(AIConnectedAccount).where(
-                    AIConnectedAccount.user_id == user_id,
-                    AIConnectedAccount.provider == "odoo",
-                    or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-                )
-            )
-            odoo_account = acct_result2.scalars().first()
-            if odoo_account and odoo_account.odoo_currency_code:
-                code = odoo_account.odoo_currency_code
-                symbol = odoo_account.odoo_currency_symbol or code
-                company = odoo_account.odoo_company_name or "your company"
-                odoo_currency_str = f"{company} uses {code} ({symbol})"
-                system_prompt += f"\n\n## Connected Odoo Currency\n{odoo_currency_str}"
-                currency_source = "odoo_connected_account"
-
-        # Inject active memories (learned preferences, patterns, resolved cases)
-        injected_memories: list[Any] = []
-        try:
-            if user_id:
-                mem_result = await db.execute(
-                    select(AIMemory).where(
-                        AIMemory.created_by_user_id == user_id,
-                        AIMemory.status == "active",
-                    )
-                    .order_by(AIMemory.priority.asc(), AIMemory.last_used_at.desc().nullslast())
-                    .limit(30)
-                )
-                injected_memories = mem_result.scalars().all()
-                if injected_memories:
-                    mem_blocks: list[str] = []
-                    for m in injected_memories:
-                        formatted = f"- [{m.type}] {m.title}"
-                        if m.summary:
-                            formatted += f": {m.summary}"
-                        if m.body:
-                            formatted += f"\n  Detail: {m.body[:300]}"
-                        mem_blocks.append(formatted)
-                    system_prompt += "\n\n## Learned from Past Interactions\n" + "\n".join(mem_blocks)
-        except Exception as mem_exc:
-            logger.warning("Failed to inject memories: %s", mem_exc)
-
-        # Search Azure AI Search for relevant SOPs, procedures, and long documents
-        chunks_to_inject: list[dict[str, Any]] = []
-        try:
-            from app.services.search_service import SearchService
-            search_svc = SearchService()
-            if search_svc.enabled and messages:
-                user_query = messages[-1]["content"]
-                # Query Azure AI Search with filters
-                injected_search_results = await search_svc.search_memories(
-                    query=user_query,
-                    user_id=user_id,
-                    status="active"
-                )
-
-                # Check feature flag and limit max injected chunks
-                from app.core.config import get_settings
-                max_chunks = get_settings().azure_search_max_injected_chunks
-                chunks_to_inject = injected_search_results[:max_chunks]
-
-                if chunks_to_inject:
-                    search_blocks = []
-                    for hit in chunks_to_inject:
-                        source_type = hit.get("type") or hit.get("source_type") or "reference"
-                        title = hit.get("title") or "Untitled Document"
-                        chunk_text = hit.get("chunk_text") or hit.get("summary") or ""
-                        block = f"- [{source_type}] {title}"
-                        if chunk_text:
-                            block += f"\n  Details: {chunk_text[:350]}"
-                        search_blocks.append(block)
-
-                    system_prompt += "\n\n## Relevant Reference Materials\n" + "\n".join(search_blocks)
-        except Exception as search_exc:
-            logger.warning("Failed to retrieve or inject search results: %s", search_exc)
-
-        # Check if the user query is complex and requires Orchestrator task-graph node execution
-        subtasks_data: list[dict[str, Any]] = []
-        if messages:
-            user_query = messages[-1]["content"]
-            is_reconciliation = any(kw in user_query.lower() for kw in ["compare", "reconcile", "reconciliation", "credit note", "pdf"])
-            if is_reconciliation:
-                try:
-                    from app.services.task_graph import TaskGraphExecutor
-                    executor = TaskGraphExecutor()
-                    subtasks_data = await executor.execute_all(user_query, db=db)
-
-                    # Inject subtask results into system prompt
-                    subtask_summary = []
-                    for t in subtasks_data:
-                        subtask_summary.append(f"- Subtask '{t['name']}' ({t['status']}): Result={t['result']}")
-
-                    system_prompt += "\n\n## Ephemeral Sub-Agent / Task Worker Results\n" + "\n".join(subtask_summary)
-                except Exception as t_exc:
-                    logger.warning("Failed to execute Task Graph nodes: %s", t_exc)
-
-        logger.info(
-            "Context injected | rules=%d facts=%d memories=%d search_results=%d subtasks=%d user_id=%s currency=%s",
-            len(injected_rules), len(injected_facts), len(injected_memories), len(chunks_to_inject), len(subtasks_data), user_id, odoo_currency_str or "none",
-        )
-    except Exception as exc:
-        logger.warning("Failed to inject context: %s", exc)
-
-    if system_prompt:
-        full_messages = [{"role": "system", "content": system_prompt}] + messages
-    else:
-        full_messages = messages
-
+    tools, tool_definitions, system_prompt = await _select_tools_for_model(
+        db, user_id, user_msg_text, task_type, risk_level, model_obj, system_prompt,
+    )
+    injected = await _inject_context_sections(db, user_id, messages, system_prompt)
+    full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
     temperature = float(route.temperature) if route.temperature is not None else 0.3
     max_tokens = route.max_tokens or 2000
 
-    total_prompt_tokens = 0
-    total_completion_tokens = 0
-    total_latency_ms = 0
-    total_tool_calls = 0
-    tool_results: list[dict[str, Any]] = []
-
-    async def _try_model(model, prov, msgs):
-        cl = await build_foundry_client(prov, model)
-        res = await cl.chat_completion(
-            messages=msgs,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tool_definitions if tool_definitions else None,
-        )
-        return res, model, prov, cl
-
-    result, used_model, used_provider, client = await _try_model(model_obj, provider, full_messages)
-    total_prompt_tokens += result.get("prompt_tokens", 0)
-    total_completion_tokens += result.get("completion_tokens", 0)
-    total_latency_ms += result.get("latency_ms", 0)
-
-    # Fallback on quota / rate-limit errors — try ALL available tool-supporting models
-    fallback_used = False
-    primary_model_display = model_obj.display_name
-    fallback_model_display = "none"
-    fallback_reason = "noneeded"
-
-    if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded"):
-        fallback_reason = "primary_quota_exceeded"
-        # Collect all possible fallback models: configured fallback first, then any other enabled model
-        fallback_candidates: list[tuple[Any, Any]] = []
-        
-        # 1. Try configured fallback model first
-        if route.fallback_model_id:
-            fb_model_res = await db.execute(
-                select(AIModel).where(AIModel.id == route.fallback_model_id, AIModel.enabled == "true")
-            )
-            fb_model = fb_model_res.scalar_one_or_none()
-            if fb_model:
-                fb_prov_res = await db.execute(
-                    select(AIProvider).where(AIProvider.id == fb_model.provider_id, AIProvider.enabled == "true")
-                )
-                fb_prov = fb_prov_res.scalar_one_or_none()
-                if fb_prov:
-                    fallback_candidates.append((fb_model, fb_prov))
-
-        # 2. If configured fallback doesn't support tools, try all other enabled models with tools
-        needs_tools = bool(tool_definitions)
-        if needs_tools and (not fallback_candidates or fallback_candidates[0][0].supports_tools != "true"):
-            all_models_res = await db.execute(
-                select(AIModel).where(
-                    AIModel.enabled == "true",
-                    AIModel.id != model_obj.id,
-                    AIModel.id != (route.fallback_model_id or UUID(int=0)),
-                ).limit(10)
-            )
-            for alt_model in all_models_res.scalars().all():
-                if alt_model.supports_tools == "true" or (alt_model.config_json or {}).get("supports_tools") is True:
-                    alt_prov_res = await db.execute(
-                        select(AIProvider).where(AIProvider.id == alt_model.provider_id, AIProvider.enabled == "true")
-                    )
-                    alt_prov = alt_prov_res.scalar_one_or_none()
-                    if alt_prov:
-                        fallback_candidates.append((alt_model, alt_prov))
-
-        for fb_model, fb_prov in fallback_candidates:
-            fb_supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
-            if needs_tools and not fb_supports_tools:
-                logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
-                continue
-
-            fallback_model_display = fb_model.display_name
-            logger.warning(
-                "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
-                model_obj.display_name, fb_model.display_name,
-            )
-            fb_result, used_model, used_provider, client = await _try_model(fb_model, fb_prov, full_messages)
-            total_prompt_tokens += fb_result.get("prompt_tokens", 0)
-            total_completion_tokens += fb_result.get("completion_tokens", 0)
-            total_latency_ms += fb_result.get("latency_ms", 0)
-            result = fb_result
-            fallback_used = True
-            if not result.get("error"):
-                break  # Success — stop trying more fallbacks
-            fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
-
-    # If primary model failed with quota and no tool-capable fallback was found,
-    # try deterministic Odoo lookup for Odoo-related queries.
-    if result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded") and not fallback_used:
-        user_query = messages[-1].get("content", "") if messages else ""
-        lookup_intent = detect_odoo_lookup_intent(user_query) if user_query else None
-        if lookup_intent:
-            fallback_reason = f"deterministic_odoo_lookup_fallback_from_{result.get('error_type')}"
-            logger.info(
-                "Using deterministic Odoo lookup fallback | user_id=%s reason=%s",
-                user_id, fallback_reason,
-            )
-            # Execute the deterministic actions
-            dr_tool_results = []
-            all_ok = True
-            for action in lookup_intent.get("actions", []):
-                try:
-                    tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"])
-                    dr_tool_results.append({
-                        "tool_call_id": f"deterministic_{action['tool']}",
-                        "tool_name": action["tool"],
-                        "arguments": action["input"],
-                        "result": tc_result,
-                    })
-                    if isinstance(tc_result, dict) and tc_result.get("error"):
-                        all_ok = False
-                        break
-                except Exception as act_exc:
-                    logger.error("Deterministic Odoo action failed: %s", act_exc)
-                    all_ok = False
-                    break
-            if dr_tool_results:
-                tool_results = dr_tool_results
-                fallback_used = True
-                # Build answer from tool results
-                dr_fallback = _build_report_fallback_answer(dr_tool_results)
-                if dr_fallback:
-                    result = {"content": dr_fallback, "finish_reason": "stop", "error": False}
-                else:
-                    # Build a simple summary from results
-                    result_parts = []
-                    for tr in dr_tool_results:
-                        r = tr.get("result", {})
-                        if isinstance(r, dict) and not r.get("error"):
-                            records = r.get("records", r.get("lines", r.get("results", [])))
-                            if records:
-                                result_parts.append(f"{tr['tool_name']}: found {len(records)} records")
-                            else:
-                                result_parts.append(f"{tr['tool_name']}: no results")
-                        elif isinstance(r, dict) and r.get("error"):
-                            result_parts.append(f"{tr['tool_name']}: error - {r.get('message', 'unknown')}")
-                    result = {"content": "; ".join(result_parts) if result_parts else "Odoo lookup completed but no results found.", "finish_reason": "stop", "error": False}
-
-    # Tool-calling loop (up to 10 rounds to prevent infinite loops)
-    max_tool_rounds = 10
-    tool_round = 0
-    while tool_round < max_tool_rounds:
-        if result.get("error"):
-            break
-
-        tool_calls = result.get("tool_calls")
-        if not tool_calls or not tools:
-            break
-
-        tool_round += 1
-        total_tool_calls += len(tool_calls)
-
-        assistant_msg = {"role": "assistant", "content": result.get("content") or None}
-        assistant_msg["tool_calls"] = [
-            {"id": tc["id"], "type": tc["type"], "function": tc["function"]}
-            for tc in tool_calls
-        ]
-        full_messages.append(assistant_msg)
-
-        for tc in tool_calls:
-            if tc.get("type") != "function":
-                continue
-            func = tc.get("function", {})
-            name = func.get("name", "")
-            try:
-                args = json.loads(func.get("arguments", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                args = {}
-
-            tc_result = await _execute_tool_call(db, user_id, name, args)
-            tool_results.append({
-                "tool_call_id": tc.get("id", ""),
-                "tool_name": name,
-                "arguments": args,
-                "result": tc_result,
-            })
-
-            full_messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id", ""),
-                "content": json.dumps(tc_result),
-            })
-
-        result = await client.chat_completion(
-            messages=full_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tool_definitions if tool_definitions else None,
-        )
-
-        total_prompt_tokens += result.get("prompt_tokens", 0)
-        total_completion_tokens += result.get("completion_tokens", 0)
-        total_latency_ms += result.get("latency_ms", 0)
-
-    log = AIUsageLog(
-        provider_id=used_provider.id,
-        model_id=used_model.id,
-        route_id=route.id,
-        task_type=task_type,
-        chat_session_id=chat_session_id,
-        user_id=user_id,
-        prompt_tokens=total_prompt_tokens,
-        completion_tokens=total_completion_tokens,
-        total_tokens=total_prompt_tokens + total_completion_tokens,
-        latency_ms=total_latency_ms,
-        status="failed" if result.get("error") else "success",
-        error_message=result.get("message") if result.get("error") else None,
+    state = await _run_model_with_fallbacks(
+        db, route, model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
     )
-    db.add(log)
-    await db.flush()
+    tool_results = await _run_deterministic_lookup_fallback(db, user_id, messages, state)
+    tool_results.extend(await _run_tool_loop(
+        db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
+    ))
 
-    if result.get("error"):
-        error_type = result.get("error_type", "unknown")
-        raw_message = result.get("message", "Provider returned an error")
-        status_code = result.get("status_code", 0)
-
-        logger.error(
-            "Provider call failed | primary_model=%s primary_provider=%s "
-            "used_model=%s used_provider=%s "
-            "error_type=%s status_code=%s raw_message=%s "
-            "fallback_used=%s fallback_model=%s "
-            "user_id=%s chat_session_id=%s tools_enabled=%s",
-            model_obj.display_name,
-            provider.name,
-            used_model.display_name,
-            used_provider.name,
-            error_type,
-            status_code,
-            raw_message,
-            fallback_used,
-            fallback_model_display,
-            user_id,
-            chat_session_id,
-            bool(tool_definitions),
-        )
-
-        if error_type in ("rate_limit_exceeded", "quota_exceeded"):
-            if fallback_used:
-                user_facing = (
-                    f"The AI service is temporarily unavailable because all models "
-                    f"reached their quota or rate limit. "
-                    f"Tried: {primary_model_display} (primary) and {fallback_model_display} (fallback). "
-                    f"Please try again shortly, or contact support if this continues."
-                )
-            else:
-                fb_note = f" (fallback model: {fallback_model_display})" if fallback_model_display != "none" else ""
-                user_facing = (
-                    f"The AI service is temporarily unavailable because the model "
-                    f"quota or rate limit has been reached. "
-                    f"Primary: {primary_model_display}{fb_note}. "
-                    f"Please try again shortly, or contact support if this continues."
-                )
-        else:
-            user_facing = {
-                "authentication_error": (
-                    "The AI service is unavailable due to an authentication issue. "
-                    "Please contact support."
-                ),
-                "authorization_error": (
-                    "The AI service is unavailable due to an authorization issue. "
-                    "Please contact support."
-                ),
-                "model_not_found": (
-                    "The configured AI model could not be found. "
-                    "Please contact support."
-                ),
-                "server_error": (
-                    "The AI service is temporarily unavailable. "
-                    "Please try again shortly, or contact support if this continues."
-                ),
-                "bad_request": (
-                    "The AI service received an invalid request. "
-                    "Please try again, or contact support if this continues."
-                ),
-            }.get(error_type, (
-                "The AI service is temporarily unavailable. "
-                "Please try again shortly, or contact support if this continues."
-            ))
-
-        raise ProviderCallError(
-            user_facing,
-            used_provider.name,
-            used_model.display_name,
-        )
-
-    context_metadata = {
-        "rules_injected": [{"id": str(r.id), "title": r.title, "priority": r.priority} for r in injected_rules] if injected_rules else [],
-        "facts_injected": [{"key": f.key, "value": f.value} for f in injected_facts] if injected_facts else [],
-        "memories_injected": [{"id": str(m.id), "title": m.title, "type": m.type} for m in injected_memories] if injected_memories else [],
-        "search_results_injected": [
-            {
-                "id": hit.get("id"),
-                "title": hit.get("title"),
-                "type": hit.get("type"),
-                "score": hit.get("score")
-            }
-            for hit in chunks_to_inject
-        ] if chunks_to_inject else [],
-        "currency_source": currency_source,
-        "subtasks": subtasks_data if "subtasks_data" in locals() else [],
-        "model_routing": {
-            "primary_model": primary_model_display,
-            "fallback_model": fallback_model_display,
-            "fallback_used": fallback_used,
-            "fallback_reason": fallback_reason,
-            "routing_reason": policy.get("reason", "unknown") if "policy" in locals() else "legacy_get_enabled_route",
-            "cost_tier": policy.get("cost_tier", "medium") if "policy" in locals() else "medium"
-        }
-    }
+    await _log_usage(db, route, task_type, chat_session_id, user_id, state)
+    _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
 
     response = {
-        "content": result.get("content", ""),
-        "finish_reason": result.get("finish_reason", ""),
-        "model_provider": used_provider.name,
-        "model_name": used_model.display_name,
-        "prompt_tokens": total_prompt_tokens,
-        "completion_tokens": total_completion_tokens,
-        "total_tokens": total_prompt_tokens + total_completion_tokens,
-        "latency_ms": total_latency_ms,
+        "content": state.result.get("content", ""),
+        "finish_reason": state.result.get("finish_reason", ""),
+        "model_provider": state.used_provider.name,
+        "model_name": state.used_model.display_name,
+        "prompt_tokens": state.stats.prompt_tokens,
+        "completion_tokens": state.stats.completion_tokens,
+        "total_tokens": state.stats.total_tokens,
+        "latency_ms": state.stats.latency_ms,
         "tool_calls": tool_results if tool_results else None,
-        "context": context_metadata,
-        "tool_call_count": total_tool_calls,
+        "context": _context_metadata(injected, state, policy, model_obj),
+        "tool_call_count": state.stats.tool_calls,
     }
-
-    # If content is blank, try deterministic fallback paths
-    content = response.get("content") or ""
-    if not content.strip():
-        if tool_results:
-            fallback = _build_report_fallback_answer(tool_results)
-            if fallback:
-                logger.info(
-                    "Used report fallback answer (from tool results) | user_id=%s tool_calls=%d",
-                    user_id, len(tool_results),
-                )
-                response["content"] = fallback
-        elif messages:
-            user_query = messages[-1].get("content", "") if isinstance(messages[-1], dict) else ""
-            report_intent = detect_odoo_report_intent(user_query) if user_query else None
-            if report_intent:
-                logger.info(
-                    "Deterministic report intent detected | user_id=%s intent=%s",
-                    user_id, report_intent,
-                )
-                try:
-                    tc_result = await _execute_tool_call(db, user_id, "odoo_analyze", report_intent["input"])
-                    dr_tool_results = [{
-                        "tool_call_id": "deterministic_report",
-                        "tool_name": "odoo_execute_report",
-                        "arguments": report_intent["input"],
-                        "result": tc_result,
-                    }]
-                    dr_fallback = _build_report_fallback_answer(dr_tool_results)
-                    if dr_fallback:
-                        response["content"] = dr_fallback
-                        response["tool_calls"] = dr_tool_results
-                        response["deterministic_report"] = True
-                        logger.info(
-                            "Used deterministic report answer | user_id=%s", user_id,
-                        )
-                except Exception as drexc:
-                    logger.error("Deterministic report execution failed: %s", drexc)
-
-    return response
+    return await _apply_blank_content_fallback(db, user_id, messages, response, tool_results)
