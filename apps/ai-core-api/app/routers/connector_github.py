@@ -5,7 +5,15 @@ import os
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
-from app.services.token_storage import store_token, delete_token, token_status
+from app.core.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.token_storage import store_token, delete_token
+from app.services.connected_account_state import (
+    mark_delegated_account_disconnected,
+    record_delegated_diagnosis,
+    sync_delegated_account_from_token,
+    upsert_delegated_account,
+)
 from app.services.connector_commands import diagnose_github_connection, run_github_cli_command
 
 router = APIRouter(prefix="/connector/github", tags=["Connector"])
@@ -45,7 +53,11 @@ async def github_auth_url(auth: dict = Depends(api_key_auth)):
 
 
 @router.post("/oauth-callback")
-async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
+async def github_oauth_callback(
+    req: dict,
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Handle GitHub OAuth callback: exchange code for token, store in KV."""
     user_id = auth.get("user_id")
     code = req.get("code", "")
@@ -69,35 +81,59 @@ async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
         access_token = data.get("access_token")
         if not access_token:
             return {"status": "error", "error": "No access_token in response", "request_id": request_id}
-        stored = await store_token("github", user_id, {
+        token_payload = {
             "access_token": access_token,
             "token_type": data.get("token_type", "bearer"),
             "scope": data.get("scope", ""),
-        })
+        }
+        stored = await store_token("github", user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
+        await upsert_delegated_account(
+            db,
+            "github",
+            user_id,
+            token_data=token_payload,
+            status="connected",
+            permission_summary="GitHub OAuth authentication completed.",
+            commit=True,
+        )
         return {"status": "connected", "request_id": request_id}
     except Exception as e:
         return {"status": "error", "error": str(e), "request_id": request_id}
 
 
 @router.get("/status")
-async def github_status(auth: dict = Depends(api_key_auth)):
+async def github_status(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Check GitHub connection status for the current user."""
     user_id = auth.get("user_id")
-    return await token_status("github", user_id) if user_id else {"status": "not_connected"}
+    return await sync_delegated_account_from_token(db, "github", user_id, commit=True) if user_id else {"status": "not_connected"}
 
 
 @router.post("/diagnose")
-async def github_diagnose(auth: dict = Depends(api_key_auth)):
+async def github_diagnose(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Validate the stored GitHub delegated token without running gh."""
-    return await diagnose_github_connection(auth.get("user_id"))
+    user_id = auth.get("user_id")
+    result = await diagnose_github_connection(user_id)
+    if user_id:
+        await record_delegated_diagnosis(db, "github", user_id, result, commit=True)
+    return result
 
 
 @router.post("/disconnect")
-async def github_disconnect(auth: dict = Depends(api_key_auth)):
+async def github_disconnect(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Disconnect GitHub for the current user."""
     user_id = auth.get("user_id")
     if user_id:
         await delete_token("github", user_id)
+        await mark_delegated_account_disconnected(db, "github", user_id, commit=True)
     return {"status": "disconnected"}

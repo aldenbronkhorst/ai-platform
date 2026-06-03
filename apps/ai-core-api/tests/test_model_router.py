@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
@@ -212,6 +213,108 @@ class TestConnectorContext:
         ):
             result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
             assert result["content"] == "Hello! I am the AI Platform."
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_includes_current_date_context(self):
+        from app.services.model_router import execute_chat
+
+        fixed_now = datetime(2026, 6, 3, 8, 30, 0, tzinfo=ZoneInfo("Africa/Johannesburg"))
+        db = MockSession(has_config=True)
+        mock_chat_completion = AsyncMock(return_value={
+            "content": "I can use the current date.",
+            "finish_reason": "stop",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 100,
+        })
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router._platform_now',
+            new=lambda now=None: fixed_now,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion))
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "what is today?"}], user_id=uuid.uuid4())
+
+        called_messages = mock_chat_completion.call_args[1]["messages"]
+        system_prompt_content = called_messages[0]["content"]
+        assert "## Current Date and Time" in system_prompt_content
+        assert "Current date: 2026-06-03" in system_prompt_content
+        assert "this month starts on 2026-06-01 and ends today, 2026-06-03" in system_prompt_content
+        assert result["context"]["current_date"] == "2026-06-03"
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_treats_azure_token_as_connected_without_account_row(self):
+        from app.services.model_router import execute_chat
+
+        db = MockSession(has_config=True, connected_accounts=[])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="azure_cli",
+                                display_name="Azure CLI",
+                                description="Run Azure CLI",
+                                target_system="azure",
+                                input_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        async def fake_token_status(provider, _user_id):
+            if provider == "azure":
+                return {"status": "connected", "provider": "azure", "scope": "https://management.core.windows.net//.default"}
+            return {"status": "not_connected", "provider": provider}
+
+        db.execute = mock_execute
+        mock_chat_completion = AsyncMock(return_value={
+            "content": "Azure is connected.",
+            "finish_reason": "stop",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 100,
+        })
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.connected_account_state.token_status',
+            new=AsyncMock(side_effect=fake_token_status),
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion))
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "can you access my azure?"}],
+                user_id=uuid.uuid4(),
+            )
+
+        called_kwargs = mock_chat_completion.call_args[1]
+        system_prompt_content = called_kwargs["messages"][0]["content"]
+        tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
+        assert "Azure: connected" in system_prompt_content
+        assert "azure_cli" in tool_names
+        assert result["content"] == "Azure is connected."
 
     @pytest.mark.asyncio
     async def test_execute_chat_injects_active_memories(self):
@@ -987,6 +1090,67 @@ class TestProviderErrorHandling:
 
 
 class TestToolExecution:
+    def test_turnover_report_intent_defaults_to_profit_and_loss(self):
+        from app.services.model_router import detect_odoo_report_intent
+
+        intent = detect_odoo_report_intent("What is this month's turnover?")
+
+        assert intent is not None
+        assert intent["tool"] == "odoo_ops_runner"
+        assert intent["input"]["mode"] == "report"
+        assert intent["input"]["report_name"] == "Profit and Loss"
+        assert "Turnover" in intent["input"]["line_names"]
+
+    @pytest.mark.asyncio
+    async def test_clear_odoo_turnover_report_skips_model_call(self):
+        from app.services.model_router import execute_chat
+
+        fixed_now = datetime(2026, 6, 3, 8, 30, 0, tzinfo=ZoneInfo("Africa/Johannesburg"))
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        mock_build_client = AsyncMock()
+        mock_execute_tool = AsyncMock(return_value={
+            "report_name": "Profit and Loss",
+            "date_from": "2026-06-01",
+            "date_to": "2026-06-03",
+            "currency_symbol": "R",
+            "lines": [{"name": "Turnover", "formatted_value": "1,234.56"}],
+        })
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router._platform_now',
+            new=lambda now=None: fixed_now,
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=mock_execute_tool,
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=mock_build_client,
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "What is this month's turnover?"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert "From the Odoo Profit and Loss" in result["content"]
+        assert "for 2026-06-01 to 2026-06-03" in result["content"]
+        assert "Turnover: R1,234.56" in result["content"]
+        assert result["total_tokens"] == 0
+        assert result["tool_call_count"] == 1
+        assert result["tool_calls"][0]["arguments"]["date_from"] == "2026-06-01"
+        assert result["tool_calls"][0]["arguments"]["date_to"] == "2026-06-03"
+        mock_execute_tool.assert_awaited_once()
+        mock_build_client.assert_not_called()
+
     def test_tool_result_compaction_limits_large_outputs(self):
         from app.services.model_router import _compact_tool_result_for_model, MAX_TOOL_RESULT_JSON_CHARS
 

@@ -14,6 +14,11 @@ def _secret_name(provider: str, user_id: UUID) -> str:
     return f"connector-token-{provider}-{user_id.hex[:12]}"
 
 
+def token_secret_name(provider: str, user_id: UUID) -> str:
+    """Return the Key Vault secret name used for a user's delegated connector token."""
+    return _secret_name(provider, user_id)
+
+
 async def store_token(provider: str, user_id: UUID, token_data: dict[str, Any]) -> bool:
     """Store OAuth token data in Key Vault for a specific user and provider."""
     if not key_vault_uri():

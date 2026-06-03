@@ -6,7 +6,8 @@ import logging
 from calendar import monthrange
 from dataclasses import dataclass, field
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, Any
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.models.models import (
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
+from app.services.connected_account_state import effective_connected_accounts
 from app.schemas.schemas import ContextRequest
 
 logger = logging.getLogger(__name__)
@@ -60,8 +62,13 @@ CANONICAL_SYSTEM_PROMPT = (
     "permitted for the current user. "
     "If a required connector is not connected, explain that clearly and guide "
     "the user to Connected Accounts. "
+    "Use the provided current date and time for relative dates such as today, "
+    "this month, and this year. Never ask the user to confirm today's date "
+    "when that context is available. "
     "Keep responses practical, business-focused, and clear."
 )
+
+DEFAULT_PLATFORM_TIMEZONE = os.environ.get("PLATFORM_TIMEZONE", "Africa/Johannesburg")
 
 
 @dataclass
@@ -135,6 +142,37 @@ class ProviderCallError(Exception):
         self.provider = provider
         self.model = model
         super().__init__(message)
+
+
+def _platform_timezone() -> ZoneInfo:
+    try:
+        return ZoneInfo(DEFAULT_PLATFORM_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        logger.warning("Invalid PLATFORM_TIMEZONE=%s; using UTC", DEFAULT_PLATFORM_TIMEZONE)
+        return ZoneInfo("UTC")
+
+
+def _platform_now(now: Optional[datetime] = None) -> datetime:
+    if now is None:
+        return datetime.now(_platform_timezone())
+    if now.tzinfo is None:
+        return now.replace(tzinfo=timezone.utc).astimezone(_platform_timezone())
+    return now.astimezone(_platform_timezone())
+
+
+def _current_time_context(now: Optional[datetime] = None) -> str:
+    local_now = _platform_now(now)
+    utc_now = local_now.astimezone(timezone.utc)
+    return (
+        "## Current Date and Time\n"
+        f"- Current date: {local_now.date().isoformat()}\n"
+        f"- Current local time: {local_now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+        f"- Timezone: {local_now.tzinfo.key if hasattr(local_now.tzinfo, 'key') else str(local_now.tzinfo)}\n"
+        f"- Current UTC time: {utc_now.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        "Use this for relative periods. For example, this month starts on "
+        f"{local_now.replace(day=1).date().isoformat()} and ends today, "
+        f"{local_now.date().isoformat()}, unless the user asks for a full calendar month."
+    )
 
 
 async def get_enabled_route(db: AsyncSession, task_type: str = "general_chat") -> tuple:
@@ -438,6 +476,7 @@ REPORT_LINE_KEYWORDS: dict[str, list[str]] = {
     "revenue": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
     "income": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
     "sales": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
+    "turnover": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
     "expenses": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
     "expense": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
     "cost": ["Cost of Goods Sold", "COGS", "Operating Expenses"],
@@ -455,12 +494,21 @@ REPORT_LINE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def _detect_date_range(query: str) -> tuple[Optional[str], Optional[str]]:
+def _detect_date_range(query: str, now: Optional[datetime] = None) -> tuple[Optional[str], Optional[str]]:
     """Parse date period from a user query. Returns (date_from, date_to) or (None, None)."""
-    now = datetime.utcnow()
+    now = _platform_now(now)
     q = query.lower()
 
-    if "this month" in q or "current month" in q:
+    if "today" in q:
+        today = now.strftime("%Y-%m-%d")
+        return today, today
+
+    if "yesterday" in q:
+        yesterday = now - timedelta(days=1)
+        value = yesterday.strftime("%Y-%m-%d")
+        return value, value
+
+    if "this month" in q or "current month" in q or "month to date" in q or "mtd" in q:
         return now.replace(day=1).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
 
     if "last month" in q or "previous month" in q:
@@ -501,6 +549,19 @@ def _detect_line_names(query: str) -> Optional[list[str]]:
         if keyword in q:
             matched.update(candidates)
     return list(matched) if matched else None
+
+
+def _default_report_for_financial_metric(query: str, line_names: Optional[list[str]], date_from: Optional[str], date_to: Optional[str]) -> Optional[str]:
+    if not line_names or not (date_from and date_to):
+        return None
+    q = query.lower()
+    metric_terms = (
+        "turnover", "revenue", "income", "expense", "expenses",
+        "cost", "cogs", "profit", "gross margin", "net income",
+    )
+    if any(term in q for term in metric_terms):
+        return "Profit and Loss"
+    return None
 
 
 def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
@@ -610,11 +671,12 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
         if alias in q:
             report_name = canonical
             break
-    if not report_name:
-        return None
-
     date_from, date_to = _detect_date_range(q)
     line_names = _detect_line_names(q)
+    if not report_name:
+        report_name = _default_report_for_financial_metric(q, line_names, date_from, date_to)
+    if not report_name:
+        return None
 
     args: dict[str, Any] = {"report_name": report_name}
     if date_from and date_to:
@@ -737,10 +799,7 @@ def _map_odoo_tool_to_path(tool_name: str) -> str:
 async def _load_connected_accounts(db: AsyncSession, user_id: Optional[UUID]) -> ConnectedAccountsSnapshot:
     if not user_id:
         return ConnectedAccountsSnapshot()
-    result = await db.execute(
-        select(AIConnectedAccount).where(AIConnectedAccount.user_id == user_id)
-    )
-    return ConnectedAccountsSnapshot(accounts=list(result.scalars().all()))
+    return ConnectedAccountsSnapshot(accounts=await effective_connected_accounts(db, user_id))
 
 
 async def _get_connector_context(
@@ -1482,6 +1541,7 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
         ],
         "currency_source": injected.currency_source,
         "subtasks": injected.subtasks,
+        "current_date": _platform_now().date().isoformat(),
         "model_routing": {
             "primary_model": primary_model.display_name,
             "fallback_model": state.fallback_model_display,
@@ -1490,6 +1550,83 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
             "routing_reason": policy.get("reason", "unknown"),
             "cost_tier": policy.get("cost_tier", "medium"),
         },
+    }
+
+
+def _deterministic_context_metadata() -> dict[str, Any]:
+    return {
+        "rules_injected": [],
+        "facts_injected": [],
+        "memories_injected": [],
+        "search_results_injected": [],
+        "currency_source": "none",
+        "subtasks": [],
+        "model_routing": {
+            "primary_model": "not_called",
+            "fallback_model": "none",
+            "fallback_used": False,
+            "fallback_reason": "none",
+            "routing_reason": "deterministic_odoo_report",
+            "cost_tier": "tool_only",
+        },
+        "current_date": _platform_now().date().isoformat(),
+    }
+
+
+async def _run_clear_odoo_report_request(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    messages: list,
+    snapshot: ConnectedAccountsSnapshot,
+) -> Optional[dict[str, Any]]:
+    if not user_id or "odoo" not in snapshot.connected_systems:
+        return None
+
+    user_query = _last_user_message(messages)
+    q = user_query.lower()
+    if any(term in q for term in ("compare", "trend", "variance", "forecast", "budget", "analyze", "analyse", "why", "versus", " vs ")):
+        return None
+
+    report_intent = detect_odoo_report_intent(user_query) if user_query else None
+    if not report_intent:
+        return None
+
+    arguments = report_intent["input"]
+    if not (arguments.get("date_from") and arguments.get("date_to")):
+        return None
+
+    try:
+        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", arguments)
+    except Exception as exc:
+        logger.warning("Deterministic Odoo report request failed before connector result: %s", exc)
+        return None
+
+    raw_tool_result = {
+        "tool_call_id": "deterministic_report",
+        "tool_name": "odoo_ops_runner",
+        "arguments": arguments,
+        "result": tc_result,
+    }
+    answer = _build_report_fallback_answer([raw_tool_result])
+    if not answer:
+        return None
+
+    logger.info("Answered clear Odoo report request deterministically | user_id=%s arguments=%s", user_id, arguments)
+    return {
+        "content": answer,
+        "finish_reason": "deterministic_tool_result",
+        "model_provider": "Odoo",
+        "model_name": "Odoo report",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": 0,
+        "tool_calls": [{
+            **raw_tool_result,
+            "result": _compact_tool_result_for_model(tc_result),
+        }],
+        "context": _deterministic_context_metadata(),
+        "tool_call_count": 1,
     }
 
 
@@ -1552,8 +1689,12 @@ async def execute_chat(
     risk_level = _risk_level_for_message(user_msg_text)
     route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
     connected_accounts = await _load_connected_accounts(db, user_id)
+    deterministic_response = await _run_clear_odoo_report_request(db, user_id, messages, connected_accounts)
+    if deterministic_response:
+        return deterministic_response
 
     system_prompt = route.system_prompt or ""
+    system_prompt = _append_context_section(system_prompt, _current_time_context())
     connector_context = await _get_connector_context(db, user_id, connected_accounts)
     if connector_context:
         system_prompt = system_prompt.rstrip() + "\n\n" + connector_context

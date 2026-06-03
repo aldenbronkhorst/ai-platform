@@ -4,7 +4,15 @@ import time
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
-from app.services.token_storage import store_token, delete_token, token_status
+from app.core.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.token_storage import store_token, delete_token
+from app.services.connected_account_state import (
+    mark_delegated_account_disconnected,
+    record_delegated_diagnosis,
+    sync_delegated_account_from_token,
+    upsert_delegated_account,
+)
 from app.services.connector_commands import (
     AZURE_AUTHORITY_HOST,
     AZURE_CLI_CLIENT_ID,
@@ -57,7 +65,11 @@ async def start_device_code(auth: dict = Depends(api_key_auth)):
 
 
 @router.post("/token-callback")
-async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
+async def device_code_callback(
+    req: dict,
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Poll device code and store resulting token."""
     user_id = auth.get("user_id")
     device_code = req.get("device_code", "")
@@ -100,28 +112,52 @@ async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
         stored = await store_token("azure", user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
+        await upsert_delegated_account(
+            db,
+            "azure",
+            user_id,
+            token_data=token_payload,
+            status="connected",
+            username=token_payload.get("username"),
+            permission_summary="Azure device authentication completed.",
+            commit=True,
+        )
         return {"status": "connected", "request_id": request_id, "cli_profile_ready": True}
     except Exception as e:
         return {"status": "error", "error": str(e), "request_id": request_id}
 
 
 @router.get("/status")
-async def azure_status(auth: dict = Depends(api_key_auth)):
+async def azure_status(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Check Azure connection status for the current user."""
     user_id = auth.get("user_id")
-    return await token_status("azure", user_id) if user_id else {"status": "not_connected"}
+    return await sync_delegated_account_from_token(db, "azure", user_id, commit=True) if user_id else {"status": "not_connected"}
 
 
 @router.post("/diagnose")
-async def azure_diagnose(auth: dict = Depends(api_key_auth)):
+async def azure_diagnose(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Validate the stored Azure delegated token without shelling out to az."""
-    return await diagnose_azure_connection(auth.get("user_id"))
+    user_id = auth.get("user_id")
+    result = await diagnose_azure_connection(user_id)
+    if user_id:
+        await record_delegated_diagnosis(db, "azure", user_id, result, commit=True)
+    return result
 
 
 @router.post("/disconnect")
-async def azure_disconnect(auth: dict = Depends(api_key_auth)):
+async def azure_disconnect(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
     """Disconnect Azure for the current user."""
     user_id = auth.get("user_id")
     if user_id:
         await delete_token("azure", user_id)
+        await mark_delegated_account_disconnected(db, "azure", user_id, commit=True)
     return {"status": "disconnected"}

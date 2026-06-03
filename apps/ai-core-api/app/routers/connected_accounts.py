@@ -20,6 +20,7 @@ from app.core.database import get_db
 from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
+from app.services.connected_account_state import effective_connected_accounts
 from app.schemas.schemas import AIAuditEventCreate
 
 router = APIRouter(prefix="/connected-accounts", tags=["connected-accounts"])
@@ -273,6 +274,16 @@ class OdooStatusResponse(BaseModel):
     odoo_company_name: Optional[str] = None
     odoo_currency_code: Optional[str] = None
     odoo_currency_symbol: Optional[str] = None
+
+
+def _account_status(account: Optional[AIConnectedAccount]) -> str:
+    if not account or account.status in ("disconnected", "not_connected"):
+        return "not_connected"
+    return account.status
+
+
+def _account_last_verified(account: Optional[AIConnectedAccount]) -> Optional[str]:
+    return account.last_verified_at.isoformat() if account and account.last_verified_at else None
 
 
 async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key: str) -> dict:
@@ -974,27 +985,19 @@ async def get_connected_accounts(
 ):
     """Returns normalized connector metadata for all connectors for the authenticated user."""
     user_id = auth.get("user_id")
-    result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-        )
-    )
-    db_accounts = result.scalars().all()
+    db_accounts = await effective_connected_accounts(db, user_id)
     odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
-
-    # Check CLI connector token status
-    from app.services.token_storage import token_status as get_token_status
-    azure_status = await get_token_status("azure", user_id)
-    github_status = await get_token_status("github", user_id)
+    azure = next((a for a in db_accounts if a.provider == "azure"), None)
+    github = next((a for a in db_accounts if a.provider == "github"), None)
 
     connectors = [
         {
             "connector_key": "odoo",
             "display_name": "Odoo Enterprise",
-            "status": odoo.status if odoo and odoo.status != "disconnected" else "not_connected",
+            "status": _account_status(odoo),
             "auth_method": "api_key",
-            "last_verified_at": odoo.last_verified_at.isoformat() if odoo and odoo.last_verified_at else None,
-            "actions_available": ["connect", "test", "disconnect"] if not odoo or odoo.status == "disconnected" else ["test", "disconnect"],
+            "last_verified_at": _account_last_verified(odoo),
+            "actions_available": ["connect", "test", "disconnect"] if _account_status(odoo) == "not_connected" else ["test", "disconnect"],
             "metadata": {
                 "odoo_url": odoo.odoo_url if odoo else None,
                 "odoo_db": odoo.odoo_db if odoo else None,
@@ -1004,18 +1007,26 @@ async def get_connected_accounts(
         {
             "connector_key": "azure",
             "display_name": "Azure CLI",
-            "status": azure_status.get("status", "not_connected"),
+            "status": _account_status(azure),
             "auth_method": "delegated_microsoft",
-            "last_verified_at": azure_status.get("expires_on"),
+            "last_verified_at": _account_last_verified(azure),
             "actions_available": ["connect", "test", "disconnect"],
+            "metadata": {
+                "provider_username": azure.provider_username if azure else None,
+                "permission_summary": azure.permission_summary if azure else None,
+            } if azure else {},
         },
         {
             "connector_key": "github",
             "display_name": "GitHub CLI",
-            "status": github_status.get("status", "not_connected"),
+            "status": _account_status(github),
             "auth_method": "github_oauth",
-            "last_verified_at": None,
+            "last_verified_at": _account_last_verified(github),
             "actions_available": ["connect", "test", "disconnect"],
+            "metadata": {
+                "provider_username": github.provider_username if github else None,
+                "permission_summary": github.permission_summary if github else None,
+            } if github else {},
         },
         {
             "connector_key": "microsoft_365",

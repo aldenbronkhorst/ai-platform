@@ -6,7 +6,8 @@ from uuid import UUID
 from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import AITool, AIConnectedAccount
+from app.models.models import AITool
+from app.services.connected_account_state import effective_connected_accounts
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,8 @@ async def get_tool_selection(
     result = ToolSelectionResult()
 
     if connected_systems is None:
-        acct_result = await db.execute(
-            select(AIConnectedAccount).where(
-                AIConnectedAccount.user_id == user_id,
-                AIConnectedAccount.status.in_(("connected", "active")),
-            )
-        )
-        connected_systems = {a.provider for a in acct_result.scalars().all()}
+        accounts = await effective_connected_accounts(db, user_id)
+        connected_systems = {a.provider for a in accounts if a.status in ("connected", "active")}
     if not connected_systems:
         return result
 
