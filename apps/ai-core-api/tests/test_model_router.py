@@ -161,6 +161,7 @@ class TestConnectorContext:
         assert "not connected" in result
         assert "Odoo" in result
         assert "GitHub" in result
+        assert "Microsoft 365" not in result
 
     @pytest.mark.asyncio
     async def test_get_connector_context_odoo_connected(self):

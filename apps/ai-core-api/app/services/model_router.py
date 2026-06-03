@@ -20,7 +20,7 @@ from app.models.models import (
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
-from app.services.connected_account_state import effective_connected_accounts
+from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.schemas.schemas import ContextRequest
 
 logger = logging.getLogger(__name__)
@@ -55,9 +55,8 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "tasks, connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, GitHub, Azure, Microsoft 365, "
-    "documents, and future connectors only when they are available, authorised, "
-    "and relevant. "
+    "You may use connected tools such as Odoo, GitHub, Azure, and documents "
+    "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
     "If a required connector is not connected, explain that clearly and guide "
@@ -228,20 +227,25 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
     )
 
 
-KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure", "microsoft_365", "azure_devops"]
+KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure"]
 
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
     "github": "GitHub",
     "azure": "Azure",
-    "microsoft_365": "Microsoft 365",
-    "azure_devops": "Azure DevOps",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
 
 ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
+DELEGATED_AUTH_FAILURE_MARKERS = (
+    "does not exist in msal token cache",
+    "run `az login`",
+    "azure cli profile",
+    "azure is not connected",
+    "azure token is expired",
+)
 
 
 def _normalize_tool_name(name: str) -> str:
@@ -374,6 +378,33 @@ async def _execute_tool_call(
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+async def _record_delegated_tool_auth_failure(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    tool_name: str,
+    result: dict[str, Any],
+) -> None:
+    if not user_id or tool_name != "azure_cli" or result.get("status") != "failed":
+        return
+
+    message = " ".join(
+        str(result.get(key) or "")
+        for key in ("error", "message", "stderr")
+    ).strip()
+    lower_message = message.lower()
+    if not any(marker in lower_message for marker in DELEGATED_AUTH_FAILURE_MARKERS):
+        return
+
+    status = "expired" if "expired" in lower_message else "error"
+    await upsert_delegated_account(
+        db,
+        "azure",
+        user_id,
+        status=status,
+        permission_summary=message[:500] if message else "Azure delegated credentials are not usable.",
+    )
 
 
 def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -> str:
@@ -1354,6 +1385,8 @@ async def _run_tool_loop(
                 args = {}
 
             result = await _execute_tool_call(db, user_id, name, args)
+            if isinstance(result, dict):
+                await _record_delegated_tool_auth_failure(db, user_id, name, result)
             compact_result = _compact_tool_result_for_model(result)
             tool_results.append({
                 "tool_call_id": call.get("id", ""),

@@ -110,6 +110,8 @@ class TestConnectedAccountsFlow:
         data = response.json()
         assert "connectors" in data
         assert isinstance(data["connectors"], list)
+        connector_keys = {item["connector_key"] for item in data["connectors"]}
+        assert connector_keys == {"odoo", "azure", "github"}
 
     def test_get_connected_accounts_uses_stored_delegated_state_without_token_lookup(self):
         async def fake_token_status(provider, _user_id):

@@ -94,14 +94,13 @@ function formatStatusLabel(status: string) {
     .join(" ");
 }
 
-type StatusTone = "success" | "danger" | "warning" | "muted" | "neutral";
+type StatusTone = "success" | "danger" | "warning" | "neutral";
 
 function getStatusTone(status?: string, hasError = false): StatusTone {
   if (hasError) return "danger";
   if (status === "connected" || status === "active") return "success";
   if (status === "error") return "danger";
   if (status === "needs_token" || status === "needs_setup" || status === "not_connected" || status === "expired") return "warning";
-  if (status === "coming_soon") return "muted";
   return "neutral";
 }
 
@@ -113,8 +112,6 @@ function statusBadgeClass(tone: StatusTone) {
       return "text-[var(--color-danger)] bg-[var(--color-danger)]/10";
     case "warning":
       return "text-[var(--color-warning)] bg-[var(--color-warning)]/10";
-    case "muted":
-      return "text-soft bg-surface";
     default:
       return "text-muted bg-surface";
   }
@@ -217,7 +214,6 @@ const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database },
   { key: "azure", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
   { key: "github", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch },
-  { key: "microsoft_365", name: "Microsoft 365", subtitle: "SharePoint / Outlook / Graph", icon: BookOpen },
 ];
 
 interface ConnectionsPageProps { accessToken: string; }
@@ -389,17 +385,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               method: "POST", headers: headers(),
               body: JSON.stringify({ device_code: data.device_code }),
             });
-            const pd = await pr.json() as { status: string; error?: string };
+            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number };
             if (pd.status === "connected") {
               setAzurePolling(false);
               setAzureDeviceCode(null);
               setCliTestResult({ status: "success", connector: "azure", message: "Azure connected!" });
               void fetchConnectors();
             } else if (pd.status === "pending") {
-              setTimeout(poll, (data.interval || 5) * 1000);
+              setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
               setAzurePolling(false);
-              setCliTestResult({ status: "failed", connector: "azure", message: pd.error || "Auth failed" });
+              setCliTestResult({ status: "failed", connector: "azure", message: pd.message || pd.error || "Auth failed" });
+              void fetchConnectors();
             }
           } catch { setAzurePolling(false); }
         };
@@ -581,16 +578,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </ConnectorDetailShell>
     );
 
-    if (key === "microsoft_365") return (
-      <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
-        <DetailCard>
-          <p className="text-sm text-muted">No setup actions are available for this connector yet.</p>
-        </DetailCard>
-      </ConnectorDetailShell>
-    );
-
     return null;
   };
+
+  const availableConnectors = connectorMeta
+    ? CONNECTORS.filter((connector) => connectorMeta[connector.key])
+    : [];
+  const activeConnector = selectedConnector && (!connectorMeta || connectorMeta[selectedConnector])
+    ? selectedConnector
+    : null;
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-fade-in">
@@ -604,8 +600,32 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <BookOpen className="w-12 h-12 text-soft shrink-0" />
       </GlassPanel>
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {CONNECTORS.map((c) => {
+      {connectorMeta === null && !connectorStatusError ? (
+        <DetailCard>
+          <p className="text-sm text-muted">Loading connectors...</p>
+        </DetailCard>
+      ) : null}
+
+      {connectorStatusError ? (
+        <DetailCard>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-muted">{connectorStatusError}</p>
+            <GlassButton size="sm" onClick={fetchConnectors}>
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </GlassButton>
+          </div>
+        </DetailCard>
+      ) : null}
+
+      {connectorMeta && availableConnectors.length === 0 && !connectorStatusError ? (
+        <DetailCard>
+          <p className="text-sm text-muted">No connectors are available.</p>
+        </DetailCard>
+      ) : null}
+
+      {availableConnectors.length > 0 ? (
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {availableConnectors.map((c) => {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
@@ -627,14 +647,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           </button>
         );})}
       </div>
+      ) : null}
 
       {/* Detail Drawer */}
-      {selectedConnector && (
+      {activeConnector && (
         <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm z-50 flex justify-end animate-fade-in">
           <div className="w-full max-w-lg bg-surface border-l border-default overflow-y-auto">
             <div className="p-6 border-b border-default flex items-center justify-between">
               <h2 className="font-bold text-lg text-default">
-                {CONNECTORS.find(c => c.key === selectedConnector)?.name || selectedConnector}
+                {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
               </h2>
               <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
@@ -642,7 +663,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               </button>
             </div>
             <div className="p-6">
-              {connectorDetail(selectedConnector)}
+              {connectorDetail(activeConnector)}
 
               {/* Test/Error results */}
               {testResult && (

@@ -20,7 +20,7 @@ AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-
 AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com")
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
 AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.core.windows.net//.default")
-AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "offline_access"]
+AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "openid", "profile", "offline_access"]
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
 
 
@@ -31,6 +31,11 @@ def _normalize_azure_command(command: str) -> str:
 
 def azure_device_scope_string() -> str:
     return " ".join(AZURE_DEVICE_SCOPES)
+
+
+def azure_token_request_data() -> dict[str, str]:
+    """Return token request fields that mirror Azure CLI/MSAL device auth."""
+    return {"scope": azure_device_scope_string(), "client_info": "1"}
 
 
 async def run_azure_cli_command(command: str, user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
@@ -132,7 +137,7 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
                     "grant_type": "refresh_token",
                     "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
                     "refresh_token": refresh_token,
-                    "scope": azure_device_scope_string(),
+                    **azure_token_request_data(),
                 },
             )
         data = response.json()
@@ -146,10 +151,12 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
             "refresh_token": data.get("refresh_token", refresh_token),
             "scope": data.get("scope", token_data.get("scope")),
             "id_token": data.get("id_token", token_data.get("id_token")),
+            "id_token_claims": _azure_identity_claims({"id_token": data.get("id_token")}) or token_data.get("id_token_claims"),
             "client_info": data.get("client_info", token_data.get("client_info")),
             "expires_in": data.get("expires_in"),
             "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
         }
+        updated["username"] = extract_azure_username(updated)
         await store_token("azure", user_id, updated)
         await ensure_azure_cli_profile(user_id, updated)
         return updated
@@ -170,16 +177,57 @@ def _token_expired(token_data: dict[str, Any]) -> bool:
 
 
 def extract_azure_username(token_data: dict[str, Any]) -> str:
-    claims = _decode_jwt_claims(token_data.get("id_token", ""))
-    return (
-        claims.get("preferred_username")
-        or claims.get("email")
-        or claims.get("upn")
-        or claims.get("unique_name")
-        or claims.get("name")
-        or token_data.get("username")
-        or "azure-user"
-    )
+    for claims in _azure_claim_sets(token_data):
+        for key in ("preferred_username", "email", "upn", "unique_name", "name"):
+            value = claims.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    stored_username = token_data.get("username")
+    if isinstance(stored_username, str) and stored_username.strip() and stored_username != "azure-user":
+        return stored_username.strip()
+
+    client_info = _decode_base64_json(token_data.get("client_info", ""))
+    for key in ("uid", "utid"):
+        value = client_info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for claims in _azure_claim_sets(token_data):
+        for key in ("oid", "sub"):
+            value = claims.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return ""
+
+
+def _azure_identity_claims(token_data: dict[str, Any]) -> dict[str, Any]:
+    claims = token_data.get("id_token_claims")
+    if isinstance(claims, dict):
+        return claims
+    return _decode_jwt_claims(token_data.get("id_token", ""))
+
+
+def _azure_claim_sets(token_data: dict[str, Any]) -> list[dict[str, Any]]:
+    claim_sets = []
+    id_claims = _azure_identity_claims(token_data)
+    if id_claims:
+        claim_sets.append(id_claims)
+    access_claims = _decode_jwt_claims(token_data.get("access_token", ""))
+    if access_claims:
+        claim_sets.append(access_claims)
+    return claim_sets
+
+
+def _decode_base64_json(value: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        value += "=" * (-len(value) % 4)
+        return json.loads(base64.urlsafe_b64decode(value.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return {}
 
 
 def _decode_jwt_claims(token: str) -> dict[str, Any]:
@@ -202,6 +250,16 @@ async def ensure_azure_cli_profile(
     if not token_data.get("access_token"):
         return {"ready": False, "message": "Azure is not connected for this user."}
 
+    username = extract_azure_username(token_data)
+    if not username:
+        return {
+            "ready": False,
+            "message": (
+                "Azure sign-in returned an access token but no usable user identity. "
+                "Reconnect Azure so the platform can store a user-scoped CLI session."
+            ),
+        }
+
     subscriptions_result = subscriptions_result or await _list_azure_subscriptions(token_data["access_token"])
     if not subscriptions_result.get("ok"):
         return {
@@ -209,7 +267,6 @@ async def ensure_azure_cli_profile(
             "message": subscriptions_result.get("message", "Azure subscription discovery failed."),
         }
 
-    username = extract_azure_username(token_data)
     config_dir = _azure_config_dir(user_id)
     await asyncio.to_thread(
         _write_azure_cli_files,
@@ -270,6 +327,7 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
         "access_token": token_data.get("access_token"),
         "refresh_token": token_data.get("refresh_token"),
         "id_token": token_data.get("id_token"),
+        "id_token_claims": _azure_identity_claims(token_data),
         "client_info": token_data.get("client_info"),
         "scope": token_data.get("scope") or azure_device_scope_string(),
         "expires_in": int(token_data.get("expires_in") or max(_expires_on(token_data) - int(time.time()), 0) or 3600),
@@ -374,6 +432,40 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
             }
         subscriptions = subscriptions_result.get("subscriptions", [])
         profile = await ensure_azure_cli_profile(user_id, token_data, subscriptions_result) if user_id else {"ready": False}
+        if not profile.get("ready"):
+            return {
+                "status": "failed",
+                "connector": "azure_cli",
+                "request_id": request_id,
+                "message": profile.get("message", "Azure CLI profile could not be prepared for this user."),
+                "cli_profile_ready": False,
+                "subscriptions": [
+                    {
+                        "subscription_id": sub.get("subscriptionId"),
+                        "display_name": sub.get("displayName"),
+                        "state": sub.get("state"),
+                    }
+                    for sub in subscriptions[:10]
+                ],
+            }
+        cli_check = await validate_azure_cli_profile(user_id) if user_id else {"ready": False}
+        if not cli_check.get("ready"):
+            return {
+                "status": "failed",
+                "connector": "azure_cli",
+                "request_id": request_id,
+                "message": cli_check.get("message", "Azure CLI profile validation failed."),
+                "stderr": cli_check.get("stderr", ""),
+                "cli_profile_ready": False,
+                "subscriptions": [
+                    {
+                        "subscription_id": sub.get("subscriptionId"),
+                        "display_name": sub.get("displayName"),
+                        "state": sub.get("state"),
+                    }
+                    for sub in subscriptions[:10]
+                ],
+            }
         return {
             "status": "success",
             "connector": "azure_cli",
@@ -396,6 +488,27 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
             "request_id": request_id,
             "message": f"Azure diagnostics failed: {exc}",
         }
+
+
+async def validate_azure_cli_profile(user_id: UUID, timeout: int = 20) -> dict[str, Any]:
+    env = {
+        "AZURE_TENANT_ID": TENANT_ID,
+        "AZURE_CONFIG_DIR": _azure_config_dir(user_id),
+    }
+    result = await run_command(
+        "az account get-access-token --resource https://management.core.windows.net/ --only-show-errors -o json",
+        timeout=timeout,
+        env=env,
+    )
+    if result.success:
+        return {"ready": True, "stdout": result.stdout}
+    output = result.to_dict()
+    return {
+        "ready": False,
+        "message": output.get("error") or output.get("stderr") or "Azure CLI profile validation failed.",
+        "stderr": output.get("stderr", ""),
+        "exit_code": output.get("exit_code"),
+    }
 
 
 async def run_github_cli_command(command: str, user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:

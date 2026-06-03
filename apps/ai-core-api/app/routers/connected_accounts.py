@@ -1028,14 +1028,6 @@ async def get_connected_accounts(
                 "permission_summary": github.permission_summary if github else None,
             } if github else {},
         },
-        {
-            "connector_key": "microsoft_365",
-            "display_name": "Microsoft 365",
-            "status": "coming_soon",
-            "auth_method": "none",
-            "last_verified_at": None,
-            "actions_available": [],
-        },
     ]
     return {"connectors": connectors}
 

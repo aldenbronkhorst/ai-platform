@@ -48,6 +48,32 @@ function writeCachedChatSessions(email: string, sessions: ChatSession[]) {
   }
 }
 
+function chatTitleAfterMessage(currentTitle: string, content: string) {
+  if (currentTitle !== "New Chat") return currentTitle;
+  const cleanContent = content.trim();
+  if (!cleanContent) return currentTitle;
+  return cleanContent.slice(0, 35) + (cleanContent.length > 35 ? "..." : "");
+}
+
+function chatSessionTime(session: ChatSession) {
+  const time = Date.parse(session.last_message_at);
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function sortChatSessions(sessions: ChatSession[]) {
+  return [...sessions].sort((a, b) => chatSessionTime(b) - chatSessionTime(a));
+}
+
+function patchChatSession(session: ChatSession, patch: Partial<ChatSession>) {
+  const updated = { ...session, ...patch };
+  return (
+    updated.title === session.title &&
+    updated.status === session.status &&
+    updated.created_at === session.created_at &&
+    updated.last_message_at === session.last_message_at
+  ) ? session : updated;
+}
+
 interface ChatFailurePayload {
   requestId: string;
   errorType: string;
@@ -161,6 +187,33 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   }, [accessToken, activeUserEmail, getHeaders]);
 
+  const updateLocalChatSession = useCallback((sessionId: string, patch: Partial<ChatSession>) => {
+    setChatSessions(prev => {
+      let changed = false;
+      const next = prev.map(session => {
+        if (session.id !== sessionId) return session;
+        const updated = patchChatSession(session, patch);
+        if (updated !== session) changed = true;
+        return updated;
+      });
+
+      if (!changed) return prev;
+      return patch.last_message_at ? sortChatSessions(next) : next;
+    });
+
+    setActiveSession(prev => {
+      if (!prev || prev.id !== sessionId) return prev;
+      return patchChatSession(prev, patch);
+    });
+  }, []);
+
+  const touchChatSessionForMessage = useCallback((session: ChatSession, content: string) => {
+    updateLocalChatSession(session.id, {
+      title: chatTitleAfterMessage(session.title, content),
+      last_message_at: new Date().toISOString(),
+    });
+  }, [updateLocalChatSession]);
+
   const createNewChat = useCallback(async (): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
@@ -269,7 +322,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         const botMsg: ChatMessage = await res.json();
         botMsg.status = "completed";
         setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? botMsg : m));
-        fetchChatSessions();
       } else {
         markAssistantFailed(pendingMessageId, await chatFailureFromResponse(res, requestId));
       }
@@ -292,6 +344,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     const currentSess = activeSession || await createNewChat();
     if (!currentSess) return;
+    touchChatSessionForMessage(currentSess, content);
 
     const pendingMsgId = crypto.randomUUID();
     setChatMessages(prev => [

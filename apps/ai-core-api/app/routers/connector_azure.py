@@ -18,11 +18,13 @@ from app.services.connector_commands import (
     AZURE_CLI_CLIENT_ID,
     TENANT_ID,
     AZURE_TOKEN_ENDPOINT,
+    azure_token_request_data,
     azure_device_scope_string,
     diagnose_azure_connection,
     ensure_azure_cli_profile,
     extract_azure_username,
     run_azure_cli_command,
+    validate_azure_cli_profile,
 )
 
 router = APIRouter(prefix="/connector/azure", tags=["Connector"])
@@ -83,12 +85,17 @@ async def device_code_callback(
                 AZURE_TOKEN_ENDPOINT,
                 data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                       "client_id": AZURE_CLI_CLIENT_ID, "device_code": device_code,
-                      "scope": azure_device_scope_string()},
+                      **azure_token_request_data()},
             )
         data = resp.json()
         if "error" in data:
-            return {"status": "pending" if data["error"] == "authorization_pending" else "error",
-                    "error": data.get("error_description", data["error"]), "request_id": request_id}
+            pending_errors = {"authorization_pending", "slow_down"}
+            return {
+                "status": "pending" if data["error"] in pending_errors else "error",
+                "error": data.get("error_description", data["error"]),
+                "interval": 10 if data["error"] == "slow_down" else None,
+                "request_id": request_id,
+            }
         token_payload = {
             "client_id": AZURE_CLI_CLIENT_ID,
             "token_type": data.get("token_type"),
@@ -101,17 +108,46 @@ async def device_code_callback(
             "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
         }
         token_payload["username"] = extract_azure_username(token_payload)
+        stored = await store_token("azure", user_id, token_payload)
+        if not stored:
+            return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
+
         profile = await ensure_azure_cli_profile(user_id, token_payload)
         if not profile.get("ready"):
+            await upsert_delegated_account(
+                db,
+                "azure",
+                user_id,
+                token_data=token_payload,
+                status="error",
+                username=token_payload.get("username"),
+                permission_summary=profile.get("message", "Could not prepare Azure CLI profile."),
+                commit=True,
+            )
             return {
                 "status": "error",
                 "error": "azure_cli_profile_failed",
                 "message": profile.get("message", "Could not prepare Azure CLI profile."),
                 "request_id": request_id,
             }
-        stored = await store_token("azure", user_id, token_payload)
-        if not stored:
-            return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
+        cli_check = await validate_azure_cli_profile(user_id)
+        if not cli_check.get("ready"):
+            await upsert_delegated_account(
+                db,
+                "azure",
+                user_id,
+                token_data=token_payload,
+                status="error",
+                username=token_payload.get("username"),
+                permission_summary=cli_check.get("message", "Azure CLI profile validation failed."),
+                commit=True,
+            )
+            return {
+                "status": "error",
+                "error": "azure_cli_profile_failed",
+                "message": cli_check.get("message", "Azure CLI profile validation failed."),
+                "request_id": request_id,
+            }
         await upsert_delegated_account(
             db,
             "azure",
