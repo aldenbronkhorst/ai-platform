@@ -188,7 +188,6 @@ class AIChatSession(Base, AuditMixin):
     user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     status = Column(String(20), default="active", nullable=False)  # active, archived, deleted
-    workflow_context = Column(String(100), nullable=True)
     last_message_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     metadata_json = Column(JSON, nullable=True)
 

@@ -149,7 +149,6 @@ def upgrade() -> None:
         sa.Column('user_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('ai_users.id'), nullable=False, index=True),
         sa.Column('title', sa.String(255), nullable=False),
         sa.Column('status', sa.String(20), server_default='active', nullable=False),
-        sa.Column('workflow_context', sa.String(100), nullable=True),
         sa.Column('last_message_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('metadata_json', sa.JSON(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

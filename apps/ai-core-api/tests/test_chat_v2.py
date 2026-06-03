@@ -41,14 +41,14 @@ class TestChatSessionsV2:
     def test_create_chat_session(self):
         response = client.post(
             "/chat/sessions",
-            json={"title": "Custom Session", "workflow_context": "attendance_review"},
+            json={"title": "Custom Session"},
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
         assert response.status_code == 201
         data = response.json()
         assert data["title"] == "Custom Session"
         assert data["status"] == "active"
-        assert data["workflow_context"] == "attendance_review"
+        assert "workflow_context" not in data
 
     def test_list_chat_sessions(self):
         response = client.get(

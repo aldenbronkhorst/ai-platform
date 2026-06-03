@@ -23,7 +23,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 class ChatSessionCreate(BaseModel):
     title: Optional[str] = Field("New Chat", description="Optional initial title")
-    workflow_context: Optional[str] = Field(None, description="Active business workflow context")
 
 
 class ChatSessionUpdate(BaseModel):
@@ -33,7 +32,6 @@ class ChatSessionUpdate(BaseModel):
 class ChatMessageCreate(BaseModel):
     content: str
     artifact_ids: Optional[List[UUID]] = Field(default_factory=list)
-    workflow_context: Optional[str] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -57,7 +55,6 @@ class ChatSessionResponse(BaseModel):
     user_id: UUID
     title: str
     status: str
-    workflow_context: Optional[str]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     last_message_at: Optional[datetime]
@@ -77,7 +74,6 @@ async def create_chat_session(
         user_id=user_id,
         title=req.title or "New Chat",
         status="active",
-        workflow_context=req.workflow_context,
         last_message_at=datetime.utcnow(),
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
