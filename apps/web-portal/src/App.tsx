@@ -146,12 +146,18 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [isChatSending, setIsChatSending] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeSessionId = activeSession?.id ?? null;
+  const activeSessionIdRef = useRef<string | null>(activeSessionId);
 
   const handleTranscript = useCallback((transcript: string) => {
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
   }, []);
   const { voiceState, toggleVoice: handleToggleVoice } = useSpeechRecognition(handleTranscript);
   const activeUserEmail = activeUser?.email || "";
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
 
   const getHeaders = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -244,11 +250,24 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     setIsMessagesLoading(true);
     try {
       const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
-      if (res.ok) setChatMessages(await res.json());
+      if (res.ok) {
+        const data = await res.json() as ChatMessage[];
+        if (activeSessionIdRef.current === sid) {
+          setChatMessages(prev => {
+            const hasInFlightMessage = prev.some(message =>
+              message.chat_session_id === sid &&
+              (message.status === "pending" || message.status === "sending" || message.status === "streaming")
+            );
+            return hasInFlightMessage ? prev : data;
+          });
+        }
+      }
     } catch (err) {
       console.error("Failed to fetch messages:", err);
     } finally {
-      setIsMessagesLoading(false);
+      if (activeSessionIdRef.current === sid) {
+        setIsMessagesLoading(false);
+      }
     }
   }, [getHeaders]);
 
@@ -279,14 +298,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
-      if (activeSession && accessToken) {
-        void fetchSessionMessages(activeSession.id);
+      if (activeSessionId && accessToken) {
+        void fetchSessionMessages(activeSessionId);
       } else {
         setChatMessages([]);
+        setIsMessagesLoading(false);
       }
     }, 0);
     return () => window.clearTimeout(timerId);
-  }, [activeSession, accessToken, fetchSessionMessages]);
+  }, [activeSessionId, accessToken, fetchSessionMessages]);
 
   const markAssistantFailed = (pendingMessageId: string, failure: ChatFailurePayload) => {
     setChatMessages(prev => prev.map(m =>
