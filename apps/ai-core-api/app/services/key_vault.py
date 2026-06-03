@@ -37,6 +37,18 @@ async def set_secret_value(secret_name: str, secret_value: str, vault_url: Optio
     await asyncio.to_thread(client.set_secret, secret_name, secret_value)
 
 
+async def recover_deleted_secret(secret_name: str, vault_url: Optional[str] = None) -> None:
+    client = get_secret_client(vault_url)
+    if not client:
+        raise RuntimeError("KEY_VAULT_URI is not configured.")
+
+    def _recover() -> None:
+        poller = client.begin_recover_deleted_secret(secret_name)
+        poller.wait()
+
+    await asyncio.to_thread(_recover)
+
+
 async def delete_secret(secret_name: str, vault_url: Optional[str] = None) -> None:
     client = get_secret_client(vault_url)
     if not client:
