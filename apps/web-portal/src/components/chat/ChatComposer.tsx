@@ -108,7 +108,6 @@ export function ChatComposer({
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
-            disabled={isChatSending}
             rows={1}
             className="flex-1 bg-transparent border-0 focus:outline-none focus:ring-0 text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-[160px] leading-relaxed"
           />

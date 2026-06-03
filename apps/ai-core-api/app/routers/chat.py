@@ -335,8 +335,14 @@ def _new_chat_message(session_id: UUID, user_id: UUID, role: str, content: str, 
     )
 
 
-async def _persist_user_message(db: AsyncSession, session_id: UUID, user_id: UUID, content: str) -> AIChatMessage:
-    message = _new_chat_message(session_id, user_id, "user", content)
+async def _persist_user_message(db: AsyncSession, session_id: UUID, user_id: UUID, content: str, request_id: str) -> AIChatMessage:
+    message = _new_chat_message(
+        session_id,
+        user_id,
+        "user",
+        content,
+        metadata_json={"request_id": request_id},
+    )
     db.add(message)
     await db.flush()
     return message
@@ -395,6 +401,12 @@ async def _persist_failed_message(
 ) -> None:
     db.add(_failed_assistant_message(session_id, user_id, error_type, error_message, request_id, trace_id))
     await db.flush()
+
+
+async def _commit_user_turn_start(db: AsyncSession, session: AIChatSession) -> None:
+    session.last_message_at = datetime.utcnow()
+    session.updated_at = datetime.utcnow()
+    await db.commit()
 
 
 async def _run_model_router(
@@ -753,12 +765,13 @@ async def post_chat_message(
     response.headers["X-Request-ID"] = request_id
     user_id = auth["user_id"]
     session = await _get_owned_session(db, session_id, user_id)
-    user_msg = await _persist_user_message(db, session_id, user_id, req.content)
+    user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
     await _apply_natural_language_feedback(db, session_id, user_id, req.content)
     _update_session_title(session, req.content)
     _link_chat_artifacts(db, session_id, user_msg.id, req.artifact_ids or [])
 
     messages = await _conversation_messages(db, session_id, user_msg, req.content)
+    await _commit_user_turn_start(db, session)
     router_result, trace_svc = await _run_model_router(db, session_id, user_id, user_msg, req.content, messages, request_id)
     _raise_on_blank_response(router_result, request_id, user_id, session_id)
 

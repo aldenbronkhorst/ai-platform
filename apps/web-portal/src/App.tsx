@@ -119,6 +119,72 @@ function chatFailureFromNetwork(err: unknown, requestId: string): ChatFailurePay
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function messageRequestId(message: ChatMessage): string | null {
+  const metadata = message.metadata_json;
+  if (!isRecord(metadata)) return null;
+  if (typeof metadata.request_id === "string") return metadata.request_id;
+  const technicalDetails = metadata.technical_details;
+  if (isRecord(technicalDetails) && typeof technicalDetails.request_id === "string") {
+    return technicalDetails.request_id;
+  }
+  return null;
+}
+
+function normalizeChatMessage(message: ChatMessage): ChatMessage {
+  const metadata = message.metadata_json;
+  if (!isRecord(metadata) || metadata.failed !== true) return message;
+
+  const requestId = typeof metadata.request_id === "string" ? metadata.request_id : "";
+  const errorType = typeof metadata.error_type === "string" ? metadata.error_type : "server_error";
+  const errorText = typeof metadata.error_message === "string"
+    ? metadata.error_message
+    : "The model service could not generate a response right now.";
+  const traceId = typeof metadata.trace_id === "string" ? metadata.trace_id : "";
+
+  return {
+    ...message,
+    status: "failed",
+    error_message: JSON.stringify({
+      requestId,
+      errorType,
+      errorMessage: errorText,
+      technicalDetail: traceId ? `Trace ID: ${traceId}` : "",
+      httpStatus: 502,
+    }),
+  };
+}
+
+function mergeChatMessages(persistedMessages: ChatMessage[], localMessages: ChatMessage[]) {
+  const normalizedPersisted = persistedMessages.map(normalizeChatMessage);
+  if (localMessages.length === 0) return normalizedPersisted;
+
+  const persistedIds = new Set(normalizedPersisted.map(message => message.id));
+  const persistedRequestRoles = new Set(
+    normalizedPersisted
+      .map(message => {
+        const requestId = messageRequestId(message);
+        return requestId ? `${message.role}:${requestId}` : null;
+      })
+      .filter((value): value is string => Boolean(value))
+  );
+
+  const localOnly = localMessages.filter(message => {
+    if (persistedIds.has(message.id)) return false;
+    const requestId = messageRequestId(message);
+    return !requestId || !persistedRequestRoles.has(`${message.role}:${requestId}`);
+  });
+
+  return [...normalizedPersisted, ...localOnly];
+}
+
+function removeRequestMessages(messages: ChatMessage[], requestId: string) {
+  return messages.filter(message => messageRequestId(message) !== requestId);
+}
+
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
   const {
     accessToken,
@@ -143,11 +209,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
   const [chatInput, setChatInput] = useState("");
-  const [isChatSending, setIsChatSending] = useState(false);
+  const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
+  const [localMessagesBySession, setLocalMessagesBySession] = useState<Record<string, ChatMessage[]>>({});
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeSessionId = activeSession?.id ?? null;
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  const localMessagesBySessionRef = useRef<Record<string, ChatMessage[]>>({});
 
   const handleTranscript = useCallback((transcript: string) => {
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
@@ -158,6 +226,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    localMessagesBySessionRef.current = localMessagesBySession;
+  }, [localMessagesBySession]);
+
+  const isActiveChatSending = activeSessionId ? sendingSessionIds.includes(activeSessionId) : false;
 
   const getHeaders = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -220,6 +294,46 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     });
   }, [updateLocalChatSession]);
 
+  const addLocalMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
+    setLocalMessagesBySession(prev => ({
+      ...prev,
+      [sessionId]: [...(prev[sessionId] || []), ...messages],
+    }));
+  }, []);
+
+  const updateLocalMessage = useCallback((sessionId: string, messageId: string, patch: Partial<ChatMessage>) => {
+    setLocalMessagesBySession(prev => {
+      const current = prev[sessionId] || [];
+      if (current.length === 0) return prev;
+      return {
+        ...prev,
+        [sessionId]: current.map(message => message.id === messageId ? { ...message, ...patch } : message),
+      };
+    });
+  }, []);
+
+  const clearLocalRequestMessages = useCallback((sessionId: string, requestId: string) => {
+    setLocalMessagesBySession(prev => {
+      const current = prev[sessionId] || [];
+      if (current.length === 0) return prev;
+      const nextMessages = removeRequestMessages(current, requestId);
+      if (nextMessages.length === current.length) return prev;
+
+      const next = { ...prev };
+      if (nextMessages.length > 0) next[sessionId] = nextMessages;
+      else delete next[sessionId];
+      return next;
+    });
+  }, []);
+
+  const markSessionSending = useCallback((sessionId: string) => {
+    setSendingSessionIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
+  }, []);
+
+  const unmarkSessionSending = useCallback((sessionId: string) => {
+    setSendingSessionIds(prev => prev.filter(id => id !== sessionId));
+  }, []);
+
   const createNewChat = useCallback(async (): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
@@ -253,13 +367,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       if (res.ok) {
         const data = await res.json() as ChatMessage[];
         if (activeSessionIdRef.current === sid) {
-          setChatMessages(prev => {
-            const hasInFlightMessage = prev.some(message =>
-              message.chat_session_id === sid &&
-              (message.status === "pending" || message.status === "sending" || message.status === "streaming")
-            );
-            return hasInFlightMessage ? prev : data;
-          });
+          setChatMessages(mergeChatMessages(data, localMessagesBySessionRef.current[sid] || []));
         }
       }
     } catch (err) {
@@ -308,12 +416,14 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     return () => window.clearTimeout(timerId);
   }, [activeSessionId, accessToken, fetchSessionMessages]);
 
-  const markAssistantFailed = (pendingMessageId: string, failure: ChatFailurePayload) => {
-    setChatMessages(prev => prev.map(m =>
-      m.id === pendingMessageId
-        ? { ...m, status: "failed" as const, error_message: JSON.stringify(failure) }
-        : m
-    ));
+  const markAssistantFailed = (sessionId: string, pendingMessageId: string, failure: ChatFailurePayload) => {
+    const patch = { status: "failed" as const, error_message: JSON.stringify(failure) };
+    updateLocalMessage(sessionId, pendingMessageId, patch);
+    if (activeSessionIdRef.current === sessionId) {
+      setChatMessages(prev => prev.map(m =>
+        m.id === pendingMessageId ? { ...m, ...patch } : m
+      ));
+    }
   };
 
   const postChatMessage = async (
@@ -321,11 +431,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     content: string,
     artifactIds: string[],
     pendingMessageId: string,
+    requestId: string,
   ) => {
-    const requestId = crypto.randomUUID();
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), CHAT_REQUEST_TIMEOUT_MS);
-    setIsChatSending(true);
+    markSessionSending(session.id);
 
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${session.id}/messages`, {
@@ -339,23 +449,27 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       });
 
       if (res.ok) {
-        const botMsg: ChatMessage = await res.json();
+        const botMsg = normalizeChatMessage(await res.json() as ChatMessage);
         botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? botMsg : m));
+        clearLocalRequestMessages(session.id, requestId);
+        if (activeSessionIdRef.current === session.id) {
+          setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? botMsg : m));
+        }
       } else {
-        markAssistantFailed(pendingMessageId, await chatFailureFromResponse(res, requestId));
+        markAssistantFailed(session.id, pendingMessageId, await chatFailureFromResponse(res, requestId));
       }
     } catch (err: unknown) {
-      markAssistantFailed(pendingMessageId, chatFailureFromNetwork(err, requestId));
+      markAssistantFailed(session.id, pendingMessageId, chatFailureFromNetwork(err, requestId));
     } finally {
       clearTimeout(timeoutId);
-      setIsChatSending(false);
+      unmarkSessionSending(session.id);
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
+    if (activeSessionId && sendingSessionIds.includes(activeSessionId)) return;
 
     const content = chatInput;
     const artifactIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
@@ -366,28 +480,33 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (!currentSess) return;
     touchChatSessionForMessage(currentSess, content);
 
+    const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
-    setChatMessages(prev => [
-      ...prev,
+    const createdAt = new Date().toISOString();
+    const localTurn: ChatMessage[] = [
       {
         id: crypto.randomUUID(),
         chat_session_id: currentSess.id,
         role: "user",
         content,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
         status: "completed",
+        metadata_json: { request_id: requestId },
       },
       {
         id: pendingMsgId,
         chat_session_id: currentSess.id,
         role: "assistant",
         content: "",
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
         status: "pending",
+        metadata_json: { request_id: requestId },
       },
-    ]);
+    ];
+    addLocalMessages(currentSess.id, localTurn);
+    setChatMessages(prev => [...prev, ...localTurn]);
 
-    await postChatMessage(currentSess, content, artifactIds, pendingMsgId);
+    await postChatMessage(currentSess, content, artifactIds, pendingMsgId, requestId);
   };
 
   const handleRetryMessage = async (messageId: string) => {
@@ -398,20 +517,24 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       .find(m => m.role === "user" && m.status === "completed");
     if (!userMessage) return;
 
+    const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
+    const pendingMessage: ChatMessage = {
+      id: pendingMsgId,
+      chat_session_id: activeSession.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+      metadata_json: { request_id: requestId },
+    };
+    addLocalMessages(activeSession.id, [pendingMessage]);
     setChatMessages(prev => [
       ...prev.filter(m => m.id !== messageId),
-      {
-        id: pendingMsgId,
-        chat_session_id: activeSession.id,
-        role: "assistant",
-        content: "",
-        created_at: new Date().toISOString(),
-        status: "pending",
-      },
+      pendingMessage,
     ]);
 
-    await postChatMessage(activeSession, userMessage.content, [], pendingMsgId);
+    await postChatMessage(activeSession, userMessage.content, [], pendingMsgId, requestId);
   };
 
   const handleCopyMessage = (content: string) => {
@@ -424,11 +547,22 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
     if (editIndex === -1) return;
 
+    const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
     const updatedUserMsg: ChatMessage = {
       ...chatMessages[editIndex],
       content: newContent,
     };
+    const pendingMessage: ChatMessage = {
+      id: pendingMsgId,
+      chat_session_id: activeSession.id,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      status: "pending",
+      metadata_json: { request_id: requestId },
+    };
+    addLocalMessages(activeSession.id, [pendingMessage]);
 
     setChatMessages(prev => {
       const idx = prev.findIndex(m => m.id === originalMessageId);
@@ -436,18 +570,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       return [
         ...prev.slice(0, idx),
         updatedUserMsg,
-        {
-          id: pendingMsgId,
-          chat_session_id: activeSession.id,
-          role: "assistant",
-          content: "",
-          created_at: new Date().toISOString(),
-          status: "pending",
-        },
+        pendingMessage,
       ];
     });
 
-    await postChatMessage(activeSession, newContent, [], pendingMsgId);
+    await postChatMessage(activeSession, newContent, [], pendingMsgId, requestId);
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -527,7 +654,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             attachedFiles={attachedFiles}
             voiceState={voiceState}
             isMessagesLoading={isMessagesLoading}
-            isChatSending={isChatSending}
+            isChatSending={isActiveChatSending}
             displayName={activeUser.displayName}
             onInputChange={setChatInput}
             onSend={handleSendMessage}
