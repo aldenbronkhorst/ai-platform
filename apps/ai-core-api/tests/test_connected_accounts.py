@@ -111,11 +111,9 @@ class TestConnectedAccountsFlow:
         assert "connectors" in data
         assert isinstance(data["connectors"], list)
 
-    def test_get_connected_accounts_uses_delegated_token_state(self):
+    def test_get_connected_accounts_uses_stored_delegated_state_without_token_lookup(self):
         async def fake_token_status(provider, _user_id):
-            if provider == "azure":
-                return {"status": "connected", "provider": "azure", "scope": "https://management.core.windows.net//.default"}
-            return {"status": "not_connected", "provider": provider}
+            raise AssertionError(f"unexpected token lookup for {provider}")
 
         with patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)):
             response = client.get(
@@ -125,7 +123,7 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        assert connectors["azure"]["status"] == "connected"
+        assert connectors["azure"]["status"] == "not_connected"
         assert connectors["github"]["status"] == "not_connected"
 
     def test_get_odoo_status_not_connected(self):

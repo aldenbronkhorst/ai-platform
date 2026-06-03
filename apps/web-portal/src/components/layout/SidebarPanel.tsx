@@ -152,7 +152,7 @@ export function SidebarPanel({
           <span className="px-3 py-1 block text-[10px] font-bold text-muted uppercase tracking-widest">
             Conversations
           </span>
-          {isSessionsLoading ? (
+          {isSessionsLoading && chatSessions.length === 0 ? (
             <div className="text-center py-6 text-xs text-muted">Loading...</div>
           ) : chatSessions.length === 0 ? (
             <div className="text-center py-8 text-xs text-soft font-medium">

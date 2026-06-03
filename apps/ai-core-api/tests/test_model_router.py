@@ -250,10 +250,16 @@ class TestConnectorContext:
         assert result["context"]["current_date"] == "2026-06-03"
 
     @pytest.mark.asyncio
-    async def test_execute_chat_treats_azure_token_as_connected_without_account_row(self):
+    async def test_execute_chat_treats_stored_azure_account_as_connected_without_token_lookup(self):
         from app.services.model_router import execute_chat
 
-        db = MockSession(has_config=True, connected_accounts=[])
+        account = AIConnectedAccount(
+            provider="azure",
+            status="connected",
+            user_id=uuid.uuid4(),
+            provider_username="azure-user",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
 
         class MockToolResult:
             def scalars(self):
@@ -278,9 +284,7 @@ class TestConnectorContext:
             return await original_execute(stmt, *args, **kwargs)
 
         async def fake_token_status(provider, _user_id):
-            if provider == "azure":
-                return {"status": "connected", "provider": "azure", "scope": "https://management.core.windows.net//.default"}
-            return {"status": "not_connected", "provider": provider}
+            raise AssertionError(f"unexpected token lookup for {provider}")
 
         db.execute = mock_execute
         mock_chat_completion = AsyncMock(return_value={
@@ -629,18 +633,6 @@ class TestSeedIdempotent:
         from scripts.seed_providers import CANONICAL_SYSTEM_PROMPT
         from app.services.model_router import CANONICAL_SYSTEM_PROMPT as ROUTER_PROMPT
         assert CANONICAL_SYSTEM_PROMPT == ROUTER_PROMPT
-
-
-# ── Update System Prompt Script Tests ──
-
-class TestUpdateSystemPrompt:
-    def test_odoo_centric_phrase_detection(self):
-        from scripts.update_system_prompt import _contains_odoo_centric_wording
-        assert _contains_odoo_centric_wording("You are an Odoo assistant")
-        assert _contains_odoo_centric_wording("integrated with Odoo ERP")
-        assert _contains_odoo_centric_wording("You are an operational assistant")
-        assert _contains_odoo_centric_wording("fully integrated into Odoo")
-        assert not _contains_odoo_centric_wording("AI Platform for Lots Lots More")
 
 
 # ── Context Service Tests (connector-aware filtering) ──

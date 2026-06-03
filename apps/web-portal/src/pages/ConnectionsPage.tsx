@@ -9,7 +9,7 @@ import type { LucideIcon } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
 import { GlassInput } from "../components/ui/GlassInput";
-import { APIM_BASE_URL } from "../hooks/useApi";
+import { APIM_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
 
 const KV_ERROR_PHRASES = [
   "forbiddenbyrbac", "setsecret/action", "key vault secrets officer",
@@ -247,7 +247,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
         const meta: Record<string, ConnectorMeta> = {};
@@ -260,13 +260,19 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       } else {
         setConnectorStatusError(`Could not load connector statuses (${res.status}).`);
       }
-    } catch (err) { setConnectorStatusError(`Could not load connector statuses: ${errorMessage(err)}`); }
+    } catch (err) {
+      setConnectorStatusError(
+        isAbortError(err)
+          ? "Connector statuses are taking too long to load. Please retry."
+          : `Could not load connector statuses: ${errorMessage(err)}`,
+      );
+    }
   }, [accessToken, headers]);
 
   const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as OdooStatus;
         setOdooStatus(data);

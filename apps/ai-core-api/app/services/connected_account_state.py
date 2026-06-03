@@ -224,12 +224,27 @@ async def record_delegated_diagnosis(
     )
 
 
-async def effective_connected_accounts(db: AsyncSession, user_id: Optional[UUID]) -> list[AIConnectedAccount]:
+async def effective_connected_accounts(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    *,
+    include_token_state: bool = False,
+) -> list[AIConnectedAccount]:
+    """Return connected-account state for normal request paths.
+
+    The database row is the fast source of truth for page rendering, chat
+    routing, and tool selection. Token-store reconciliation is intentionally
+    opt-in because Key Vault checks can be slow and should only run on explicit
+    connect/status/diagnose/disconnect paths.
+    """
     if not user_id:
         return []
 
     result = await db.execute(select(AIConnectedAccount).where(AIConnectedAccount.user_id == user_id))
     accounts = list(result.scalars().all())
+    if not include_token_state:
+        return accounts
+
     by_provider = {account.provider: account for account in accounts}
 
     for provider in DELEGATED_TOKEN_PROVIDERS:

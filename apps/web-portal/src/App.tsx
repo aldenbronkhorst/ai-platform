@@ -12,7 +12,7 @@ import { AuditPage } from "./pages/AuditPage";
 import { AiConfigView } from "./AiConfigView";
 import { AdminPage } from "./pages/AdminPage";
 import type { ActiveTab } from "./types";
-import { APIM_BASE_URL } from "./hooks/useApi";
+import { APIM_BASE_URL, fetchWithTimeout, isAbortError } from "./hooks/useApi";
 import { usePortalAuth } from "./hooks/usePortalAuth";
 import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 
@@ -20,12 +20,33 @@ function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
 }
 
-function isAbortError(err: unknown) {
-  return typeof err === "object" && err !== null && "name" in err
-    && (err as { name?: string }).name === "AbortError";
+const CHAT_REQUEST_TIMEOUT_MS = 180_000;
+const CHAT_SESSIONS_CACHE_PREFIX = "ai-platform.chatSessions.";
+
+function chatSessionsCacheKey(email: string) {
+  return `${CHAT_SESSIONS_CACHE_PREFIX}${email.toLowerCase()}`;
 }
 
-const CHAT_REQUEST_TIMEOUT_MS = 180_000;
+function readCachedChatSessions(email: string): ChatSession[] {
+  if (!email) return [];
+  try {
+    const raw = window.localStorage.getItem(chatSessionsCacheKey(email));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed as ChatSession[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedChatSessions(email: string, sessions: ChatSession[]) {
+  if (!email) return;
+  try {
+    window.localStorage.setItem(chatSessionsCacheKey(email), JSON.stringify(sessions));
+  } catch {
+    // Ignore storage quota/privacy errors; the live API remains authoritative.
+  }
+}
 
 interface ChatFailurePayload {
   requestId: string;
@@ -104,6 +125,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
   }, []);
   const { voiceState, toggleVoice: handleToggleVoice } = useSpeechRecognition(handleTranscript);
+  const activeUserEmail = activeUser?.email || "";
 
   const getHeaders = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -120,12 +142,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     if (!accessToken) return;
     setIsSessionsLoading(true);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions`, { headers: getHeaders() });
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as ChatSession[];
         setChatSessions(data);
+        writeCachedChatSessions(activeUserEmail, data);
         setActiveSession(prev => {
-          if (prev) return prev;
+          if (prev && data.some(session => session.id === prev.id)) return prev;
           return data.length > 0 ? data[0] : null;
         });
       } else {
@@ -136,7 +159,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } finally {
       setIsSessionsLoading(false);
     }
-  }, [accessToken, getHeaders]);
+  }, [accessToken, activeUserEmail, getHeaders]);
 
   const createNewChat = useCallback(async (workflowContext?: string): Promise<ChatSession | null> => {
     if (!accessToken) return null;
@@ -167,7 +190,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const fetchSessionMessages = useCallback(async (sid: string) => {
     setIsMessagesLoading(true);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
       if (res.ok) setChatMessages(await res.json());
     } catch (err) {
       console.error("Failed to fetch messages:", err);
@@ -191,10 +214,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   useEffect(() => {
     if (!accessToken) return;
     const timerId = window.setTimeout(() => {
+      const cached = readCachedChatSessions(activeUserEmail);
+      if (cached.length > 0) {
+        setChatSessions(cached);
+        setActiveSession(prev => prev || cached[0]);
+      }
       void fetchChatSessions();
     }, 0);
     return () => window.clearTimeout(timerId);
-  }, [accessToken, fetchChatSessions]);
+  }, [accessToken, activeUserEmail, fetchChatSessions]);
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
