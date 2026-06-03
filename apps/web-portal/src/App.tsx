@@ -161,13 +161,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     }
   }, [accessToken, activeUserEmail, getHeaders]);
 
-  const createNewChat = useCallback(async (workflowContext?: string): Promise<ChatSession | null> => {
+  const createNewChat = useCallback(async (): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
       const res = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify({ title: "New Chat", workflow_context: workflowContext }),
+        body: JSON.stringify({ title: "New Chat" }),
       });
       if (res.ok) {
         const newSess = await res.json();
@@ -261,7 +261,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         body: JSON.stringify({
           content,
           artifact_ids: artifactIds,
-          workflow_context: session.workflow_context,
         }),
         signal: abortController.signal,
       });
@@ -378,14 +377,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     await postChatMessage(activeSession, newContent, [], pendingMsgId);
   };
 
-  const handleSuggestionClick = (prompt: string) => {
-    setChatInput(prompt);
-    if (!activeSession) {
-      createNewChat();
-      setActiveTab("chat");
-    }
-  };
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || !accessToken) return;
@@ -472,7 +463,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             onTriggerUpload={() => fileInputRef.current?.click()}
             onToggleVoice={handleToggleVoice}
             onRetryMessage={handleRetryMessage}
-            onSuggestionClick={handleSuggestionClick}
             onCopyMessage={handleCopyMessage}
             onEditResend={handleEditResend}
           />

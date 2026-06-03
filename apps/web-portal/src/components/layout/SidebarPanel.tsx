@@ -173,11 +173,6 @@ export function SidebarPanel({
                   <p className="text-xs font-semibold truncate leading-tight text-default">
                     {sess.title}
                   </p>
-                  {sess.workflow_context && (
-                    <span className="text-[8px] text-soft font-bold block truncate mt-0.5 uppercase tracking-wider">
-                      {sess.workflow_context.split("_").join(" ")}
-                    </span>
-                  )}
                 </div>
                 <button
                   onClick={(e) => {

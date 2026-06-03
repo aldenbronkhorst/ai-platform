@@ -21,7 +21,6 @@ interface ChatViewProps {
   onTriggerUpload: () => void;
   onToggleVoice: () => void;
   onRetryMessage: (messageId: string) => void;
-  onSuggestionClick: (prompt: string) => void;
   onCopyMessage: (content: string) => void;
   onEditResend: (originalMessageId: string, newContent: string) => void;
   placeholder?: string;
@@ -43,7 +42,6 @@ export function ChatView({
   onTriggerUpload,
   onToggleVoice,
   onRetryMessage,
-  onSuggestionClick,
   onCopyMessage,
   onEditResend,
   placeholder,
@@ -136,7 +134,7 @@ export function ChatView({
         </div>
       ) : (
         <div className="flex-1 flex flex-col overflow-y-auto">
-          <ChatEmptyState displayName={displayName} onSuggestion={onSuggestionClick} />
+          <ChatEmptyState displayName={displayName} />
         </div>
       )}
 

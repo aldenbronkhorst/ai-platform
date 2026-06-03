@@ -9,7 +9,6 @@ export interface ChatSession {
   id: string;
   title: string;
   status: string;
-  workflow_context?: string;
   created_at: string;
   last_message_at: string;
 }
@@ -26,12 +25,6 @@ export interface ChatMessage {
   metadata_json?: unknown;
   status?: MessageStatus;
   error_message?: string;
-}
-
-export interface SuggestedAction {
-  label: string;
-  prompt: string;
-  icon: string;
 }
 
 export interface AttachedFile {

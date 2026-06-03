@@ -56,7 +56,7 @@ export function LoginPage({
             AI Platform
           </h2>
           <p className="text-xs text-muted mt-2 leading-relaxed">
-            Secure operational portal for business workflows, audits, and automation.
+            Secure operational portal for business operations, audits, and automation.
           </p>
         </div>
 
