@@ -42,7 +42,7 @@ async def start_device_code(auth: dict = Depends(api_key_auth)):
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/devicecode",
-                data={"client_id": AZURE_CLI_CLIENT_ID, "scope": azure_device_scope_string(), "client_info": "1"},
+                data={"client_id": AZURE_CLI_CLIENT_ID, "scope": azure_device_scope_string()},
             )
         data = resp.json()
         if "error" in data:
@@ -71,7 +71,7 @@ async def device_code_callback(req: dict, auth: dict = Depends(api_key_auth)):
                 AZURE_TOKEN_ENDPOINT,
                 data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                       "client_id": AZURE_CLI_CLIENT_ID, "device_code": device_code,
-                      "scope": azure_device_scope_string(), "client_info": "1"},
+                      "scope": azure_device_scope_string()},
             )
         data = resp.json()
         if "error" in data:

@@ -20,7 +20,7 @@ AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-
 AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com")
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
 AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.core.windows.net//.default")
-AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "offline_access", "openid", "profile"]
+AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "offline_access"]
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
 
 
@@ -133,7 +133,6 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
                     "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
                     "refresh_token": refresh_token,
                     "scope": azure_device_scope_string(),
-                    "client_info": "1",
                 },
             )
         data = response.json()
@@ -198,11 +197,6 @@ async def ensure_azure_cli_profile(user_id: UUID, token_data: dict[str, Any]) ->
     """Persist an isolated Azure CLI profile/cache for the connected user."""
     if not token_data.get("access_token"):
         return {"ready": False, "message": "Azure is not connected for this user."}
-    if not token_data.get("id_token") and not token_data.get("client_info"):
-        return {
-            "ready": False,
-            "message": "Azure connection must be refreshed. Reconnect Azure for this user.",
-        }
 
     subscriptions_result = await _list_azure_subscriptions(token_data["access_token"])
     if not subscriptions_result.get("ok"):
@@ -405,20 +399,85 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
 
 
 async def run_github_cli_command(command: str, user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    request_id = uuid.uuid4().hex[:16]
     token_data = await retrieve_token("github", user_id) if user_id else None
     access_token = token_data.get("access_token") if token_data else None
-    env: dict[str, str] = {}
-    if access_token:
-        env.update({"GH_TOKEN": access_token, "GITHUB_TOKEN": access_token})
+    normalized = command.strip()
+    if not access_token:
+        return {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 1,
+            "timed_out": False,
+            "output_truncated": False,
+            "stdout_chars": 0,
+            "stderr_chars": 0,
+            "error": "GitHub is not connected for this user.",
+            "command": normalized,
+            "connector": "github_cli",
+            "request_id": request_id,
+            "status": "failed",
+            "auth_method": "not_connected",
+        }
 
-    request_id = uuid.uuid4().hex[:16]
-    result = await run_command(command.strip(), timeout=timeout, env=env)
+    env: dict[str, str] = {}
+    env.update({"GH_TOKEN": access_token, "GITHUB_TOKEN": access_token})
+
+    result = await run_command(normalized, timeout=timeout, env=env)
     output = result.to_dict()
     output.update({
-        "command": command.strip(),
+        "command": normalized,
         "connector": "github_cli",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
-        "auth_method": "oauth_token_env" if access_token else "none",
+        "auth_method": "oauth_token_env",
     })
     return output
+
+
+async def diagnose_github_connection(user_id: Optional[UUID]) -> dict[str, Any]:
+    request_id = uuid.uuid4().hex[:16]
+    token_data = await retrieve_token("github", user_id) if user_id else None
+    access_token = token_data.get("access_token") if token_data else None
+    if not access_token:
+        return {
+            "status": "failed",
+            "connector": "github_cli",
+            "request_id": request_id,
+            "message": "GitHub is not connected for this user.",
+        }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                "https://api.github.com/user",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+        if response.status_code >= 400:
+            return {
+                "status": "failed",
+                "connector": "github_cli",
+                "request_id": request_id,
+                "message": f"GitHub token check failed with HTTP {response.status_code}.",
+                "stderr": response.text[:1000],
+            }
+        user = response.json()
+        return {
+            "status": "success",
+            "connector": "github_cli",
+            "request_id": request_id,
+            "message": f"GitHub token is valid for {user.get('login', 'the connected user')}.",
+            "login": user.get("login"),
+            "scopes": response.headers.get("X-OAuth-Scopes", ""),
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "connector": "github_cli",
+            "request_id": request_id,
+            "message": f"GitHub diagnostics failed: {exc}",
+        }

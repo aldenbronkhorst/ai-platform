@@ -233,8 +233,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooDb, setOdooDb] = useState("");
   const [odooUsername, setOdooUsername] = useState("");
   const [odooApiKey, setOdooApiKey] = useState("");
-  const [githubToken, setGithubToken] = useState("");
-  const [githubOrg, setGithubOrg] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
@@ -409,13 +407,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleAzureStatus = async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/azure/status`, { method: "GET", headers: headers() });
-      const data = await res.json() as { status?: string };
-      if (data.status === "connected") {
-        setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected" });
+      const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
+      const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
+      if (data.status === "success") {
+        setCliTestResult({ status: "success", connector: "azure_cli", message: data.message || "Azure connected", request_id: data.request_id });
         await fetchConnectors();
       } else {
-        setCliTestResult({ status: "failed", connector: "azure_cli", message: `Azure status: ${formatStatusLabel(data.status || "not_connected")}` });
+        setCliTestResult({ status: "failed", connector: "azure_cli", message: data.message || `Azure status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
     } catch { /* ignore transient Azure status errors */ }
@@ -441,30 +439,16 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleGithubStatus = async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/github/status`, { method: "GET", headers: headers() });
-      const data = await res.json() as { status?: string };
-      if (data.status === "connected") {
-        setCliTestResult({ status: "success", connector: "github_cli", message: "GitHub connected" });
+      const res = await fetch(`${APIM_BASE_URL}/connector/github/diagnose`, { method: "POST", headers: headers() });
+      const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
+      if (data.status === "success") {
+        setCliTestResult({ status: "success", connector: "github_cli", message: data.message || "GitHub connected", request_id: data.request_id });
+        await fetchConnectors();
+      } else {
+        setCliTestResult({ status: "failed", connector: "github_cli", message: data.message || `GitHub status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
     } catch { /* ignore transient GitHub status errors */ }
-  };
-
-  const handleConnectGithubToken = async () => {
-    if (!accessToken || !githubToken) return; setIsConnecting(true); setCliTestResult(null);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/github/token-connect`, {
-        method: "POST", headers: headers(),
-        body: JSON.stringify({ token: githubToken, org: githubOrg }),
-      });
-      const data = await res.json() as CliTestResult;
-      setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github_cli" });
-      if (res.ok) {
-        setGithubToken("");
-        await fetchConnectors();
-      }
-    } catch (err) { setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) }); }
-    finally { setIsConnecting(false); }
   };
 
   const connectorDetail = (key: string) => {
@@ -577,7 +561,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (key === "github_cli") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
         <DetailCard>
-          <p className="text-sm text-muted">Connect with GitHub OAuth or a personal access token.</p>
+          <p className="text-sm text-muted">Connect with GitHub OAuth.</p>
         </DetailCard>
 
         <ActionGroup>
@@ -588,23 +572,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
           </GlassButton>
         </ActionGroup>
-
-        <details className="rounded-2xl border border-default bg-canvas p-4 text-sm">
-          <summary className="cursor-pointer text-muted hover:text-default font-semibold">Use token manually</summary>
-          <div className="mt-4 grid gap-3">
-            <FormField label="Personal Access Token">
-              <GlassInput type="password" placeholder="ghp_..." value={githubToken} onChange={e => setGithubToken(e.target.value)} />
-            </FormField>
-            <FormField label="Organization / Owner">
-              <GlassInput type="text" placeholder="Optional owner" value={githubOrg} onChange={e => setGithubOrg(e.target.value)} />
-            </FormField>
-            <ActionGroup>
-              <GlassButton size="sm" onClick={handleConnectGithubToken} disabled={isConnecting || !githubToken}>
-                {isConnecting ? "Connecting..." : "Connect with Token"}
-              </GlassButton>
-            </ActionGroup>
-          </div>
-        </details>
       </ConnectorDetailShell>
     );
 

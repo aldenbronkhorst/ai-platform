@@ -987,6 +987,88 @@ class TestProviderErrorHandling:
 
 
 class TestToolExecution:
+    def test_tool_result_compaction_limits_large_outputs(self):
+        from app.services.model_router import _compact_tool_result_for_model, MAX_TOOL_RESULT_JSON_CHARS
+
+        compacted = _compact_tool_result_for_model({
+            "records": [
+                {"id": i, "name": f"Record {i}", "datas": "x" * 50000, "body": "b" * 5000}
+                for i in range(25)
+            ]
+        })
+
+        payload = str(compacted)
+        assert len(payload) < MAX_TOOL_RESULT_JSON_CHARS + 5000
+        assert compacted["records"]["total_items"] == 25
+        assert compacted["records"]["truncated_items"] == 20
+        assert compacted["records"]["items"][0]["datas"]["omitted"] is True
+        assert "truncated" in compacted["records"]["items"][0]["body"]
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_fallback_helper_switches_model(self):
+        from app.services.model_router import ModelCallStats, ModelCallState, _try_rate_limit_fallbacks
+
+        route = AIRoute(
+            id=uuid.uuid4(),
+            task_type="general_chat",
+            primary_model_id=uuid.uuid4(),
+            fallback_model_id=uuid.uuid4(),
+            enabled="true",
+        )
+        primary_provider = AIProvider(id=uuid.uuid4(), name="Primary", enabled="true")
+        fallback_provider = AIProvider(id=uuid.uuid4(), name="Fallback Provider", enabled="true")
+        primary_model = AIModel(
+            id=route.primary_model_id,
+            provider_id=primary_provider.id,
+            display_name="Primary Model",
+            supports_tools="true",
+            enabled="true",
+        )
+        fallback_model = AIModel(
+            id=route.fallback_model_id,
+            provider_id=fallback_provider.id,
+            display_name="Fallback Model",
+            supports_tools="true",
+            enabled="true",
+        )
+        state = ModelCallState(
+            result={"error": True, "error_type": "rate_limit_exceeded", "latency_ms": 10},
+            used_model=primary_model,
+            used_provider=primary_provider,
+            client=MagicMock(),
+            stats=ModelCallStats(),
+        )
+
+        with patch(
+            "app.services.model_router._fallback_candidates",
+            new=AsyncMock(return_value=[(fallback_model, fallback_provider)]),
+        ), patch(
+            "app.services.model_router._call_model",
+            new=AsyncMock(return_value=({
+                "error": False,
+                "content": "fallback response",
+                "prompt_tokens": 7,
+                "completion_tokens": 3,
+                "latency_ms": 20,
+            }, MagicMock())),
+        ):
+            updated = await _try_rate_limit_fallbacks(
+                MockSession(),
+                route,
+                primary_model,
+                state,
+                [{"role": "user", "content": "hi"}],
+                0.3,
+                2000,
+                [{"type": "function"}],
+                reason="tool_loop_quota_exceeded",
+            )
+
+        assert updated.fallback_used is True
+        assert updated.used_model.id == fallback_model.id
+        assert updated.result["content"] == "fallback response"
+        assert updated.stats.total_tokens == 10
+
     @pytest.mark.asyncio
     async def test_execute_chat_with_tools(self):
         """When model supports tools and tools are registered, they should be

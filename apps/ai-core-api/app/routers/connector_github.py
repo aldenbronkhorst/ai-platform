@@ -5,8 +5,8 @@ import os
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
-from app.services.token_storage import store_token, retrieve_token, delete_token, token_status
-from app.services.connector_commands import run_github_cli_command
+from app.services.token_storage import store_token, delete_token, token_status
+from app.services.connector_commands import diagnose_github_connection, run_github_cli_command
 
 router = APIRouter(prefix="/connector/github", tags=["Connector"])
 logger = logging.getLogger(__name__)
@@ -25,11 +25,6 @@ class GithubCliRequest(BaseModel):
     command: str = Field(..., description="GitHub CLI command (gh, git, rg, jq)")
     purpose: str = Field("", description="Purpose")
     timeout: int = Field(60, description="Timeout", le=300)
-
-
-class GithubTokenConnectRequest(BaseModel):
-    token: str = Field(..., min_length=8)
-    org: str = Field("", description="Default organization or owner")
 
 
 @router.post("/cli")
@@ -86,34 +81,17 @@ async def github_oauth_callback(req: dict, auth: dict = Depends(api_key_auth)):
         return {"status": "error", "error": str(e), "request_id": request_id}
 
 
-@router.post("/token-connect")
-async def github_token_connect(req: GithubTokenConnectRequest, auth: dict = Depends(api_key_auth)):
-    """Store a manually supplied GitHub token for the current user."""
-    user_id = auth.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="Missing authenticated user")
-    request_id = uuid.uuid4().hex[:16]
-    stored = await store_token("github", user_id, {
-        "access_token": req.token,
-        "token_type": "bearer",
-        "scope": "",
-        "org": req.org,
-    })
-    if not stored:
-        return {
-            "status": "error",
-            "error": "key_vault_write_failed",
-            "message": "Could not store credentials securely.",
-            "request_id": request_id,
-        }
-    return {"status": "connected", "provider": "github", "request_id": request_id}
-
-
 @router.get("/status")
 async def github_status(auth: dict = Depends(api_key_auth)):
     """Check GitHub connection status for the current user."""
     user_id = auth.get("user_id")
     return await token_status("github", user_id) if user_id else {"status": "not_connected"}
+
+
+@router.post("/diagnose")
+async def github_diagnose(auth: dict = Depends(api_key_auth)):
+    """Validate the stored GitHub delegated token without running gh."""
+    return await diagnose_github_connection(auth.get("user_id"))
 
 
 @router.post("/disconnect")

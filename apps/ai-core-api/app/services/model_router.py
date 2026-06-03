@@ -25,6 +25,29 @@ from app.schemas.schemas import ContextRequest
 logger = logging.getLogger(__name__)
 
 ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure a model in Settings \u2192 AI Configuration."
+RATE_LIMIT_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded"}
+MAX_TOOL_RESULT_STRING_CHARS = 600
+MAX_TOOL_RESULT_LIST_ITEMS = 5
+MAX_TOOL_RESULT_DICT_KEYS = 60
+MAX_TOOL_RESULT_JSON_CHARS = 12000
+OMITTED_TOOL_CONTENT_KEYS = {
+    "datas",
+    "raw",
+    "raw_html",
+    "html",
+    "content_base64",
+    "base64",
+    "binary",
+}
+LARGE_TEXT_TOOL_KEYS = {
+    "body",
+    "content",
+    "description",
+    "index_content",
+    "message_body",
+    "note",
+    "text",
+}
 
 CANONICAL_SYSTEM_PROMPT = (
     "You are the AI Platform for Lots Lots More. "
@@ -319,6 +342,75 @@ async def _execute_tool_call(
     return {"error": f"Unknown tool: {tool_name}"}
 
 
+def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -> str:
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
+
+
+def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
+    """Return a model-safe summary of connector output.
+
+    This is not an authorization layer. It keeps provider data usable while
+    preventing one large connector response from becoming a huge follow-up
+    prompt or persisted chat payload.
+    """
+    key_lower = key.lower()
+    if depth > 8:
+        return {"truncated": True, "reason": "max_depth"}
+
+    if any(sensitive in key_lower for sensitive in ("password", "secret", "token", "api_key", "authorization", "cookie")):
+        return {"redacted": True}
+
+    if key_lower in OMITTED_TOOL_CONTENT_KEYS:
+        if isinstance(value, str):
+            return {"omitted": True, "chars": len(value)}
+        return {"omitted": True}
+
+    if isinstance(value, str):
+        if key_lower in LARGE_TEXT_TOOL_KEYS:
+            return _truncate_tool_text(value)
+        return _truncate_tool_text(value)
+
+    if isinstance(value, list):
+        compact_items = [_compact_tool_value(item, key, depth + 1) for item in value[:MAX_TOOL_RESULT_LIST_ITEMS]]
+        if len(value) <= MAX_TOOL_RESULT_LIST_ITEMS:
+            return compact_items
+        return {
+            "items": compact_items,
+            "total_items": len(value),
+            "truncated_items": len(value) - MAX_TOOL_RESULT_LIST_ITEMS,
+        }
+
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        items = list(value.items())
+        for child_key, child_value in items[:MAX_TOOL_RESULT_DICT_KEYS]:
+            compact[child_key] = _compact_tool_value(child_value, child_key, depth + 1)
+        if len(items) > MAX_TOOL_RESULT_DICT_KEYS:
+            compact["_truncated_keys"] = len(items) - MAX_TOOL_RESULT_DICT_KEYS
+        return compact
+
+    return value
+
+
+def _compact_tool_result_for_model(result: Any) -> Any:
+    compacted = _compact_tool_value(result)
+    payload = json.dumps(compacted, ensure_ascii=False, default=str)
+    serializable = json.loads(payload)
+    if len(payload) <= MAX_TOOL_RESULT_JSON_CHARS:
+        return serializable
+    return {
+        "summary": "Tool result was too large and was compacted before model follow-up.",
+        "result_preview": _truncate_tool_text(payload, MAX_TOOL_RESULT_JSON_CHARS),
+        "original_compacted_chars": len(payload),
+    }
+
+
+def _tool_message_content(compacted_result: Any) -> str:
+    return json.dumps(compacted_result, ensure_ascii=False, default=str)
+
+
 REPORT_ALIASES: dict[str, str] = {
     "p&l": "Profit and Loss",
     "pnl": "Profit and Loss",
@@ -434,7 +526,7 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
                 "reason": f"Found explicit credit-note + partner query for '{partner_hint}'",
                 "actions": [
                     {
-                        "tool": "odoo_query",
+                        "tool": "odoo_ops_runner",
                         "input": {
                             "mode": "records",
                             "model": "account.move",
@@ -456,7 +548,7 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
             "reason": "Found credit-note query (no explicit partner)",
             "actions": [
                 {
-                    "tool": "odoo_query",
+                    "tool": "odoo_ops_runner",
                     "input": {
                         "mode": "records",
                         "model": "account.move",
@@ -491,7 +583,7 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
             "reason": f"Found bill/invoice query{' for ' + partner_hint2 if partner_hint2 else ''}",
             "actions": [
                 {
-                    "tool": "odoo_query",
+                    "tool": "odoo_ops_runner",
                     "input": {
                         "mode": "records",
                         "model": "account.move",
@@ -626,7 +718,10 @@ def _report_success_message(result: dict[str, Any]) -> str | None:
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     """Build a clean user-facing answer when report tool output needs summarising."""
     for tool_result in tool_results:
-        if tool_result.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports"):
+        if tool_result.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports", "odoo_ops_runner"):
+            continue
+        arguments = tool_result.get("arguments") or {}
+        if tool_result.get("tool_name") == "odoo_ops_runner" and arguments.get("mode") not in ("report", "account_report"):
             continue
         result = tool_result.get("result", {})
         if not isinstance(result, dict):
@@ -797,28 +892,18 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
     if not odoo_available:
         return system_prompt
 
-    guidance_parts = ["\n\n### Odoo Tool Guidance\nUse these mode-based Odoo tools. Do not create one-off tools.\n"]
-    tool_descriptions = {
-        "odoo_query": "Records/count/summary. Default to records with domain.",
-        "odoo_analyze": "Aggregates and account reports. P&L -> Profit and Loss.",
-        "odoo_content": "Chatter/notes/long text. metadata first, then content with IDs.",
-        "odoo_attachment": "Attachment metadata and text. Discovery via odoo_query on ir.attachment.",
-        "odoo_mutation": "Create/write/delete/workflow. Odoo permissions decide whether the connected user can perform the action.",
-        "odoo_message": "Post/update chatter/Discuss messages.",
-        "odoo_schema": "Model/field discovery when unsure.",
-        "odoo_health": "Connection/runtime check.",
-    }
-    for name in odoo_available:
-        desc = tool_descriptions.get(name, "")
-        if desc:
-            guidance_parts.append(f"  - **{name}**: {desc}")
-    if "odoo_analyze" in odoo_available:
+    guidance_parts = ["\n\n### Odoo Tool Guidance\nUse `odoo_ops_runner` only. Select an internal mode instead of inventing separate Odoo tools.\n"]
+    if "odoo_ops_runner" in odoo_available:
+        guidance_parts.append(
+            "Modes: health, schema, query/records, count, aggregate, report/account_report, "
+            "attachment, content, message, mutation/create/write/delete, execute."
+        )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
             "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
             "Line names: revenue -> [Revenue, Income, Sales]; expenses -> [Expenses, COGS]; net income -> [Net Profit, Net Income]."
         )
-    guidance_parts.append("Prefer the consolidated odoo_ops_runner surface. Do not create one-off tools.")
+    guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
     return system_prompt + "\n".join(guidance_parts)
 
 
@@ -1052,6 +1137,10 @@ async def _call_model(
     return result, client
 
 
+def _is_rate_limit_error(result: dict[str, Any]) -> bool:
+    return bool(result.get("error") and result.get("error_type") in RATE_LIMIT_ERROR_TYPES)
+
+
 async def _fallback_candidates(
     db: AsyncSession,
     route: AIRoute,
@@ -1098,6 +1187,54 @@ async def _fallback_candidates(
     return candidates
 
 
+async def _try_rate_limit_fallbacks(
+    db: AsyncSession,
+    route: AIRoute,
+    primary_model: AIModel,
+    state: ModelCallState,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    tool_definitions: list[dict[str, Any]],
+    reason: str,
+) -> ModelCallState:
+    if not _is_rate_limit_error(state.result):
+        return state
+
+    state.fallback_reason = reason
+    attempted_fallback = False
+    for fb_model, fb_provider in await _fallback_candidates(db, route, primary_model, bool(tool_definitions)):
+        if fb_model.id == state.used_model.id:
+            continue
+        supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
+        if tool_definitions and not supports_tools:
+            logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
+            continue
+
+        attempted_fallback = True
+        state.fallback_model_display = fb_model.display_name
+        logger.warning(
+            "Model quota exceeded, trying fallback | failed_model=%s fallback=%s reason=%s",
+            state.used_model.display_name,
+            fb_model.display_name,
+            reason,
+        )
+        fb_result, fb_client = await _call_model(fb_model, fb_provider, messages, temperature, max_tokens, tool_definitions)
+        state.stats.add_result(fb_result)
+        state.result = fb_result
+        state.used_model = fb_model
+        state.used_provider = fb_provider
+        state.client = fb_client
+        state.fallback_used = True
+        if not fb_result.get("error"):
+            return state
+        state.fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
+
+    if not attempted_fallback:
+        state.fallback_model_display = "none"
+    return state
+
+
 async def _run_model_with_fallbacks(
     db: AsyncSession,
     route: AIRoute,
@@ -1113,33 +1250,10 @@ async def _run_model_with_fallbacks(
     stats.add_result(result)
     state = ModelCallState(result=result, used_model=primary_model, used_provider=primary_provider, client=client, stats=stats)
 
-    if not (result.get("error") and result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded")):
-        return state
-
-    state.fallback_reason = "primary_quota_exceeded"
-    for fb_model, fb_provider in await _fallback_candidates(db, route, primary_model, bool(tool_definitions)):
-        supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
-        if tool_definitions and not supports_tools:
-            logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
-            continue
-
-        state.fallback_model_display = fb_model.display_name
-        logger.warning(
-            "Primary model quota exceeded, trying fallback | primary=%s fallback=%s",
-            primary_model.display_name,
-            fb_model.display_name,
-        )
-        fb_result, fb_client = await _call_model(fb_model, fb_provider, messages, temperature, max_tokens, tool_definitions)
-        stats.add_result(fb_result)
-        state.result = fb_result
-        state.used_model = fb_model
-        state.used_provider = fb_provider
-        state.client = fb_client
-        state.fallback_used = True
-        if not fb_result.get("error"):
-            break
-        state.fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
-    return state
+    return await _try_rate_limit_fallbacks(
+        db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
+        reason="primary_quota_exceeded",
+    )
 
 
 async def _run_deterministic_lookup_fallback(
@@ -1171,7 +1285,7 @@ async def _run_deterministic_lookup_fallback(
             "tool_call_id": f"deterministic_{action['tool']}",
             "tool_name": action["tool"],
             "arguments": action["input"],
-            "result": tc_result,
+            "result": _compact_tool_result_for_model(tc_result),
         })
         if isinstance(tc_result, dict) and tc_result.get("error"):
             break
@@ -1205,6 +1319,8 @@ async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
     state: ModelCallState,
+    route: AIRoute,
+    primary_model: AIModel,
     messages: list[dict[str, Any]],
     tools: list[AITool],
     tool_definitions: list[dict[str, Any]],
@@ -1240,16 +1356,17 @@ async def _run_tool_loop(
                 args = {}
 
             result = await _execute_tool_call(db, user_id, name, args)
+            compact_result = _compact_tool_result_for_model(result)
             tool_results.append({
                 "tool_call_id": call.get("id", ""),
                 "tool_name": name,
                 "arguments": args,
-                "result": result,
+                "result": compact_result,
             })
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.get("id", ""),
-                "content": json.dumps(result),
+                "content": _tool_message_content(compact_result),
             })
 
         state.result = await state.client.chat_completion(
@@ -1259,6 +1376,10 @@ async def _run_tool_loop(
             tools=tool_definitions if tool_definitions else None,
         )
         state.stats.add_result(state.result)
+        state = await _try_rate_limit_fallbacks(
+            db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
+            reason="tool_loop_quota_exceeded",
+        )
     return tool_results
 
 
@@ -1408,21 +1529,24 @@ async def _apply_blank_content_fallback(
 
     logger.info("Deterministic report intent detected | user_id=%s intent=%s", user_id, report_intent)
     try:
-        tc_result = await _execute_tool_call(db, user_id, "odoo_analyze", report_intent["input"])
+        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", report_intent["input"])
     except Exception as exc:
         logger.error("Deterministic report execution failed: %s", exc)
         return response
 
     deterministic_results = [{
         "tool_call_id": "deterministic_report",
-        "tool_name": "odoo_execute_report",
+        "tool_name": "odoo_ops_runner",
         "arguments": report_intent["input"],
         "result": tc_result,
     }]
     fallback = _build_report_fallback_answer(deterministic_results)
     if fallback:
         response["content"] = fallback
-        response["tool_calls"] = deterministic_results
+        response["tool_calls"] = [{
+            **deterministic_results[0],
+            "result": _compact_tool_result_for_model(tc_result),
+        }]
         response["deterministic_report"] = True
         logger.info("Used deterministic report answer | user_id=%s", user_id)
     return response
@@ -1457,7 +1581,7 @@ async def execute_chat(
     )
     tool_results = await _run_deterministic_lookup_fallback(db, user_id, messages, state)
     tool_results.extend(await _run_tool_loop(
-        db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
+        db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
     ))
 
     await _log_usage(db, route, task_type, chat_session_id, user_id, state)

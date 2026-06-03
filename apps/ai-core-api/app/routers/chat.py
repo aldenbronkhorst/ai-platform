@@ -398,7 +398,7 @@ async def _persist_failed_message(
     trace_id: str,
 ) -> None:
     db.add(_failed_assistant_message(session_id, user_id, error_type, error_message, request_id, trace_id))
-    await db.commit()
+    await db.flush()
 
 
 async def _run_model_router(
@@ -431,6 +431,7 @@ async def _run_model_router(
         return router_result, trace_svc
     except RouteNotFoundError as exc:
         await trace_svc.commit(status="failed", error_type="configuration_error", error_message=str(exc))
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
@@ -443,8 +444,9 @@ async def _run_model_router(
         )
     except ProviderCallError as exc:
         error_msg = str(exc)
-        await _persist_failed_message(db, session_id, user_id, "model_error", error_msg, request_id, trace_svc.trace_id)
         await trace_svc.commit(status="failed", error_type="model_error", error_message=error_msg)
+        await _persist_failed_message(db, session_id, user_id, "model_error", error_msg, request_id, trace_svc.trace_id)
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
@@ -457,8 +459,9 @@ async def _run_model_router(
         )
     except Exception as exc:
         error_msg = str(exc)
-        await _persist_failed_message(db, session_id, user_id, "server_error", error_msg, request_id, trace_svc.trace_id)
         await trace_svc.commit(status="failed", error_type="server_error", error_message=error_msg)
+        await _persist_failed_message(db, session_id, user_id, "server_error", error_msg, request_id, trace_svc.trace_id)
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
@@ -748,7 +751,7 @@ async def post_chat_message(
     """Posts a message to the chat session and executes the platform business assistant flow.
 
     Returns a natural language response with technical logs safely hidden inside metadata_json.
-    On failure, returns a structured JSON error response — failed messages are not persisted.
+    On failure, returns a structured JSON error response and persists a failed assistant marker for audit/debugging.
     """
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     response.headers["X-Request-ID"] = request_id
