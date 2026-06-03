@@ -33,7 +33,7 @@ TOOLS = [
                 "report_name": {"type": "string", "description": "Report name or alias (e.g. 'Profit and Loss', 'Trial Balance')"},
                 "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
                 "date_to": {"type": "string", "description": "End date (YYYY-MM-DD)"},
-                "line_names": {"type": "array", "items": {"type": "string"}, "description": "Report line names to filter"},
+                "line_names": {"type": "array", "items": {"type": "string"}, "description": "Optional exact report line names to filter when already known"},
                 "attachment_id": {"type": "integer", "description": "Single attachment ID"},
                 "content_fields": {"type": "array", "items": {"type": "string"}, "description": "Content fields to read"},
                 "operation": {"type": "string", "enum": ["create", "write", "delete"], "description": "Mutation operation"},

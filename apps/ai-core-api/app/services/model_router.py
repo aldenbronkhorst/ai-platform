@@ -472,28 +472,6 @@ REPORT_ALIASES: dict[str, str] = {
     "tax_report": "Tax Report",
 }
 
-REPORT_LINE_KEYWORDS: dict[str, list[str]] = {
-    "revenue": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
-    "income": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
-    "sales": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
-    "turnover": ["Revenue", "Income", "Operating Income", "Sales", "Turnover"],
-    "expenses": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
-    "expense": ["Expenses", "Operating Expenses", "Cost of Goods Sold", "COGS"],
-    "cost": ["Cost of Goods Sold", "COGS", "Operating Expenses"],
-    "cogs": ["Cost of Goods Sold"],
-    "net profit": ["Net Profit", "Net Income", "Profit/Loss"],
-    "net income": ["Net Profit", "Net Income", "Profit/Loss"],
-    "gross profit": ["Gross Profit", "Gross Margin"],
-    "gross margin": ["Gross Profit", "Gross Margin"],
-    "assets": ["Assets", "Total Assets", "Current Assets", "Non-Current Assets"],
-    "liabilities": ["Liabilities", "Total Liabilities", "Current Liabilities"],
-    "equity": ["Equity", "Total Equity", "Owner's Equity"],
-    "receivable": ["Receivables", "Accounts Receivable", "Trade Receivables"],
-    "payable": ["Payables", "Accounts Payable", "Trade Payables"],
-    "balance": ["Total Assets", "Total Liabilities", "Total Equity"],
-}
-
-
 def _detect_date_range(query: str, now: Optional[datetime] = None) -> tuple[Optional[str], Optional[str]]:
     """Parse date period from a user query. Returns (date_from, date_to) or (None, None)."""
     now = _platform_now(now)
@@ -539,29 +517,6 @@ def _detect_date_range(query: str, now: Optional[datetime] = None) -> tuple[Opti
         )
 
     return None, None
-
-
-def _detect_line_names(query: str) -> Optional[list[str]]:
-    """Parse requested line names from a user query."""
-    q = query.lower()
-    matched = set()
-    for keyword, candidates in REPORT_LINE_KEYWORDS.items():
-        if keyword in q:
-            matched.update(candidates)
-    return list(matched) if matched else None
-
-
-def _default_report_for_financial_metric(query: str, line_names: Optional[list[str]], date_from: Optional[str], date_to: Optional[str]) -> Optional[str]:
-    if not line_names or not (date_from and date_to):
-        return None
-    q = query.lower()
-    metric_terms = (
-        "turnover", "revenue", "income", "expense", "expenses",
-        "cost", "cogs", "profit", "gross margin", "net income",
-    )
-    if any(term in q for term in metric_terms):
-        return "Profit and Loss"
-    return None
 
 
 def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
@@ -657,10 +612,10 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
 
 
 def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
-    """Detect a generic Odoo report intent from a user query.
+    """Detect explicit Odoo report names or aliases in a user query.
     
     Returns tool arguments dict for odoo_ops_runner if a report is detected,
-    or None if the query does not appear to be about Odoo reports.
+    or None if no explicit report name/alias is present.
     """
     if not query:
         return None
@@ -672,9 +627,6 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
             report_name = canonical
             break
     date_from, date_to = _detect_date_range(q)
-    line_names = _detect_line_names(q)
-    if not report_name:
-        report_name = _default_report_for_financial_metric(q, line_names, date_from, date_to)
     if not report_name:
         return None
 
@@ -682,12 +634,10 @@ def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
     if date_from and date_to:
         args["date_from"] = date_from
         args["date_to"] = date_to
-    if line_names:
-        args["line_names"] = line_names
 
     logger.info(
-        "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s line_names=%s",
-        query[:80], report_name, date_from, date_to, line_names,
+        "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s",
+        query[:80], report_name, date_from, date_to,
     )
     return {"tool": "odoo_ops_runner", "input": {"mode": "report", **args}}
 
@@ -927,7 +877,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
             "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
-            "Line names: revenue -> [Revenue, Income, Sales]; expenses -> [Expenses, COGS]; net income -> [Net Profit, Net Income]."
+            "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
     guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
     return system_prompt + "\n".join(guidance_parts)

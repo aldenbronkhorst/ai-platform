@@ -1082,19 +1082,15 @@ class TestProviderErrorHandling:
 
 
 class TestToolExecution:
-    def test_turnover_report_intent_defaults_to_profit_and_loss(self):
+    def test_turnover_without_report_name_does_not_default_to_profit_and_loss(self):
         from app.services.model_router import detect_odoo_report_intent
 
         intent = detect_odoo_report_intent("What is this month's turnover?")
 
-        assert intent is not None
-        assert intent["tool"] == "odoo_ops_runner"
-        assert intent["input"]["mode"] == "report"
-        assert intent["input"]["report_name"] == "Profit and Loss"
-        assert "Turnover" in intent["input"]["line_names"]
+        assert intent is None
 
     @pytest.mark.asyncio
-    async def test_clear_odoo_turnover_report_skips_model_call(self):
+    async def test_turnover_without_report_name_uses_model_path(self):
         from app.services.model_router import execute_chat
 
         fixed_now = datetime(2026, 6, 3, 8, 30, 0, tzinfo=ZoneInfo("Africa/Johannesburg"))
@@ -1104,13 +1100,14 @@ class TestToolExecution:
         )
         db = MockSession(has_config=True, connected_accounts=[account])
 
-        mock_build_client = AsyncMock()
-        mock_execute_tool = AsyncMock(return_value={
-            "report_name": "Profit and Loss",
-            "date_from": "2026-06-01",
-            "date_to": "2026-06-03",
-            "currency_symbol": "R",
-            "lines": [{"name": "Turnover", "formatted_value": "1,234.56"}],
+        mock_execute_tool = AsyncMock()
+        mock_chat_completion = AsyncMock(return_value={
+            "content": "I can check turnover from Odoo without assuming a specific report.",
+            "finish_reason": "stop",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "latency_ms": 100,
         })
 
         with patch.object(
@@ -1125,7 +1122,7 @@ class TestToolExecution:
             new=mock_execute_tool,
         ), patch(
             'app.services.model_router.build_foundry_client',
-            new=mock_build_client,
+            new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion)),
         ):
             result = await execute_chat(
                 db,
@@ -1133,15 +1130,12 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert "From the Odoo Profit and Loss" in result["content"]
-        assert "for 2026-06-01 to 2026-06-03" in result["content"]
-        assert "Turnover: R1,234.56" in result["content"]
-        assert result["total_tokens"] == 0
-        assert result["tool_call_count"] == 1
-        assert result["tool_calls"][0]["arguments"]["date_from"] == "2026-06-01"
-        assert result["tool_calls"][0]["arguments"]["date_to"] == "2026-06-03"
-        mock_execute_tool.assert_awaited_once()
-        mock_build_client.assert_not_called()
+        assert result["content"] == "I can check turnover from Odoo without assuming a specific report."
+        assert result["total_tokens"] == 15
+        assert result["tool_call_count"] == 0
+        assert result["tool_calls"] is None
+        mock_execute_tool.assert_not_awaited()
+        mock_chat_completion.assert_awaited_once()
 
     def test_tool_result_compaction_limits_large_outputs(self):
         from app.services.model_router import _compact_tool_result_for_model, MAX_TOOL_RESULT_JSON_CHARS

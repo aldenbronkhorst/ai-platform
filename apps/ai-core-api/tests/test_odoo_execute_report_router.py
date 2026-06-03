@@ -386,8 +386,7 @@ class TestDetectOdooReportIntent:
         assert args["report_name"] == "Profit and Loss"
         assert "date_from" in args
         assert "date_to" in args
-        assert "line_names" in args
-        assert "Revenue" in args["line_names"]
+        assert "line_names" not in args
 
     def test_detect_trial_balance_this_month(self):
         from app.services.model_router import detect_odoo_report_intent
@@ -414,25 +413,27 @@ class TestDetectOdooReportIntent:
         assert detect_odoo_report_intent("") is None
         assert detect_odoo_report_intent(None) is None
 
-    def test_detect_revenue_keywords(self):
+    def test_metric_without_explicit_report_returns_none(self):
         from app.services.model_router import detect_odoo_report_intent
-        for phrase in ["revenue", "income", "sales"]:
-            result = detect_odoo_report_intent(f"whats the {phrase} on p&l")
-            assert result is not None, f"Failed for phrase: {phrase}"
-            assert "line_names" in result["input"]
-            assert any(kw in str(result["input"]["line_names"]).lower() for kw in [phrase])
+        for phrase in ["turnover", "revenue", "income", "sales", "expenses", "gross profit"]:
+            result = detect_odoo_report_intent(f"whats this month's {phrase}")
+            assert result is None, f"Unexpected report inference for phrase: {phrase}"
 
-    def test_detect_expenses_keywords(self):
+    def test_explicit_report_does_not_inject_line_filters(self):
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("what are the expenses on p&l")
         assert result is not None
-        assert "Expenses" in result["input"]["line_names"]
+        assert result["input"]["report_name"] == "Profit and Loss"
+        assert "line_names" not in result["input"]
 
-    def test_detect_gross_profit(self):
+    def test_explicit_report_with_metric_stays_generic(self):
         from app.services.model_router import detect_odoo_report_intent
         result = detect_odoo_report_intent("gross profit on p&l this month")
         assert result is not None
-        assert "Gross Profit" in result["input"]["line_names"]
+        assert result["input"]["report_name"] == "Profit and Loss"
+        assert "date_from" in result["input"]
+        assert "date_to" in result["input"]
+        assert "line_names" not in result["input"]
 
     def test_date_range_this_year(self):
         from app.services.model_router import _detect_date_range
