@@ -431,13 +431,19 @@ async def _run_model_router(
             task_type="general_chat",
             chat_session_id=session_id,
             user_id=user_id,
+            trace_svc=trace_svc,
+            request_id=request_id,
         )
         trace_svc.end_span(model_span, output_summary={
             "content_length": len(router_result.get("content", "")),
             "tool_call_count": router_result.get("tool_call_count", 0),
+            "prompt_tokens": router_result.get("prompt_tokens", 0),
+            "completion_tokens": router_result.get("completion_tokens", 0),
+            "total_tokens": router_result.get("total_tokens", 0),
         })
         return router_result, trace_svc
     except RouteNotFoundError as exc:
+        trace_svc.span_error(model_span, "configuration_error", str(exc))
         await trace_svc.commit(status="failed", error_type="configuration_error", error_message=str(exc))
         await db.commit()
         raise HTTPException(
@@ -452,6 +458,7 @@ async def _run_model_router(
         )
     except ProviderCallError as exc:
         error_msg = str(exc)
+        trace_svc.span_error(model_span, "model_error", error_msg)
         await trace_svc.commit(status="failed", error_type="model_error", error_message=error_msg)
         await _persist_failed_message(db, session_id, user_id, "model_error", error_msg, request_id, trace_svc.trace_id)
         await db.commit()
@@ -467,6 +474,7 @@ async def _run_model_router(
         )
     except Exception as exc:
         error_msg = str(exc)
+        trace_svc.span_error(model_span, "server_error", error_msg)
         await trace_svc.commit(status="failed", error_type="server_error", error_message=error_msg)
         await _persist_failed_message(db, session_id, user_id, "server_error", error_msg, request_id, trace_svc.trace_id)
         await db.commit()
@@ -529,64 +537,6 @@ def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, use
     )
 
 
-async def _review_router_result(
-    content: str,
-    assistant_content: str,
-    tool_calls: Any,
-    trace_svc: Any,
-    request_id: str,
-) -> tuple[bool, dict[str, Any] | None]:
-    reviewer_invoked = False
-    reviewer_result_data = None
-    reviewer_span = trace_svc.start_span("reviewer", "Reviewer check")
-    try:
-        from app.services.reviewer import ReviewerAgent
-        from app.schemas.schemas import ReviewRequest
-
-        reviewer = ReviewerAgent()
-        if reviewer._is_finance_question(content):
-            reviewer_invoked = True
-            review = await reviewer.review(ReviewRequest(
-                content=assistant_content,
-                user_question=content,
-                tool_results=tool_calls if tool_calls else None,
-            ))
-            reviewer_result_data = {
-                "approved": review.approved,
-                "risk_level": review.risk_level,
-                "issues": review.issues,
-                "required_changes": review.required_changes,
-                "reviewer_notes": review.reviewer_notes,
-            }
-            if not review.approved:
-                logger.warning("Reviewer rejected response | request_id=%s issues=%d risk=%s", request_id, len(review.issues), review.risk_level)
-                trace_svc.end_span(reviewer_span, status="rejected", output_summary={"issues": review.issues, "risk_level": review.risk_level})
-                await trace_svc.commit(status="failed", error_type="review_failed")
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail={
-                        "request_id": request_id,
-                        "error_type": "review_failed",
-                        "error_message": "The response was reviewed and rejected. Please try again.",
-                        "technical_detail": f"Review issues: {'; '.join(review.issues)}",
-                        "reviewer_result": {
-                            "approved": review.approved,
-                            "issues": review.issues,
-                            "risk_level": review.risk_level,
-                            "reviewer_notes": review.reviewer_notes,
-                        },
-                    },
-                )
-    except HTTPException:
-        await trace_svc.commit(status="failed", error_type="review_failed")
-        raise
-    except Exception as exc:
-        logger.warning("Reviewer check failed (non-blocking): %s", exc)
-    else:
-        trace_svc.end_span(reviewer_span, output_summary=reviewer_result_data)
-    return reviewer_invoked, reviewer_result_data
-
-
 def _token_usage(router_result: dict[str, Any]) -> dict[str, int]:
     return {
         "prompt_tokens": router_result.get("prompt_tokens", 0),
@@ -599,25 +549,11 @@ def _assistant_metadata(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
-    reviewer_invoked: bool,
-    reviewer_result_data: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    token_usage = _token_usage(router_result)
     metadata = {
-        "technical_details": {
-            "model_provider": router_result.get("model_provider", "unknown"),
-            "model_name": router_result.get("model_name", "unknown"),
-            "latency_ms": router_result.get("latency_ms", 0),
-            "token_usage": token_usage,
-            "request_id": request_id,
-            "trace_id": trace_id,
-            "reviewer_invoked": reviewer_invoked,
-            "reviewer_result": reviewer_result_data,
-            "tool_call_count": router_result.get("tool_call_count", 0),
-        }
+        "request_id": request_id,
+        "trace_id": trace_id,
     }
-    if router_result.get("tool_calls"):
-        metadata["technical_details"]["tool_calls"] = router_result["tool_calls"]
     if router_result.get("context"):
         metadata["context"] = router_result["context"]
     return metadata
@@ -629,8 +565,6 @@ def _build_assistant_message(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
-    reviewer_invoked: bool,
-    reviewer_result_data: dict[str, Any] | None,
 ) -> AIChatMessage:
     return _new_chat_message(
         session_id,
@@ -641,7 +575,7 @@ def _build_assistant_message(
         model_name=router_result.get("model_name", "unknown"),
         token_usage_json=_token_usage(router_result),
         tool_call_json=router_result.get("tool_calls"),
-        metadata_json=_assistant_metadata(router_result, request_id, trace_id, reviewer_invoked, reviewer_result_data),
+        metadata_json=_assistant_metadata(router_result, request_id, trace_id),
     )
 
 
@@ -773,28 +707,24 @@ async def post_chat_message(
     messages = await _conversation_messages(db, session_id, user_msg, req.content)
     await _commit_user_turn_start(db, session)
     router_result, trace_svc = await _run_model_router(db, session_id, user_id, user_msg, req.content, messages, request_id)
-    _raise_on_blank_response(router_result, request_id, user_id, session_id)
+    try:
+        _raise_on_blank_response(router_result, request_id, user_id, session_id)
+    except HTTPException as exc:
+        error_type = "server_error"
+        error_message = "Blank model response"
+        if isinstance(exc.detail, dict):
+            exc.detail["trace_id"] = trace_svc.trace_id
+            error_type = str(exc.detail.get("error_type") or error_type)
+            error_message = str(exc.detail.get("error_message") or error_message)
+        await trace_svc.commit(status="failed", error_type=error_type, error_message=error_message)
+        await _persist_failed_message(db, session_id, user_id, error_type, error_message, request_id, trace_svc.trace_id)
+        await db.commit()
+        raise
 
-    assistant_content = router_result.get("content", "")
-    tool_calls_data = router_result.get("tool_calls")
-    reviewer_invoked, reviewer_result_data = await _review_router_result(
-        req.content, assistant_content, tool_calls_data, trace_svc, request_id,
-    )
     context_data = router_result.get("context")
-    token_usage = _token_usage(router_result)
-    trace_svc.add_metadata(metadata={
-        "model_provider": router_result.get("model_provider", "unknown"),
-        "model_name": router_result.get("model_name", "unknown"),
-        "prompt_tokens": token_usage["prompt_tokens"],
-        "completion_tokens": token_usage["completion_tokens"],
-        "total_tokens": token_usage["total_tokens"],
-        "tool_call_count": router_result.get("tool_call_count", 0),
-        "reviewer_invoked": reviewer_invoked,
-    })
 
     assistant_msg = _build_assistant_message(
         session_id, user_id, router_result, request_id, trace_svc.trace_id,
-        reviewer_invoked, reviewer_result_data,
     )
     await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)

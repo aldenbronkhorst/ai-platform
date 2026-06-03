@@ -19,6 +19,20 @@ const ERROR_HEADINGS: Record<string, string> = {
   server_error: "Something went wrong while generating the response.",
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function displayValue(value: unknown, fallback = "") {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return fallback;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 interface FailedMessageProps {
   errorMessage?: string;
   onRetry: () => void;
@@ -30,12 +44,19 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
   const parsed = useMemo<ChatError | null>(() => {
     if (!errorMessage) return null;
     try {
-      const parsed = JSON.parse(errorMessage);
-      if (parsed && typeof parsed === "object" && parsed.errorMessage) {
-        // Normalize snake_case from backend to camelCase for frontend
-        if (parsed.trace_id && !parsed.traceId) parsed.traceId = parsed.trace_id;
-        if (parsed.request_id && !parsed.requestId) parsed.requestId = parsed.request_id;
-        return parsed as ChatError;
+      const parsed = JSON.parse(errorMessage) as unknown;
+      if (isRecord(parsed) && (parsed.errorMessage || parsed.error_message)) {
+        return {
+          requestId: displayValue(parsed.requestId ?? parsed.request_id),
+          traceId: displayValue(parsed.traceId ?? parsed.trace_id),
+          errorType: displayValue(parsed.errorType ?? parsed.error_type),
+          errorMessage: displayValue(
+            parsed.errorMessage ?? parsed.error_message,
+            "Sorry, I could not complete that request. Please try again.",
+          ),
+          technicalDetail: displayValue(parsed.technicalDetail ?? parsed.technical_detail),
+          httpStatus: typeof parsed.httpStatus === "number" ? parsed.httpStatus : undefined,
+        };
       }
     } catch { /* ignore malformed error payloads */ }
     return null;

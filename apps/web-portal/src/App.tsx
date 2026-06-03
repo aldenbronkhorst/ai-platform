@@ -64,6 +64,32 @@ function sortChatSessions(sessions: ChatSession[]) {
   return [...sessions].sort((a, b) => chatSessionTime(b) - chatSessionTime(a));
 }
 
+const CONNECTOR_PROGRESS_HINTS = [
+  { label: "Azure", keywords: ["azure", "subscription", "resource group", "container app", "key vault", "foundry"] },
+  { label: "GitHub", keywords: ["github", "repo", "pull request", "commit", "branch", "workflow", "actions"] },
+  { label: "Odoo", keywords: ["odoo", "invoice", "credit note", "customer", "sale order", "profit and loss", "turnover"] },
+];
+
+function connectorProgressHints(content: string) {
+  const normalized = content.toLowerCase();
+  return CONNECTOR_PROGRESS_HINTS
+    .filter(({ keywords }) => keywords.some(keyword => normalized.includes(keyword)))
+    .map(({ label }) => label);
+}
+
+function pendingProgressMetadata(requestId: string, content: string, artifactCount: number, startedAt: string) {
+  const summary = content.trim().replace(/\s+/g, " ").slice(0, 120);
+  return {
+    request_id: requestId,
+    progress_context: {
+      summary,
+      connectors: connectorProgressHints(content),
+      has_artifacts: artifactCount > 0,
+      started_at: startedAt,
+    },
+  };
+}
+
 function patchChatSession(session: ChatSession, patch: Partial<ChatSession>) {
   const updated = { ...session, ...patch };
   return (
@@ -82,6 +108,16 @@ interface ChatFailurePayload {
   httpStatus: number;
 }
 
+function detailString(value: unknown, fallback = "") {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return fallback;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 async function chatFailureFromResponse(res: Response, requestId: string): Promise<ChatFailurePayload> {
   const body = await res.json().catch(() => null);
   const respRequestId = res.headers.get("X-Request-ID") || requestId;
@@ -89,9 +125,9 @@ async function chatFailureFromResponse(res: Response, requestId: string): Promis
     const detail = body.detail;
     return {
       requestId: respRequestId,
-      errorType: detail.error_type || "server_error",
-      errorMessage: detail.error_message || `Server returned ${res.status}`,
-      technicalDetail: detail.technical_detail || "",
+      errorType: typeof detail.error_type === "string" ? detail.error_type : "server_error",
+      errorMessage: detailString(detail.error_message, `Server returned ${res.status}`),
+      technicalDetail: detailString(detail.technical_detail),
       httpStatus: res.status,
     };
   }
@@ -99,7 +135,7 @@ async function chatFailureFromResponse(res: Response, requestId: string): Promis
     requestId: respRequestId,
     errorType: "server_error",
     errorMessage: `Server returned ${res.status}`,
-    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
+    technicalDetail: detailString(body),
     httpStatus: res.status,
   };
 }
@@ -500,7 +536,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         content: "",
         created_at: createdAt,
         status: "pending",
-        metadata_json: { request_id: requestId },
+        metadata_json: pendingProgressMetadata(requestId, content, artifactIds.length, createdAt),
       },
     ];
     addLocalMessages(currentSess.id, localTurn);
@@ -519,14 +555,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
     const pendingMessage: ChatMessage = {
       id: pendingMsgId,
       chat_session_id: activeSession.id,
       role: "assistant",
       content: "",
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
       status: "pending",
-      metadata_json: { request_id: requestId },
+      metadata_json: pendingProgressMetadata(requestId, userMessage.content, 0, createdAt),
     };
     addLocalMessages(activeSession.id, [pendingMessage]);
     setChatMessages(prev => [
@@ -549,6 +586,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
     const updatedUserMsg: ChatMessage = {
       ...chatMessages[editIndex],
       content: newContent,
@@ -558,9 +596,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       chat_session_id: activeSession.id,
       role: "assistant",
       content: "",
-      created_at: new Date().toISOString(),
+      created_at: createdAt,
       status: "pending",
-      metadata_json: { request_id: requestId },
+      metadata_json: pendingProgressMetadata(requestId, newContent, 0, createdAt),
     };
     addLocalMessages(activeSession.id, [pendingMessage]);
 

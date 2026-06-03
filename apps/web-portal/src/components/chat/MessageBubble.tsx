@@ -63,7 +63,7 @@ export function MessageBubble({
   }
 
   if (message.status === "pending" || message.status === "sending") {
-    return <PendingAssistant toolHint={message.model_name} />;
+    return <PendingAssistant message={message} />;
   }
 
   if (message.status === "failed") {

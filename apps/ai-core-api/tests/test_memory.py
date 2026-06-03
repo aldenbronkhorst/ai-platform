@@ -238,61 +238,6 @@ class TestMemoryCandidateService:
         assert memory.type == "system_behavior"
 
 
-# ── ReviewerAgent unit tests ──
-
-class TestReviewerAgent:
-    @pytest.mark.asyncio
-    async def test_blank_response_rejected(self):
-        from app.services.reviewer import ReviewerAgent
-        from app.schemas.schemas import ReviewRequest
-
-        agent = ReviewerAgent()
-        result = await agent.review(ReviewRequest(
-            content="",
-            user_question="What is revenue?",
-        ))
-        assert result.approved is False
-        assert "blank" in " ".join(result.issues).lower()
-
-    @pytest.mark.asyncio
-    async def test_currency_check_passes(self):
-        from app.services.reviewer import ReviewerAgent
-        from app.schemas.schemas import ReviewRequest
-
-        agent = ReviewerAgent()
-        result = await agent.review(ReviewRequest(
-            content="Revenue this month is R 50,000.00",
-            user_question="What is revenue?",
-        ))
-        assert result.approved is True
-        assert len(result.issues) == 0
-
-    @pytest.mark.asyncio
-    async def test_dollar_assumption_caught(self):
-        from app.services.reviewer import ReviewerAgent
-        from app.schemas.schemas import ReviewRequest
-
-        agent = ReviewerAgent()
-        result = await agent.review(ReviewRequest(
-            content="Revenue this month is $50,000.00",
-            user_question="What is the revenue? I need it in ZAR.",
-        ))
-        assert result.approved is False
-        assert len(result.issues) > 0
-
-    @pytest.mark.asyncio
-    async def test_non_finance_question_passes(self):
-        from app.services.reviewer import ReviewerAgent
-        from app.schemas.schemas import ReviewRequest
-
-        agent = ReviewerAgent()
-        result = await agent.review(ReviewRequest(
-            content="The weather is sunny today.",
-            user_question="What is the weather?",
-        ))
-        assert result.approved is True
-
-
 # ── Memory CRUD endpoint tests ──
 
 class TestMemoryEndpoints:

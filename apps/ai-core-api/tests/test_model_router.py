@@ -50,6 +50,16 @@ def test_canonical_prompt_is_tool_agnostic():
     assert "never claim live access" in CANONICAL_SYSTEM_PROMPT.lower()
 
 
+def test_trace_redaction_keeps_token_counts_visible():
+    from app.services.trace_service import redact_value
+
+    assert redact_value("prompt_tokens", 123) == 123
+    assert redact_value("completion_tokens", 45) == 45
+    redacted_secret = redact_value("access_token", "super-secret-token")
+    assert redacted_secret["present"] is True
+    assert "super-secret-token" not in str(redacted_secret)
+
+
 # ── Mock DB that can simulate empty / configured / connector states ──
 
 class MockSession:
@@ -956,6 +966,56 @@ class TestProviderErrorHandling:
         assert "Rate limit" not in str(exc_info.value)
         assert "quota or rate limit" in str(exc_info.value)
         assert "model" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_records_trace_payloads_and_usage_correlation(self):
+        from app.services.model_router import execute_chat
+        from app.services.trace_service import TraceService
+
+        db = MockSession(has_config=True)
+        request_id = "req_observability_test"
+        trace_svc = TraceService(db, request_id=request_id)
+        trace_svc.begin("chat_message", "test chat", user_id=uuid.uuid4())
+        client = AsyncMock(
+            chat_completion=AsyncMock(return_value={
+                "error": False,
+                "content": "Hello from the model.",
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "prompt_tokens": 12,
+                "completion_tokens": 5,
+                "total_tokens": 17,
+                "latency_ms": 34,
+                "model": "mock-model",
+                "raw_response": {"usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}},
+            })
+        )
+
+        with patch(
+            "app.services.model_router.build_foundry_client",
+            new=AsyncMock(return_value=client),
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "hi"}],
+                user_id=uuid.uuid4(),
+                trace_svc=trace_svc,
+                request_id=request_id,
+            )
+
+        assert result["total_tokens"] == 17
+        usage_logs = [item for item in db.added if isinstance(item, AIUsageLog)]
+        assert len(usage_logs) == 1
+        assert usage_logs[0].request_id == request_id
+        assert usage_logs[0].trace_id == trace_svc.trace_id
+        assert usage_logs[0].prompt_tokens == 12
+
+        provider_spans = [span for span in trace_svc._spans.values() if span.span_type == "provider_call"]
+        assert len(provider_spans) == 1
+        provider_span = provider_spans[0]
+        assert provider_span.input_summary_json["request"]["messages"][0]["role"] == "system"
+        assert provider_span.output_summary_json["usage"]["prompt_tokens"] == 12
+        assert provider_span.output_summary_json["response"]["raw_response"]["usage"]["total_tokens"] == 17
 
     @pytest.mark.asyncio
     async def test_execute_chat_quota_error_via_403(self):

@@ -130,5 +130,6 @@ class FoundryClient:
             "total_tokens": usage.get("total_tokens", 0),
             "latency_ms": elapsed,
             "model": body.get("model", model),
+            "raw_response": body,
         }
         return result

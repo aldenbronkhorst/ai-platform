@@ -20,12 +20,28 @@ SENSITIVE_KEYS = {
     "credentials", "datas", "content_base64",
 }
 
+NON_SECRET_TOKEN_KEYS = {
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "max_tokens",
+    "token_count",
+    "tokens_used",
+}
+
 
 def redact_value(key: str, value: Any, depth: int = 0) -> Any:
     """Redact sensitive values recursively. Returns a safe-for-storage copy."""
     if depth > 10:
         return {"__truncated__": True}
-    if key.lower() in SENSITIVE_KEYS or any(s in key.lower() for s in ["_key", "_secret", "_password", "_token"]):
+    key_lower = key.lower()
+    is_sensitive = (
+        key_lower in SENSITIVE_KEYS
+        or any(s in key_lower for s in ["_key", "_secret", "_password", "_token"])
+    )
+    if key_lower in NON_SECRET_TOKEN_KEYS:
+        is_sensitive = False
+    if is_sensitive:
         if isinstance(value, str) and value:
             h = hashlib.sha256(value.encode()).hexdigest()
             return {"present": True, "fingerprint": f"sha256:{h[:8]}...{h[-4:]}", "type": type(value).__name__}

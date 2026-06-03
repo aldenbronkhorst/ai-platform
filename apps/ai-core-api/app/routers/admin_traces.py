@@ -8,7 +8,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import require_role
-from app.models.models import AITrace, AITraceSpan
+from app.models.models import AITrace, AITraceSpan, AIUsageLog
 
 router = APIRouter(prefix="/admin/traces", tags=["Admin"])
 logger = logging.getLogger(__name__)
@@ -110,6 +110,12 @@ async def get_trace(
         .order_by(AITraceSpan.started_at.asc())
     )
     spans = span_result.scalars().all()
+    usage_result = await db.execute(
+        select(AIUsageLog).where(
+            (AIUsageLog.trace_id == trace.trace_id) | (AIUsageLog.request_id == trace.request_id)
+        ).order_by(AIUsageLog.timestamp.asc())
+    )
+    usage_logs = usage_result.scalars().all()
 
     return {
         "trace": {
@@ -150,5 +156,26 @@ async def get_trace(
                 "metadata": s.metadata_json,
             }
             for s in spans
+        ],
+        "usage_logs": [
+            {
+                "id": str(log.id),
+                "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                "request_id": log.request_id,
+                "trace_id": log.trace_id,
+                "provider_id": str(log.provider_id) if log.provider_id else None,
+                "model_id": str(log.model_id) if log.model_id else None,
+                "route_id": str(log.route_id) if log.route_id else None,
+                "task_type": log.task_type,
+                "chat_session_id": str(log.chat_session_id) if log.chat_session_id else None,
+                "user_id": str(log.user_id) if log.user_id else None,
+                "prompt_tokens": log.prompt_tokens,
+                "completion_tokens": log.completion_tokens,
+                "total_tokens": log.total_tokens,
+                "latency_ms": log.latency_ms,
+                "status": log.status,
+                "error_message": log.error_message,
+            }
+            for log in usage_logs
         ],
     }

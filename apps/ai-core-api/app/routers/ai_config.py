@@ -139,6 +139,8 @@ class UsageLogResponse(BaseModel):
 
     id: UUID
     timestamp: Optional[datetime]
+    request_id: Optional[str] = None
+    trace_id: Optional[str] = None
     task_type: Optional[str]
     model_id: Optional[UUID]
     provider_id: Optional[UUID]

@@ -295,6 +295,8 @@ class AIUsageLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    request_id = Column(String(100), nullable=True, index=True)
+    trace_id = Column(String(100), nullable=True, index=True)
     provider_id = Column(UUID(as_uuid=True), ForeignKey("ai_providers.id"), nullable=True)
     model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=True)
     route_id = Column(UUID(as_uuid=True), ForeignKey("ai_routes.id"), nullable=True)

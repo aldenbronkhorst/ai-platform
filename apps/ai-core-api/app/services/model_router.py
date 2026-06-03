@@ -331,7 +331,7 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     }
 
 
-async def _execute_tool_call(
+async def _execute_tool_call_impl(
     db: AsyncSession,
     user_id: UUID,
     tool_name: str,
@@ -378,6 +378,46 @@ async def _execute_tool_call(
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+async def _execute_tool_call(
+    db: AsyncSession,
+    user_id: UUID,
+    tool_name: str,
+    arguments: dict[str, Any],
+    trace_svc: Any = None,
+) -> dict[str, Any]:
+    """Execute a tool call and record a troubleshooting span when tracing is enabled."""
+    span_id = None
+    if trace_svc:
+        span_id = trace_svc.start_span(
+            "tool_call",
+            tool_name,
+            input_summary={
+                "tool_name": tool_name,
+                "user_id": str(user_id) if user_id else None,
+                "arguments": arguments,
+            },
+        )
+    try:
+        result = await _execute_tool_call_impl(db, user_id, tool_name, arguments)
+    except Exception as exc:
+        if trace_svc and span_id:
+            trace_svc.span_error(span_id, type(exc).__name__, str(exc))
+        raise
+
+    if trace_svc and span_id:
+        failed = isinstance(result, dict) and bool(result.get("error") or result.get("status") == "failed")
+        error_type = result.get("error_type") if isinstance(result, dict) else None
+        error_message = (result.get("message") or result.get("error")) if isinstance(result, dict) else None
+        trace_svc.end_span(
+            span_id,
+            status="failed" if failed else "success",
+            output_summary={"result": result},
+            error_type=error_type if failed else None,
+            error_message=str(error_message) if failed and error_message else None,
+        )
+    return result
 
 
 async def _record_delegated_tool_auth_failure(
@@ -1148,6 +1188,34 @@ async def _inject_context_sections(
     return injected
 
 
+def _provider_response_summary(result: dict[str, Any]) -> dict[str, Any]:
+    response = {
+        "error": bool(result.get("error")),
+        "content": result.get("content", ""),
+        "finish_reason": result.get("finish_reason", ""),
+        "tool_calls": result.get("tool_calls"),
+        "model": result.get("model"),
+        "raw_response": result.get("raw_response"),
+    }
+    if result.get("error"):
+        response.update({
+            "error_type": result.get("error_type"),
+            "status_code": result.get("status_code"),
+            "message": result.get("message"),
+        })
+    return {
+        "response": response,
+        "usage": {
+            "prompt_tokens": result.get("prompt_tokens", 0),
+            "completion_tokens": result.get("completion_tokens", 0),
+            "total_tokens": result.get("total_tokens", 0),
+        },
+        "latency_ms": result.get("latency_ms", 0),
+        "content_length": len(result.get("content") or ""),
+        "tool_call_count": len(result.get("tool_calls") or []),
+    }
+
+
 async def _call_model(
     model: AIModel,
     provider: AIProvider,
@@ -1155,14 +1223,65 @@ async def _call_model(
     temperature: float,
     max_tokens: int,
     tool_definitions: list[dict[str, Any]],
+    trace_svc: Any = None,
+    attempt_reason: str = "primary",
+    client: Optional[FoundryClient] = None,
 ) -> tuple[dict[str, Any], FoundryClient]:
-    client = await build_foundry_client(provider, model)
-    result = await client.chat_completion(
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        tools=tool_definitions if tool_definitions else None,
-    )
+    span_id = None
+    if trace_svc:
+        span_id = trace_svc.start_span(
+            "provider_call",
+            f"{provider.name}: {model.display_name}",
+            input_summary={
+                "attempt_reason": attempt_reason,
+                "provider": provider.name,
+                "provider_type": provider.provider_type,
+                "base_url": provider.base_url,
+                "model": {
+                    "display_name": model.display_name,
+                    "model_name": model.model_name,
+                    "deployment_name": model.deployment_name,
+                    "supports_tools": model.supports_tools,
+                    "context_window": model.context_window,
+                },
+                "request": {
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "tools": tool_definitions if tool_definitions else None,
+                },
+                "message_count": len(messages),
+                "tool_count": len(tool_definitions),
+            },
+            metadata={
+                "provider_id": str(provider.id),
+                "model_id": str(model.id),
+                "attempt_reason": attempt_reason,
+            },
+        )
+    try:
+        if client is None:
+            client = await build_foundry_client(provider, model)
+        result = await client.chat_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tool_definitions if tool_definitions else None,
+        )
+    except Exception as exc:
+        if trace_svc and span_id:
+            trace_svc.span_error(span_id, type(exc).__name__, str(exc))
+        raise
+
+    if trace_svc and span_id:
+        failed = bool(result.get("error"))
+        trace_svc.end_span(
+            span_id,
+            status="failed" if failed else "success",
+            output_summary=_provider_response_summary(result),
+            error_type=result.get("error_type") if failed else None,
+            error_message=result.get("message") if failed else None,
+        )
     return result, client
 
 
@@ -1226,6 +1345,7 @@ async def _try_rate_limit_fallbacks(
     max_tokens: int,
     tool_definitions: list[dict[str, Any]],
     reason: str,
+    trace_svc: Any = None,
 ) -> ModelCallState:
     if not _is_rate_limit_error(state.result):
         return state
@@ -1248,7 +1368,16 @@ async def _try_rate_limit_fallbacks(
             fb_model.display_name,
             reason,
         )
-        fb_result, fb_client = await _call_model(fb_model, fb_provider, messages, temperature, max_tokens, tool_definitions)
+        fb_result, fb_client = await _call_model(
+            fb_model,
+            fb_provider,
+            messages,
+            temperature,
+            max_tokens,
+            tool_definitions,
+            trace_svc=trace_svc,
+            attempt_reason=reason,
+        )
         state.stats.add_result(fb_result)
         state.result = fb_result
         state.used_model = fb_model
@@ -1273,15 +1402,26 @@ async def _run_model_with_fallbacks(
     temperature: float,
     max_tokens: int,
     tool_definitions: list[dict[str, Any]],
+    trace_svc: Any = None,
 ) -> ModelCallState:
     stats = ModelCallStats()
-    result, client = await _call_model(primary_model, primary_provider, messages, temperature, max_tokens, tool_definitions)
+    result, client = await _call_model(
+        primary_model,
+        primary_provider,
+        messages,
+        temperature,
+        max_tokens,
+        tool_definitions,
+        trace_svc=trace_svc,
+        attempt_reason="primary",
+    )
     stats.add_result(result)
     state = ModelCallState(result=result, used_model=primary_model, used_provider=primary_provider, client=client, stats=stats)
 
     return await _try_rate_limit_fallbacks(
         db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
         reason="primary_quota_exceeded",
+        trace_svc=trace_svc,
     )
 
 
@@ -1290,6 +1430,7 @@ async def _run_deterministic_lookup_fallback(
     user_id: Optional[UUID],
     messages: list,
     state: ModelCallState,
+    trace_svc: Any = None,
 ) -> list[dict[str, Any]]:
     if state.fallback_used:
         return []
@@ -1306,7 +1447,7 @@ async def _run_deterministic_lookup_fallback(
     tool_results: list[dict[str, Any]] = []
     for action in lookup_intent.get("actions", []):
         try:
-            tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"])
+            tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"], trace_svc=trace_svc)
         except Exception as exc:
             logger.error("Deterministic Odoo action failed: %s", exc)
             break
@@ -1355,6 +1496,7 @@ async def _run_tool_loop(
     tool_definitions: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
+    trace_svc: Any = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
     for _ in range(10):
@@ -1384,7 +1526,7 @@ async def _run_tool_loop(
             except (json.JSONDecodeError, TypeError):
                 args = {}
 
-            result = await _execute_tool_call(db, user_id, name, args)
+            result = await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
             if isinstance(result, dict):
                 await _record_delegated_tool_auth_failure(db, user_id, name, result)
             compact_result = _compact_tool_result_for_model(result)
@@ -1400,16 +1542,24 @@ async def _run_tool_loop(
                 "content": _tool_message_content(compact_result),
             })
 
-        state.result = await state.client.chat_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            tools=tool_definitions if tool_definitions else None,
+        result, client = await _call_model(
+            state.used_model,
+            state.used_provider,
+            messages,
+            temperature,
+            max_tokens,
+            tool_definitions,
+            trace_svc=trace_svc,
+            attempt_reason="tool_loop",
+            client=state.client,
         )
+        state.result = result
+        state.client = client
         state.stats.add_result(state.result)
         state = await _try_rate_limit_fallbacks(
             db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
             reason="tool_loop_quota_exceeded",
+            trace_svc=trace_svc,
         )
     return tool_results
 
@@ -1421,8 +1571,12 @@ async def _log_usage(
     chat_session_id: Optional[UUID],
     user_id: Optional[UUID],
     state: ModelCallState,
+    request_id: Optional[str] = None,
+    trace_id: Optional[str] = None,
 ) -> None:
     db.add(AIUsageLog(
+        request_id=request_id,
+        trace_id=trace_id,
         provider_id=state.used_provider.id,
         model_id=state.used_model.id,
         route_id=route.id,
@@ -1561,6 +1715,7 @@ async def _run_clear_odoo_report_request(
     user_id: Optional[UUID],
     messages: list,
     snapshot: ConnectedAccountsSnapshot,
+    trace_svc: Any = None,
 ) -> Optional[dict[str, Any]]:
     if not user_id or "odoo" not in snapshot.connected_systems:
         return None
@@ -1579,7 +1734,7 @@ async def _run_clear_odoo_report_request(
         return None
 
     try:
-        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", arguments)
+        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", arguments, trace_svc=trace_svc)
     except Exception as exc:
         logger.warning("Deterministic Odoo report request failed before connector result: %s", exc)
         return None
@@ -1619,6 +1774,7 @@ async def _apply_blank_content_fallback(
     messages: list,
     response: dict[str, Any],
     tool_results: list[dict[str, Any]],
+    trace_svc: Any = None,
 ) -> dict[str, Any]:
     content = response.get("content") or ""
     if content.strip():
@@ -1638,7 +1794,7 @@ async def _apply_blank_content_fallback(
 
     logger.info("Deterministic report intent detected | user_id=%s intent=%s", user_id, report_intent)
     try:
-        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", report_intent["input"])
+        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", report_intent["input"], trace_svc=trace_svc)
     except Exception as exc:
         logger.error("Deterministic report execution failed: %s", exc)
         return response
@@ -1667,45 +1823,113 @@ async def execute_chat(
     task_type: str = "general_chat",
     chat_session_id: Optional[UUID] = None,
     user_id: Optional[UUID] = None,
+    trace_svc: Any = None,
+    request_id: Optional[str] = None,
 ) -> dict:
     user_msg_text = _last_user_message(messages)
-    risk_level = _risk_level_for_message(user_msg_text)
-    route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
-    connected_accounts = await _load_connected_accounts(db, user_id)
-    deterministic_response = await _run_clear_odoo_report_request(db, user_id, messages, connected_accounts)
-    if deterministic_response:
-        return deterministic_response
+    context_span = None
+    if trace_svc:
+        context_span = trace_svc.start_span(
+            "context_build",
+            "Build chat context",
+            input_summary={
+                "task_type": task_type,
+                "request_id": request_id,
+                "user_id": str(user_id) if user_id else None,
+                "chat_session_id": str(chat_session_id) if chat_session_id else None,
+                "user_message": user_msg_text,
+                "message_count": len(messages),
+            },
+        )
+    try:
+        risk_level = _risk_level_for_message(user_msg_text)
+        route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
+        connected_accounts = await _load_connected_accounts(db, user_id)
+        deterministic_response = await _run_clear_odoo_report_request(
+            db, user_id, messages, connected_accounts, trace_svc=trace_svc,
+        )
+        if deterministic_response:
+            if trace_svc and context_span:
+                trace_svc.end_span(
+                    context_span,
+                    output_summary={
+                        "risk_level": risk_level,
+                        "route_id": str(route.id),
+                        "selected_model": model_obj.display_name,
+                        "selected_provider": provider.name,
+                        "connected_systems": sorted(connected_accounts.connected_systems),
+                        "deterministic_response": True,
+                    },
+                )
+            return deterministic_response
 
-    system_prompt = route.system_prompt or ""
-    system_prompt = _append_context_section(system_prompt, _current_time_context())
-    connector_context = await _get_connector_context(db, user_id, connected_accounts)
-    if connector_context:
-        system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
+        system_prompt = route.system_prompt or ""
+        system_prompt = _append_context_section(system_prompt, _current_time_context())
+        connector_context = await _get_connector_context(db, user_id, connected_accounts)
+        if connector_context:
+            system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
 
-    tools, tool_definitions, system_prompt = await _select_tools_for_model(
-        db,
-        user_id,
-        connected_accounts.connected_systems,
-        user_msg_text,
-        task_type,
-        risk_level,
-        model_obj,
-        system_prompt,
-    )
-    injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
-    full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
-    temperature = float(route.temperature) if route.temperature is not None else 0.3
-    max_tokens = route.max_tokens or 2000
+        tools, tool_definitions, system_prompt = await _select_tools_for_model(
+            db,
+            user_id,
+            connected_accounts.connected_systems,
+            user_msg_text,
+            task_type,
+            risk_level,
+            model_obj,
+            system_prompt,
+        )
+        injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
+        full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
+        temperature = float(route.temperature) if route.temperature is not None else 0.3
+        max_tokens = route.max_tokens or 2000
+        if trace_svc and context_span:
+            trace_svc.end_span(
+                context_span,
+                output_summary={
+                    "risk_level": risk_level,
+                    "route_id": str(route.id),
+                    "selected_model": model_obj.display_name,
+                    "selected_provider": provider.name,
+                    "connected_systems": sorted(connected_accounts.connected_systems),
+                    "tools": [tool.name for tool in tools],
+                    "tool_count": len(tools),
+                    "rules_injected": len(injected.rules),
+                    "facts_injected": len(injected.facts),
+                    "memories_injected": len(injected.memories),
+                    "search_results_injected": len(injected.search_results),
+                    "subtasks_injected": len(injected.subtasks),
+                    "system_prompt_chars": len(injected.system_prompt or ""),
+                    "full_message_count": len(full_messages),
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            )
+    except Exception as exc:
+        if trace_svc and context_span:
+            trace_svc.span_error(context_span, type(exc).__name__, str(exc))
+        raise
 
     state = await _run_model_with_fallbacks(
         db, route, model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
+        trace_svc=trace_svc,
     )
-    tool_results = await _run_deterministic_lookup_fallback(db, user_id, messages, state)
+    tool_results = await _run_deterministic_lookup_fallback(db, user_id, messages, state, trace_svc=trace_svc)
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
+        trace_svc=trace_svc,
     ))
 
-    await _log_usage(db, route, task_type, chat_session_id, user_id, state)
+    await _log_usage(
+        db,
+        route,
+        task_type,
+        chat_session_id,
+        user_id,
+        state,
+        request_id=request_id,
+        trace_id=trace_svc.trace_id if trace_svc else None,
+    )
     _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
 
     response = {
@@ -1721,4 +1945,4 @@ async def execute_chat(
         "context": _context_metadata(injected, state, policy, model_obj),
         "tool_call_count": state.stats.tool_calls,
     }
-    return await _apply_blank_content_fallback(db, user_id, messages, response, tool_results)
+    return await _apply_blank_content_fallback(db, user_id, messages, response, tool_results, trace_svc=trace_svc)

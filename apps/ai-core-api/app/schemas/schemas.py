@@ -293,21 +293,6 @@ class MemoryCandidate(BaseModel):
     save_mode: str = "auto"  # auto, confirm, admin_approval
 
 
-class ReviewRequest(BaseModel):
-    content: str
-    user_question: str
-    tool_results: Optional[List[Any]] = None
-    source_system: Optional[str] = None
-
-
-class ReviewResult(BaseModel):
-    approved: bool
-    issues: List[str] = []
-    required_changes: List[str] = []
-    risk_level: str = "low"
-    reviewer_notes: Optional[str] = None
-
-
 class ContextResponse(BaseModel):
     rules: List[AIRuleResponse]
     facts: List[AICompanyFactResponse]
