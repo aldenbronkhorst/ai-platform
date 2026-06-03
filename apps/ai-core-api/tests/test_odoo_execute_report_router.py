@@ -224,8 +224,8 @@ class TestStructuredToolErrors:
              patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), \
              patch("app.services.model_router.ODOO_CONNECTOR_KEY", "test-key"):
             mc.return_value = {"url": "https://test.odoo.com", "db": "test", "username": "admin", "api_key": "key"}
-            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_execute_report",
-                                              {"report_name": "Profit and Loss"})
+            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_ops_runner",
+                                              {"mode": "report", "report_name": "Profit and Loss"})
         assert result.get("error") is True
         assert result.get("status_code") == 400
         assert result.get("error_type") == "report_not_found"
@@ -244,8 +244,8 @@ class TestStructuredToolErrors:
              patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), \
              patch("app.services.model_router.ODOO_CONNECTOR_KEY", "test-key"):
             mc.return_value = {"url": "https://test.odoo.com", "db": "test", "username": "admin", "api_key": "key"}
-            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_execute_report",
-                                              {"report_name": "Test"})
+            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_ops_runner",
+                                              {"mode": "report", "report_name": "Test"})
         assert result.get("error") is True
         assert result.get("error_type") == "connector_http_error"
         assert "connection refused" in result.get("message", "").lower()
@@ -257,7 +257,7 @@ class TestReportFallbackAnswer:
     def test_fallback_from_report_lines(self):
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_execute_report", "result": {
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
                 "report_name": "Profit and Loss",
                 "date_from": "2026-06-01", "date_to": "2026-06-30",
                 "currency_code": "ZAR", "currency_symbol": "R",
@@ -275,7 +275,7 @@ class TestReportFallbackAnswer:
     def test_fallback_without_matching_lines(self):
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_execute_report", "result": {
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
                 "report_name": "Profit and Loss",
                 "lines": [],
                 "available_line_names": ["Revenue", "Expenses", "Net Income"],
@@ -287,7 +287,7 @@ class TestReportFallbackAnswer:
     def test_fallback_from_tool_error(self):
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_execute_report", "result": {
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
                 "error": True, "error_type": "report_not_found",
                 "message": "Report not found",
             }},
@@ -298,7 +298,7 @@ class TestReportFallbackAnswer:
     def test_fallback_ignores_non_report_tools(self):
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_search_read", "result": {"records": []}},
+            {"tool_name": "azure_cli", "result": {"stdout": ""}},
         ])
         assert result is None
 
@@ -314,19 +314,18 @@ class TestReviewerBlankCheck:
         review = await reviewer.review(ReviewRequest(
             content="",
             user_question="What is revenue on P&L?",
-            tool_results=[{"tool_name": "odoo_execute_report", "result": {"error": True}}],
+            tool_results=[{"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {"error": True}}],
         ))
         assert not review.approved
 
 
 class TestReportDiscovery:
-    """Tests for Fix 2: Generic report discovery."""
+    """Tests for consolidated report routing."""
 
-    def test_odoo_list_reports_tool_mapped(self):
-        """odoo_list_reports must map to /reports/list endpoint."""
+    def test_only_odoo_ops_runner_is_mapped(self):
         from app.services.model_router import _map_odoo_tool_to_path
-        assert _map_odoo_tool_to_path("odoo_list_reports") == "/reports/list"
-        # No dedicated P&L tool
+        assert _map_odoo_tool_to_path("odoo_ops_runner") == "/odoo/ops/run"
+        assert _map_odoo_tool_to_path("odoo_list_reports") == ""
         assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
 
 
@@ -337,7 +336,7 @@ class TestCleanFallback:
         """Fallback answer must never contain raw dict repr."""
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_execute_report", "result": {
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
                 "error": True,
                 "connector_error": {
                     "detail": {
@@ -358,7 +357,7 @@ class TestCleanFallback:
         """Technical error with 'id' must produce clean message."""
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "odoo_execute_report", "result": {
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
                 "error": True,
                 "connector_error": {
                     "detail": {
@@ -463,7 +462,7 @@ class TestExecuteChatReportFallback:
     async def test_execute_chat_fallback_on_blank_content(self):
         """Blank model content + successful report tool must produce fallback answer."""
         from app.services.model_router import execute_chat, _build_report_fallback_answer
-        tool_results = [{"tool_name": "odoo_execute_report", "result": {
+        tool_results = [{"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
             "report_name": "Profit and Loss",
             "date_from": "2026-06-01", "date_to": "2026-06-30",
             "currency_code": "ZAR", "currency_symbol": "R",
@@ -479,15 +478,15 @@ class TestExecuteChatReportFallback:
         """Non-report tools must not produce a fallback."""
         from app.services.model_router import _build_report_fallback_answer
         fallback = _build_report_fallback_answer([
-            {"tool_name": "odoo_search_read", "result": {"records": []}},
+            {"tool_name": "azure_cli", "result": {"stdout": ""}},
         ])
         assert fallback is None
 
     def test_pnl_uses_generic_report_tool(self):
-        """P&L question must route through generic odoo_execute_report, not a dedicated tool."""
+        """P&L question must route through odoo_ops_runner, not a dedicated tool."""
         from app.services.model_router import _map_odoo_tool_to_path
-        path = _map_odoo_tool_to_path("odoo_execute_report")
-        assert path == "/reports/execute"
+        path = _map_odoo_tool_to_path("odoo_ops_runner")
+        assert path == "/odoo/ops/run"
         # No dedicated P&L tool should exist
         assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
         assert _map_odoo_tool_to_path("get_revenue_this_month") == ""

@@ -3,6 +3,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from uuid import UUID
+from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITool, AIConnectedAccount
@@ -32,17 +33,19 @@ async def get_tool_selection(
     _user_message: str,
     _task_type: str = "general_chat",
     _risk_level: str = "low",
+    connected_systems: Optional[set[str]] = None,
 ) -> ToolSelectionResult:
     """Select all consolidated tools for connected systems."""
     result = ToolSelectionResult()
 
-    acct_result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            AIConnectedAccount.status.in_(("connected", "active")),
+    if connected_systems is None:
+        acct_result = await db.execute(
+            select(AIConnectedAccount).where(
+                AIConnectedAccount.user_id == user_id,
+                AIConnectedAccount.status.in_(("connected", "active")),
+            )
         )
-    )
-    connected_systems = {a.provider for a in acct_result.scalars().all()}
+        connected_systems = {a.provider for a in acct_result.scalars().all()}
     if not connected_systems:
         return result
 

@@ -1,17 +1,13 @@
 """Per-user token storage in Key Vault for delegated auth flows."""
-import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any, Optional
 from uuid import UUID
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
+
+from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 
 logger = logging.getLogger(__name__)
-
-KV_URI = os.environ.get("KEY_VAULT_URI", "")
 
 
 def _secret_name(provider: str, user_id: UUID) -> str:
@@ -20,16 +16,11 @@ def _secret_name(provider: str, user_id: UUID) -> str:
 
 async def store_token(provider: str, user_id: UUID, token_data: dict[str, Any]) -> bool:
     """Store OAuth token data in Key Vault for a specific user and provider."""
-    if not KV_URI:
+    if not key_vault_uri():
         logger.warning("KEY_VAULT_URI not set, cannot store token")
         return False
     try:
-        def _store() -> None:
-            credential = DefaultAzureCredential()
-            client = SecretClient(vault_url=KV_URI, credential=credential)
-            client.set_secret(_secret_name(provider, user_id), json.dumps(token_data))
-
-        await asyncio.to_thread(_store)
+        await set_secret_value(_secret_name(provider, user_id), json.dumps(token_data))
         logger.info("Stored %s token for user %s", provider, user_id.hex[:12])
         return True
     except Exception as e:
@@ -39,16 +30,10 @@ async def store_token(provider: str, user_id: UUID, token_data: dict[str, Any]) 
 
 async def retrieve_token(provider: str, user_id: UUID) -> Optional[dict[str, Any]]:
     """Retrieve OAuth token data from Key Vault."""
-    if not KV_URI:
+    if not key_vault_uri():
         return None
     try:
-        def _retrieve() -> str:
-            credential = DefaultAzureCredential()
-            client = SecretClient(vault_url=KV_URI, credential=credential)
-            secret = client.get_secret(_secret_name(provider, user_id))
-            return secret.value or "{}"
-
-        secret_value = await asyncio.to_thread(_retrieve)
+        secret_value = await get_secret_value(_secret_name(provider, user_id))
         return json.loads(secret_value)
     except Exception as e:
         logger.warning("No %s token found for user %s: %s", provider, user_id.hex[:12], e)
@@ -57,16 +42,10 @@ async def retrieve_token(provider: str, user_id: UUID) -> Optional[dict[str, Any
 
 async def delete_token(provider: str, user_id: UUID) -> bool:
     """Delete OAuth token from Key Vault (disconnect)."""
-    if not KV_URI:
+    if not key_vault_uri():
         return False
     try:
-        def _delete() -> None:
-            credential = DefaultAzureCredential()
-            client = SecretClient(vault_url=KV_URI, credential=credential)
-            poller = client.begin_delete_secret(_secret_name(provider, user_id))
-            poller.wait()
-
-        await asyncio.to_thread(_delete)
+        await delete_secret(_secret_name(provider, user_id))
         logger.info("Deleted %s token for user %s", provider, user_id.hex[:12])
         return True
     except Exception as e:

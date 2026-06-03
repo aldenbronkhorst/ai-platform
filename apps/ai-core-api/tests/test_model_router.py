@@ -725,7 +725,7 @@ class TestToolDefinitions:
     def test_build_tool_definitions_skips_missing_schema(self):
         from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
         TOOL_NAME_MAP.clear()
-        tool = AITool(name="odoo_search_read", display_name="Odoo Search Read",
+        tool = AITool(name="odoo_ops_runner", display_name="Odoo Ops Runner",
                        description="Search Odoo", target_system="odoo", input_schema=None)
         assert _build_tool_definitions([tool]) == []
 
@@ -733,35 +733,35 @@ class TestToolDefinitions:
         from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
         TOOL_NAME_MAP.clear()
         tool = AITool(
-            name="odoo_search_read", display_name="Odoo Search Read",
-            description="Search and read Odoo records",
+            name="odoo_ops_runner", display_name="Odoo Ops Runner",
+            description="Run Odoo operations",
             target_system="odoo",
             input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
         )
         defs = _build_tool_definitions([tool])
         assert len(defs) == 1
         assert defs[0]["type"] == "function"
-        assert defs[0]["function"]["name"] == "odoo_search_read"
+        assert defs[0]["function"]["name"] == "odoo_ops_runner"
         assert "parameters" in defs[0]["function"]
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
         TOOL_NAME_MAP.clear()
         tool = AITool(
-            name="odoo.search_read", display_name="Odoo Search Read",
-            description="Search and read Odoo records",
+            name="odoo.ops_runner", display_name="Odoo Ops Runner",
+            description="Run Odoo operations",
             target_system="odoo",
             input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
         )
         defs = _build_tool_definitions([tool])
         assert len(defs) == 1
-        assert defs[0]["function"]["name"] == "odoo_search_read"
+        assert defs[0]["function"]["name"] == "odoo_ops_runner"
         assert "." not in defs[0]["function"]["name"]
-        assert TOOL_NAME_MAP.get("odoo_search_read") == "odoo.search_read"
+        assert TOOL_NAME_MAP.get("odoo_ops_runner") == "odoo.ops_runner"
 
     def test_normalize_tool_name(self):
         from app.services.model_router import _normalize_tool_name
-        assert _normalize_tool_name("odoo.search_read") == "odoo_search_read"
+        assert _normalize_tool_name("odoo.ops_runner") == "odoo_ops_runner"
         assert _normalize_tool_name("odoo.attach_artifact") == "odoo_attach_artifact"
         assert _normalize_tool_name("already_normal") == "already_normal"
         assert _normalize_tool_name("no-changes_needed") == "no-changes_needed"

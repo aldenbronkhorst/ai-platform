@@ -5,7 +5,6 @@ import type { ChatSession, ChatMessage, AttachedFile } from "./types";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
 import { ChatView } from "./components/chat/ChatView";
-import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { TasksPage } from "./pages/TasksPage";
 import { DocumentsPage } from "./pages/DocumentsPage";
@@ -26,6 +25,53 @@ function isAbortError(err: unknown) {
     && (err as { name?: string }).name === "AbortError";
 }
 
+const CHAT_REQUEST_TIMEOUT_MS = 180_000;
+
+interface ChatFailurePayload {
+  requestId: string;
+  errorType: string;
+  errorMessage: string;
+  technicalDetail: string;
+  httpStatus: number;
+}
+
+async function chatFailureFromResponse(res: Response, requestId: string): Promise<ChatFailurePayload> {
+  const body = await res.json().catch(() => null);
+  const respRequestId = res.headers.get("X-Request-ID") || requestId;
+  if (body && body.detail) {
+    const detail = body.detail;
+    return {
+      requestId: respRequestId,
+      errorType: detail.error_type || "server_error",
+      errorMessage: detail.error_message || `Server returned ${res.status}`,
+      technicalDetail: detail.technical_detail || "",
+      httpStatus: res.status,
+    };
+  }
+  return {
+    requestId: respRequestId,
+    errorType: "server_error",
+    errorMessage: `Server returned ${res.status}`,
+    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
+    httpStatus: res.status,
+  };
+}
+
+function chatFailureFromNetwork(err: unknown, requestId: string): ChatFailurePayload {
+  const timeout = isAbortError(err);
+  return {
+    requestId,
+    errorType: timeout ? "timeout" : "network",
+    errorMessage: timeout
+      ? "The request took too long to complete. Please try again or narrow the question."
+      : "The AI service could not be reached. Please check your connection and try again.",
+    technicalDetail: timeout
+      ? `Request timed out after ${CHAT_REQUEST_TIMEOUT_MS / 1000} seconds`
+      : errorMessage(err),
+    httpStatus: 0,
+  };
+}
+
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
   const {
     accessToken,
@@ -39,7 +85,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     signOut,
   } = usePortalAuth();
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("workflows");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -143,263 +189,129 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   };
 
   useEffect(() => {
-    if (accessToken) {
-      fetchChatSessions();
-    }
+    if (!accessToken) return;
+    const timerId = window.setTimeout(() => {
+      void fetchChatSessions();
+    }, 0);
+    return () => window.clearTimeout(timerId);
   }, [accessToken, fetchChatSessions]);
 
   useEffect(() => {
-    if (activeSession && accessToken) {
-      fetchSessionMessages(activeSession.id);
-    } else {
-      setChatMessages([]);
-    }
+    const timerId = window.setTimeout(() => {
+      if (activeSession && accessToken) {
+        void fetchSessionMessages(activeSession.id);
+      } else {
+        setChatMessages([]);
+      }
+    }, 0);
+    return () => window.clearTimeout(timerId);
   }, [activeSession, accessToken, fetchSessionMessages]);
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
+  const markAssistantFailed = (pendingMessageId: string, failure: ChatFailurePayload) => {
+    setChatMessages(prev => prev.map(m =>
+      m.id === pendingMessageId
+        ? { ...m, status: "failed" as const, error_message: JSON.stringify(failure) }
+        : m
+    ));
+  };
 
-    const content = chatInput;
-    setChatInput("");
+  const postChatMessage = async (
+    session: ChatSession,
+    content: string,
+    artifactIds: string[],
+    pendingMessageId: string,
+  ) => {
+    const requestId = crypto.randomUUID();
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), CHAT_REQUEST_TIMEOUT_MS);
     setIsChatSending(true);
 
-    const artIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
-    setAttachedFiles([]);
-
-    let currentSess = activeSession;
-    if (!currentSess) {
-      currentSess = await createNewChat();
-      if (!currentSess) {
-        setIsChatSending(false);
-        return;
-      }
-    }
-
-    const requestId = crypto.randomUUID();
-    const userMsgId = crypto.randomUUID();
-    const pendingMsgId = crypto.randomUUID();
-
-    const tempUserMsg: ChatMessage = {
-      id: userMsgId,
-      chat_session_id: currentSess.id,
-      role: "user",
-      content,
-      created_at: new Date().toISOString(),
-      status: "completed",
-    };
-
-    const pendingAssistantMsg: ChatMessage = {
-      id: pendingMsgId,
-      chat_session_id: currentSess.id,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-    };
-
-    setChatMessages(prev => [...prev, tempUserMsg, pendingAssistantMsg]);
-
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
-
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
+      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${session.id}/messages`, {
         method: "POST",
         headers: { ...getHeaders(), "X-Request-ID": requestId },
-        body: JSON.stringify({ content, artifact_ids: artIds, workflow_context: currentSess.workflow_context }),
+        body: JSON.stringify({
+          content,
+          artifact_ids: artifactIds,
+          workflow_context: session.workflow_context,
+        }),
         signal: abortController.signal,
       });
+
       if (res.ok) {
         const botMsg: ChatMessage = await res.json();
         botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
+        setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? botMsg : m));
         fetchChatSessions();
-
-        // Non-blocking memory extraction
-        fetch(`${APIM_BASE_URL}/memories/extract?conversation_id=${currentSess.id}`, {
-          method: "POST",
-          headers: getHeaders(),
-        }).catch(() => {});
       } else {
-        const body = await res.json().catch(() => null);
-        const respRequestId = res.headers.get("X-Request-ID") || requestId;
-        if (body && body.detail) {
-          const d = body.detail;
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: d.error_type || "server_error",
-                    errorMessage: d.error_message || `Server returned ${res.status}`,
-                    technicalDetail: d.technical_detail || "",
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        } else {
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: "server_error",
-                    errorMessage: `Server returned ${res.status}`,
-                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        }
+        markAssistantFailed(pendingMessageId, await chatFailureFromResponse(res, requestId));
       }
     } catch (err: unknown) {
-      const isTimeout = isAbortError(err);
-      setChatMessages(prev => prev.map(m =>
-        m.id === pendingMsgId
-          ? {
-              ...m,
-              status: "failed" as const,
-              error_message: JSON.stringify({
-                requestId,
-                errorType: isTimeout ? "timeout" : "network",
-                errorMessage: isTimeout
-                  ? "The request took too long to complete. Please try again or narrow the question."
-                  : "The AI service could not be reached. Please check your connection and try again.",
-                technicalDetail: isTimeout
-                  ? "Request timed out after 180 seconds"
-                  : errorMessage(err),
-                httpStatus: 0,
-              }),
-            }
-          : m
-      ));
+      markAssistantFailed(pendingMessageId, chatFailureFromNetwork(err, requestId));
     } finally {
       clearTimeout(timeoutId);
       setIsChatSending(false);
     }
   };
 
-  const handleRetryMessage = async (messageId: string) => {
-    const msg = chatMessages.find(m => m.id === messageId);
-    if (!msg || !activeSession) return;
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
 
-    setIsChatSending(true);
-    const currentSess = activeSession;
+    const content = chatInput;
+    const artifactIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
+    setChatInput("");
+    setAttachedFiles([]);
 
-    const failedIdx = chatMessages.findIndex(m => m.id === messageId);
-    let userContent = "";
-    for (let i = failedIdx - 1; i >= 0; i--) {
-      if (chatMessages[i].role === "user" && chatMessages[i].status === "completed") {
-        userContent = chatMessages[i].content;
-        break;
-      }
-    }
+    const currentSess = activeSession || await createNewChat();
+    if (!currentSess) return;
 
-    const newPendingId = crypto.randomUUID();
-    const pendingAssistantMsg: ChatMessage = {
-      id: newPendingId,
-      chat_session_id: activeSession.id,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-    };
-
+    const pendingMsgId = crypto.randomUUID();
     setChatMessages(prev => [
-      ...prev.filter(m => m.id !== messageId),
-      pendingAssistantMsg,
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        chat_session_id: currentSess.id,
+        role: "user",
+        content,
+        created_at: new Date().toISOString(),
+        status: "completed",
+      },
+      {
+        id: pendingMsgId,
+        chat_session_id: currentSess.id,
+        role: "assistant",
+        content: "",
+        created_at: new Date().toISOString(),
+        status: "pending",
+      },
     ]);
 
-    const requestId = crypto.randomUUID();
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
+    await postChatMessage(currentSess, content, artifactIds, pendingMsgId);
+  };
 
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
-        method: "POST",
-        headers: { ...getHeaders(), "X-Request-ID": requestId },
-        body: JSON.stringify({
-          content: userContent,
-          artifact_ids: [],
-          workflow_context: currentSess.workflow_context,
-        }),
-        signal: abortController.signal,
-      });
-      if (res.ok) {
-        const botMsg: ChatMessage = await res.json();
-        botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === newPendingId ? botMsg : m));
-        fetchChatSessions();
-      } else {
-        const body = await res.json().catch(() => null);
-        const respRequestId = res.headers.get("X-Request-ID") || requestId;
-        if (body && body.detail) {
-          const d = body.detail;
-          setChatMessages(prev => prev.map(m =>
-            m.id === newPendingId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: d.error_type || "server_error",
-                    errorMessage: d.error_message || `Server returned ${res.status}`,
-                    technicalDetail: d.technical_detail || "",
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        } else {
-          setChatMessages(prev => prev.map(m =>
-            m.id === newPendingId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: "server_error",
-                    errorMessage: `Server returned ${res.status}`,
-                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        }
-      }
-    } catch (err: unknown) {
-      const isTimeout = isAbortError(err);
-      setChatMessages(prev => prev.map(m =>
-        m.id === newPendingId
-          ? {
-              ...m,
-              status: "failed" as const,
-              error_message: JSON.stringify({
-                requestId,
-                errorType: isTimeout ? "timeout" : "network",
-                errorMessage: isTimeout
-                  ? "The request took too long to complete. Please try again or narrow the question."
-                  : "The AI service could not be reached. Please check your connection and try again.",
-                technicalDetail: isTimeout
-                  ? "Request timed out after 180 seconds"
-                  : errorMessage(err),
-                httpStatus: 0,
-              }),
-            }
-          : m
-      ));
-    } finally {
-      clearTimeout(timeoutId);
-      setIsChatSending(false);
-    }
+  const handleRetryMessage = async (messageId: string) => {
+    if (!chatMessages.find(m => m.id === messageId) || !activeSession) return;
+
+    const failedIdx = chatMessages.findIndex(m => m.id === messageId);
+    const userMessage = [...chatMessages.slice(0, failedIdx)].reverse()
+      .find(m => m.role === "user" && m.status === "completed");
+    if (!userMessage) return;
+
+    const pendingMsgId = crypto.randomUUID();
+    setChatMessages(prev => [
+      ...prev.filter(m => m.id !== messageId),
+      {
+        id: pendingMsgId,
+        chat_session_id: activeSession.id,
+        role: "assistant",
+        content: "",
+        created_at: new Date().toISOString(),
+        status: "pending",
+      },
+    ]);
+
+    await postChatMessage(activeSession, userMessage.content, [], pendingMsgId);
   };
 
   const handleCopyMessage = (content: string) => {
@@ -409,117 +321,33 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const handleEditResend = async (originalMessageId: string, newContent: string) => {
     if (!activeSession || !newContent.trim()) return;
 
-    const currentSess = activeSession;
-
     const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
     if (editIndex === -1) return;
 
-    setIsChatSending(true);
-
+    const pendingMsgId = crypto.randomUUID();
     const updatedUserMsg: ChatMessage = {
       ...chatMessages[editIndex],
       content: newContent,
     };
 
-    const pendingMsgId = crypto.randomUUID();
-    const pendingAssistantMsg: ChatMessage = {
-      id: pendingMsgId,
-      chat_session_id: currentSess.id,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      status: "pending",
-    };
-
     setChatMessages(prev => {
       const idx = prev.findIndex(m => m.id === originalMessageId);
       if (idx === -1) return prev;
-      return [...prev.slice(0, idx), updatedUserMsg, pendingAssistantMsg];
+      return [
+        ...prev.slice(0, idx),
+        updatedUserMsg,
+        {
+          id: pendingMsgId,
+          chat_session_id: activeSession.id,
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+          status: "pending",
+        },
+      ];
     });
 
-    const requestId = crypto.randomUUID();
-    const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), 180_000);
-
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${currentSess.id}/messages`, {
-        method: "POST",
-        headers: { ...getHeaders(), "X-Request-ID": requestId },
-        body: JSON.stringify({
-          content: newContent,
-          artifact_ids: [],
-          workflow_context: currentSess.workflow_context,
-        }),
-        signal: abortController.signal,
-      });
-      if (res.ok) {
-        const botMsg: ChatMessage = await res.json();
-        botMsg.status = "completed";
-        setChatMessages(prev => prev.map(m => m.id === pendingMsgId ? botMsg : m));
-        fetchChatSessions();
-      } else {
-        const body = await res.json().catch(() => null);
-        const respRequestId = res.headers.get("X-Request-ID") || requestId;
-        if (body && body.detail) {
-          const d = body.detail;
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: d.error_type || "server_error",
-                    errorMessage: d.error_message || `Server returned ${res.status}`,
-                    technicalDetail: d.technical_detail || "",
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        } else {
-          setChatMessages(prev => prev.map(m =>
-            m.id === pendingMsgId
-              ? {
-                  ...m,
-                  status: "failed" as const,
-                  error_message: JSON.stringify({
-                    requestId: respRequestId,
-                    errorType: "server_error",
-                    errorMessage: `Server returned ${res.status}`,
-                    technicalDetail: typeof body === "string" ? body : JSON.stringify(body),
-                    httpStatus: res.status,
-                  }),
-                }
-              : m
-          ));
-        }
-      }
-    } catch (err: unknown) {
-      const isTimeout = isAbortError(err);
-      setChatMessages(prev => prev.map(m =>
-        m.id === pendingMsgId
-          ? {
-              ...m,
-              status: "failed" as const,
-              error_message: JSON.stringify({
-                requestId,
-                errorType: isTimeout ? "timeout" : "network",
-                errorMessage: isTimeout
-                  ? "The request took too long to complete. Please try again or narrow the question."
-                  : "The AI service could not be reached. Please check your connection and try again.",
-                technicalDetail: isTimeout
-                  ? "Request timed out after 180 seconds"
-                  : errorMessage(err),
-                httpStatus: 0,
-              }),
-            }
-          : m
-      ));
-    } finally {
-      clearTimeout(timeoutId);
-      setIsChatSending(false);
-    }
+    await postChatMessage(activeSession, newContent, [], pendingMsgId);
   };
 
   const handleSuggestionClick = (prompt: string) => {
@@ -619,13 +447,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             onSuggestionClick={handleSuggestionClick}
             onCopyMessage={handleCopyMessage}
             onEditResend={handleEditResend}
-          />
-        );
-      case "workflows":
-        return (
-          <WorkflowsPage
-            accessToken={accessToken}
-            onLaunchChat={(workflowId) => createNewChat(workflowId)}
           />
         );
       case "tasks":

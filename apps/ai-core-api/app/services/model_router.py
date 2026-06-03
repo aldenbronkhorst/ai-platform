@@ -10,8 +10,6 @@ from datetime import datetime, timedelta
 from typing import Optional, Any
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 import httpx
 
 from app.models.models import (
@@ -20,6 +18,7 @@ from app.models.models import (
 )
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
+from app.services.key_vault import get_secret_value, key_vault_uri
 from app.schemas.schemas import ContextRequest
 
 logger = logging.getLogger(__name__)
@@ -106,6 +105,25 @@ class ModelCallState:
     fallback_reason: str = "noneeded"
 
 
+@dataclass
+class ConnectedAccountsSnapshot:
+    accounts: list[AIConnectedAccount] = field(default_factory=list)
+
+    @property
+    def connected_systems(self) -> set[str]:
+        return {
+            account.provider
+            for account in self.accounts
+            if account.status in ("connected", "active")
+        }
+
+    def first_connected(self, provider: str) -> Optional[AIConnectedAccount]:
+        for account in self.accounts:
+            if account.provider == provider and account.status in ("connected", "active"):
+                return account
+        return None
+
+
 class RouteNotFoundError(Exception):
     def __init__(self, task_type: str):
         self.task_type = task_type
@@ -144,28 +162,13 @@ async def get_enabled_route(db: AsyncSession, task_type: str = "general_chat") -
     return route, model, provider
 
 
-_secret_client: Optional[SecretClient] = None
-
-
-def _get_kv_client() -> SecretClient:
-    global _secret_client
-    if _secret_client is None:
-        vault_uri = os.environ.get("KEY_VAULT_URI", "")
-        if vault_uri:
-            credential = DefaultAzureCredential()
-            _secret_client = SecretClient(vault_url=vault_uri, credential=credential)
-    return _secret_client
-
-
 async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
     """Try Key Vault secret first, then env var, then fall back to hard-coded."""
     if provider.auth_type == "key_vault_secret" and provider.secret_reference:
         try:
-            client = _get_kv_client()
-            if client:
-                secret = await asyncio.to_thread(client.get_secret, provider.secret_reference)
-                if secret and secret.value:
-                    return secret.value
+            secret_value = await get_secret_value(provider.secret_reference)
+            if secret_value:
+                return secret_value
         except Exception as exc:
             logger.warning("Failed to fetch KV secret %s: %s", provider.secret_reference, exc)
     # Fallback: check environment variable
@@ -250,15 +253,9 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
         raise RuntimeError("No Odoo connected account found for tool execution")
 
     api_key = ""
-    if account.secret_reference and os.environ.get("KEY_VAULT_URI"):
+    if account.secret_reference and key_vault_uri():
         try:
-            def _get_secret() -> str:
-                credential = DefaultAzureCredential()
-                kv_client = SecretClient(vault_url=os.environ["KEY_VAULT_URI"], credential=credential)
-                secret = kv_client.get_secret(account.secret_reference)
-                return secret.value or ""
-
-            api_key = await asyncio.to_thread(_get_secret)
+            api_key = await get_secret_value(account.secret_reference)
         except Exception as e:
             raise RuntimeError(f"Failed to retrieve Odoo credentials from Key Vault: {e}")
 
@@ -300,7 +297,6 @@ async def _execute_tool_call(
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name.startswith("odoo_"):
-        _log_deprecated_tool(tool_name)
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         path = _map_odoo_tool_to_path(tool_name)
         if not path:
@@ -602,7 +598,7 @@ def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
 def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
     """Detect a generic Odoo report intent from a user query.
     
-    Returns tool arguments dict for odoo_execute_report if a report is detected,
+    Returns tool arguments dict for odoo_ops_runner if a report is detected,
     or None if the query does not appear to be about Odoo reports.
     """
     if not query:
@@ -718,7 +714,7 @@ def _report_success_message(result: dict[str, Any]) -> str | None:
 def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     """Build a clean user-facing answer when report tool output needs summarising."""
     for tool_result in tool_results:
-        if tool_result.get("tool_name") not in ("odoo_execute_report", "odoo_list_reports", "odoo_ops_runner"):
+        if tool_result.get("tool_name") != "odoo_ops_runner":
             continue
         arguments = tool_result.get("arguments") or {}
         if tool_result.get("tool_name") == "odoo_ops_runner" and arguments.get("mode") not in ("report", "account_report"):
@@ -734,48 +730,24 @@ def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     return None
 
 
-DEPRECATED_TOOL_ALIASES: dict[str, str] = {
-    "odoo_search_read": "odoo_query",
-    "odoo_execute_report": "odoo_analyze",
-    "odoo_attachments_list": "odoo_query",
-    "odoo_attachments_get": "odoo_attachment",
-    "odoo_messages_list": "odoo_content",
-    "odoo_messages_create": "odoo_message",
-}
-
-
-def _log_deprecated_tool(tool_name: str):
-    replacement = DEPRECATED_TOOL_ALIASES.get(tool_name)
-    if replacement:
-        logger.warning("Deprecated tool '%s' called — delegate to '%s' instead", tool_name, replacement)
-
-
 def _map_odoo_tool_to_path(tool_name: str) -> str:
-    mapping = {
-        # Primary consolidated tools
-        "odoo_ops_runner": "/odoo/ops/run",
-        # Legacy individual Odoo tools (still work as compatibility aliases)
-        "odoo_health": "/odoo/ops/run",
-        "odoo_schema": "/odoo/ops/run",
-        "odoo_query": "/odoo/ops/run",
-        "odoo_analyze": "/odoo/ops/run",
-        "odoo_content": "/odoo/ops/run",
-        "odoo_attachment": "/odoo/ops/run",
-        "odoo_mutation": "/odoo/ops/run",
-        "odoo_message": "/odoo/ops/run",
-        "odoo_execute_report": "/reports/execute",
-        "odoo_list_reports": "/reports/list",
-        "odoo_search_read": "/records/search-read",
-        "odoo_execute_kw": "/execute-kw/",
-        "odoo_attachments_list": "/attachments/list",
-        "odoo_attachments_get": "/attachments/get",
-        "odoo_messages_list": "/messages/list",
-        "odoo_messages_create": "/messages/create",
-    }
-    return mapping.get(tool_name, "")
+    return "/odoo/ops/run" if tool_name == "odoo_ops_runner" else ""
 
 
-async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> str:
+async def _load_connected_accounts(db: AsyncSession, user_id: Optional[UUID]) -> ConnectedAccountsSnapshot:
+    if not user_id:
+        return ConnectedAccountsSnapshot()
+    result = await db.execute(
+        select(AIConnectedAccount).where(AIConnectedAccount.user_id == user_id)
+    )
+    return ConnectedAccountsSnapshot(accounts=list(result.scalars().all()))
+
+
+async def _get_connector_context(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    snapshot: Optional[ConnectedAccountsSnapshot] = None,
+) -> str:
     """Build a connector-availability context block for the current user.
 
     Queries AIConnectedAccount for the user and returns a human-readable
@@ -786,15 +758,10 @@ async def _get_connector_context(db: AsyncSession, user_id: Optional[UUID]) -> s
         lines.append("  (no authenticated user context)")
         return "\n".join(lines)
 
-    result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-        )
-    )
-    accounts = result.scalars().all()
+    snapshot = snapshot or await _load_connected_accounts(db, user_id)
 
     conn_map: dict[str, str] = {}
-    for acct in accounts:
+    for acct in snapshot.accounts:
         status = acct.status
         if status == "connected":
             conn_map[acct.provider] = "connected"
@@ -910,6 +877,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
 async def _select_tools_for_model(
     db: AsyncSession,
     user_id: Optional[UUID],
+    connected_systems: set[str],
     user_msg_text: str,
     task_type: str,
     risk_level: str,
@@ -921,7 +889,14 @@ async def _select_tools_for_model(
 
     from app.services.tool_selection import get_tool_selection
 
-    selection = await get_tool_selection(db, user_id, user_msg_text, task_type, risk_level)
+    selection = await get_tool_selection(
+        db,
+        user_id,
+        user_msg_text,
+        task_type,
+        risk_level,
+        connected_systems=connected_systems,
+    )
     tools = selection.selected
     tool_definitions = _build_tool_definitions(tools)
     if selection.selected:
@@ -949,8 +924,12 @@ async def _connected_systems_for_context(db: AsyncSession, user_id: Optional[UUI
     return {acct.provider for acct in acct_result.scalars().all()}
 
 
-async def _business_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, list[Any], list[Any]]:
-    connected_systems = await _connected_systems_for_context(db, user_id)
+async def _business_context(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    connected_systems: Optional[set[str]] = None,
+) -> tuple[str, list[Any], list[Any]]:
+    connected_systems = connected_systems if connected_systems is not None else await _connected_systems_for_context(db, user_id)
     context = await ContextService(db).get_context(
         ContextRequest(
             task="general_chat",
@@ -958,6 +937,7 @@ async def _business_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[
             limit=50,
         ),
         user_id=user_id,
+        connected_systems=connected_systems,
     )
     rules = context.get("rules", [])
     facts = context.get("facts", [])
@@ -971,17 +951,24 @@ async def _business_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[
     return ("\n\n".join(prompt_parts), rules, facts)
 
 
-async def _odoo_currency_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, str, str | None]:
+async def _odoo_currency_context(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    snapshot: Optional[ConnectedAccountsSnapshot] = None,
+) -> tuple[str, str, str | None]:
     if not user_id:
         return "", "none", None
-    acct_result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            AIConnectedAccount.provider == "odoo",
-            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+    if snapshot is None:
+        acct_result = await db.execute(
+            select(AIConnectedAccount).where(
+                AIConnectedAccount.user_id == user_id,
+                AIConnectedAccount.provider == "odoo",
+                or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
+            )
         )
-    )
-    account = acct_result.scalars().first()
+        account = acct_result.scalars().first()
+    else:
+        account = snapshot.first_connected("odoo")
     if not account or not account.odoo_currency_code:
         return "", "none", None
 
@@ -1073,17 +1060,19 @@ async def _inject_context_sections(
     user_id: Optional[UUID],
     messages: list,
     system_prompt: str,
+    snapshot: Optional[ConnectedAccountsSnapshot] = None,
 ) -> InjectedContext:
     injected = InjectedContext(system_prompt=system_prompt)
+    connected_systems = snapshot.connected_systems if snapshot else None
 
     try:
-        section, injected.rules, injected.facts = await _business_context(db, user_id)
+        section, injected.rules, injected.facts = await _business_context(db, user_id, connected_systems)
         injected.system_prompt = _append_context_section(injected.system_prompt, section)
     except Exception as exc:
         logger.warning("Failed to inject business context: %s", exc)
 
     try:
-        section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id)
+        section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id, snapshot)
         injected.system_prompt = _append_context_section(injected.system_prompt, section)
     except Exception as exc:
         logger.warning("Failed to inject Odoo currency context: %s", exc)
@@ -1562,16 +1551,24 @@ async def execute_chat(
     user_msg_text = _last_user_message(messages)
     risk_level = _risk_level_for_message(user_msg_text)
     route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
+    connected_accounts = await _load_connected_accounts(db, user_id)
 
     system_prompt = route.system_prompt or ""
-    connector_context = await _get_connector_context(db, user_id)
+    connector_context = await _get_connector_context(db, user_id, connected_accounts)
     if connector_context:
         system_prompt = system_prompt.rstrip() + "\n\n" + connector_context
 
     tools, tool_definitions, system_prompt = await _select_tools_for_model(
-        db, user_id, user_msg_text, task_type, risk_level, model_obj, system_prompt,
+        db,
+        user_id,
+        connected_accounts.connected_systems,
+        user_msg_text,
+        task_type,
+        risk_level,
+        model_obj,
+        system_prompt,
     )
-    injected = await _inject_context_sections(db, user_id, messages, system_prompt)
+    injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
     full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
     temperature = float(route.temperature) if route.temperature is not None else 0.3
     max_tokens = route.max_tokens or 2000

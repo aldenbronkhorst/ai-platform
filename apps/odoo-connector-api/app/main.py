@@ -5,14 +5,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.odoo_client import OdooError, OdooAuthError
 from app.core.middleware import CorrelationIdMiddleware
-from app.routers import health, schema, records, execute_kw, attachments, messages, reports
-from app.routers import query as query_router
-from app.routers import analyze as analyze_router
-from app.routers import content as content_router
-from app.routers import attachment as attachment_router
-from app.routers import mutation as mutation_router
-from app.routers import message as message_router
-from app.routers import health_check as health_check_router
+from app.routers import health
 from app.routers import ops_runner as ops_runner_router
 
 settings = get_settings()
@@ -60,26 +53,8 @@ async def appinsights_middleware(request: Request, call_next):
         return await call_next(request)
 
 
-# Register new tool surface (primary)
-app.include_router(health_check_router.router, prefix="/odoo/health", tags=["Odoo Health"])
-app.include_router(query_router.router, prefix="/odoo/query", tags=["Odoo Query"])
-app.include_router(analyze_router.router, prefix="/odoo/analyze", tags=["Odoo Analyze"])
-app.include_router(content_router.router, prefix="/odoo/content", tags=["Odoo Content"])
-app.include_router(attachment_router.router, prefix="/odoo/attachment", tags=["Odoo Attachment"])
-app.include_router(mutation_router.router, prefix="/odoo/mutation", tags=["Odoo Mutation"])
-app.include_router(message_router.router, prefix="/odoo/message", tags=["Odoo Message"])
-
-# Odoo operations runner (primary consolidated tool)
-app.include_router(ops_runner_router.router, prefix="/odoo/ops", tags=["Odoo Ops Runner"])
-
-# Register legacy routers (deprecated, will be removed after migration)
 app.include_router(health.router, tags=["Health"])
-app.include_router(schema.router, prefix="/schema", tags=["Schema"])
-app.include_router(records.router, prefix="/records", tags=["Records"])
-app.include_router(execute_kw.router, prefix="/execute-kw", tags=["Execute"])
-app.include_router(attachments.router, prefix="/attachments", tags=["Attachments"])
-app.include_router(messages.router, prefix="/messages", tags=["Messages"])
-app.include_router(reports.router, prefix="/reports", tags=["Reports"])
+app.include_router(ops_runner_router.router, prefix="/odoo/ops", tags=["Odoo Ops Runner"])
 
 
 @app.exception_handler(OdooAuthError)

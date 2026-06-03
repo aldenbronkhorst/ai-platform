@@ -1,6 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
 import {
-  Layers,
   FileText,
   Database,
   ClipboardList,
@@ -81,7 +80,6 @@ export function SidebarPanel({
   }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
 
   const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
-    { tab: "workflows", icon: Layers, label: "Workflows" },
     { tab: "tasks", icon: ClipboardList, label: "Tasks Tracker" },
     { tab: "artifacts", icon: FileText, label: "Documents Vault" },
     { tab: "connected-accounts", icon: Database, label: "Connected Accounts" },

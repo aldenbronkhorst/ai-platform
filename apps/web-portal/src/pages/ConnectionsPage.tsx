@@ -215,9 +215,9 @@ function ConnectorDetailShell({
 
 const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database },
-  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
-  { key: "github_cli", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch },
-  { key: "ms365", name: "Microsoft 365", subtitle: "SharePoint / Outlook / Graph", icon: BookOpen },
+  { key: "azure", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
+  { key: "github", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch },
+  { key: "microsoft_365", name: "Microsoft 365", subtitle: "SharePoint / Outlook / Graph", icon: BookOpen },
 ];
 
 interface ConnectionsPageProps { accessToken: string; }
@@ -298,10 +298,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           body: JSON.stringify({ code, state }),
         });
         const data = await res.json() as CliTestResult;
-        setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github_cli" });
+        setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github" });
         await fetchConnectors();
       } catch (err) {
-        setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) });
+        setCliTestResult({ status: "failed", connector: "github", message: errorMessage(err) });
       } finally {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
@@ -387,21 +387,21 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             if (pd.status === "connected") {
               setAzurePolling(false);
               setAzureDeviceCode(null);
-              setCliTestResult({ status: "success", connector: "azure_cli", message: "Azure connected!" });
+              setCliTestResult({ status: "success", connector: "azure", message: "Azure connected!" });
               void fetchConnectors();
             } else if (pd.status === "pending") {
               setTimeout(poll, (data.interval || 5) * 1000);
             } else {
               setAzurePolling(false);
-              setCliTestResult({ status: "failed", connector: "azure_cli", message: pd.error || "Auth failed" });
+              setCliTestResult({ status: "failed", connector: "azure", message: pd.error || "Auth failed" });
             }
           } catch { setAzurePolling(false); }
         };
         setTimeout(poll, (data.interval || 5) * 1000);
       } else {
-        setCliTestResult({ status: "failed", connector: "azure_cli", message: data.error || "Failed to start device code flow" });
+        setCliTestResult({ status: "failed", connector: "azure", message: data.error || "Failed to start device code flow" });
       }
-    } catch (err) { setCliTestResult({ status: "failed", connector: "azure_cli", message: errorMessage(err) }); }
+    } catch (err) { setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
   };
 
   const handleAzureStatus = async () => {
@@ -410,10 +410,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
       if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: "azure_cli", message: data.message || "Azure connected", request_id: data.request_id });
+        setCliTestResult({ status: "success", connector: "azure", message: data.message || "Azure connected", request_id: data.request_id });
         await fetchConnectors();
       } else {
-        setCliTestResult({ status: "failed", connector: "azure_cli", message: data.message || `Azure status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
+        setCliTestResult({ status: "failed", connector: "azure", message: data.message || `Azure status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
     } catch { /* ignore transient Azure status errors */ }
@@ -423,7 +423,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return;
     await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
-    setCliTestResult({ status: "success", connector: "azure_cli", message: "Disconnected" });
+    setCliTestResult({ status: "success", connector: "azure", message: "Disconnected" });
   };
 
   const handleGithubOAuth = async () => {
@@ -432,8 +432,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
       const data = await res.json() as { auth_url?: string; message?: string };
       if (data.auth_url) window.location.href = data.auth_url;
-      else setCliTestResult({ status: "failed", connector: "github_cli", message: data.message || "GitHub OAuth not configured." });
-    } catch (err) { setCliTestResult({ status: "failed", connector: "github_cli", message: errorMessage(err) }); }
+      else setCliTestResult({ status: "failed", connector: "github", message: data.message || "GitHub OAuth not configured." });
+    } catch (err) { setCliTestResult({ status: "failed", connector: "github", message: errorMessage(err) }); }
   };
 
   const handleGithubStatus = async () => {
@@ -442,10 +442,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connector/github/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
       if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: "github_cli", message: data.message || "GitHub connected", request_id: data.request_id });
+        setCliTestResult({ status: "success", connector: "github", message: data.message || "GitHub connected", request_id: data.request_id });
         await fetchConnectors();
       } else {
-        setCliTestResult({ status: "failed", connector: "github_cli", message: data.message || `GitHub status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
+        setCliTestResult({ status: "failed", connector: "github", message: data.message || `GitHub status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
     } catch { /* ignore transient GitHub status errors */ }
@@ -527,7 +527,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       );
     }
 
-    if (key === "azure_cli") return (
+    if (key === "azure") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
         <DetailCard>
           <p className="text-sm text-muted">Connect with Microsoft device authentication.</p>
@@ -558,7 +558,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </ConnectorDetailShell>
     );
 
-    if (key === "github_cli") return (
+    if (key === "github") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
         <DetailCard>
           <p className="text-sm text-muted">Connect with GitHub OAuth.</p>
@@ -575,7 +575,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </ConnectorDetailShell>
     );
 
-    if (key === "ms365") return (
+    if (key === "microsoft_365") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
         <DetailCard>
           <p className="text-sm text-muted">No setup actions are available for this connector yet.</p>
@@ -664,7 +664,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               {cliTestResult && (
                 <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${cliTestResult.status === 'success' ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
                   <p className={`font-semibold ${cliTestResult.status === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                    {cliTestResult.connector === "azure_cli" ? "Azure CLI" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
+                    {cliTestResult.connector === "azure" ? "Azure CLI" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
                   </p>
                   {cliTestResult.request_id && (
                     <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>

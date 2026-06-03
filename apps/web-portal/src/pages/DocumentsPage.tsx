@@ -80,7 +80,7 @@ export function DocumentsPage({ accessToken }: DocumentsPageProps) {
           <FileText className="w-10 h-10 text-soft mb-3 mx-auto" />
           <p className="font-semibold text-default">No documents found</p>
           <p className="text-xs text-soft max-w-sm mx-auto mt-1">
-            Executed workflows generate Excel and PDF audit summaries.
+            Uploaded files and generated outputs will appear here.
           </p>
         </div>
       ) : (

@@ -12,7 +12,6 @@ export function MainHeader({
   isSidebarCollapsed,
 }: MainHeaderProps) {
   const tabLabels: Record<ActiveTab, string> = {
-    workflows: "Workflows",
     chat: "Chat",
     tasks: "Tasks",
     artifacts: "Documents",

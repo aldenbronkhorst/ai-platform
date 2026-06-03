@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 import os
@@ -20,6 +19,7 @@ from app.core.security import api_key_auth, require_role
 from app.core.database import get_db
 from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
+from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.schemas.schemas import AIAuditEventCreate
 
 router = APIRouter(prefix="/connected-accounts", tags=["connected-accounts"])
@@ -292,6 +292,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
                 "api_key": api_key,
                 "transport": "auto",
             },
+            "mode": "query",
             "model": "res.company",
             "domain": [],
             "fields": ["id", "name", "currency_id"],
@@ -300,7 +301,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
+                f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/ops/run",
                 json=payload,
                 headers=headers,
             )
@@ -441,6 +442,7 @@ def _odoo_verify_payload(url: str, db: str, username: str, api_key: str) -> dict
             "api_key": api_key,
             "transport": "auto"
         },
+        "mode": "query",
         "model": "res.partner",
         "domain": [],
         "limit": 1
@@ -456,7 +458,7 @@ async def _post_odoo_verify_request(
 ) -> httpx.Response:
     async with httpx.AsyncClient(timeout=30.0) as client:
         return await client.post(
-            f"{ODOO_CONNECTOR_URL.rstrip('/')}/records/search-read",
+            f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/ops/run",
             json=_odoo_verify_payload(url, db, username, api_key),
             headers=_odoo_verify_headers(trace),
         )
@@ -546,8 +548,7 @@ async def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
     Raises HTTPException on failure, with a user-friendly message for
     ObjectIsDeletedButRecoverable conflicts.
     If KEY_VAULT_URI is not configured, raises so callers know storage failed."""
-    kv_uri = os.environ.get("KEY_VAULT_URI", "")
-    if not kv_uri:
+    if not key_vault_uri():
         raise HTTPException(
             status_code=500,
             detail=ConnectErrorDetail(
@@ -558,15 +559,8 @@ async def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
             ).model_dump()
         )
 
-    def _store_sync() -> None:
-        from azure.identity import DefaultAzureCredential
-        from azure.keyvault.secrets import SecretClient
-        credential = DefaultAzureCredential()
-        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
-        kv_client.set_secret(secret_name, secret_value)
-
     try:
-        await asyncio.to_thread(_store_sync)
+        await set_secret_value(secret_name, secret_value)
     except Exception as e:
         error_str = str(e)
         if "ObjectIsDeletedButRecoverable" in error_str or "Conflict" in error_str:
@@ -600,20 +594,11 @@ async def _store_key_vault_secret(secret_name: str, secret_value: str) -> None:
 async def _delete_key_vault_secret(secret_name: str) -> None:
     """Deletes the secret in Azure Key Vault if Key Vault is configured.
     Does not raise if the secret doesn't exist (already deleted or never created)."""
-    kv_uri = os.environ.get("KEY_VAULT_URI", "")
-    if not kv_uri:
+    if not key_vault_uri():
         return
 
-    def _delete_sync() -> None:
-        from azure.identity import DefaultAzureCredential
-        from azure.keyvault.secrets import SecretClient
-        credential = DefaultAzureCredential()
-        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
-        poller = kv_client.begin_delete_secret(secret_name)
-        poller.wait()
-
     try:
-        await asyncio.to_thread(_delete_sync)
+        await delete_secret(secret_name)
     except Exception as e:
         error_str = str(e)
         # If secret doesn't exist, just log and continue - don't fail the disconnect
@@ -630,20 +615,11 @@ async def _delete_key_vault_secret(secret_name: str) -> None:
 async def _retrieve_key_vault_secret(secret_name: str) -> str:
     """Retrieves the secret from Azure Key Vault.
     Raises HTTPException if Key Vault is not configured or secret not found."""
-    kv_uri = os.environ.get("KEY_VAULT_URI", "")
-    if not kv_uri:
+    if not key_vault_uri():
         raise HTTPException(status_code=500, detail="Key Vault is not configured. Cannot retrieve credentials.")
 
-    def _retrieve_sync() -> str:
-        from azure.identity import DefaultAzureCredential
-        from azure.keyvault.secrets import SecretClient
-        credential = DefaultAzureCredential()
-        kv_client = SecretClient(vault_url=kv_uri, credential=credential)
-        secret = kv_client.get_secret(secret_name)
-        return secret.value or ""
-
     try:
-        return await asyncio.to_thread(_retrieve_sync)
+        return await get_secret_value(secret_name)
     except Exception as e:
         error_str = str(e)
         if "SecretNotFound" in error_str or "NotFound" in error_str:
@@ -1026,7 +1002,7 @@ async def get_connected_accounts(
             } if odoo else {},
         },
         {
-            "connector_key": "azure_cli",
+            "connector_key": "azure",
             "display_name": "Azure CLI",
             "status": azure_status.get("status", "not_connected"),
             "auth_method": "delegated_microsoft",
@@ -1034,7 +1010,7 @@ async def get_connected_accounts(
             "actions_available": ["connect", "test", "disconnect"],
         },
         {
-            "connector_key": "github_cli",
+            "connector_key": "github",
             "display_name": "GitHub CLI",
             "status": github_status.get("status", "not_connected"),
             "auth_method": "github_oauth",
@@ -1042,7 +1018,7 @@ async def get_connected_accounts(
             "actions_available": ["connect", "test", "disconnect"],
         },
         {
-            "connector_key": "ms365",
+            "connector_key": "microsoft_365",
             "display_name": "Microsoft 365",
             "status": "coming_soon",
             "auth_method": "none",

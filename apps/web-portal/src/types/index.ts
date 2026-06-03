@@ -34,20 +34,6 @@ export interface SuggestedAction {
   icon: string;
 }
 
-export interface WorkflowCardData {
-  id: string;
-  title: string;
-  description: string;
-  category: "finance" | "hr" | "operations";
-  inputs: Array<{
-    name: string;
-    label: string;
-    type: "date" | "select" | "text";
-    options?: string[];
-    placeholder?: string;
-  }>;
-}
-
 export interface AttachedFile {
   file: File;
   id?: string;
@@ -74,4 +60,4 @@ export interface AIMemory {
   updated_at: string;
 }
 
-export type ActiveTab = "workflows" | "chat" | "tasks" | "artifacts" | "connected-accounts" | "audit" | "settings" | "admin";
+export type ActiveTab = "chat" | "tasks" | "artifacts" | "connected-accounts" | "audit" | "settings" | "admin";

@@ -19,19 +19,7 @@ def health_check():
         "status": "healthy" if not config_issues else "degraded",
         "version": settings.app_version,
         "capabilities": [
-            "schema.models",
-            "schema.fields",
-            "records.search-read",
-            "records.count",
-            "records.read",
-            "records.mutate",
-            "execute-kw",
-            "attachments.list",
-            "attachments.get",
-            "attachments.create",
-            "messages.list",
-            "messages.create",
-            "reports.execute",
+            "odoo.ops.run",
         ],
     }
     if config_issues:
@@ -67,18 +55,7 @@ def _validate_startup_config() -> list:
 def get_capabilities(_auth: dict = Depends(internal_api_key_auth)):
     return CapabilitiesResponse(
         endpoints=[
-            {"path": "/schema/models", "method": "POST", "description": "Search Odoo models"},
-            {"path": "/schema/fields", "method": "POST", "description": "Inspect model fields"},
-            {"path": "/records/search-read", "method": "POST", "description": "Search and read records"},
-            {"path": "/records/count", "method": "POST", "description": "Count records matching domain"},
-            {"path": "/records/read", "method": "POST", "description": "Read specific record IDs"},
-            {"path": "/records/mutate", "method": "POST", "description": "Create/write/delete/workflow records"},
-            {"path": "/execute-kw", "method": "POST", "description": "Generic execute_kw"},
-            {"path": "/attachments/list", "method": "POST", "description": "List attachments"},
-            {"path": "/attachments/get", "method": "POST", "description": "Get attachment metadata/content"},
-            {"path": "/attachments/create", "method": "POST", "description": "Create attachment on record"},
-            {"path": "/messages/list", "method": "POST", "description": "List messages/chatter"},
-            {"path": "/messages/create", "method": "POST", "description": "Post message to record chatter"},
+            {"path": "/odoo/ops/run", "method": "POST", "description": "Run consolidated Odoo operations by mode"},
         ],
         execute_kw_enabled=True,
         execute_kw_write_methods=True,

@@ -1,17 +1,26 @@
 import os
-from unittest.mock import patch
-import pytest
+from unittest.mock import MagicMock, patch
+
 from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.main import app
-from app.core.config import get_settings
 
 client = TestClient(app)
 
 AUTH_HEADERS = {"X-Internal-API-Key": "test-internal-key"}
+CREDENTIALS = {
+    "url": "https://example.odoo.com",
+    "db": "test",
+    "username": "test",
+    "api_key": "test",
+}
+
+
+def ops_payload(mode: str, **values):
+    return {"credentials": CREDENTIALS, "mode": mode, **values}
 
 
 class TestHealth:
@@ -20,133 +29,85 @@ class TestHealth:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert "capabilities" in data
+        assert data["capabilities"] == ["odoo.ops.run"]
 
     def test_capabilities(self):
         response = client.get("/capabilities", headers=AUTH_HEADERS)
         assert response.status_code == 200
         data = response.json()
-        assert "endpoints" in data
+        assert data["endpoints"] == [
+            {
+                "path": "/odoo/ops/run",
+                "method": "POST",
+                "description": "Run consolidated Odoo operations by mode",
+            }
+        ]
 
 
-class TestSchema:
-    def test_schema_models_no_auth_in_debug(self):
-        response = client.post("/schema/models", json={
-            "credentials": {
-                "url": "https://example.odoo.com",
-                "db": "test",
-                "username": "test",
-                "api_key": "test",
-            },
-            "query": "account",
-        }, headers=AUTH_HEADERS)
-        assert response.status_code in [200, 400, 500, 502]
-
-
-class TestRecords:
-    def test_search_read_requires_credentials(self):
-        response = client.post("/records/search-read", json={
-            "credentials": {
-                "url": "https://example.odoo.com",
-                "db": "test",
-                "username": "test",
-                "api_key": "test",
-            },
-            "model": "res.partner",
-            "domain": [],
-            "limit": 5,
-        }, headers=AUTH_HEADERS)
-        assert response.status_code in [200, 400, 500, 502]
-
-    @patch("app.routers.records._get_client")
-    def test_search_read_passes_db_unchanged(self, mock_get_client):
-        """The request credentials.db must reach OdooClient without substitution."""
-        from unittest.mock import MagicMock
+class TestOdooOpsRunner:
+    @patch("app.routers.ops_runner._get_client")
+    def test_query_passes_db_unchanged(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.search_read.return_value = []
         mock_get_client.return_value = mock_client
 
         user_db = "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
-        response = client.post("/records/search-read", json={
-            "credentials": {
-                "url": "https://lotslotsmore.odoo.com",
-                "db": user_db,
-                "username": "alden@lotslotsmore.com",
-                "api_key": "test-key",
-            },
-            "model": "res.partner",
-            "domain": [],
-            "limit": 1,
-        }, headers=AUTH_HEADERS)
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                credentials={**CREDENTIALS, "db": user_db},
+                model="res.partner",
+                domain=[],
+                limit=1,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
         assert response.status_code == 200
-
-        # Verify _get_client was called with the exact user-provided db
-        mock_get_client.assert_called_once()
         creds_arg = mock_get_client.call_args[0][0]
-        assert creds_arg.db == user_db, f"Expected db={user_db!r}, got db={creds_arg.db!r}"
+        assert creds_arg.db == user_db
 
-    def test_count_requires_credentials(self):
-        response = client.post("/records/count", json={
-            "credentials": {
-                "url": "https://example.odoo.com",
-                "db": "test",
-                "username": "test",
-                "api_key": "test",
-            },
-            "model": "res.partner",
-        }, headers=AUTH_HEADERS)
-        assert response.status_code in [200, 400, 500, 502]
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_unlink_passes_through_to_odoo(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_get_client.return_value = mock_client
 
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload("execute", model="res.partner", method="unlink", args=[[1]]),
+            headers=AUTH_HEADERS,
+        )
 
-class TestExecuteKw:
-    def test_execute_kw_passes_through_without_platform_write_flag(self):
-        get_settings.cache_clear()
-        os.environ["DEBUG"] = "false"
-        os.environ["INTERNAL_API_KEY"] = "test-internal-key"
-        try:
-            response = client.post("/execute-kw/", json={
-                "credentials": {
-                    "url": "https://example.odoo.com",
-                    "db": "test",
-                    "username": "test",
-                    "api_key": "test",
-                },
-                "model": "res.partner",
-                "method": "search",
-                "args": [[]],
-            }, headers={"X-Internal-API-Key": "test-internal-key"})
-            assert response.status_code != 403
-        finally:
-            get_settings.cache_clear()
-            os.environ["DEBUG"] = "true"
-            os.environ.pop("INTERNAL_API_KEY", None)
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "res.partner",
+            "unlink",
+            args=[[1]],
+            kwargs={},
+        )
 
+    @patch("app.routers.ops_runner.OdooReportService")
+    @patch("app.routers.ops_runner._get_client")
+    def test_report_mode_uses_report_service(self, mock_get_client, mock_report_service):
+        mock_get_client.return_value = MagicMock()
+        mock_report_service.return_value.execute.return_value = {
+            "report_name": "Profit and Loss",
+            "line_count": 1,
+        }
 
-class TestAttachments:
-    def test_list_attachments_structure(self):
-        response = client.post("/attachments/list", json={
-            "credentials": {
-                "url": "https://example.odoo.com",
-                "db": "test",
-                "username": "test",
-                "api_key": "test",
-            },
-            "model": "res.partner",
-            "record_id": 1,
-        }, headers=AUTH_HEADERS)
-        assert response.status_code in [200, 400, 500, 502]
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "report",
+                report_name="P&L",
+                date_from="2026-05-01",
+                date_to="2026-05-31",
+                line_names=["Revenue"],
+            ),
+            headers=AUTH_HEADERS,
+        )
 
-
-class TestMessages:
-    def test_list_messages_structure(self):
-        response = client.post("/messages/list", json={
-            "credentials": {
-                "url": "https://example.odoo.com",
-                "db": "test",
-                "username": "test",
-                "api_key": "test",
-            },
-            "model": "res.partner",
-            "record_id": 1,
-        }, headers=AUTH_HEADERS)
-        assert response.status_code in [200, 400, 500, 502]
+        assert response.status_code == 200
+        assert response.json()["report_name"] == "Profit and Loss"

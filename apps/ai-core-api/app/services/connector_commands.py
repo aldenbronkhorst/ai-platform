@@ -193,12 +193,16 @@ def _decode_jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
-async def ensure_azure_cli_profile(user_id: UUID, token_data: dict[str, Any]) -> dict[str, Any]:
+async def ensure_azure_cli_profile(
+    user_id: UUID,
+    token_data: dict[str, Any],
+    subscriptions_result: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     """Persist an isolated Azure CLI profile/cache for the connected user."""
     if not token_data.get("access_token"):
         return {"ready": False, "message": "Azure is not connected for this user."}
 
-    subscriptions_result = await _list_azure_subscriptions(token_data["access_token"])
+    subscriptions_result = subscriptions_result or await _list_azure_subscriptions(token_data["access_token"])
     if not subscriptions_result.get("ok"):
         return {
             "ready": False,
@@ -359,21 +363,17 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                "https://management.azure.com/subscriptions?api-version=2020-01-01",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        if response.status_code >= 400:
+        subscriptions_result = await _list_azure_subscriptions(access_token)
+        if not subscriptions_result.get("ok"):
             return {
                 "status": "failed",
                 "connector": "azure_cli",
                 "request_id": request_id,
-                "message": f"Azure token check failed with HTTP {response.status_code}.",
-                "stderr": response.text[:1000],
+                "message": subscriptions_result.get("message", "Azure token check failed."),
+                "stderr": subscriptions_result.get("stderr", ""),
             }
-        subscriptions = response.json().get("value", [])
-        profile = await ensure_azure_cli_profile(user_id, token_data) if user_id else {"ready": False}
+        subscriptions = subscriptions_result.get("subscriptions", [])
+        profile = await ensure_azure_cli_profile(user_id, token_data, subscriptions_result) if user_id else {"ready": False}
         return {
             "status": "success",
             "connector": "azure_cli",

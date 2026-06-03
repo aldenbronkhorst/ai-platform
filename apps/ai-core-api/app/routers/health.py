@@ -6,19 +6,41 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
 from azure.storage.blob import BlobServiceClient
 from azure.servicebus.management import ServiceBusAdministrationClient
 
 from app.core.database import get_db
 from app.core.config import get_settings
+from app.services.key_vault import get_secret_client
 
 router = APIRouter(prefix="/health", tags=["health"])
 logger = logging.getLogger(__name__)
 
 
 @router.get("")
-async def health_check(db: AsyncSession = Depends(get_db)):
+async def health_check():
+    status_info = {
+        "status": "healthy",
+        "version": "0.1.0",
+        "dependencies": {
+            "postgresql": _configured("POSTGRES_HOST"),
+            "key_vault": _configured("KEY_VAULT_URI"),
+            "blob_storage": _configured("STORAGE_ACCOUNT_NAME"),
+            "service_bus": _configured("AZURE_SERVICE_BUS_NAMESPACE", "SERVICE_BUS_NAMESPACE"),
+        },
+    }
+
+    config_issues = _startup_config_issues()
+    if config_issues:
+        if get_settings().app_env == "production":
+            status_info["status"] = "degraded"
+        status_info["config_issues"] = config_issues
+
+    return status_info
+
+
+@router.get("/dependencies")
+async def dependency_health_check(db: AsyncSession = Depends(get_db)):
     status_info = {
         "status": "healthy",
         "version": "0.1.0",
@@ -26,7 +48,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     }
 
     try:
-        result = await db.execute(text("SELECT 1"))
+        await db.execute(text("SELECT 1"))
         status_info["dependencies"]["postgresql"] = "reachable"
     except Exception as exc:
         logger.warning("Health: PostgreSQL unreachable: %s", exc)
@@ -34,34 +56,28 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
     kv_uri = os.environ.get("KEY_VAULT_URI")
     if kv_uri:
-        status_info["dependencies"]["key_vault"] = await _check_key_vault(kv_uri)
+        status_info["dependencies"]["key_vault"] = await _check_key_vault(kv_uri, deep=True)
     else:
         status_info["dependencies"]["key_vault"] = "not_configured"
 
     storage_name = os.environ.get("STORAGE_ACCOUNT_NAME")
     if storage_name:
-        status_info["dependencies"]["blob_storage"] = await _check_blob_storage(storage_name)
+        status_info["dependencies"]["blob_storage"] = await _check_blob_storage(storage_name, deep=True)
     else:
         status_info["dependencies"]["blob_storage"] = "not_configured"
 
     sb_namespace = os.environ.get("AZURE_SERVICE_BUS_NAMESPACE") or os.environ.get("SERVICE_BUS_NAMESPACE")
     if sb_namespace:
         queue_name = os.environ.get("AZURE_SERVICE_BUS_QUEUE_NAME", "ai-jobs")
-        status_info["dependencies"]["service_bus"] = await _check_service_bus(sb_namespace, queue_name)
+        status_info["dependencies"]["service_bus"] = await _check_service_bus(sb_namespace, queue_name, deep=True)
     else:
         status_info["dependencies"]["service_bus"] = "not_configured"
 
-    # Startup config validation (degrades status in production, warns in development)
-    try:
-        config_issues = _validate_startup_config()
-        is_production = get_settings().app_env == "production"
-        if config_issues:
-            if is_production:
-                status_info["status"] = "degraded"
-            status_info["config_issues"] = config_issues
-    except Exception as exc:
-        logger.error("Health: config validation failed: %s", exc)
-        config_issues = []
+    config_issues = _startup_config_issues()
+    if config_issues:
+        if get_settings().app_env == "production":
+            status_info["status"] = "degraded"
+        status_info["config_issues"] = config_issues
 
     # Always return 200 so Container App liveness/readiness probes never fail.
     # Dependency issues are reported in the response body as informational.
@@ -76,15 +92,19 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     return status_info
 
 
+def _configured(*names: str) -> str:
+    return "configured" if any(os.environ.get(name) for name in names) else "not_configured"
+
+
 def _deep_dependency_checks_enabled() -> bool:
     explicit = os.environ.get("HEALTH_CHECK_DEEP")
     if explicit is not None:
         return explicit.strip().lower() in {"1", "true", "yes", "on"}
-    return get_settings().app_env == "production"
+    return False
 
 
-async def _run_dependency_check(name: str, check):
-    if not _deep_dependency_checks_enabled():
+async def _run_dependency_check(name: str, check, deep: bool = False):
+    if not (deep or _deep_dependency_checks_enabled()):
         return "configured"
     try:
         await asyncio.to_thread(check)
@@ -94,16 +114,17 @@ async def _run_dependency_check(name: str, check):
         return "unreachable"
 
 
-async def _check_key_vault(kv_uri: str) -> str:
+async def _check_key_vault(kv_uri: str, deep: bool = False) -> str:
     def check():
-        credential = DefaultAzureCredential()
-        client = SecretClient(vault_url=kv_uri, credential=credential)
+        client = get_secret_client(kv_uri)
+        if not client:
+            raise RuntimeError("Key Vault is not configured")
         client.get_secret("api-key")
 
-    return await _run_dependency_check("Key Vault", check)
+    return await _run_dependency_check("Key Vault", check, deep=deep)
 
 
-async def _check_blob_storage(storage_name: str) -> str:
+async def _check_blob_storage(storage_name: str, deep: bool = False) -> str:
     def check():
         credential = DefaultAzureCredential()
         blob_client = BlobServiceClient(
@@ -112,10 +133,10 @@ async def _check_blob_storage(storage_name: str) -> str:
         )
         next(blob_client.list_containers(), None)
 
-    return await _run_dependency_check("Blob storage", check)
+    return await _run_dependency_check("Blob storage", check, deep=deep)
 
 
-async def _check_service_bus(sb_namespace: str, queue_name: str) -> str:
+async def _check_service_bus(sb_namespace: str, queue_name: str, deep: bool = False) -> str:
     def check():
         credential = DefaultAzureCredential()
         client = ServiceBusAdministrationClient(
@@ -127,7 +148,7 @@ async def _check_service_bus(sb_namespace: str, queue_name: str) -> str:
         finally:
             client.close()
 
-    return await _run_dependency_check("Service Bus", check)
+    return await _run_dependency_check("Service Bus", check, deep=deep)
 
 
 def _validate_startup_config() -> list:
@@ -182,3 +203,11 @@ def _validate_startup_config() -> list:
         })
 
     return issues
+
+
+def _startup_config_issues() -> list:
+    try:
+        return _validate_startup_config()
+    except Exception as exc:
+        logger.error("Health: config validation failed: %s", exc)
+        return []

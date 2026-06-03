@@ -3,7 +3,8 @@
 Respects connector availability so that tools and rules for disconnected systems
 are not injected as available capabilities.
 """
-from typing import List, Optional
+from datetime import datetime
+from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
@@ -31,8 +32,14 @@ class ContextService:
         accounts = result.scalars().all()
         return {a.provider for a in accounts}
 
-    async def get_context(self, req: ContextRequest, user_id: Optional[UUID] = None) -> dict:
-        connected_systems = await self._get_connected_systems(user_id)
+    async def get_context(
+        self,
+        req: ContextRequest,
+        user_id: Optional[UUID] = None,
+        connected_systems: Optional[set[str]] = None,
+    ) -> dict:
+        connected_systems = connected_systems if connected_systems is not None else await self._get_connected_systems(user_id)
+        now = datetime.utcnow()
 
         # ── Fetch relevant rules ──
         rules_query = select(AIRule).where(
@@ -40,11 +47,11 @@ class ContextService:
                 AIRule.status == "active",
                 or_(
                     AIRule.effective_from.is_(None),
-                    AIRule.effective_from <= __import__('datetime').datetime.utcnow()
+                    AIRule.effective_from <= now
                 ),
                 or_(
                     AIRule.effective_to.is_(None),
-                    AIRule.effective_to >= __import__('datetime').datetime.utcnow()
+                    AIRule.effective_to >= now
                 )
             )
         )
@@ -81,7 +88,7 @@ class ContextService:
         facts_query = select(AICompanyFact).where(
             or_(
                 AICompanyFact.effective_from.is_(None),
-                AICompanyFact.effective_from <= __import__('datetime').datetime.utcnow()
+                AICompanyFact.effective_from <= now
             )
         )
         if req.department:
