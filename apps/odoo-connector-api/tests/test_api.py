@@ -69,6 +69,47 @@ class TestOdooOpsRunner:
         assert creds_arg.db == user_db
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_retries_without_invalid_requested_fields(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.side_effect = [
+            ValueError("Invalid field 'field_desc' on model 'mail.tracking.value'"),
+            [{"id": 1, "old_value_char": "0", "new_value_char": "480"}],
+        ]
+        mock_client.fields_get.return_value = {
+            "model": "mail.tracking.value",
+            "fields": {
+                "old_value_char": {},
+                "new_value_char": {},
+                "mail_message_id": {},
+            },
+            "partial": True,
+            "field_errors": {
+                "field_desc": "Invalid field 'field_desc' on model 'mail.tracking.value'",
+            },
+        }
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="mail.tracking.value",
+                fields=["id", "field_desc", "old_value_char", "new_value_char", "mail_message_id"],
+                domain=[],
+                limit=5,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["omitted_invalid_fields"] == ["field_desc"]
+        assert data["records"][0]["new_value_char"] == "480"
+        assert mock_client.search_read.call_count == 2
+        retry_kwargs = mock_client.search_read.call_args_list[1].kwargs
+        assert retry_kwargs["fields"] == ["id", "old_value_char", "new_value_char", "mail_message_id"]
+
+    @patch("app.routers.ops_runner._get_client")
     def test_execute_unlink_passes_through_to_odoo(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = True

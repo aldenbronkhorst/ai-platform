@@ -91,20 +91,59 @@ def _run_schema(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]
     return {"warning": "Provide model or query for schema inspection."}
 
 
-def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+def _invalid_field_error(exc: Exception) -> bool:
+    return "Invalid field" in str(exc)
+
+
+def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[str]) -> tuple[list[str], list[str], dict[str, Any]]:
+    schema = client.fields_get(model, fields=requested_fields)
+    available_fields = set((schema.get("fields") or {}).keys())
+    valid_fields = [field for field in requested_fields if field == "id" or field in available_fields]
+    invalid_fields = [field for field in requested_fields if field not in valid_fields]
+    return valid_fields, invalid_fields, schema
+
+
+def _query_records(client: OdooClient, req: OdooOpsRunnerRequest, fields: list[str] | None = None) -> list[dict[str, Any]]:
     if req.ids:
-        records = client.read(model=req.model, ids=req.ids, fields=req.fields)
-    else:
-        records = client.search_read(
-            model=req.model,
-            domain=req.domain or [],
-            fields=req.fields,
-            limit=req.limit,
-            offset=req.offset,
-            order=req.order,
-            include_ids=req.include_ids,
-        )
-    return {"model": req.model, "records": records, "count": len(records)}
+        return client.read(model=req.model, ids=req.ids, fields=fields)
+    return client.search_read(
+        model=req.model,
+        domain=req.domain or [],
+        fields=fields,
+        limit=req.limit,
+        offset=req.offset,
+        order=req.order,
+        include_ids=req.include_ids,
+    )
+
+
+def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    try:
+        records = _query_records(client, req, req.fields)
+        return {"model": req.model, "records": records, "count": len(records)}
+    except Exception as exc:
+        if not req.fields or not req.model or not _invalid_field_error(exc):
+            raise
+
+    valid_fields, invalid_fields, schema = _valid_query_fields(client, req.model, req.fields)
+    if not valid_fields:
+        raise HTTPException(status_code=400, detail={
+            "error": "invalid_fields",
+            "message": "None of the requested fields exist on this Odoo model.",
+            "model": req.model,
+            "invalid_fields": invalid_fields,
+            "field_errors": schema.get("field_errors"),
+        })
+
+    records = _query_records(client, req, valid_fields)
+    return {
+        "model": req.model,
+        "records": records,
+        "count": len(records),
+        "warning": "Some requested fields do not exist on this Odoo model and were omitted.",
+        "omitted_invalid_fields": invalid_fields,
+        "field_errors": schema.get("field_errors"),
+    }
 
 
 def _run_count(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:

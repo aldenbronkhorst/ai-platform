@@ -1351,45 +1351,47 @@ class TestToolExecution:
 
         db.execute = mock_execute
 
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                # First call: model returns a tool_call
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "res.partner"}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                # Second call: model returns final answer
+                {
+                    "content": "I found 5 partners in Odoo.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "total_tokens": 28,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+
         with patch.object(
             type(db), 'add'
         ), patch.object(
             type(db), 'flush'
         ), patch(
             'app.services.model_router.build_foundry_client',
-            new=AsyncMock(return_value=AsyncMock(
-                chat_completion=AsyncMock(side_effect=[
-                    # First call: model returns a tool_call
-                    {
-                        "content": None,
-                        "finish_reason": "tool_calls",
-                        "tool_calls": [{
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "odoo_ops_runner",
-                                "arguments": '{"mode": "query", "model": "res.partner"}',
-                            },
-                        }],
-                        "prompt_tokens": 10,
-                        "completion_tokens": 5,
-                        "total_tokens": 15,
-                        "latency_ms": 100,
-                        "error": False,
-                    },
-                    # Second call: model returns final answer
-                    {
-                        "content": "I found 5 partners in Odoo.",
-                        "finish_reason": "stop",
-                        "tool_calls": None,
-                        "prompt_tokens": 20,
-                        "completion_tokens": 8,
-                        "total_tokens": 28,
-                        "latency_ms": 200,
-                        "error": False,
-                    },
-                ])
-            ))
+            new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
             new=AsyncMock(return_value={"records": [{"id": 1, "name": "Partner A"}]})
@@ -1400,6 +1402,115 @@ class TestToolExecution:
             assert len(result["tool_calls"]) == 1
             assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
             assert result["total_tokens"] == 43
+            assert client.chat_completion.call_count == 2
+            post_tool_call = client.chat_completion.call_args_list[1]
+            assert post_tool_call.kwargs["max_tokens"] == 4000
+            assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_finalizes_blank_response_after_tools(self):
+        """A blank length-limited final response after tools must be retried without tools."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "purchase.order"}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "",
+                    "finish_reason": "length",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 2000,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+                {
+                    "content": "The Odoo evidence shows the receipt was adjusted by a later completed move.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 30,
+                    "completion_tokens": 12,
+                    "latency_ms": 150,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value={"records": [{"id": 5266, "name": "WH01-IN-2026-02586"}]})
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "diagnose this Odoo receipt"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "The Odoo evidence shows the receipt was adjusted by a later completed move."
+        assert result["finish_reason"] == "stop"
+        assert result["total_tokens"] == 2077
+        assert client.chat_completion.call_count == 3
+
+        post_tool_call = client.chat_completion.call_args_list[1]
+        assert post_tool_call.kwargs["max_tokens"] == 4000
+        assert post_tool_call.kwargs["tools"] is not None
+        assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
+
+        finalizer_call = client.chat_completion.call_args_list[2]
+        assert finalizer_call.kwargs["tools"] is None
+        assert finalizer_call.kwargs["max_tokens"] == 4000
+        assert "Tool results:" in finalizer_call.kwargs["messages"][1]["content"]
+        assert "WH01-IN-2026-02586" in finalizer_call.kwargs["messages"][1]["content"]
 
 
 # ── Security Tests ──

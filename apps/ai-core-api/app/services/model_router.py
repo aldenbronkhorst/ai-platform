@@ -31,6 +31,21 @@ MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 12000
+TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
+TOOL_FINALIZER_MAX_TOKENS = 4000
+TOOL_FINALIZER_MAX_TOOL_CALLS = 12
+TOOL_FINALIZER_RESULT_CHARS = 3500
+TOOL_FINALIZER_PAYLOAD_CHARS = 45000
+TOOL_FINALIZER_CHAT_MESSAGES = 8
+TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
+TOOL_LOOP_FOLLOWUP_MESSAGE = {
+    "role": "system",
+    "content": (
+        "Use the tool results already gathered to answer the user. "
+        "Call another tool only when a necessary fact is still missing. "
+        "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
+    ),
+}
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -533,6 +548,100 @@ def _compact_tool_result_for_model(result: Any) -> Any:
 
 def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
+
+
+def _is_blank_model_content(result: dict[str, Any]) -> bool:
+    return not str(result.get("content") or "").strip()
+
+
+def _recent_chat_messages_for_finalizer(messages: list) -> list[dict[str, str]]:
+    recent: list[dict[str, str]] = []
+    for message in messages[-TOOL_FINALIZER_CHAT_MESSAGES:]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = message.get("content")
+        if content is None:
+            continue
+        text = str(content).strip()
+        if not text:
+            continue
+        recent.append({
+            "role": role,
+            "content": _truncate_tool_text(text, TOOL_FINALIZER_CHAT_MESSAGE_CHARS),
+        })
+    return recent
+
+
+def _json_or_preview(value: Any, limit: int) -> Any:
+    payload = json.dumps(value, ensure_ascii=False, default=str)
+    if len(payload) <= limit:
+        return value
+    return {
+        "truncated": True,
+        "original_chars": len(payload),
+        "preview": payload[:limit],
+        "warning": "Only a preview is available. Do not infer missing values from truncated output.",
+    }
+
+
+def _tool_results_payload_for_finalizer(tool_results: list[dict[str, Any]]) -> str:
+    visible_results = tool_results[-TOOL_FINALIZER_MAX_TOOL_CALLS:]
+    first_index = max(len(tool_results) - len(visible_results) + 1, 1)
+    payload: dict[str, Any] = {
+        "tool_call_count": len(tool_results),
+        "included_tool_calls": len(visible_results),
+        "tool_results": [],
+    }
+    dropped = len(tool_results) - len(visible_results)
+    if dropped:
+        payload["dropped_earlier_tool_calls"] = dropped
+        payload["warning"] = "Earlier tool calls were omitted from this finalization payload."
+
+    for offset, tool_result in enumerate(visible_results):
+        payload["tool_results"].append({
+            "call_index": first_index + offset,
+            "tool_name": tool_result.get("tool_name"),
+            "arguments": _json_or_preview(tool_result.get("arguments") or {}, 2000),
+            "result": _json_or_preview(tool_result.get("result"), TOOL_FINALIZER_RESULT_CHARS),
+        })
+
+    text = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(text) <= TOOL_FINALIZER_PAYLOAD_CHARS:
+        return text
+    return (
+        text[:TOOL_FINALIZER_PAYLOAD_CHARS]
+        + f"\n...[finalizer payload truncated from {len(text)} chars; answer only from visible evidence]..."
+    )
+
+
+def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    conversation = json.dumps(_recent_chat_messages_for_finalizer(messages), ensure_ascii=False, default=str)
+    tool_payload = _tool_results_payload_for_finalizer(tool_results)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are finalizing a user-visible answer after connected-system tools have already run. "
+                "Do not call tools. Use only the conversation excerpt and tool results provided. "
+                "If the evidence is enough, answer directly and concisely. "
+                "If the evidence is partial, truncated, or blocked by tool errors, say exactly what is known "
+                "and what is still missing. Do not invent data."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Conversation excerpt:\n"
+                f"{conversation}\n\n"
+                "Tool results:\n"
+                f"{tool_payload}\n\n"
+                "Write the final answer for the user now."
+            ),
+        },
+    ]
 
 
 def _report_error_message(tool_result: dict[str, Any], result: dict[str, Any]) -> str:
@@ -1304,12 +1413,14 @@ async def _run_tool_loop(
                 "content": _tool_message_content(compact_result),
             })
 
+        followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
+        followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
         result, client = await _call_model(
             state.used_model,
             state.used_provider,
-            messages,
+            followup_messages,
             temperature,
-            max_tokens,
+            followup_max_tokens,
             tool_definitions,
             trace_svc=trace_svc,
             attempt_reason="tool_loop",
@@ -1319,11 +1430,82 @@ async def _run_tool_loop(
         state.client = client
         state.stats.add_result(state.result)
         state = await _try_rate_limit_fallbacks(
-            db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
+            db, route, primary_model, state, followup_messages, temperature, followup_max_tokens, tool_definitions,
             reason="tool_loop_quota_exceeded",
             trace_svc=trace_svc,
         )
     return tool_results
+
+
+def _should_finalize_blank_tool_response(state: ModelCallState, tool_results: list[dict[str, Any]]) -> bool:
+    if not tool_results:
+        return False
+    if state.result.get("error") or state.result.get("tool_calls"):
+        return False
+    return _is_blank_model_content(state.result)
+
+
+async def _finalize_blank_tool_response(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    route: AIRoute,
+    primary_model: AIModel,
+    state: ModelCallState,
+    original_messages: list,
+    tool_results: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    trace_svc: Any = None,
+) -> ModelCallState:
+    if not _should_finalize_blank_tool_response(state, tool_results):
+        return state
+
+    finalizer_messages = _build_tool_finalizer_messages(original_messages, tool_results)
+    finalizer_max_tokens = max(max_tokens, TOOL_FINALIZER_MAX_TOKENS)
+    logger.warning(
+        "Retrying blank post-tool model response with finalizer | user_id=%s finish_reason=%s tool_calls=%d max_tokens=%d",
+        user_id,
+        state.result.get("finish_reason", ""),
+        len(tool_results),
+        finalizer_max_tokens,
+    )
+
+    result, client = await _call_model(
+        state.used_model,
+        state.used_provider,
+        finalizer_messages,
+        min(temperature, 0.2),
+        finalizer_max_tokens,
+        [],
+        trace_svc=trace_svc,
+        attempt_reason="tool_finalizer",
+        client=state.client,
+    )
+    state.result = result
+    state.client = client
+    state.stats.add_result(state.result)
+    state = await _try_rate_limit_fallbacks(
+        db,
+        route,
+        primary_model,
+        state,
+        finalizer_messages,
+        min(temperature, 0.2),
+        finalizer_max_tokens,
+        [],
+        reason="tool_finalizer_quota_exceeded",
+        trace_svc=trace_svc,
+    )
+
+    if _is_blank_model_content(state.result):
+        logger.warning(
+            "Tool finalizer returned blank content | finish_reason=%s tool_calls=%d",
+            state.result.get("finish_reason", ""),
+            len(tool_results),
+        )
+    else:
+        logger.info("Recovered blank post-tool model response with finalizer | tool_calls=%d", len(tool_results))
+    return state
 
 
 async def _log_usage(
@@ -1460,8 +1642,7 @@ async def _apply_blank_content_fallback(
     tool_results: list[dict[str, Any]],
     trace_svc: Any = None,
 ) -> dict[str, Any]:
-    content = response.get("content") or ""
-    if content.strip():
+    if not _is_blank_model_content(response):
         return response
 
     if tool_results:
@@ -1559,6 +1740,18 @@ async def execute_chat(
         db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,
     ))
+    state = await _finalize_blank_tool_response(
+        db,
+        user_id,
+        route,
+        model_obj,
+        state,
+        messages,
+        tool_results,
+        temperature,
+        max_tokens,
+        trace_svc=trace_svc,
+    )
 
     await _log_usage(
         db,
