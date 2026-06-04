@@ -1215,6 +1215,40 @@ class TestToolExecution:
         assert compacted["records"]["items"][0]["datas"]["omitted"] is True
         assert "truncated" in compacted["records"]["items"][0]["body"]
 
+    def test_tool_result_compaction_keeps_practical_cli_stdout_complete(self):
+        from app.services.model_router import _compact_tool_result_for_model
+
+        resource_rows = "\n".join(
+            f"resource-{i}\trg-ai-platform-prod-san-001\tMicrosoft.App/containerApps"
+            for i in range(80)
+        )
+        compacted = _compact_tool_result_for_model({
+            "stdout": resource_rows,
+            "stderr": "",
+            "stdout_chars": len(resource_rows),
+            "output_truncated": False,
+            "status": "success",
+        })
+
+        assert compacted["stdout"] == resource_rows
+        assert "resource-79" in compacted["stdout"]
+
+    def test_tool_result_compaction_marks_huge_stdout_incomplete(self):
+        from app.services.model_router import _compact_tool_result_for_model
+
+        huge_stdout = "resource-name\n" * 1000
+        compacted = _compact_tool_result_for_model({
+            "stdout": huge_stdout,
+            "stderr": "",
+            "stdout_chars": len(huge_stdout),
+            "output_truncated": False,
+            "status": "success",
+        })
+
+        assert compacted["stdout"]["truncated"] is True
+        assert compacted["stdout"]["chars"] == len(huge_stdout)
+        assert "Do not infer missing rows" in compacted["stdout"]["warning"]
+
     @pytest.mark.asyncio
     async def test_rate_limit_fallback_helper_switches_model(self):
         from app.services.model_router import ModelCallStats, ModelCallState, _try_rate_limit_fallbacks

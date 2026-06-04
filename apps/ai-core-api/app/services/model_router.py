@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure a model in Settings \u2192 AI Configuration."
 RATE_LIMIT_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded"}
 MAX_TOOL_RESULT_STRING_CHARS = 600
+MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 12000
@@ -64,6 +65,9 @@ CANONICAL_SYSTEM_PROMPT = (
     "Use the provided current date and time for relative dates such as today, "
     "this month, and this year. Never ask the user to confirm today's date "
     "when that context is available. "
+    "If a tool result says it was truncated or incomplete, never infer missing "
+    "records from naming patterns; run a narrower tool query or state that the "
+    "output is incomplete. "
     "Keep responses practical, business-focused, and clear."
 )
 
@@ -453,6 +457,20 @@ def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -
     return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
 
 
+def _compact_stdio_text(value: str) -> str | dict[str, Any]:
+    if len(value) <= MAX_TOOL_STDIO_STRING_CHARS:
+        return value
+    return {
+        "truncated": True,
+        "chars": len(value),
+        "preview": value[:MAX_TOOL_STDIO_STRING_CHARS],
+        "warning": (
+            "Output is incomplete. Do not infer missing rows or values from this preview; "
+            "run a narrower command or explain that the tool output was truncated."
+        ),
+    }
+
+
 def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
     """Return a model-safe summary of connector output.
 
@@ -473,6 +491,8 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
         return {"omitted": True}
 
     if isinstance(value, str):
+        if key_lower in ("stdout", "stderr"):
+            return _compact_stdio_text(value)
         if key_lower in LARGE_TEXT_TOOL_KEYS:
             return _truncate_tool_text(value)
         return _truncate_tool_text(value)
