@@ -1,8 +1,12 @@
+import asyncio
+import json
 import uuid
 import logging
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
@@ -417,11 +421,12 @@ async def _run_model_router(
     content: str,
     messages: list[dict[str, str]],
     request_id: str,
+    activity_event_sink=None,
 ):
     from app.services.trace_service import TraceService
     from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
 
-    trace_svc = TraceService(db, request_id=request_id)
+    trace_svc = TraceService(db, request_id=request_id, activity_event_sink=activity_event_sink)
     trace_svc.begin("chat_message", f"chat: {content[:60]}", user_id=user_id, chat_session_id=session_id, message_id=user_msg.id)
     try:
         model_span = trace_svc.start_span("model_request", "Model request")
@@ -549,6 +554,7 @@ def _assistant_metadata(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
+    activity_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "request_id": request_id,
@@ -556,6 +562,8 @@ def _assistant_metadata(
     }
     if router_result.get("context"):
         metadata["context"] = router_result["context"]
+    if activity_events:
+        metadata["activity_events"] = activity_events
     return metadata
 
 
@@ -565,6 +573,7 @@ def _build_assistant_message(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
+    activity_events: list[dict[str, Any]] | None = None,
 ) -> AIChatMessage:
     return _new_chat_message(
         session_id,
@@ -575,7 +584,7 @@ def _build_assistant_message(
         model_name=router_result.get("model_name", "unknown"),
         token_usage_json=_token_usage(router_result),
         tool_call_json=router_result.get("tool_calls"),
-        metadata_json=_assistant_metadata(router_result, request_id, trace_id),
+        metadata_json=_assistant_metadata(router_result, request_id, trace_id, activity_events),
     )
 
 
@@ -681,23 +690,21 @@ async def _enqueue_or_extract_memories(
         logger.warning("Inline memory extraction failed: %s", exc)
 
 
-@router.post("/sessions/{session_id}/messages", response_model=ChatMessageResponse)
-async def post_chat_message(
+async def _process_chat_turn(
+    db: AsyncSession,
     session_id: UUID,
     req: ChatMessageCreate,
-    request: Request,
-    response: Response,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    """Posts a message to the chat session and executes the platform business assistant flow.
+    request_id: str,
+    user_id: UUID,
+    activity_event_sink=None,
+) -> AIChatMessage:
+    activity_events: list[dict[str, Any]] = []
 
-    Returns a natural language response with technical logs safely hidden inside metadata_json.
-    On failure, returns a structured JSON error response and persists a failed assistant marker for audit/debugging.
-    """
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    response.headers["X-Request-ID"] = request_id
-    user_id = auth["user_id"]
+    def collect_activity(event: dict[str, Any]) -> None:
+        activity_events.append(event)
+        if activity_event_sink:
+            activity_event_sink(event)
+
     session = await _get_owned_session(db, session_id, user_id)
     user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
     await _apply_natural_language_feedback(db, session_id, user_id, req.content)
@@ -706,7 +713,16 @@ async def post_chat_message(
 
     messages = await _conversation_messages(db, session_id, user_msg, req.content)
     await _commit_user_turn_start(db, session)
-    router_result, trace_svc = await _run_model_router(db, session_id, user_id, user_msg, req.content, messages, request_id)
+    router_result, trace_svc = await _run_model_router(
+        db,
+        session_id,
+        user_id,
+        user_msg,
+        req.content,
+        messages,
+        request_id,
+        activity_event_sink=collect_activity,
+    )
     try:
         _raise_on_blank_response(router_result, request_id, user_id, session_id)
     except HTTPException as exc:
@@ -724,9 +740,98 @@ async def post_chat_message(
     context_data = router_result.get("context")
 
     assistant_msg = _build_assistant_message(
-        session_id, user_id, router_result, request_id, trace_svc.trace_id,
+        session_id,
+        user_id,
+        router_result,
+        request_id,
+        trace_svc.trace_id,
+        activity_events,
     )
     await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)
     await trace_svc.commit(status="success")
     return assistant_msg
+
+
+def _sse(event_type: str, payload: Any) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(jsonable_encoder(payload), default=str)}\n\n"
+
+
+def _chat_message_payload(message: AIChatMessage) -> dict[str, Any]:
+    return ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
+
+
+@router.post("/sessions/{session_id}/messages", response_model=ChatMessageResponse)
+async def post_chat_message(
+    session_id: UUID,
+    req: ChatMessageCreate,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Posts a message to the chat session and executes the platform business assistant flow.
+
+    Returns a natural language response with technical logs safely hidden inside metadata_json.
+    On failure, returns a structured JSON error response and persists a failed assistant marker for audit/debugging.
+    """
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    response.headers["X-Request-ID"] = request_id
+    user_id = auth["user_id"]
+    return await _process_chat_turn(db, session_id, req, request_id, user_id)
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def stream_chat_message(
+    session_id: UUID,
+    req: ChatMessageCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    """Streams user-safe agent activity while the chat turn runs."""
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    user_id = auth["user_id"]
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    def collect_activity(event: dict[str, Any]) -> None:
+        queue.put_nowait({"type": "activity", "payload": event})
+
+    async def run_turn() -> None:
+        try:
+            assistant_msg = await _process_chat_turn(db, session_id, req, request_id, user_id, collect_activity)
+            await queue.put({"type": "message", "payload": _chat_message_payload(assistant_msg)})
+        except HTTPException as exc:
+            await queue.put({"type": "error", "payload": exc.detail})
+        except Exception as exc:
+            logger.exception("Streaming chat turn failed | request_id=%s", request_id)
+            await queue.put({
+                "type": "error",
+                "payload": {
+                    "request_id": request_id,
+                    "error_type": "server_error",
+                    "error_message": "Something went wrong while generating the response. Please try again.",
+                    "technical_detail": str(exc),
+                },
+            })
+        finally:
+            await queue.put({"type": "done", "payload": {"request_id": request_id}})
+
+    async def event_stream():
+        task = asyncio.create_task(run_turn())
+        yield _sse("started", {"request_id": request_id})
+        try:
+            while True:
+                item = await queue.get()
+                yield _sse(item["type"], item["payload"])
+                if item["type"] == "done":
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"X-Request-ID": request_id, "Cache-Control": "no-cache"},
+    )

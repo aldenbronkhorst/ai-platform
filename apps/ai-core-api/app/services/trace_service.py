@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITrace, AITraceSpan
@@ -93,16 +93,105 @@ def estimate_prompt_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _activity_input_summary(span_type: str, data: dict[str, Any]) -> dict[str, Any]:
+    if span_type == "provider_call":
+        request = data.get("request") if isinstance(data.get("request"), dict) else {}
+        model = data.get("model") if isinstance(data.get("model"), dict) else {}
+        return {
+            "attempt_reason": data.get("attempt_reason"),
+            "provider": data.get("provider"),
+            "provider_type": data.get("provider_type"),
+            "model": {
+                "display_name": model.get("display_name"),
+                "model_name": model.get("model_name"),
+                "supports_tools": model.get("supports_tools"),
+                "context_window": model.get("context_window"),
+            },
+            "message_count": data.get("message_count"),
+            "tool_count": data.get("tool_count"),
+            "request": {
+                "temperature": request.get("temperature"),
+                "max_tokens": request.get("max_tokens"),
+            },
+        }
+    if span_type == "tool_call":
+        args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+        return {
+            "tool_name": data.get("tool_name"),
+            "arguments": {
+                key: value
+                for key, value in args.items()
+                if key in {"command", "query", "model", "operation", "resource", "timeout"}
+            } or {"argument_keys": sorted(args.keys())[:8]},
+        }
+    if span_type == "context_build":
+        return {
+            "task_type": data.get("task_type"),
+            "request_id": data.get("request_id"),
+            "message_count": data.get("message_count"),
+        }
+    return summarize_payload(data)
+
+
+def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, Any]:
+    if span_type == "tool_call":
+        result = data.get("result")
+        if isinstance(result, dict):
+            return {
+                "result": {
+                    "status": result.get("status"),
+                    "error": bool(result.get("error")),
+                    "error_type": result.get("error_type"),
+                    "message": result.get("message") or result.get("error"),
+                    "count": result.get("count") if isinstance(result.get("count"), int) else None,
+                    "keys": sorted(result.keys())[:10],
+                }
+            }
+        if isinstance(result, list):
+            return {"result": {"count": len(result), "type": "list"}}
+        return {"result": {"type": type(result).__name__}}
+    if span_type in {"provider_call", "context_build", "model_request"}:
+        return summarize_payload(data)
+    return summarize_payload(data)
+
+
+def activity_safe_event(event: dict[str, Any]) -> dict[str, Any]:
+    span_type = str(event.get("span_type") or "")
+    safe = {key: value for key, value in event.items() if key not in {"input_summary", "output_summary"}}
+    input_summary = event.get("input_summary")
+    output_summary = event.get("output_summary")
+    if isinstance(input_summary, dict):
+        safe["input_summary"] = _activity_input_summary(span_type, input_summary)
+    if isinstance(output_summary, dict):
+        safe["output_summary"] = _activity_output_summary(span_type, output_summary)
+    return safe
+
+
 class TraceService:
     """Manages trace creation, span tracking, and persistence."""
 
-    def __init__(self, db: AsyncSession, trace_id: Optional[str] = None, request_id: Optional[str] = None):
+    def __init__(
+        self,
+        db: AsyncSession,
+        trace_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        activity_event_sink: Optional[Callable[[dict[str, Any]], None]] = None,
+    ):
         self.db = db
         self.trace_id = trace_id or make_trace_id()
         self.request_id = request_id or make_request_id()
         self._trace: Optional[AITrace] = None
         self._spans: dict[str, AITraceSpan] = {}
         self._span_stack: list[str] = []
+        self._activity_event_sink = activity_event_sink
+
+    def _emit_activity(self, event: dict[str, Any]) -> None:
+        if not self._activity_event_sink:
+            return
+        try:
+            self._activity_event_sink(redact_value("activity", activity_safe_event(event)))
+        except Exception as exc:
+            logger.warning("Failed to emit trace activity event: %s", exc)
 
     def begin(self, operation_type: str, operation_name: str = "", user_id: Any = None,
               chat_session_id: Any = None, message_id: Any = None, connector: str = None,
@@ -167,6 +256,17 @@ class TraceService:
             span.input_summary_json = redact_value("input", input_summary)
         self._spans[span_id] = span
         self._span_stack.append(span_id)
+        self._emit_activity({
+            "event": "span_started",
+            "span_id": span_id,
+            "parent_span_id": parent_id,
+            "span_type": span_type,
+            "span_name": span_name,
+            "status": "running",
+            "started_at": now.isoformat(),
+            "input_summary": input_summary or {},
+            "metadata": metadata or {},
+        })
         return span_id
 
     def end_span(self, span_id: str = None, status: str = "success", output_summary: dict = None,
@@ -190,6 +290,21 @@ class TraceService:
         span.error_message = error_message
         if output_summary:
             span.output_summary_json = redact_value("output", output_summary)
+        self._emit_activity({
+            "event": "span_finished",
+            "span_id": span_id,
+            "parent_span_id": span.parent_span_id,
+            "span_type": span.span_type,
+            "span_name": span.span_name,
+            "status": status,
+            "started_at": span.started_at.isoformat() if span.started_at else None,
+            "ended_at": now.isoformat(),
+            "duration_ms": span.duration_ms,
+            "output_summary": output_summary or {},
+            "error_type": error_type,
+            "error_message": error_message,
+            "metadata": span.metadata_json or {},
+        })
 
     def span_error(self, span_id: str, error_type: str, error_message: str):
         self.end_span(span_id, status="failed", error_type=error_type, error_message=error_message)

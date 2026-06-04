@@ -33,7 +33,7 @@ export function LoginPage({
 }: LoginPageProps) {
   if (inProgress !== "none") {
     return (
-      <div className="flex h-screen bg-canvas text-default items-center justify-center relative">
+      <div className="flex h-[100dvh] bg-canvas text-default items-center justify-center relative overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,var(--color-accent-soft),transparent_50%)]" />
         <div className="relative z-10 text-center space-y-4">
           <RefreshCw className="w-10 h-10 text-muted animate-spin mx-auto" />
@@ -46,7 +46,7 @@ export function LoginPage({
   }
 
   return (
-    <div className="flex h-screen bg-canvas text-default antialiased overflow-hidden items-center justify-center relative px-4">
+    <div className="flex h-[100dvh] bg-canvas text-default antialiased overflow-hidden items-center justify-center relative px-4">
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-[var(--color-accent-soft)] rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-[var(--color-accent-soft)] rounded-full blur-[120px] pointer-events-none" />
 

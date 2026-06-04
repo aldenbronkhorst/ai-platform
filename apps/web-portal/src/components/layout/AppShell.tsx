@@ -41,8 +41,8 @@ export function AppShell({
   hasRole,
 }: AppShellProps) {
   return (
-    <div className="flex h-[100dvh] bg-canvas text-default antialiased overflow-hidden">
-      <div className="flex w-full gap-3 p-3">
+    <div className="fixed inset-0 flex h-[100dvh] w-screen bg-canvas text-default antialiased overflow-hidden overscroll-none">
+      <div className="flex h-full min-h-0 w-full gap-3 overflow-hidden p-3">
         <SidebarPanel
           activeTab={activeTab}
           chatSessions={chatSessions}
@@ -61,13 +61,13 @@ export function AppShell({
           hasRole={hasRole}
         />
 
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <main className="flex-1 h-full min-h-0 flex flex-col overflow-hidden min-w-0">
           <MainHeader
             activeTab={activeTab}
             activeSession={activeSession}
             isSidebarCollapsed={isSidebarCollapsed}
           />
-          <section className={`flex-1 overflow-y-auto ${activeTab === "chat" ? "" : "p-4 sm:p-6"}`}>
+          <section className={`flex-1 min-h-0 overscroll-contain ${activeTab === "chat" ? "overflow-hidden" : "overflow-y-auto p-4 sm:p-6"}`}>
             {children}
           </section>
         </main>

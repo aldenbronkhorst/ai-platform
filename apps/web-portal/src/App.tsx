@@ -91,6 +91,7 @@ function pendingProgressMetadata(requestId: string, content: string, artifactCou
       has_artifacts: artifactCount > 0,
       started_at: startedAt,
     },
+    activity_events: [],
   };
 }
 
@@ -122,18 +123,31 @@ function detailString(value: unknown, fallback = "") {
   }
 }
 
+function chatFailureFromDetail(detail: unknown, requestId: string, httpStatus: number): ChatFailurePayload {
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>;
+    return {
+      requestId: detailString(record.request_id, requestId),
+      errorType: detailString(record.error_type, "server_error"),
+      errorMessage: detailString(record.error_message, "Something went wrong while generating the response."),
+      technicalDetail: detailString(record.technical_detail, detailString(detail)),
+      httpStatus,
+    };
+  }
+  return {
+    requestId,
+    errorType: "server_error",
+    errorMessage: "Something went wrong while generating the response.",
+    technicalDetail: detailString(detail),
+    httpStatus,
+  };
+}
+
 async function chatFailureFromResponse(res: Response, requestId: string): Promise<ChatFailurePayload> {
   const body = await res.json().catch(() => null);
   const respRequestId = res.headers.get("X-Request-ID") || requestId;
   if (body && body.detail) {
-    const detail = body.detail;
-    return {
-      requestId: respRequestId,
-      errorType: typeof detail.error_type === "string" ? detail.error_type : "server_error",
-      errorMessage: detailString(detail.error_message, `Server returned ${res.status}`),
-      technicalDetail: detailString(detail.technical_detail),
-      httpStatus: res.status,
-    };
+    return chatFailureFromDetail(body.detail, respRequestId, res.status);
   }
   return {
     requestId: respRequestId,
@@ -142,6 +156,36 @@ async function chatFailureFromResponse(res: Response, requestId: string): Promis
     technicalDetail: detailString(body),
     httpStatus: res.status,
   };
+}
+
+function appendActivityEvent(message: ChatMessage, event: unknown): ChatMessage {
+  const metadata = isRecord(message.metadata_json) ? { ...message.metadata_json } : {};
+  const current = Array.isArray(metadata.activity_events) ? metadata.activity_events : [];
+  metadata.activity_events = [...current, event];
+  return { ...message, metadata_json: metadata };
+}
+
+function parseSseChunk(buffer: string) {
+  const events: Array<{ event: string; data: unknown }> = [];
+  const blocks = buffer.split(/\n\n/);
+  const rest = blocks.pop() || "";
+  for (const block of blocks) {
+    let event = "message";
+    const dataLines: string[] = [];
+    for (const line of block.split(/\n/)) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+    }
+    const rawData = dataLines.join("\n");
+    let data: unknown;
+    try {
+      data = rawData ? JSON.parse(rawData) : null;
+    } catch {
+      data = rawData;
+    }
+    events.push({ event, data });
+  }
+  return { events, rest };
 }
 
 function chatFailureFromNetwork(err: unknown, requestId: string): ChatFailurePayload {
@@ -495,7 +539,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     markSessionSending(session.id);
 
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${session.id}/messages`, {
+      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${session.id}/messages/stream`, {
         method: "POST",
         headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({
@@ -506,11 +550,63 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       });
 
       if (res.ok) {
-        const botMsg = normalizeChatMessage(await res.json() as ChatMessage);
-        botMsg.status = "completed";
-        clearLocalRequestMessages(session.id, requestId);
-        if (activeSessionIdRef.current === session.id) {
-          setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? botMsg : m));
+        if (!res.body) {
+          throw new Error("Streaming response did not include a body");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let finalMessage: ChatMessage | null = null;
+        let streamFailure: ChatFailurePayload | null = null;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseChunk(buffer);
+          buffer = parsed.rest;
+
+          for (const item of parsed.events) {
+            if (item.event === "activity") {
+              updateLocalMessage(session.id, pendingMessageId, appendActivityEvent(
+                (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId) || {
+                  id: pendingMessageId,
+                  chat_session_id: session.id,
+                  role: "assistant",
+                  content: "",
+                  created_at: new Date().toISOString(),
+                  status: "pending",
+                },
+                item.data,
+              ));
+              if (activeSessionIdRef.current === session.id) {
+                setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? appendActivityEvent(m, item.data) : m));
+              }
+            } else if (item.event === "message") {
+              finalMessage = normalizeChatMessage(item.data as ChatMessage);
+              finalMessage.status = "completed";
+            } else if (item.event === "error") {
+              streamFailure = chatFailureFromDetail(item.data, requestId, 502);
+            }
+          }
+        }
+
+        if (streamFailure) {
+          markAssistantFailed(session.id, pendingMessageId, streamFailure);
+        } else if (finalMessage) {
+          clearLocalRequestMessages(session.id, requestId);
+          if (activeSessionIdRef.current === session.id) {
+            setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? finalMessage : m));
+          }
+        } else {
+          markAssistantFailed(session.id, pendingMessageId, {
+            requestId,
+            errorType: "stream_error",
+            errorMessage: "The AI service finished without returning a response.",
+            technicalDetail: "Chat stream ended before a final message event was received.",
+            httpStatus: 0,
+          });
         }
       } else {
         markAssistantFailed(session.id, pendingMessageId, await chatFailureFromResponse(res, requestId));

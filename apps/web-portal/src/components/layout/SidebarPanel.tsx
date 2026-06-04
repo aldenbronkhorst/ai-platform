@@ -104,7 +104,7 @@ export function SidebarPanel({
   }
 
   return (
-    <aside className="fixed inset-0 z-50 h-[100dvh] w-full flex flex-col justify-between select-none shrink-0 animate-fade-in bg-sidebar border-0 rounded-none overflow-hidden md:relative md:inset-auto md:z-auto md:h-auto md:w-72 md:border md:border-default md:rounded-3xl">
+    <aside className="fixed inset-0 z-50 h-[100dvh] w-full flex flex-col justify-between select-none shrink-0 animate-fade-in bg-sidebar border-0 rounded-none overflow-hidden overscroll-none md:relative md:inset-auto md:z-auto md:h-full md:w-72 md:border md:border-default md:rounded-3xl">
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="h-16 px-4 border-b border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
@@ -149,7 +149,7 @@ export function SidebarPanel({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3 space-y-0.5">
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-0.5">
           <span className="px-3 py-1 block text-[10px] font-bold text-muted uppercase tracking-widest">
             Conversations
           </span>
