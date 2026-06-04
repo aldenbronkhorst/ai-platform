@@ -589,15 +589,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     : null;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 animate-fade-in">
-      <GlassPanel className="p-8 rounded-3xl flex items-center justify-between">
+    <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
+      <GlassPanel className="p-5 sm:p-8 rounded-2xl sm:rounded-3xl flex items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-default mb-2">Connected Accounts</h2>
           <p className="text-sm text-muted max-w-2xl">
             Connect third-party integrations. Credentials are stored securely in Azure Key Vault.
           </p>
         </div>
-        <BookOpen className="w-12 h-12 text-soft shrink-0" />
+        <BookOpen className="hidden sm:block w-12 h-12 text-soft shrink-0" />
       </GlassPanel>
 
       {connectorMeta === null && !connectorStatusError ? (
@@ -653,7 +653,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       {activeConnector && (
         <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm z-50 flex justify-end animate-fade-in">
           <div className="w-full max-w-lg bg-surface border-l border-default overflow-y-auto">
-            <div className="p-6 border-b border-default flex items-center justify-between">
+            <div className="p-4 sm:p-6 border-b border-default flex items-center justify-between">
               <h2 className="font-bold text-lg text-default">
                 {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
               </h2>
@@ -662,7 +662,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-6">
+            <div className="p-4 sm:p-6">
               {connectorDetail(activeConnector)}
 
               {/* Test/Error results */}

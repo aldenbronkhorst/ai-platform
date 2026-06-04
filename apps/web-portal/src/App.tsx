@@ -70,6 +70,10 @@ const CONNECTOR_PROGRESS_HINTS = [
   { label: "Odoo", keywords: ["odoo", "invoice", "credit note", "customer", "sale order", "profit and loss", "turnover"] },
 ];
 
+function mobileViewportMatches() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+}
+
 function connectorProgressHints(content: string) {
   const normalized = content.toLowerCase();
   return CONNECTOR_PROGRESS_HINTS
@@ -235,7 +239,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   } = usePortalAuth();
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(mobileViewportMatches);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(mobileViewportMatches);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
@@ -258,6 +263,22 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   }, []);
   const { voiceState, toggleVoice: handleToggleVoice } = useSpeechRecognition(handleTranscript);
   const activeUserEmail = activeUser?.email || "";
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const syncViewport = () => {
+      const isMobile = query.matches;
+      setIsMobileViewport(isMobile);
+      if (isMobile) {
+        setIsSidebarCollapsed(true);
+        setIsProfileMenuOpen(false);
+      }
+    };
+
+    syncViewport();
+    query.addEventListener("change", syncViewport);
+    return () => query.removeEventListener("change", syncViewport);
+  }, []);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -648,8 +669,15 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   const handleRemoveFile = (id: string) => setAttachedFiles(prev => prev.filter(f => f.id !== id));
 
+  const closeMobileSidebar = useCallback(() => {
+    if (!isMobileViewport) return;
+    setIsSidebarCollapsed(true);
+    setIsProfileMenuOpen(false);
+  }, [isMobileViewport]);
+
   const handleTabChange = (tab: ActiveTab) => {
     setActiveTab(tab);
+    closeMobileSidebar();
   };
 
   if (inProgress !== InteractionStatus.None) {
@@ -740,13 +768,20 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         isSidebarCollapsed={isSidebarCollapsed}
         isProfileMenuOpen={isProfileMenuOpen}
         onTabChange={handleTabChange}
-        onNewChat={() => createNewChat()}
+        onNewChat={() => {
+          closeMobileSidebar();
+          void createNewChat();
+        }}
         onSelectSession={(sess) => {
           setActiveSession(sess);
           setActiveTab("chat");
+          closeMobileSidebar();
         }}
         onDeleteSession={deleteChatSession}
-        onToggleCollapse={setIsSidebarCollapsed}
+        onToggleCollapse={(collapsed) => {
+          setIsSidebarCollapsed(collapsed);
+          if (collapsed) setIsProfileMenuOpen(false);
+        }}
         onToggleProfileMenu={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
         onSignOut={signOut}
         hasRole={hasRole}

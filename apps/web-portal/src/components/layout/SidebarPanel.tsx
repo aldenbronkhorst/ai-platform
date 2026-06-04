@@ -104,7 +104,7 @@ export function SidebarPanel({
   }
 
   return (
-    <aside className="w-72 flex flex-col justify-between select-none shrink-0 animate-fade-in bg-sidebar border border-default rounded-3xl overflow-hidden">
+    <aside className="fixed inset-0 z-50 h-[100dvh] w-full flex flex-col justify-between select-none shrink-0 animate-fade-in bg-sidebar border-0 rounded-none overflow-hidden md:relative md:inset-auto md:z-auto md:h-auto md:w-72 md:border md:border-default md:rounded-3xl">
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="h-16 px-4 border-b border-default flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
@@ -117,7 +117,8 @@ export function SidebarPanel({
             className="p-1.5 text-muted hover:text-default rounded-lg hover-bg-surface transition-all"
             title="Collapse Sidebar"
           >
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="hidden md:block w-4 h-4" />
+            <X className="md:hidden w-4 h-4" />
           </button>
         </div>
 

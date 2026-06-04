@@ -110,12 +110,12 @@ export function ChatView({
   const hasMessages = activeSession && chatMessages.length > 0;
 
   return (
-    <div className="h-full flex flex-col max-w-4xl mx-auto relative w-full">
+    <div className="h-full min-h-0 flex flex-col max-w-4xl mx-auto relative w-full">
       {hasMessages ? (
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className={`flex-1 overflow-y-auto px-2 py-4 flex flex-col-reverse gap-4 scrollbar-transient ${isScrollbarVisible ? "scrollbar-visible" : ""}`}
+          className={`flex-1 min-h-0 overflow-y-auto px-3 sm:px-2 py-3 sm:py-4 flex flex-col-reverse gap-4 scrollbar-transient ${isScrollbarVisible ? "scrollbar-visible" : ""}`}
         >
           <div ref={messagesEndRef} />
           {[...chatMessages].reverse().map((msg) => (
@@ -133,7 +133,7 @@ export function ChatView({
           ))}
         </div>
       ) : (
-        <div className="flex-1 flex flex-col overflow-y-auto">
+        <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
           <ChatEmptyState displayName={displayName} />
         </div>
       )}

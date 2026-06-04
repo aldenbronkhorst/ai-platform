@@ -52,12 +52,13 @@ export function ChatComposer({
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    const newHeight = Math.min(ta.scrollHeight, 160);
+    const maxHeight = window.innerWidth < 640 ? 112 : 160;
+    const newHeight = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${newHeight}px`;
   }, [chatInput]);
 
   return (
-    <div className="px-4 pb-4 select-none">
+    <div className="px-3 pb-3 sm:px-4 sm:pb-4 select-none">
       <div className="glass-composer">
         {attachedFiles.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1">
@@ -84,7 +85,7 @@ export function ChatComposer({
           </div>
         )}
 
-        <form ref={formRef} onSubmit={onSend} className="flex items-end gap-1 p-1.5">
+        <form ref={formRef} onSubmit={onSend} className="flex items-end gap-1 p-1 sm:p-1.5">
           <input
             type="file"
             ref={fileInputRef}
@@ -96,7 +97,7 @@ export function ChatComposer({
           <button
             type="button"
             onClick={handleTriggerUpload}
-            className="p-2 rounded-lg text-muted hover-text-default hover-bg-surface transition-all shrink-0 self-end"
+            className="h-9 w-9 flex items-center justify-center rounded-lg text-muted hover-text-default hover-bg-surface transition-all shrink-0 self-end"
             title="Attach files"
           >
             <Plus className="w-5 h-5" />
@@ -109,13 +110,13 @@ export function ChatComposer({
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={1}
-            className="flex-1 bg-transparent border-0 focus:outline-none focus:ring-0 text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-[160px] leading-relaxed"
+            className="flex-1 min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-snug sm:leading-relaxed"
           />
 
           <button
             type="button"
             onClick={onToggleVoice}
-            className={`p-2 rounded-lg transition-all shrink-0 self-end ${
+            className={`h-9 w-9 flex items-center justify-center rounded-lg transition-all shrink-0 self-end ${
               voiceState === "listening"
                 ? "bg-[var(--color-danger)]/15 text-[var(--color-danger)] animate-pulse"
                 : "text-muted hover-text-default hover-bg-surface"
@@ -132,7 +133,7 @@ export function ChatComposer({
           <button
             type="submit"
             disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
-            className="p-2 rounded-lg bg-raised hover-bg-surface text-default transition-all shrink-0 self-end border border-default"
+            className="h-9 w-9 flex items-center justify-center rounded-lg bg-raised hover-bg-surface text-default transition-all shrink-0 self-end border border-default disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <CornerDownLeft className="w-4 h-4" />
           </button>
