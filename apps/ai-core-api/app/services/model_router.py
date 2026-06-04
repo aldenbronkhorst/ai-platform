@@ -21,6 +21,7 @@ from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.schemas.schemas import ContextRequest
+from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +57,17 @@ CHAT_TITLE_SYSTEM_PROMPT = (
     "Return only the title, with no quotes, no markdown, no trailing punctuation, and no generic words like chat or conversation."
 )
 TEXT_TOOL_CALL_RE = re.compile(
-    r"<\|tool_call_begin\|>\s*(?P<name>.*?)\s*"
-    r"<\|tool_call_argument_begin\|>\s*(?P<arguments>.*?)\s*"
-    r"<\|tool_call_end\|>",
+    r"<\|?tool_call_begin\|?>\s*(?P<name>.*?)\s*"
+    r"<\|?tool_call_argument_begin\|?>\s*(?P<arguments>.*?)\s*"
+    r"<\|?tool_call_end\|?>",
     re.DOTALL,
 )
 TEXT_TOOL_CALL_SECTION_RE = re.compile(
-    r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
+    r"<\|?tool_calls_section_begin\|?>.*?<\|?tool_calls_section_end\|?>",
     re.DOTALL,
 )
+TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
+TEXT_TOOL_ARGUMENT_MARKER_RE = re.compile(r"<\|?tool_call_argument_begin\|?>", re.IGNORECASE)
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -110,6 +113,16 @@ FOLLOW_UP_CONTEXT_WORDS = {
     "they", "them", "her", "him", "full", "more", "all", "timeline",
 }
 FOLLOW_UP_GREETINGS = {"hi", "hello", "hey", "thanks", "thank you"}
+FOLLOW_UP_CORRECTION_WORDS = {
+    "actually", "correction", "meant", "mean", "instead", "rather", "sorry",
+    "previous", "earlier",
+}
+MONTH_WORDS = {
+    "jan", "january", "feb", "february", "mar", "march", "apr", "april",
+    "may", "jun", "june", "jul", "july", "aug", "august", "sep", "sept",
+    "september", "oct", "october", "nov", "november", "dec", "december",
+}
+DATE_LIKE_RE = re.compile(r"\b\d{1,4}([/-]\d{1,2}){1,2}\b|\b\d{1,2}(st|nd|rd|th)?\b", re.IGNORECASE)
 
 
 @dataclass
@@ -420,11 +433,23 @@ def _parse_tool_arguments(arguments_text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _textual_tool_call_allowed(canonical_name: str, tool_definitions: list[dict[str, Any]]) -> bool:
+    if canonical_name in CONSOLIDATED_TOOL_NAMES:
+        return True
+
+    exposed_tool_names = {
+        str(((definition.get("function") or {}).get("name")) or "")
+        for definition in tool_definitions
+        if isinstance(definition, dict)
+    }
+    return canonical_name in exposed_tool_names
+
+
 def _coerce_text_tool_calls(result: dict[str, Any], tool_definitions: list[dict[str, Any]]) -> dict[str, Any]:
-    if result.get("error") or result.get("tool_calls") or not tool_definitions:
+    if result.get("error") or result.get("tool_calls"):
         return result
     content = str(result.get("content") or "")
-    if "<|tool_call_begin|>" not in content or "<|tool_call_argument_begin|>" not in content:
+    if not TEXT_TOOL_MARKER_RE.search(content) or not TEXT_TOOL_ARGUMENT_MARKER_RE.search(content):
         return result
 
     calls: list[dict[str, Any]] = []
@@ -433,6 +458,8 @@ def _coerce_text_tool_calls(result: dict[str, Any], tool_definitions: list[dict[
         raw_arguments = match.group("arguments").strip()
         parsed_arguments = _parse_tool_arguments(raw_arguments)
         canonical_name, canonical_arguments = _canonical_tool_invocation(raw_name, parsed_arguments)
+        if not _textual_tool_call_allowed(canonical_name, tool_definitions):
+            continue
         calls.append({
             "id": f"text_call_{idx}",
             "type": "function",
@@ -1041,8 +1068,11 @@ def _tool_selection_message(messages: list) -> str:
         return latest
 
     tokens = set(re.findall(r"[a-z0-9_&+-]+", lower))
+    has_date_or_month = bool(tokens.intersection(MONTH_WORDS)) or bool(DATE_LIKE_RE.search(lower))
     is_follow_up = (
         len(tokens) <= 3
+        or (len(tokens) <= 8 and bool(tokens.intersection(FOLLOW_UP_CORRECTION_WORDS)))
+        or (len(tokens) <= 8 and has_date_or_month)
         or bool(tokens.intersection(FOLLOW_UP_CONTEXT_WORDS))
         or lower in {"?", "??"}
     )
@@ -1646,7 +1676,7 @@ async def _run_tool_loop(
         if state.result.get("error"):
             break
         tool_calls = state.result.get("tool_calls")
-        if not tool_calls or not tools:
+        if not tool_calls:
             break
 
         tool_calls = [_canonicalize_tool_call(call) for call in tool_calls]

@@ -2,6 +2,7 @@ import asyncio
 import json
 import uuid
 import logging
+import re
 from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
+TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 
 
 class ChatSessionCreate(BaseModel):
@@ -445,7 +447,7 @@ def _is_valid_history_message(message: AIChatMessage) -> bool:
     content = message.content or ""
     if not content.strip():
         return False
-    return "<|tool_call" not in content and "<|tool_calls_section" not in content
+    return not TEXT_TOOL_MARKER_RE.search(content)
 
 
 def _failed_assistant_message(session_id: UUID, user_id: UUID, error_type: str, error_message: str, request_id: str, trace_id: str) -> AIChatMessage:
@@ -580,7 +582,7 @@ def _blank_tool_error_details(tool_calls: list[dict[str, Any]]) -> list[dict[str
 
 def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, user_id: UUID, session_id: UUID) -> None:
     assistant_content = router_result.get("content", "")
-    if "<|tool_call" in str(assistant_content):
+    if TEXT_TOOL_MARKER_RE.search(str(assistant_content)):
         logger.warning(
             "Unprocessed textual tool call in assistant content | request_id=%s user_id=%s session_id=%s",
             request_id, user_id, session_id,
