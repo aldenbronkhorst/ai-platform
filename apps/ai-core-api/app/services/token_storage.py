@@ -108,6 +108,8 @@ async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
             "token_type": token.get("token_type", "unknown"),
             "expires_on": expires_on,
             "scope": token.get("scope", ""),
+            "username": token.get("username") or token.get("login") or token.get("provider_username"),
+            "login": token.get("login"),
         }
     return {
         "status": "connected",
@@ -115,4 +117,6 @@ async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
         "token_type": token.get("token_type", "unknown"),
         "expires_on": token.get("expires_on"),
         "scope": token.get("scope", ""),
+        "username": token.get("username") or token.get("login") or token.get("provider_username"),
+        "login": token.get("login"),
     }

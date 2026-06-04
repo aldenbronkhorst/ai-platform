@@ -89,13 +89,32 @@ async def github_oauth_callback(
         stored = await store_token("github", user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
+        diagnosis = await diagnose_github_connection(user_id)
+        if diagnosis.get("status") != "success":
+            await upsert_delegated_account(
+                db,
+                "github",
+                user_id,
+                token_data=token_payload,
+                status="error",
+                username=diagnosis.get("login"),
+                permission_summary=diagnosis.get("message", "GitHub CLI profile validation failed."),
+                commit=True,
+            )
+            return {
+                "status": "error",
+                "error": "github_cli_profile_failed",
+                "message": diagnosis.get("message", "GitHub CLI profile validation failed."),
+                "request_id": request_id,
+            }
         await upsert_delegated_account(
             db,
             "github",
             user_id,
             token_data=token_payload,
             status="connected",
-            permission_summary="GitHub OAuth authentication completed.",
+            username=diagnosis.get("login"),
+            permission_summary=diagnosis.get("message", "GitHub OAuth authentication completed."),
             commit=True,
         )
         return {"status": "connected", "request_id": request_id}

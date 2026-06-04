@@ -1143,12 +1143,11 @@ class TestProviderErrorHandling:
 
 
 class TestToolExecution:
-    def test_turnover_without_report_name_does_not_default_to_profit_and_loss(self):
-        from app.services.model_router import detect_odoo_report_intent
+    def test_core_router_has_no_deterministic_odoo_report_detector(self):
+        import app.services.model_router as model_router
 
-        intent = detect_odoo_report_intent("What is this month's turnover?")
-
-        assert intent is None
+        assert not hasattr(model_router, "detect_odoo_report_intent")
+        assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
     @pytest.mark.asyncio
     async def test_turnover_without_report_name_uses_model_path(self):

@@ -116,10 +116,11 @@ async def test_validate_azure_cli_profile_forces_msal_token_lookup(monkeypatch, 
         def to_dict(self):
             return {"stderr": "", "exit_code": 0, "error": None}
 
-    async def fake_run_command(command, timeout, env):
+    async def fake_run_command(command, timeout, env, allowed_binaries=None):
         called["command"] = command
         called["timeout"] = timeout
         called["env"] = env
+        called["allowed_binaries"] = allowed_binaries
         return Result()
 
     monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
@@ -129,3 +130,4 @@ async def test_validate_azure_cli_profile_forces_msal_token_lookup(monkeypatch, 
     assert result["ready"] is True
     assert "account get-access-token" in str(called["command"])
     assert "account show" not in str(called["command"])
+    assert called["allowed_binaries"] == azure_commands.AZURE_ALLOWED_BINARIES

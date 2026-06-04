@@ -54,7 +54,7 @@ def _delegated_account_view(
     token_state: dict[str, Any],
     status: str,
 ) -> AIConnectedAccount:
-    return AIConnectedAccount(
+    view = AIConnectedAccount(
         id=account.id if account else None,
         user_id=user_id,
         provider=provider,
@@ -77,6 +77,9 @@ def _delegated_account_view(
         last_verified_at=account.last_verified_at if account else None,
         disconnected_at=account.disconnected_at if account else None,
     )
+    view.token_status = token_state.get("status") or "unknown"
+    view.token_expires_on = token_state.get("expires_on")
+    return view
 
 
 async def upsert_delegated_account(

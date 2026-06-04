@@ -26,6 +26,22 @@ interface ConnectorDef {
 interface ConnectorMeta {
   connector_key?: string;
   status?: string;
+  auth_method?: string;
+  last_verified_at?: string | null;
+  state?: {
+    configured?: boolean;
+    account_status?: string;
+    token_status?: string;
+    diagnostics_status?: string;
+    cli_status?: string;
+    source?: string;
+  };
+  metadata?: {
+    provider_username?: string | null;
+    permission_summary?: string | null;
+    odoo_url?: string | null;
+    odoo_db?: string | null;
+  };
 }
 
 interface OdooStatus {
@@ -92,6 +108,14 @@ function formatStatusLabel(status: string) {
     .filter(Boolean)
     .map(part => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatOptionalStatus(status?: string | null) {
+  return status ? formatStatusLabel(status) : "—";
+}
+
+function formatDateTime(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : "—";
 }
 
 type StatusTone = "success" | "danger" | "warning" | "neutral";
@@ -243,7 +267,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts?include_token_state=true`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
         const meta: Record<string, ConnectorMeta> = {};
@@ -536,6 +560,17 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           <p className="text-sm text-muted">Connect with Microsoft device authentication.</p>
         </DetailCard>
 
+        <InfoGrid
+          rows={[
+            { label: "Account", value: formatOptionalStatus(connectorMeta?.azure?.state?.account_status || metaStatus) },
+            { label: "Token", value: formatOptionalStatus(connectorMeta?.azure?.state?.token_status) },
+            { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.azure?.state?.diagnostics_status) },
+            { label: "CLI", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
+            { label: "User", value: connectorMeta?.azure?.metadata?.provider_username || "—" },
+            { label: "Last Verified", value: formatDateTime(connectorMeta?.azure?.last_verified_at) },
+          ]}
+        />
+
         <ActionGroup>
           <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
             {azurePolling ? "Waiting for authentication..." : "Connect with Microsoft"}
@@ -566,6 +601,17 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <DetailCard>
           <p className="text-sm text-muted">Connect with GitHub OAuth.</p>
         </DetailCard>
+
+        <InfoGrid
+          rows={[
+            { label: "Account", value: formatOptionalStatus(connectorMeta?.github?.state?.account_status || metaStatus) },
+            { label: "Token", value: formatOptionalStatus(connectorMeta?.github?.state?.token_status) },
+            { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.github?.state?.diagnostics_status) },
+            { label: "CLI", value: formatOptionalStatus(connectorMeta?.github?.state?.cli_status) },
+            { label: "User", value: connectorMeta?.github?.metadata?.provider_username || "—" },
+            { label: "Last Verified", value: formatDateTime(connectorMeta?.github?.last_verified_at) },
+          ]}
+        />
 
         <ActionGroup>
           <GlassButton size="sm" onClick={handleGithubOAuth}>

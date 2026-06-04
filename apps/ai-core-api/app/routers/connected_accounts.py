@@ -8,7 +8,7 @@ import re
 import socket
 from datetime import datetime
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
@@ -284,6 +284,46 @@ def _account_status(account: Optional[AIConnectedAccount]) -> str:
 
 def _account_last_verified(account: Optional[AIConnectedAccount]) -> Optional[str]:
     return account.last_verified_at.isoformat() if account and account.last_verified_at else None
+
+
+def _is_configured(account: Optional[AIConnectedAccount]) -> bool:
+    return _account_status(account) not in {"not_connected", "disconnected"}
+
+
+def _diagnostics_status(account: Optional[AIConnectedAccount]) -> str:
+    status_value = _account_status(account)
+    if status_value in {"error", "expired"}:
+        return "failed"
+    if status_value in {"connected", "active"} and account and account.last_verified_at:
+        return "passed"
+    if status_value == "not_connected":
+        return "not_applicable"
+    return "not_checked"
+
+
+def _cli_status(account: Optional[AIConnectedAccount], provider: str) -> str:
+    if provider not in {"azure", "github"}:
+        return "not_applicable"
+    status_value = _account_status(account)
+    if status_value in {"error", "expired"}:
+        return "failed"
+    if status_value in {"connected", "active"} and account and account.last_verified_at:
+        return "ready"
+    if status_value == "not_connected":
+        return "not_applicable"
+    return "not_checked"
+
+
+def _connector_state(account: Optional[AIConnectedAccount], provider: str, include_token_state: bool) -> dict:
+    token_status = getattr(account, "token_status", None)
+    return {
+        "configured": _is_configured(account),
+        "account_status": _account_status(account),
+        "token_status": token_status or ("not_checked" if provider in {"azure", "github"} else "not_applicable"),
+        "diagnostics_status": _diagnostics_status(account),
+        "cli_status": _cli_status(account, provider),
+        "source": "token_store" if include_token_state and provider in {"azure", "github"} else "database",
+    }
 
 
 async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key: str) -> dict:
@@ -982,10 +1022,11 @@ async def connect_odoo(
 async def get_connected_accounts(
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
+    include_token_state: bool = Query(False),
 ):
     """Returns normalized connector metadata for all connectors for the authenticated user."""
     user_id = auth.get("user_id")
-    db_accounts = await effective_connected_accounts(db, user_id)
+    db_accounts = await effective_connected_accounts(db, user_id, include_token_state=include_token_state)
     odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
     azure = next((a for a in db_accounts if a.provider == "azure"), None)
     github = next((a for a in db_accounts if a.provider == "github"), None)
@@ -998,6 +1039,7 @@ async def get_connected_accounts(
             "auth_method": "api_key",
             "last_verified_at": _account_last_verified(odoo),
             "actions_available": ["connect", "test", "disconnect"] if _account_status(odoo) == "not_connected" else ["test", "disconnect"],
+            "state": _connector_state(odoo, "odoo", include_token_state),
             "metadata": {
                 "odoo_url": odoo.odoo_url if odoo else None,
                 "odoo_db": odoo.odoo_db if odoo else None,
@@ -1011,6 +1053,7 @@ async def get_connected_accounts(
             "auth_method": "delegated_microsoft",
             "last_verified_at": _account_last_verified(azure),
             "actions_available": ["connect", "test", "disconnect"],
+            "state": _connector_state(azure, "azure", include_token_state),
             "metadata": {
                 "provider_username": azure.provider_username if azure else None,
                 "permission_summary": azure.permission_summary if azure else None,
@@ -1023,6 +1066,7 @@ async def get_connected_accounts(
             "auth_method": "github_oauth",
             "last_verified_at": _account_last_verified(github),
             "actions_available": ["connect", "test", "disconnect"],
+            "state": _connector_state(github, "github", include_token_state),
             "metadata": {
                 "provider_username": github.provider_username if github else None,
                 "permission_summary": github.permission_summary if github else None,

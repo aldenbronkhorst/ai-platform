@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { VoiceState } from "../types";
 
 interface SpeechRecognitionResultLike {
+  resultIndex?: number;
   results: {
+    length: number;
     [index: number]: {
+      isFinal?: boolean;
       [index: number]: {
         transcript: string;
       };
@@ -46,6 +49,8 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     () => getSpeechRecognitionConstructor() ? "idle" : "unsupported",
   );
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const shouldListenRef = useRef(false);
+  const restartTimerRef = useRef<number | null>(null);
   const onTranscriptRef = useRef(onTranscript);
 
   useEffect(() => {
@@ -57,23 +62,58 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = false;
     recognition.lang = "en-US";
     recognition.onstart = () => setVoiceState("listening");
     recognition.onresult = (event) => {
-      onTranscriptRef.current(event.results[0][0].transcript);
-      setVoiceState("processing");
+      const finalSegments: string[] = [];
+      const startIndex = event.resultIndex ?? 0;
+      for (let i = startIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        if (result.isFinal === false) continue;
+        const transcript = result[0]?.transcript?.trim();
+        if (transcript) finalSegments.push(transcript);
+      }
+      if (finalSegments.length > 0) {
+        onTranscriptRef.current(finalSegments.join(" "));
+      }
     };
     recognition.onerror = (event) => {
-      setVoiceState(event.error === "not-allowed" ? "denied" : "idle");
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        shouldListenRef.current = false;
+        if (restartTimerRef.current) {
+          window.clearTimeout(restartTimerRef.current);
+          restartTimerRef.current = null;
+        }
+        setVoiceState("denied");
+        return;
+      }
+      setVoiceState(shouldListenRef.current ? "listening" : "idle");
     };
     recognition.onend = () => {
-      setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
+      if (!shouldListenRef.current) {
+        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
+        return;
+      }
+      restartTimerRef.current = window.setTimeout(() => {
+        restartTimerRef.current = null;
+        try {
+          recognition.start();
+        } catch {
+          shouldListenRef.current = false;
+          setVoiceState("idle");
+        }
+      }, 150);
     };
     recognitionRef.current = recognition;
 
     return () => {
+      shouldListenRef.current = false;
+      if (restartTimerRef.current) {
+        window.clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       try {
         recognition.abort();
       } catch {
@@ -86,12 +126,20 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
   const toggleVoice = useCallback(() => {
     if (voiceState === "unsupported") return;
     if (voiceState === "listening") {
+      shouldListenRef.current = false;
+      if (restartTimerRef.current) {
+        window.clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       recognitionRef.current?.stop();
       return;
     }
     try {
+      shouldListenRef.current = true;
       recognitionRef.current?.start();
+      setVoiceState("listening");
     } catch {
+      shouldListenRef.current = false;
       // Ignore duplicate start requests.
     }
   }, [voiceState]);

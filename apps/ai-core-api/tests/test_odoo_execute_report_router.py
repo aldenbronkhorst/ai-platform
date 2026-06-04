@@ -1,5 +1,4 @@
 import os
-from datetime import datetime
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from uuid import uuid4
@@ -327,89 +326,6 @@ class TestCleanFallback:
         assert "{'detail'" not in result
         assert "Technical error" in result
         assert "'id'" in result
-
-
-class TestDetectOdooReportIntent:
-    """Tests for deterministic report intent detection."""
-
-    def test_detect_pnl_this_month(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("whats the revenue for this month on p&l report")
-        assert result is not None
-        assert result["tool"] == "odoo_ops_runner"
-        args = result["input"]
-        assert args["mode"] == "report"
-        assert args["report_name"] == "Profit and Loss"
-        assert "date_from" in args
-        assert "date_to" in args
-        assert "line_names" not in args
-
-    def test_detect_trial_balance_this_month(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("show trial balance this month")
-        assert result is not None
-        assert result["tool"] == "odoo_ops_runner"
-        assert result["input"]["mode"] == "report"
-        assert result["input"]["report_name"] == "Trial Balance"
-        assert "date_from" in result["input"]
-
-    def test_detect_balance_sheet(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("show balance sheet this year")
-        assert result is not None
-        assert result["input"]["report_name"] == "Balance Sheet"
-
-    def test_non_report_query_returns_none(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("whats the weather today")
-        assert result is None
-
-    def test_empty_query_returns_none(self):
-        from app.services.model_router import detect_odoo_report_intent
-        assert detect_odoo_report_intent("") is None
-        assert detect_odoo_report_intent(None) is None
-
-    def test_metric_without_explicit_report_returns_none(self):
-        from app.services.model_router import detect_odoo_report_intent
-        for phrase in ["turnover", "revenue", "income", "sales", "expenses", "gross profit"]:
-            result = detect_odoo_report_intent(f"whats this month's {phrase}")
-            assert result is None, f"Unexpected report inference for phrase: {phrase}"
-
-    def test_explicit_report_does_not_inject_line_filters(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("what are the expenses on p&l")
-        assert result is not None
-        assert result["input"]["report_name"] == "Profit and Loss"
-        assert "line_names" not in result["input"]
-
-    def test_explicit_report_with_metric_stays_generic(self):
-        from app.services.model_router import detect_odoo_report_intent
-        result = detect_odoo_report_intent("gross profit on p&l this month")
-        assert result is not None
-        assert result["input"]["report_name"] == "Profit and Loss"
-        assert "date_from" in result["input"]
-        assert "date_to" in result["input"]
-        assert "line_names" not in result["input"]
-
-    def test_date_range_this_year(self):
-        from app.services.model_router import _detect_date_range
-        dfrom, dto = _detect_date_range("show p&l this year")
-        assert dfrom is not None
-        assert dto is not None
-        assert dfrom.startswith(str(datetime.utcnow().year))
-        assert dfrom.endswith("-01-01")
-
-    def test_date_range_last_month(self):
-        from app.services.model_router import _detect_date_range
-        dfrom, dto = _detect_date_range("p&l last month")
-        assert dfrom is not None
-        assert dto is not None
-
-    def test_no_dedicated_pnl_tool(self):
-        """Must not add a dedicated P&L tool."""
-        from app.services.model_router import _map_odoo_tool_to_path
-        assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
-        assert _map_odoo_tool_to_path("get_revenue") == ""
 
 
 class TestExecuteChatReportFallback:

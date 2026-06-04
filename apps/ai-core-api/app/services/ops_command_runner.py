@@ -24,13 +24,14 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(?i)pat=\S+|token=\S+|password=\S+'),
 ]
 
-ALLOWED_BINARIES = {"az", "gh", "git", "jq", "rg", "which"}
+DEFAULT_ALLOWED_BINARIES = frozenset({"az", "gh", "git", "jq", "rg", "which"})
 
 
-def _is_allowed_binary(args: list[str]) -> bool:
+def _is_allowed_binary(args: list[str], allowed_binaries: Optional[set[str]] = None) -> bool:
     if not args:
         return False
-    return args[0] in ALLOWED_BINARIES
+    policy = DEFAULT_ALLOWED_BINARIES if allowed_binaries is None else allowed_binaries
+    return args[0] in policy
 
 
 def _redact_output(text: str) -> str:
@@ -72,6 +73,7 @@ async def run_command(
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
     env: Optional[dict[str, str]] = None,
     cwd: Optional[str] = None,
+    allowed_binaries: Optional[set[str]] = None,
 ) -> CommandResult:
     """Execute a CLI command with timeout, output limits, and binary validation."""
     try:
@@ -79,7 +81,7 @@ async def run_command(
     except ValueError as e:
         return CommandResult(error=f"Invalid command: {e}")
 
-    if not _is_allowed_binary(args):
+    if not _is_allowed_binary(args, allowed_binaries):
         logger.warning("Blocked command outside connector binary policy: %.100s", command)
         return CommandResult(error=f"Command binary not allowed: {args[0] if args else 'empty'}", exit_code=126)
 

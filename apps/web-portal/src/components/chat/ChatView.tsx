@@ -168,12 +168,6 @@ export function ChatView({
           onToggleVoice={onToggleVoice}
         />
       </div>
-
-      {voiceState === "listening" && (
-        <div className="text-center pb-2 text-xs text-danger font-semibold flex items-center justify-center gap-1 animate-pulse">
-          Speak now…
-        </div>
-      )}
     </div>
   );
 }

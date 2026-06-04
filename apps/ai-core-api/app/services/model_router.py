@@ -3,10 +3,9 @@ import os
 import re
 import json
 import logging
-from calendar import monthrange
 from dataclasses import dataclass, field
 from uuid import UUID
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, Any
 from sqlalchemy import select, or_
@@ -534,203 +533,6 @@ def _compact_tool_result_for_model(result: Any) -> Any:
 
 def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
-
-
-REPORT_ALIASES: dict[str, str] = {
-    "p&l": "Profit and Loss",
-    "pnl": "Profit and Loss",
-    "profit and loss": "Profit and Loss",
-    "profit & loss": "Profit and Loss",
-    "profit_and_loss": "Profit and Loss",
-    "balance sheet": "Balance Sheet",
-    "balancesheet": "Balance Sheet",
-    "bs": "Balance Sheet",
-    "trial balance": "Trial Balance",
-    "trialbalance": "Trial Balance",
-    "tb": "Trial Balance",
-    "general ledger": "General Ledger",
-    "generalledger": "General Ledger",
-    "gl": "General Ledger",
-    "partner ledger": "Partner Ledger",
-    "partnerledger": "Partner Ledger",
-    "aged receivables": "Aged Receivables",
-    "aged_receivables": "Aged Receivables",
-    "receivables aged": "Aged Receivables",
-    "aged payables": "Aged Payables",
-    "aged_payables": "Aged Payables",
-    "payables aged": "Aged Payables",
-    "tax report": "Tax Report",
-    "tax_report": "Tax Report",
-}
-
-def _detect_date_range(query: str, now: Optional[datetime] = None) -> tuple[Optional[str], Optional[str]]:
-    """Parse date period from a user query. Returns (date_from, date_to) or (None, None)."""
-    now = _platform_now(now)
-    q = query.lower()
-
-    if "today" in q:
-        today = now.strftime("%Y-%m-%d")
-        return today, today
-
-    if "yesterday" in q:
-        yesterday = now - timedelta(days=1)
-        value = yesterday.strftime("%Y-%m-%d")
-        return value, value
-
-    if "this month" in q or "current month" in q or "month to date" in q or "mtd" in q:
-        return now.replace(day=1).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
-
-    if "last month" in q or "previous month" in q:
-        first_of_this = now.replace(day=1)
-        end_of_last = first_of_this - timedelta(days=1)
-        start_of_last = end_of_last.replace(day=1)
-        return start_of_last.strftime("%Y-%m-%d"), end_of_last.strftime("%Y-%m-%d")
-
-    if "this year" in q or "current year" in q or "ytd" in q or "year to date" in q:
-        return now.replace(month=1, day=1).strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
-
-    if "last year" in q or "previous year" in q:
-        return f"{now.year - 1}-01-01", f"{now.year - 1}-12-31"
-
-    if "this quarter" in q or "current quarter" in q or "q1" in q or "q2" in q or "q3" in q or "q4" in q:
-        q_num = 1
-        for i, label in enumerate(["q1", "q2", "q3", "q4"], 1):
-            if label in q:
-                q_num = i
-                break
-        quarter_start = {1: 1, 2: 4, 3: 7, 4: 10}[q_num]
-        quarter_end = {1: 3, 2: 6, 3: 9, 4: 12}[q_num]
-        year = now.year
-        end_day = monthrange(year, quarter_end)[1]
-        return (
-            datetime(year, quarter_start, 1).strftime("%Y-%m-%d"),
-            datetime(year, quarter_end, end_day).strftime("%Y-%m-%d"),
-        )
-
-    return None, None
-
-
-def detect_odoo_lookup_intent(query: str) -> Optional[dict[str, Any]]:
-    """Detect common Odoo lookup patterns and return deterministic actions.
-    
-    Returns a dict with the tool calls to execute, or None if query is not
-    a detectable Odoo lookup pattern.
-    """
-    if not query:
-        return None
-    q = query.strip()
-
-    # Check for credit-note + partner pattern
-    cn_match = re.search(r'(credit\s+note|credit\s+notes|refund)\s*(?:for|from|of)?\s*(.+?)(?:\?|$|\s+with|\s+that|\s+attached)', q, re.IGNORECASE)
-    if cn_match:
-        partner_hint = cn_match.group(2).strip().rstrip("?.!")
-        if partner_hint and not partner_hint.lower().startswith(("the ", "a ", "an ", "this ", "that ")):
-            return {
-                "reason": f"Found explicit credit-note + partner query for '{partner_hint}'",
-                "actions": [
-                    {
-                        "tool": "odoo_ops_runner",
-                        "input": {
-                            "mode": "records",
-                            "model": "account.move",
-                            "domain": [
-                                ["move_type", "in", ["out_refund", "in_refund"]],
-                                "|",
-                                ["partner_id.name", "ilike", partner_hint],
-                                ["partner_id.display_name", "ilike", partner_hint],
-                            ],
-                            "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type", "ref"],
-                            "order": "invoice_date desc",
-                            "limit": 10,
-                        },
-                    },
-                ],
-            }
-        # Credit note without explicit partner
-        return {
-            "reason": "Found credit-note query (no explicit partner)",
-            "actions": [
-                {
-                    "tool": "odoo_ops_runner",
-                    "input": {
-                        "mode": "records",
-                        "model": "account.move",
-                        "domain": [["move_type", "in", ["out_refund", "in_refund"]]],
-                        "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type"],
-                        "order": "invoice_date desc",
-                        "limit": 10,
-                    },
-                },
-            ],
-        }
-
-    # Check for bill/invoice search
-    bill_match = re.search(r'(?:latest\s+|posted\s+|vendor\s+)?(?:bill|bills|invoice|invoices)(?:\s|$|for|from)', q, re.IGNORECASE)
-    if bill_match:
-        partner_hint2 = None
-        for prefix in ["for ", "from ", "by "]:
-            idx = q.lower().find(prefix)
-            if idx >= 0:
-                partner_hint2 = q[idx + len(prefix):].strip().rstrip("?.!")
-                break
-        domain = [["move_type", "in", ["in_invoice", "in_receipt"]], ["state", "=", "posted"]]
-        if partner_hint2 and len(partner_hint2) > 2:
-            domain = [
-                ["move_type", "in", ["in_invoice", "in_receipt"]],
-                ["state", "=", "posted"],
-                "|",
-                ["partner_id.name", "ilike", partner_hint2],
-                ["partner_id.display_name", "ilike", partner_hint2],
-            ]
-        return {
-            "reason": f"Found bill/invoice query{' for ' + partner_hint2 if partner_hint2 else ''}",
-            "actions": [
-                {
-                    "tool": "odoo_ops_runner",
-                    "input": {
-                        "mode": "records",
-                        "model": "account.move",
-                        "domain": domain,
-                        "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "move_type"],
-                        "order": "invoice_date desc",
-                        "limit": 10,
-                    },
-                },
-            ],
-        }
-
-    return None
-
-
-def detect_odoo_report_intent(query: str) -> Optional[dict[str, Any]]:
-    """Detect explicit Odoo report names or aliases in a user query.
-    
-    Returns tool arguments dict for odoo_ops_runner if a report is detected,
-    or None if no explicit report name/alias is present.
-    """
-    if not query:
-        return None
-    q = query.lower().strip()
-
-    report_name = None
-    for alias, canonical in REPORT_ALIASES.items():
-        if alias in q:
-            report_name = canonical
-            break
-    date_from, date_to = _detect_date_range(q)
-    if not report_name:
-        return None
-
-    args: dict[str, Any] = {"report_name": report_name}
-    if date_from and date_to:
-        args["date_from"] = date_from
-        args["date_to"] = date_to
-
-    logger.info(
-        "Detected Odoo report intent | query=%s report_name=%s date_from=%s date_to=%s",
-        query[:80], report_name, date_from, date_to,
-    )
-    return {"tool": "odoo_ops_runner", "input": {"mode": "report", **args}}
 
 
 def _report_error_message(tool_result: dict[str, Any], result: dict[str, Any]) -> str:
@@ -1445,66 +1247,6 @@ async def _run_model_with_fallbacks(
     )
 
 
-async def _run_deterministic_lookup_fallback(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    messages: list,
-    state: ModelCallState,
-    trace_svc: Any = None,
-) -> list[dict[str, Any]]:
-    if state.fallback_used:
-        return []
-    if not (state.result.get("error") and state.result.get("error_type") in ("rate_limit_exceeded", "quota_exceeded")):
-        return []
-
-    user_query = _last_user_message(messages)
-    lookup_intent = detect_odoo_lookup_intent(user_query) if user_query else None
-    if not lookup_intent:
-        return []
-
-    state.fallback_reason = f"deterministic_odoo_lookup_fallback_from_{state.result.get('error_type')}"
-    logger.info("Using deterministic Odoo lookup fallback | user_id=%s reason=%s", user_id, state.fallback_reason)
-    tool_results: list[dict[str, Any]] = []
-    for action in lookup_intent.get("actions", []):
-        try:
-            tc_result = await _execute_tool_call(db, user_id, action["tool"], action["input"], trace_svc=trace_svc)
-        except Exception as exc:
-            logger.error("Deterministic Odoo action failed: %s", exc)
-            break
-        tool_results.append({
-            "tool_call_id": f"deterministic_{action['tool']}",
-            "tool_name": action["tool"],
-            "arguments": action["input"],
-            "result": _compact_tool_result_for_model(tc_result),
-        })
-        if isinstance(tc_result, dict) and tc_result.get("error"):
-            break
-
-    if not tool_results:
-        return []
-
-    state.fallback_used = True
-    report_fallback = _build_report_fallback_answer(tool_results)
-    if report_fallback:
-        state.result = {"content": report_fallback, "finish_reason": "stop", "error": False}
-        return tool_results
-
-    result_parts = []
-    for tool_result in tool_results:
-        result = tool_result.get("result", {})
-        if isinstance(result, dict) and not result.get("error"):
-            records = result.get("records", result.get("lines", result.get("results", [])))
-            result_parts.append(f"{tool_result['tool_name']}: found {len(records)} records" if records else f"{tool_result['tool_name']}: no results")
-        elif isinstance(result, dict) and result.get("error"):
-            result_parts.append(f"{tool_result['tool_name']}: error - {result.get('message', 'unknown')}")
-    state.result = {
-        "content": "; ".join(result_parts) if result_parts else "Odoo lookup completed but no results found.",
-        "finish_reason": "stop",
-        "error": False,
-    }
-    return tool_results
-
-
 async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1710,84 +1452,6 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
     }
 
 
-def _deterministic_context_metadata() -> dict[str, Any]:
-    return {
-        "rules_injected": [],
-        "facts_injected": [],
-        "memories_injected": [],
-        "search_results_injected": [],
-        "currency_source": "none",
-        "subtasks": [],
-        "model_routing": {
-            "primary_model": "not_called",
-            "fallback_model": "none",
-            "fallback_used": False,
-            "fallback_reason": "none",
-            "routing_reason": "deterministic_odoo_report",
-            "cost_tier": "tool_only",
-        },
-        "current_date": _platform_now().date().isoformat(),
-    }
-
-
-async def _run_clear_odoo_report_request(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    messages: list,
-    snapshot: ConnectedAccountsSnapshot,
-    trace_svc: Any = None,
-) -> Optional[dict[str, Any]]:
-    if not user_id or "odoo" not in snapshot.connected_systems:
-        return None
-
-    user_query = _last_user_message(messages)
-    q = user_query.lower()
-    if any(term in q for term in ("compare", "trend", "variance", "forecast", "budget", "analyze", "analyse", "why", "versus", " vs ")):
-        return None
-
-    report_intent = detect_odoo_report_intent(user_query) if user_query else None
-    if not report_intent:
-        return None
-
-    arguments = report_intent["input"]
-    if not (arguments.get("date_from") and arguments.get("date_to")):
-        return None
-
-    try:
-        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", arguments, trace_svc=trace_svc)
-    except Exception as exc:
-        logger.warning("Deterministic Odoo report request failed before connector result: %s", exc)
-        return None
-
-    raw_tool_result = {
-        "tool_call_id": "deterministic_report",
-        "tool_name": "odoo_ops_runner",
-        "arguments": arguments,
-        "result": tc_result,
-    }
-    answer = _build_report_fallback_answer([raw_tool_result])
-    if not answer:
-        return None
-
-    logger.info("Answered clear Odoo report request deterministically | user_id=%s arguments=%s", user_id, arguments)
-    return {
-        "content": answer,
-        "finish_reason": "deterministic_tool_result",
-        "model_provider": "Odoo",
-        "model_name": "Odoo report",
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "latency_ms": 0,
-        "tool_calls": [{
-            **raw_tool_result,
-            "result": _compact_tool_result_for_model(tc_result),
-        }],
-        "context": _deterministic_context_metadata(),
-        "tool_call_count": 1,
-    }
-
-
 async def _apply_blank_content_fallback(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1807,33 +1471,6 @@ async def _apply_blank_content_fallback(
             response["content"] = fallback
         return response
 
-    user_query = _last_user_message(messages)
-    report_intent = detect_odoo_report_intent(user_query) if user_query else None
-    if not report_intent:
-        return response
-
-    logger.info("Deterministic report intent detected | user_id=%s intent=%s", user_id, report_intent)
-    try:
-        tc_result = await _execute_tool_call(db, user_id, "odoo_ops_runner", report_intent["input"], trace_svc=trace_svc)
-    except Exception as exc:
-        logger.error("Deterministic report execution failed: %s", exc)
-        return response
-
-    deterministic_results = [{
-        "tool_call_id": "deterministic_report",
-        "tool_name": "odoo_ops_runner",
-        "arguments": report_intent["input"],
-        "result": tc_result,
-    }]
-    fallback = _build_report_fallback_answer(deterministic_results)
-    if fallback:
-        response["content"] = fallback
-        response["tool_calls"] = [{
-            **deterministic_results[0],
-            "result": _compact_tool_result_for_model(tc_result),
-        }]
-        response["deterministic_report"] = True
-        logger.info("Used deterministic report answer | user_id=%s", user_id)
     return response
 
 
@@ -1865,23 +1502,6 @@ async def execute_chat(
         risk_level = _risk_level_for_message(user_msg_text)
         route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
         connected_accounts = await _load_connected_accounts(db, user_id)
-        deterministic_response = await _run_clear_odoo_report_request(
-            db, user_id, messages, connected_accounts, trace_svc=trace_svc,
-        )
-        if deterministic_response:
-            if trace_svc and context_span:
-                trace_svc.end_span(
-                    context_span,
-                    output_summary={
-                        "risk_level": risk_level,
-                        "route_id": str(route.id),
-                        "selected_model": model_obj.display_name,
-                        "selected_provider": provider.name,
-                        "connected_systems": sorted(connected_accounts.connected_systems),
-                        "deterministic_response": True,
-                    },
-                )
-            return deterministic_response
 
         system_prompt = route.system_prompt or ""
         system_prompt = _append_context_section(system_prompt, _current_time_context())
@@ -1934,7 +1554,7 @@ async def execute_chat(
         db, route, model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
         trace_svc=trace_svc,
     )
-    tool_results = await _run_deterministic_lookup_fallback(db, user_id, messages, state, trace_svc=trace_svc)
+    tool_results: list[dict[str, Any]] = []
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,

@@ -128,6 +128,30 @@ class TestConnectedAccountsFlow:
         assert connectors["azure"]["status"] == "not_connected"
         assert connectors["github"]["status"] == "not_connected"
 
+    def test_get_connected_accounts_can_include_verified_token_state(self):
+        async def fake_token_status(provider, _user_id):
+            if provider == "azure":
+                return {
+                    "status": "connected",
+                    "provider": "azure",
+                    "username": "alden@example.com",
+                    "scope": "https://management.core.windows.net//.default",
+                }
+            return {"status": "not_connected", "provider": provider}
+
+        with patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)):
+            response = client.get(
+                "/connected-accounts?include_token_state=true",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
+            )
+
+        assert response.status_code == 200
+        connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
+        assert connectors["azure"]["status"] == "connected"
+        assert connectors["azure"]["state"]["configured"] is True
+        assert connectors["azure"]["state"]["token_status"] == "connected"
+        assert connectors["azure"]["state"]["source"] == "token_store"
+
     def test_get_odoo_status_not_connected(self):
         response = client.get(
             "/connected-accounts/odoo/status",
