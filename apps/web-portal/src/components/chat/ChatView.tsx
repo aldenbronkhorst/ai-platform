@@ -16,7 +16,6 @@ interface ChatViewProps {
   displayName: string;
   onInputChange: (value: string) => void;
   onSend: (e: React.FormEvent) => void;
-  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveFile: (id: string) => void;
   onTriggerUpload: () => void;
   onToggleVoice: () => void;
@@ -37,7 +36,6 @@ export function ChatView({
   displayName,
   onInputChange,
   onSend,
-  onFileUpload,
   onRemoveFile,
   onTriggerUpload,
   onToggleVoice,
@@ -162,7 +160,6 @@ export function ChatView({
           placeholder={placeholder}
           onInputChange={onInputChange}
           onSend={onSend}
-          onFileUpload={onFileUpload}
           onRemoveFile={onRemoveFile}
           onTriggerUpload={onTriggerUpload}
           onToggleVoice={onToggleVoice}

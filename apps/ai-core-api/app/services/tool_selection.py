@@ -9,15 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITool
 from app.services.connected_account_state import effective_connected_accounts
+from app.services.tool_registry import CONNECTOR_TOOL_BY_SYSTEM, CONSOLIDATED_TOOL_NAMES, is_model_facing_tool
 
 logger = logging.getLogger(__name__)
 
-CONSOLIDATED_TOOL_NAMES = {"odoo_ops_runner", "azure_cli", "github_cli"}
-TOOL_BY_SYSTEM = {
-    "odoo": "odoo_ops_runner",
-    "azure": "azure_cli",
-    "github": "github_cli",
-}
+TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
 SYSTEM_INTENT_KEYWORDS = {
     "odoo": {
         "odoo", "invoice", "invoices", "bill", "bills", "credit note", "refund",
@@ -119,9 +115,14 @@ async def get_tool_selection(
         select(AITool).where(
             AITool.status == "active",
             AITool.target_system.in_(connected_systems),
+            AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
         ).order_by(AITool.name)
     )
-    all_tools: list[AITool] = tool_result.scalars().all()
+    all_tools = [
+        tool
+        for tool in tool_result.scalars().all()
+        if is_model_facing_tool(tool.name, tool.target_system)
+    ]
     if not all_tools:
         return result
 

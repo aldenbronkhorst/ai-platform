@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
@@ -41,8 +41,9 @@ async def register_tool(
 @router.get("", response_model=list[AIToolResponse])
 async def list_tools(
     target_system: str = None,
+    include_internal: bool = Query(False, description="Include non-canonical/internal connector tools"),
     db: AsyncSession = Depends(get_db),
     auth=Depends(api_key_auth),
 ):
     svc = ToolService(db)
-    return await svc.list_tools(target_system=target_system)
+    return await svc.list_tools(target_system=target_system, include_internal=include_internal)

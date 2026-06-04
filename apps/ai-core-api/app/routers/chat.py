@@ -7,15 +7,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Any
 
 from app.core.security import api_key_auth
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.models.models import (
-    AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AITask,
+    AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AITask, AIUsageLog,
 )
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
@@ -23,14 +23,15 @@ from app.schemas.schemas import AIAuditEventCreate
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+DEFAULT_CHAT_TITLE = "New Chat"
 
 
 class ChatSessionCreate(BaseModel):
-    title: Optional[str] = Field("New Chat", description="Optional initial title")
+    title: Optional[str] = Field(DEFAULT_CHAT_TITLE, max_length=80, description="Optional initial title")
 
 
 class ChatSessionUpdate(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=80)
 
 
 class ChatMessageCreate(BaseModel):
@@ -72,13 +73,16 @@ async def create_chat_session(
 ):
     """Creates a new, independent chat session for the authenticated user."""
     user_id = auth["user_id"]
+    title = (req.title or DEFAULT_CHAT_TITLE).strip() or DEFAULT_CHAT_TITLE
+    title_source = "manual" if title != DEFAULT_CHAT_TITLE else "empty"
     
     session = AIChatSession(
         id=uuid.uuid4(),
         user_id=user_id,
-        title=req.title or "New Chat",
+        title=title,
         status="active",
         last_message_at=datetime.utcnow(),
+        metadata_json={"title_source": title_source},
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -143,7 +147,15 @@ async def update_chat_session(
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
     
-    session.title = req.title
+    title = req.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Chat title cannot be empty.")
+
+    session.title = title
+    metadata = dict(session.metadata_json or {})
+    metadata["title_source"] = "manual"
+    metadata["title_updated_at"] = datetime.utcnow().isoformat()
+    session.metadata_json = metadata
     session.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(session)
@@ -352,9 +364,51 @@ async def _persist_user_message(db: AsyncSession, session_id: UUID, user_id: UUI
     return message
 
 
-def _update_session_title(session: AIChatSession, content: str) -> None:
-    if session.title == "New Chat":
-        session.title = content[:35] + ("..." if len(content) > 35 else "")
+def _session_metadata(session: AIChatSession) -> dict[str, Any]:
+    return dict(session.metadata_json or {})
+
+
+def _set_session_title_source(session: AIChatSession, source: str) -> None:
+    metadata = _session_metadata(session)
+    metadata["title_source"] = source
+    metadata["title_updated_at"] = datetime.utcnow().isoformat()
+    session.metadata_json = metadata
+
+
+def _can_auto_title_session(session: AIChatSession) -> bool:
+    metadata = _session_metadata(session)
+    if metadata.get("title_source") == "manual":
+        return False
+    return session.title.strip() == DEFAULT_CHAT_TITLE
+
+
+async def _maybe_generate_session_title(
+    db: AsyncSession,
+    session: AIChatSession,
+    messages: list[dict[str, str]],
+    assistant_content: str,
+    user_id: UUID,
+    request_id: str,
+    trace_svc: Any,
+) -> None:
+    if not _can_auto_title_session(session):
+        return
+
+    from app.services.model_router import generate_chat_title
+
+    title = await generate_chat_title(
+        db,
+        [*messages, {"role": "assistant", "content": assistant_content}],
+        chat_session_id=session.id,
+        user_id=user_id,
+        request_id=request_id,
+        trace_svc=trace_svc,
+    )
+    if not title:
+        return
+
+    session.title = title
+    _set_session_title_source(session, "ai")
 
 
 def _link_chat_artifacts(db: AsyncSession, session_id: UUID, message_id: UUID, artifact_ids: list[UUID]) -> None:
@@ -373,9 +427,25 @@ async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: A
             AIChatMessage.chat_session_id == session_id
         ).order_by(AIChatMessage.created_at.asc())
     )
-    messages = [{"role": msg.role, "content": msg.content} for msg in history.scalars().all() if msg.id != user_msg.id]
+    messages = [
+        {"role": msg.role, "content": msg.content}
+        for msg in history.scalars().all()
+        if msg.id != user_msg.id and _is_valid_history_message(msg)
+    ]
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def _is_valid_history_message(message: AIChatMessage) -> bool:
+    if message.role != "assistant":
+        return True
+    metadata = message.metadata_json or {}
+    if metadata.get("failed"):
+        return False
+    content = message.content or ""
+    if not content.strip():
+        return False
+    return "<|tool_call" not in content and "<|tool_calls_section" not in content
 
 
 def _failed_assistant_message(session_id: UUID, user_id: UUID, error_type: str, error_message: str, request_id: str, trace_id: str) -> AIChatMessage:
@@ -510,6 +580,20 @@ def _blank_tool_error_details(tool_calls: list[dict[str, Any]]) -> list[dict[str
 
 def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, user_id: UUID, session_id: UUID) -> None:
     assistant_content = router_result.get("content", "")
+    if "<|tool_call" in str(assistant_content):
+        logger.warning(
+            "Unprocessed textual tool call in assistant content | request_id=%s user_id=%s session_id=%s",
+            request_id, user_id, session_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "request_id": request_id,
+                "error_type": "unprocessed_tool_call",
+                "error_message": "The model tried to use a tool, but the tool call was not executed.",
+                "technical_detail": "Assistant content contained textual tool-call markup after model routing.",
+            },
+        )
     if assistant_content and assistant_content.strip():
         return
 
@@ -539,6 +623,14 @@ def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, use
             "error_message": "The model returned an empty response. Please try again.",
             "technical_detail": "Model router returned blank content",
         },
+    )
+
+
+async def _mark_usage_failed(db: AsyncSession, request_id: str, trace_id: str, error_message: str) -> None:
+    await db.execute(
+        update(AIUsageLog)
+        .where((AIUsageLog.request_id == request_id) | (AIUsageLog.trace_id == trace_id))
+        .values(status="failed", error_message=error_message)
     )
 
 
@@ -708,7 +800,6 @@ async def _process_chat_turn(
     session = await _get_owned_session(db, session_id, user_id)
     user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
     await _apply_natural_language_feedback(db, session_id, user_id, req.content)
-    _update_session_title(session, req.content)
     _link_chat_artifacts(db, session_id, user_msg.id, req.artifact_ids or [])
 
     messages = await _conversation_messages(db, session_id, user_msg, req.content)
@@ -733,6 +824,7 @@ async def _process_chat_turn(
             error_type = str(exc.detail.get("error_type") or error_type)
             error_message = str(exc.detail.get("error_message") or error_message)
         await trace_svc.commit(status="failed", error_type=error_type, error_message=error_message)
+        await _mark_usage_failed(db, request_id, trace_svc.trace_id, error_message)
         await _persist_failed_message(db, session_id, user_id, error_type, error_message, request_id, trace_svc.trace_id)
         await db.commit()
         raise
@@ -747,9 +839,19 @@ async def _process_chat_turn(
         trace_svc.trace_id,
         activity_events,
     )
+    await _maybe_generate_session_title(
+        db,
+        session,
+        messages,
+        assistant_msg.content,
+        user_id,
+        request_id,
+        trace_svc,
+    )
     await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)
     await trace_svc.commit(status="success")
+    await db.commit()
     return assistant_msg
 
 
@@ -786,7 +888,6 @@ async def stream_chat_message(
     session_id: UUID,
     req: ChatMessageCreate,
     request: Request,
-    db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
     """Streams user-safe agent activity while the chat turn runs."""
@@ -798,24 +899,27 @@ async def stream_chat_message(
         queue.put_nowait({"type": "activity", "payload": event})
 
     async def run_turn() -> None:
-        try:
-            assistant_msg = await _process_chat_turn(db, session_id, req, request_id, user_id, collect_activity)
-            await queue.put({"type": "message", "payload": _chat_message_payload(assistant_msg)})
-        except HTTPException as exc:
-            await queue.put({"type": "error", "payload": exc.detail})
-        except Exception as exc:
-            logger.exception("Streaming chat turn failed | request_id=%s", request_id)
-            await queue.put({
-                "type": "error",
-                "payload": {
-                    "request_id": request_id,
-                    "error_type": "server_error",
-                    "error_message": "Something went wrong while generating the response. Please try again.",
-                    "technical_detail": str(exc),
-                },
-            })
-        finally:
-            await queue.put({"type": "done", "payload": {"request_id": request_id}})
+        async with AsyncSessionLocal() as db:
+            try:
+                assistant_msg = await _process_chat_turn(db, session_id, req, request_id, user_id, collect_activity)
+                await queue.put({"type": "message", "payload": _chat_message_payload(assistant_msg)})
+            except HTTPException as exc:
+                await db.rollback()
+                await queue.put({"type": "error", "payload": exc.detail})
+            except Exception as exc:
+                await db.rollback()
+                logger.exception("Streaming chat turn failed | request_id=%s", request_id)
+                await queue.put({
+                    "type": "error",
+                    "payload": {
+                        "request_id": request_id,
+                        "error_type": "server_error",
+                        "error_message": "Something went wrong while generating the response. Please try again.",
+                        "technical_detail": str(exc),
+                    },
+                })
+            finally:
+                await queue.put({"type": "done", "payload": {"request_id": request_id}})
 
     async def event_stream():
         task = asyncio.create_task(run_turn())

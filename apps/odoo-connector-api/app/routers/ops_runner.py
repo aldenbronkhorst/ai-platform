@@ -309,6 +309,7 @@ MODE_HANDLERS: dict[str, Callable[[OdooClient, OdooOpsRunnerRequest], dict[str, 
     "mutation": _run_mutation,
     "write": _run_mutation,
     "create": _run_mutation,
+    "delete": _run_mutation,
     "execute": _run_execute,
 }
 

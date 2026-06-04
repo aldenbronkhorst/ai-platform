@@ -38,6 +38,10 @@ TOOL_FINALIZER_RESULT_CHARS = 3500
 TOOL_FINALIZER_PAYLOAD_CHARS = 45000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
+CHAT_TITLE_MAX_CHARS = 70
+CHAT_TITLE_SOURCE_MESSAGES = 6
+CHAT_TITLE_SOURCE_CHARS = 900
+CHAT_TITLE_MAX_TOKENS = 24
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -46,6 +50,21 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
         "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
     ),
 }
+CHAT_TITLE_SYSTEM_PROMPT = (
+    "Generate a short title for this chat. "
+    "Use 3 to 6 words. "
+    "Return only the title, with no quotes, no markdown, no trailing punctuation, and no generic words like chat or conversation."
+)
+TEXT_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call_begin\|>\s*(?P<name>.*?)\s*"
+    r"<\|tool_call_argument_begin\|>\s*(?P<arguments>.*?)\s*"
+    r"<\|tool_call_end\|>",
+    re.DOTALL,
+)
+TEXT_TOOL_CALL_SECTION_RE = re.compile(
+    r"<\|tool_calls_section_begin\|>.*?<\|tool_calls_section_end\|>",
+    re.DOTALL,
+)
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -86,6 +105,11 @@ CANONICAL_SYSTEM_PROMPT = (
 )
 
 DEFAULT_PLATFORM_TIMEZONE = os.environ.get("PLATFORM_TIMEZONE", "Africa/Johannesburg")
+FOLLOW_UP_CONTEXT_WORDS = {
+    "same", "again", "this", "that", "these", "those", "it", "she", "he",
+    "they", "them", "her", "him", "full", "more", "all", "timeline",
+}
+FOLLOW_UP_GREETINGS = {"hi", "hello", "hey", "thanks", "thank you"}
 
 
 @dataclass
@@ -272,6 +296,176 @@ def _normalize_tool_name(name: str) -> str:
 
 
 TOOL_NAME_MAP: dict[str, str] = {}
+
+
+def _strip_function_prefix(name: str) -> str:
+    value = (name or "").strip()
+    if value.startswith("functions."):
+        value = value[len("functions."):]
+    if ":" in value:
+        value = value.split(":", 1)[0]
+    return value.strip()
+
+
+def _odoo_positional_arg(arguments: dict[str, Any], index: int, default: Any = None) -> Any:
+    args = arguments.get("args")
+    if isinstance(args, list) and len(args) > index:
+        return args[index]
+    return default
+
+
+def _odoo_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
+    kwargs = arguments.get("kwargs")
+    return kwargs if isinstance(kwargs, dict) else {}
+
+
+def _odoo_query_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    kwargs = _odoo_kwargs(arguments)
+    domain = arguments.get("domain", _odoo_positional_arg(arguments, 0, []))
+    fields = arguments.get("fields", _odoo_positional_arg(arguments, 1, kwargs.get("fields")))
+    converted: dict[str, Any] = {
+        "mode": "query",
+        "model": arguments.get("model"),
+        "domain": domain if isinstance(domain, list) else [],
+    }
+    if isinstance(fields, list):
+        converted["fields"] = fields
+    for key in ("limit", "offset", "order"):
+        value = arguments.get(key, kwargs.get(key))
+        if value is not None:
+            converted[key] = value
+    return converted
+
+
+def _odoo_read_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    kwargs = _odoo_kwargs(arguments)
+    ids = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
+    fields = arguments.get("fields", _odoo_positional_arg(arguments, 1, kwargs.get("fields")))
+    converted: dict[str, Any] = {
+        "mode": "records",
+        "model": arguments.get("model"),
+        "ids": ids if isinstance(ids, list) else [],
+    }
+    if isinstance(fields, list):
+        converted["fields"] = fields
+    return converted
+
+
+def _odoo_mutation_arguments(arguments: dict[str, Any], operation: str) -> dict[str, Any]:
+    converted: dict[str, Any] = {
+        "mode": operation,
+        "operation": operation,
+        "model": arguments.get("model"),
+    }
+    if operation == "create":
+        converted["values"] = arguments.get("values", _odoo_positional_arg(arguments, 0, {}))
+    elif operation == "write":
+        converted["ids"] = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
+        converted["values"] = arguments.get("values", _odoo_positional_arg(arguments, 1, {}))
+    elif operation == "delete":
+        converted["ids"] = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
+    return converted
+
+
+def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    method = str(arguments.get("method") or "").strip()
+    operation = alias.removeprefix("odoo_")
+    if alias == "odoo":
+        operation = method
+    if operation in {"search_read", "search"}:
+        return _odoo_query_arguments(arguments)
+    if operation in {"read", "browse"}:
+        return _odoo_read_arguments(arguments)
+    if operation == "search_count":
+        return {
+            "mode": "count",
+            "model": arguments.get("model"),
+            "domain": arguments.get("domain", _odoo_positional_arg(arguments, 0, [])),
+        }
+    if operation in {"fields_get", "schema"}:
+        return {
+            "mode": "schema",
+            "model": arguments.get("model"),
+            "fields": arguments.get("fields"),
+        }
+    if operation in {"create", "write", "unlink", "delete"}:
+        return _odoo_mutation_arguments(arguments, "delete" if operation == "unlink" else operation)
+    if method:
+        return {
+            "mode": "execute",
+            "model": arguments.get("model"),
+            "method": method,
+            "args": arguments.get("args") or [],
+            "kwargs": arguments.get("kwargs") or {},
+        }
+    return {"mode": "execute", **arguments}
+
+
+def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    cleaned = _strip_function_prefix(name)
+    normalized = _normalize_tool_name(cleaned)
+    mapped = TOOL_NAME_MAP.get(normalized, cleaned)
+    if mapped in {"azure_cli", "github_cli", "odoo_ops_runner"}:
+        return mapped, arguments
+    if mapped == "odoo" or mapped.startswith("odoo_"):
+        return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
+    return mapped, arguments
+
+
+def _parse_tool_arguments(arguments_text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(arguments_text or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _coerce_text_tool_calls(result: dict[str, Any], tool_definitions: list[dict[str, Any]]) -> dict[str, Any]:
+    if result.get("error") or result.get("tool_calls") or not tool_definitions:
+        return result
+    content = str(result.get("content") or "")
+    if "<|tool_call_begin|>" not in content or "<|tool_call_argument_begin|>" not in content:
+        return result
+
+    calls: list[dict[str, Any]] = []
+    for idx, match in enumerate(TEXT_TOOL_CALL_RE.finditer(content), start=1):
+        raw_name = match.group("name")
+        raw_arguments = match.group("arguments").strip()
+        parsed_arguments = _parse_tool_arguments(raw_arguments)
+        canonical_name, canonical_arguments = _canonical_tool_invocation(raw_name, parsed_arguments)
+        calls.append({
+            "id": f"text_call_{idx}",
+            "type": "function",
+            "function": {
+                "name": canonical_name,
+                "arguments": json.dumps(canonical_arguments, ensure_ascii=False, default=str),
+            },
+        })
+
+    if not calls:
+        return result
+
+    cleaned_content = TEXT_TOOL_CALL_SECTION_RE.sub("", content).strip()
+    result["content"] = cleaned_content or None
+    result["tool_calls"] = calls
+    result["finish_reason"] = "tool_calls"
+    result["text_tool_calls_detected"] = True
+    return result
+
+
+def _canonicalize_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    if call.get("type") != "function":
+        return call
+    function = dict(call.get("function") or {})
+    arguments = _parse_tool_arguments(str(function.get("arguments") or "{}"))
+    canonical_name, canonical_arguments = _canonical_tool_invocation(str(function.get("name") or ""), arguments)
+    normalized = dict(call)
+    normalized["function"] = {
+        **function,
+        "name": canonical_name,
+        "arguments": json.dumps(canonical_arguments, ensure_ascii=False, default=str),
+    }
+    return normalized
 
 
 def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
@@ -469,6 +663,42 @@ def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -
     if len(value) <= limit:
         return value
     return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
+
+
+def _sanitize_chat_title(title: Any) -> str | None:
+    text = str(title or "").strip()
+    if not text or "<|tool_call" in text or "```" in text:
+        return None
+
+    text = re.split(r"[\r\n]+", text, maxsplit=1)[0]
+    text = re.sub(r"^\s*(?:[-*#]+|\d+[.)])\s*", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" \t'\"`“”‘’")
+    text = text.rstrip(".:;,- ")
+    if not text:
+        return None
+
+    if text.lower() in {"new chat", "untitled", "chat", "conversation"}:
+        return None
+
+    if len(text) > CHAT_TITLE_MAX_CHARS:
+        text = text[:CHAT_TITLE_MAX_CHARS].rsplit(" ", 1)[0].strip() or text[:CHAT_TITLE_MAX_CHARS].strip()
+    return text or None
+
+
+def _chat_title_source_text(messages: list[dict[str, Any]]) -> str:
+    excerpts: list[str] = []
+    for message in messages[:CHAT_TITLE_SOURCE_MESSAGES]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        content = re.sub(r"\s+", " ", content)
+        excerpts.append(f"{role}: {_truncate_tool_text(content, CHAT_TITLE_SOURCE_CHARS)}")
+    return "\n".join(excerpts)
 
 
 def _compact_stdio_text(value: str) -> str | dict[str, Any]:
@@ -802,6 +1032,33 @@ def _last_user_message(messages: list) -> str:
     return ""
 
 
+def _tool_selection_message(messages: list) -> str:
+    latest = _last_user_message(messages).strip()
+    if not latest:
+        return ""
+    lower = latest.lower()
+    if lower in FOLLOW_UP_GREETINGS:
+        return latest
+
+    tokens = set(re.findall(r"[a-z0-9_&+-]+", lower))
+    is_follow_up = (
+        len(tokens) <= 3
+        or bool(tokens.intersection(FOLLOW_UP_CONTEXT_WORDS))
+        or lower in {"?", "??"}
+    )
+    if not is_follow_up:
+        return latest
+
+    recent: list[str] = []
+    for message in messages[-6:]:
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            recent.append(content[:1000])
+    return "\n".join(recent) if recent else latest
+
+
 def _risk_level_for_message(user_msg_text: str) -> str:
     q = user_msg_text.lower()
     is_finance_topic = any(kw in q for kw in [
@@ -867,22 +1124,32 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
     )
 
     odoo_available = [name for name in available_names if name.startswith("odoo_")]
-    if not odoo_available:
-        return system_prompt
-
-    guidance_parts = ["\n\n### Odoo Tool Guidance\nUse `odoo_ops_runner` only. Select an internal mode instead of inventing separate Odoo tools.\n"]
+    guidance_parts: list[str] = []
     if "odoo_ops_runner" in odoo_available:
         guidance_parts.append(
-            "Modes: health, schema, query/records, count, aggregate, report/account_report, "
-            "attachment, content, message, mutation/create/write/delete, execute."
+            "\n\n### Connected Account Tool Guidance\n"
+            "Use one consolidated tool per connected system. Do not invent feature-specific connector tools."
+        )
+        guidance_parts.append("Odoo: use `odoo_ops_runner` only. Select a broad mode for the operation.")
+        guidance_parts.append(
+            "Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. "
+            "For create/write/delete, use mode `mutation` with the `operation` field."
         )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
             "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
-    guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    return system_prompt + "\n".join(guidance_parts)
+        guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
+    if "azure_cli" in available_names:
+        guidance_parts.append(
+            "Azure: use `azure_cli` only. Use native az commands; Azure RBAC decides what the connected user can do."
+        )
+    if "github_cli" in available_names:
+        guidance_parts.append(
+            "GitHub: use `github_cli` only. Use native gh/git/rg/jq commands; GitHub permissions decide access."
+        )
+    return system_prompt + "\n".join(guidance_parts) if guidance_parts else system_prompt
 
 
 async def _select_tools_for_model(
@@ -955,7 +1222,11 @@ async def _business_context(
     prompt_parts: list[str] = []
     if rules:
         rules_text = "\n".join(f"- [Priority {rule.priority}] {rule.body}" for rule in rules)
-        prompt_parts.append(f"## Active Business Rules\n{rules_text}")
+        prompt_parts.append(
+            "## Active Business Rules\n"
+            "Rules are listed in precedence order. Lower priority numbers override higher priority numbers.\n"
+            f"{rules_text}"
+        )
     if facts:
         facts_text = "\n".join(f"- {fact.key}: {fact.value}" for fact in facts)
         prompt_parts.append(f"## Company Facts\n{facts_text}")
@@ -1199,6 +1470,7 @@ async def _call_model(
             max_tokens=max_tokens,
             tools=tool_definitions if tool_definitions else None,
         )
+        result = _coerce_text_tool_calls(result, tool_definitions)
     except Exception as exc:
         if trace_svc and span_id:
             trace_svc.span_error(span_id, type(exc).__name__, str(exc))
@@ -1377,6 +1649,8 @@ async def _run_tool_loop(
         if not tool_calls or not tools:
             break
 
+        tool_calls = [_canonicalize_tool_call(call) for call in tool_calls]
+        state.result["tool_calls"] = tool_calls
         state.stats.tool_calls += len(tool_calls)
         messages.append({
             "role": "assistant",
@@ -1655,6 +1929,72 @@ async def _apply_blank_content_fallback(
     return response
 
 
+async def generate_chat_title(
+    db: AsyncSession,
+    messages: list[dict[str, Any]],
+    chat_session_id: Optional[UUID] = None,
+    user_id: Optional[UUID] = None,
+    request_id: Optional[str] = None,
+    trace_svc: Any = None,
+) -> str | None:
+    """Generate a compact chat title without exposing connector tools."""
+    source_text = _chat_title_source_text(messages)
+    if not source_text:
+        return None
+
+    try:
+        route, model_obj, provider, _policy = await _select_route_model_provider(db, "general_chat", "low")
+        title_messages = [
+            {"role": "system", "content": CHAT_TITLE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Conversation excerpt:\n{source_text}\n\nTitle:",
+            },
+        ]
+        stats = ModelCallStats()
+        result, client = await _call_model(
+            model_obj,
+            provider,
+            title_messages,
+            temperature=0.1,
+            max_tokens=CHAT_TITLE_MAX_TOKENS,
+            tool_definitions=[],
+            trace_svc=trace_svc,
+            attempt_reason="chat_title",
+        )
+        stats.add_result(result)
+        state = ModelCallState(result=result, used_model=model_obj, used_provider=provider, client=client, stats=stats)
+        state = await _try_rate_limit_fallbacks(
+            db,
+            route,
+            model_obj,
+            state,
+            title_messages,
+            temperature=0.1,
+            max_tokens=CHAT_TITLE_MAX_TOKENS,
+            tool_definitions=[],
+            reason="chat_title_quota_exceeded",
+            trace_svc=trace_svc,
+        )
+        await _log_usage(
+            db,
+            route,
+            "chat_title",
+            chat_session_id,
+            user_id,
+            state,
+            request_id=f"{request_id}:title" if request_id else None,
+            trace_id=trace_svc.trace_id if trace_svc else None,
+        )
+        if state.result.get("error"):
+            logger.warning("Chat title generation failed: %s", state.result.get("message") or state.result.get("error_type"))
+            return None
+        return _sanitize_chat_title(state.result.get("content"))
+    except Exception as exc:
+        logger.warning("Chat title generation skipped: %s", exc)
+        return None
+
+
 async def execute_chat(
     db: AsyncSession,
     messages: list,
@@ -1694,7 +2034,7 @@ async def execute_chat(
             db,
             user_id,
             connected_accounts.connected_systems,
-            user_msg_text,
+            _tool_selection_message(messages),
             task_type,
             risk_level,
             model_obj,

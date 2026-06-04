@@ -10,7 +10,6 @@ interface ChatComposerProps {
   placeholder?: string;
   onInputChange: (value: string) => void;
   onSend: (e: React.FormEvent) => void;
-  onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onRemoveFile: (id: string) => void;
   onTriggerUpload: () => void;
   onToggleVoice: () => void;
@@ -24,19 +23,12 @@ export function ChatComposer({
   placeholder = "Ask anything...",
   onInputChange,
   onSend,
-  onFileUpload,
   onRemoveFile,
   onTriggerUpload,
   onToggleVoice,
 }: ChatComposerProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
-
-  const handleTriggerUpload = () => {
-    fileInputRef.current?.click();
-    onTriggerUpload();
-  };
 
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -61,9 +53,12 @@ export function ChatComposer({
   }, [chatInput, isComposerExpanded]);
 
   const isListening = voiceState === "listening";
+  const isVoiceProcessing = voiceState === "processing";
   const isVoiceDisabled = voiceState === "unsupported";
   const composerPlaceholder = isListening
     ? "Listening..."
+    : isVoiceProcessing
+      ? "Transcribing..."
     : voiceState === "denied"
       ? "Microphone access blocked"
       : placeholder;
@@ -74,7 +69,7 @@ export function ChatComposer({
   const uploadButton = (
     <button
       type="button"
-      onClick={handleTriggerUpload}
+      onClick={onTriggerUpload}
       className={`${controlButtonClass} ${idleControlClass}`}
       title="Attach files"
     >
@@ -88,11 +83,11 @@ export function ChatComposer({
       onClick={onToggleVoice}
       disabled={isVoiceDisabled}
       className={`${controlButtonClass} ${
-        isListening
+        isListening || isVoiceProcessing
           ? "bg-[var(--color-danger)]/15 text-[var(--color-danger)]"
           : "text-muted hover-text-default hover-bg-surface"
       } disabled:opacity-40 disabled:cursor-not-allowed`}
-      title={isVoiceDisabled ? "Voice not supported" : isListening ? "Stop listening" : "Voice input"}
+      title={isVoiceDisabled ? "Voice not supported" : isVoiceProcessing ? "Transcribing voice input" : isListening ? "Stop listening" : "Voice input"}
     >
       <Mic className="w-4 h-4" />
     </button>
@@ -154,14 +149,6 @@ export function ChatComposer({
           onSubmit={onSend}
           className={isComposerExpanded ? "flex flex-col gap-1 p-1 sm:p-1.5" : "flex items-center gap-1 p-1 sm:p-1.5"}
         >
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={onFileUpload}
-            className="hidden"
-            multiple
-          />
-
           {isComposerExpanded ? (
             <>
               {textarea}

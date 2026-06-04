@@ -17,6 +17,7 @@ from app.services.model_router import (
     RouteNotFoundError,
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
+    _sanitize_chat_title,
 )
 
 
@@ -51,13 +52,23 @@ def test_canonical_prompt_is_tool_agnostic():
 
 
 def test_trace_redaction_keeps_token_counts_visible():
-    from app.services.trace_service import redact_value
+    from app.services.trace_service import redact_value, summarize_payload
 
     assert redact_value("prompt_tokens", 123) == 123
     assert redact_value("completion_tokens", 45) == 45
     redacted_secret = redact_value("access_token", "super-secret-token")
     assert redacted_secret["present"] is True
     assert "super-secret-token" not in str(redacted_secret)
+    assert summarize_payload({"messages": [{"role": "user", "content": "hi"}]}) == {
+        "messages": [1, {"role": "user", "content": "hi"}]
+    }
+
+
+def test_chat_title_sanitizer_returns_short_plain_title():
+    assert _sanitize_chat_title('"Azure Resource Costs."') == "Azure Resource Costs"
+    assert _sanitize_chat_title("1. Odoo Invoice Review\nextra") == "Odoo Invoice Review"
+    assert _sanitize_chat_title("<|tool_call_begin|>bad") is None
+    assert _sanitize_chat_title("New Chat") is None
 
 
 # ── Mock DB that can simulate empty / configured / connector states ──
@@ -1511,6 +1522,108 @@ class TestToolExecution:
         assert finalizer_call.kwargs["max_tokens"] == 4000
         assert "Tool results:" in finalizer_call.kwargs["messages"][1]["content"]
         assert "WH01-IN-2026-02586" in finalizer_call.kwargs["messages"][1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):
+        """Kimi-style textual tool markers must be executed, not shown to users."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {"mode": {"type": "string"}},
+                                    "required": ["mode"],
+                                },
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        raw_tool_markup = (
+            "I'll look that up."
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.odoo:0"
+            "<|tool_call_argument_begin|>"
+            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]],["id","name","login"]],"kwargs":{"limit":1}}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": raw_tool_markup,
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "Penelope was found in Odoo.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+        execute_tool = AsyncMock(return_value={"records": [{"id": 7, "name": "Penelope"}], "count": 1})
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=execute_tool,
+        ):
+            result = await execute_chat(
+                db,
+                [
+                    {"role": "user", "content": "What did Penny do today in Odoo?"},
+                    {"role": "assistant", "content": "I found Penny's Odoo activity for today."},
+                    {"role": "user", "content": "Penelope"},
+                ],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "Penelope was found in Odoo."
+        assert "<|tool_call" not in result["content"]
+        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        called_args = execute_tool.call_args.args
+        assert called_args[2] == "odoo_ops_runner"
+        assert called_args[3]["mode"] == "query"
+        assert called_args[3]["model"] == "res.users"
+        assert called_args[3]["domain"] == [["name", "ilike", "Penelope"]]
+        assert called_args[3]["fields"] == ["id", "name", "login"]
+        assert called_args[3]["limit"] == 1
 
 
 # ── Security Tests ──

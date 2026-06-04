@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
 from sqlalchemy import select, or_, and_
@@ -29,7 +30,21 @@ OPPOSING_DIRECTIVES = [
 
 HIGH_RISK_KEYWORDS = [
     "revenue", "currency", "zar", "usd", "invoice", "customer", "supplier",
-    "payment", "bill", "p&l", "pnl", "financial", "compliance", "priority"
+    "payment", "bill", "p&l", "pnl", "financial", "compliance", "priority",
+    "identity", "authentication", "connected account", "user-delegated",
+]
+
+IDENTITY_ALLOW_PATTERNS = [
+    r"\bmust\s+use\b.{0,120}\b(user'?s|requesting\s+user'?s|connected\s+account|user-delegated)\b",
+    r"\bshould\s+use\b.{0,120}\b(user'?s|requesting\s+user'?s|connected\s+account|user-delegated)\b",
+    r"\buse\b.{0,120}\b(requesting\s+user'?s|user'?s\s+connected\s+account|connected\s+account|user-delegated)\b",
+]
+
+IDENTITY_BLOCK_PATTERNS = [
+    r"\bmust\s+(?:never|not)\s+use\b.{0,120}\b(user'?s|requesting\s+user'?s|connected\s+account|user-delegated)\b",
+    r"\bnever\s+use\b.{0,120}\b(user'?s|requesting\s+user'?s|connected\s+account|user-delegated)\b",
+    r"\bdo\s+not\s+use\b.{0,120}\b(user'?s|requesting\s+user'?s|connected\s+account|user-delegated)\b",
+    r"\bblock\b.{0,80}\b(user-delegated|connected\s+account)\b",
 ]
 
 
@@ -47,6 +62,27 @@ class RuleConflictService:
             if (w1 in t1 and w2 in t2) or (w2 in t1 and w1 in t2):
                 conflicts.append((w1, w2))
         return conflicts
+
+    def _has_identity_allow(self, text: str) -> bool:
+        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in IDENTITY_ALLOW_PATTERNS)
+
+    def _has_identity_block(self, text: str) -> bool:
+        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in IDENTITY_BLOCK_PATTERNS)
+
+    def _detect_identity_access_conflict(self, text1: str, text2: str) -> List[Tuple[str, str]]:
+        """Detect the specific per-user connector vs blocked delegation conflict.
+
+        Generic opposing-word checks miss phrases such as "must use the user's
+        connected account" versus "must never use user connected accounts".
+        This path protects the platform's delegated connector model directly.
+        """
+        first_allows = self._has_identity_allow(text1)
+        first_blocks = self._has_identity_block(text1)
+        second_allows = self._has_identity_allow(text2)
+        second_blocks = self._has_identity_block(text2)
+        if (first_allows and second_blocks) or (first_blocks and second_allows):
+            return [("user-delegated access allowed", "user-delegated access blocked")]
+        return []
 
     async def check_conflicts(self, candidate_rule: AIRule) -> Optional[Dict[str, Any]]:
         """Compares a candidate rule against existing active rules.
@@ -90,6 +126,7 @@ class RuleConflictService:
 
             # 3. Check for contradictory directives inside overlapping scopes
             opposing = self._detect_opposing_terms(candidate_rule.body, old_rule.body)
+            opposing += self._detect_identity_access_conflict(candidate_rule.body, old_rule.body)
             # Or if titles have opposing keywords
             opposing_title = self._detect_opposing_terms(candidate_rule.title, old_rule.title)
             

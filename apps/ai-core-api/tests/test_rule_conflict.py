@@ -83,6 +83,50 @@ class TestRuleConflictService:
         assert "'posted' vs 'draft'" in conflict["opposing_terms"]
 
     @pytest.mark.asyncio
+    async def test_user_delegated_identity_conflict_detected(self):
+        db = MockSession(has_config=False)
+
+        old_rule = AIRule(
+            id=uuid4(),
+            title="User Identity Policy",
+            body=(
+                "Direct user-triggered actions must use the requesting user's connected "
+                "account wherever possible."
+            ),
+            scope_type="global",
+            status="active"
+        )
+
+        new_rule = AIRule(
+            id=uuid4(),
+            title="Conflicting User Identity Policy",
+            body=(
+                "Direct user-triggered actions must never use user connected accounts. "
+                "In addition, always block user-delegated authentication."
+            ),
+            scope_type="global",
+            status="active"
+        )
+
+        class QueryResult:
+            @property
+            def scalars(self):
+                return lambda: MagicMock(all=lambda: [old_rule])
+
+        db.execute = AsyncMock(return_value=QueryResult())
+        db.add = MagicMock()
+
+        svc = RuleConflictService(db)
+        conflict = await svc.check_conflicts(new_rule)
+
+        assert conflict is not None
+        assert conflict["severity"] == "high"
+        assert (
+            "'user-delegated access allowed' vs 'user-delegated access blocked'"
+            in conflict["opposing_terms"]
+        )
+
+    @pytest.mark.asyncio
     async def test_non_conflicting_different_scopes(self):
         db = MockSession(has_config=False)
 

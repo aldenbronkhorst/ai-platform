@@ -1,13 +1,15 @@
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, update
 from app.core.config import get_settings
 from app.models.models import AITool
+from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, CONNECTOR_SYSTEMS
 
 settings = get_settings()
 
@@ -17,12 +19,12 @@ TOOLS = [
     {
         "name": "odoo_ops_runner",
         "display_name": "Odoo Operations Runner",
-        "description": "Consolidated Odoo command center. Modes: health, schema, query/records, count, aggregate, report/account_report, attachment, content, message, mutation/create/write/delete, execute. Use the mode field to choose the operation. Set `mode` to one of the supported values and provide the required parameters for that mode.",
+        "description": "Consolidated Odoo command center. Use one broad mode instead of feature-specific tools. Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. Normal ORM work uses XML-RPC; complex accounting reports use the connector report path.",
         "target_system": "odoo",
         "input_schema": {
             "type": "object",
             "properties": {
-                "mode": {"type": "string", "enum": ["health", "schema", "query", "records", "count", "aggregate", "report", "account_report", "attachment", "content", "message", "mutation", "create", "write", "delete", "execute"], "description": "Operation mode"},
+                "mode": {"type": "string", "enum": ["health", "schema", "query", "aggregate", "report", "attachment", "content", "message", "mutation", "execute"], "description": "Broad operation mode"},
                 "model": {"type": "string", "description": "Odoo model name (required for most modes)"},
                 "domain": {"type": "array", "items": {}, "description": "Search domain as list of filters"},
                 "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to return"},
@@ -51,7 +53,7 @@ TOOLS = [
     {
         "name": "azure_cli",
         "display_name": "Azure CLI",
-        "description": "Execute native Azure CLI commands. Use for any Azure operation: container apps, revisions, logs, metrics, key vault, network, etc. Uses the connected user's Azure account. Provide the full az command without the 'az ' prefix.",
+        "description": "Execute native Azure CLI commands for Azure operations such as resources, Container Apps, logs, metrics, Key Vault, networking, and RBAC. Uses the connected user's Azure account; Azure RBAC decides access. Provide the command with or without the leading 'az'.",
         "target_system": "azure",
         "input_schema": {
             "type": "object",
@@ -66,7 +68,7 @@ TOOLS = [
     {
         "name": "github_cli",
         "display_name": "GitHub CLI",
-        "description": "Execute native GitHub CLI commands (gh, git, rg, jq). Use for any GitHub operation: repo view, run list, PR view, issue list, commit log, file search, etc. Uses stored GitHub token for authentication.",
+        "description": "Execute native GitHub CLI and local repo commands (gh, git, rg, jq). Use for GitHub operations such as repos, Actions, PRs, issues, commits, and code search. Uses the connected user's GitHub token; GitHub org/repo/app permissions decide access.",
         "target_system": "github",
         "input_schema": {
             "type": "object",
@@ -107,8 +109,18 @@ async def seed_tools():
                 )
                 session.add(tool)
 
+        archived = await session.execute(
+            update(AITool)
+            .where(
+                AITool.status == "active",
+                AITool.target_system.in_(CONNECTOR_SYSTEMS),
+                ~AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
+            )
+            .values(status="archived", updated_at=datetime.now(timezone.utc))
+        )
         await session.commit()
-        print("Tools seeded successfully.")
+        archived_count = archived.rowcount or 0
+        print(f"Tools seeded successfully. Archived {archived_count} non-canonical connector tool(s).")
 
     await engine.dispose()
 

@@ -86,3 +86,75 @@ class TestSecureArtifactDownloads:
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
         assert response.status_code == 404
+
+
+class TestChatResponseGuards:
+    def test_unprocessed_textual_tool_call_is_rejected(self):
+        import uuid
+        from fastapi import HTTPException
+        from app.routers.chat import _raise_on_blank_response
+
+        with pytest.raises(HTTPException) as exc_info:
+            _raise_on_blank_response(
+                {
+                    "content": "Let me check.<|tool_calls_section_begin|><|tool_call_begin|>functions.odoo:0",
+                    "tool_calls": None,
+                },
+                "req-test",
+                uuid.uuid4(),
+                uuid.uuid4(),
+            )
+
+        assert exc_info.value.detail["error_type"] == "unprocessed_tool_call"
+
+    def test_invalid_assistant_messages_are_excluded_from_model_history(self):
+        import uuid
+        from app.models.models import AIChatMessage
+        from app.routers.chat import _is_valid_history_message
+
+        session_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+
+        assert _is_valid_history_message(AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content="Useful response",
+        ))
+        assert not _is_valid_history_message(AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content="",
+            metadata_json={"failed": True},
+        ))
+        assert not _is_valid_history_message(AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content="<|tool_calls_section_begin|><|tool_call_begin|>functions.odoo:0",
+        ))
+
+
+class TestChatTitleOwnership:
+    def test_manual_title_prevents_auto_title(self):
+        import uuid
+        from app.models.models import AIChatSession
+        from app.routers.chat import _can_auto_title_session, _set_session_title_source
+
+        session = AIChatSession(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            title="New Chat",
+            status="active",
+        )
+        assert _can_auto_title_session(session)
+
+        session.title = "Operations Review"
+        _set_session_title_source(session, "manual")
+
+        assert session.metadata_json["title_source"] == "manual"
+        assert not _can_auto_title_session(session)

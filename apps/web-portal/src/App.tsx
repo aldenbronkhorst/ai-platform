@@ -48,13 +48,6 @@ function writeCachedChatSessions(email: string, sessions: ChatSession[]) {
   }
 }
 
-function chatTitleAfterMessage(currentTitle: string, content: string) {
-  if (currentTitle !== "New Chat") return currentTitle;
-  const cleanContent = content.trim();
-  if (!cleanContent) return currentTitle;
-  return cleanContent.slice(0, 35) + (cleanContent.length > 35 ? "..." : "");
-}
-
 function chatSessionTime(session: ChatSession) {
   const time = Date.parse(session.last_message_at);
   return Number.isNaN(time) ? 0 : time;
@@ -355,7 +348,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         setChatSessions(data);
         writeCachedChatSessions(activeUserEmail, data);
         setActiveSession(prev => {
-          if (prev && data.some(session => session.id === prev.id)) return prev;
+          if (prev) {
+            const updatedActive = data.find(session => session.id === prev.id);
+            if (updatedActive) return updatedActive;
+          }
           return data.length > 0 ? data[0] : null;
         });
       } else {
@@ -388,12 +384,59 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     });
   }, []);
 
-  const touchChatSessionForMessage = useCallback((session: ChatSession, content: string) => {
+  const upsertChatSession = useCallback((session: ChatSession) => {
+    setChatSessions(prev => {
+      const exists = prev.some(item => item.id === session.id);
+      const next = exists
+        ? prev.map(item => item.id === session.id ? session : item)
+        : [session, ...prev];
+      const sorted = sortChatSessions(next);
+      writeCachedChatSessions(activeUserEmail, sorted);
+      return sorted;
+    });
+
+    setActiveSession(prev => prev?.id === session.id ? session : prev);
+  }, [activeUserEmail]);
+
+  const refreshChatSession = useCallback(async (sessionId: string) => {
+    if (!accessToken) return;
+    try {
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sessionId}`, { headers: getHeaders() });
+      if (res.ok) {
+        upsertChatSession(await res.json() as ChatSession);
+      }
+    } catch (err) {
+      console.error("Failed to refresh chat session:", err);
+    }
+  }, [accessToken, getHeaders, upsertChatSession]);
+
+  const touchChatSessionForMessage = useCallback((session: ChatSession) => {
     updateLocalChatSession(session.id, {
-      title: chatTitleAfterMessage(session.title, content),
       last_message_at: new Date().toISOString(),
     });
   }, [updateLocalChatSession]);
+
+  const renameChatSession = useCallback(async (sessionId: string, title: string) => {
+    const cleanTitle = title.trim().replace(/\s+/g, " ");
+    if (!cleanTitle) return;
+
+    const previous = chatSessions.find(session => session.id === sessionId);
+    updateLocalChatSession(sessionId, { title: cleanTitle });
+
+    try {
+      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: getHeaders(),
+        body: JSON.stringify({ title: cleanTitle }),
+      });
+      if (!res.ok) throw new Error(`Rename failed with HTTP ${res.status}`);
+      upsertChatSession(await res.json() as ChatSession);
+    } catch (err) {
+      console.error("Rename session failed:", err);
+      if (previous) updateLocalChatSession(sessionId, { title: previous.title });
+      alert("Failed to rename chat. Please try again.");
+    }
+  }, [chatSessions, getHeaders, updateLocalChatSession, upsertChatSession]);
 
   const addLocalMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
     setLocalMessagesBySession(prev => ({
@@ -616,6 +659,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } finally {
       clearTimeout(timeoutId);
       unmarkSessionSending(session.id);
+      void refreshChatSession(session.id);
     }
   };
 
@@ -631,7 +675,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
     const currentSess = activeSession || await createNewChat();
     if (!currentSess) return;
-    touchChatSessionForMessage(currentSess, content);
+    touchChatSessionForMessage(currentSess);
 
     const requestId = crypto.randomUUID();
     const pendingMsgId = crypto.randomUUID();
@@ -820,7 +864,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             displayName={activeUser.displayName}
             onInputChange={setChatInput}
             onSend={handleSendMessage}
-            onFileUpload={handleFileUpload}
             onRemoveFile={handleRemoveFile}
             onTriggerUpload={() => fileInputRef.current?.click()}
             onToggleVoice={handleToggleVoice}
@@ -874,6 +917,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           closeMobileSidebar();
         }}
         onDeleteSession={deleteChatSession}
+        onRenameSession={renameChatSession}
         onToggleCollapse={(collapsed) => {
           setIsSidebarCollapsed(collapsed);
           if (collapsed) setIsProfileMenuOpen(false);

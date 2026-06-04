@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 from app.models.models import AIRule, AICompanyFact, AITool, AIConnectedAccount
 from app.schemas.schemas import ContextRequest
+from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, CONNECTOR_SYSTEMS, is_model_facing_tool
 
 
 class ContextService:
@@ -127,10 +128,20 @@ class ContextService:
         else:
             # No connected or requested systems: only show AI-platform tools
             tools_query = tools_query.where(AITool.target_system == "ai-platform")
+        tools_query = tools_query.where(
+            or_(
+                ~AITool.target_system.in_(CONNECTOR_SYSTEMS),
+                AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
+            )
+        )
 
         tools_query = tools_query.limit(req.limit)
         tools_result = await self.db.execute(tools_query)
-        tools = tools_result.scalars().all()
+        tools = [
+            tool
+            for tool in tools_result.scalars().all()
+            if is_model_facing_tool(tool.name, tool.target_system)
+        ]
 
         return {
             "rules": filtered_rules,

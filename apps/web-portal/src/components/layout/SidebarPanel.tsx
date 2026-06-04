@@ -1,14 +1,17 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   FileText,
   Database,
   ClipboardList,
   Plus,
   X,
+  Check,
   ChevronLeft,
   Menu,
   User,
   ChevronDown,
+  Pencil,
   ShieldAlert,
   Settings,
   LogOut,
@@ -28,6 +31,7 @@ interface SidebarPanelProps {
   onNewChat: () => void;
   onSelectSession: (session: ChatSession) => void;
   onDeleteSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
   onToggleCollapse: (collapsed: boolean) => void;
   onToggleProfileMenu: () => void;
   onSignOut: () => void;
@@ -46,6 +50,7 @@ export function SidebarPanel({
   onNewChat,
   onSelectSession,
   onDeleteSession,
+  onRenameSession,
   onToggleCollapse,
   onToggleProfileMenu,
   onSignOut,
@@ -53,6 +58,15 @@ export function SidebarPanel({
 }: SidebarPanelProps) {
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+
+  useEffect(() => {
+    if (!editingSessionId) return;
+    editInputRef.current?.focus();
+    editInputRef.current?.select();
+  }, [editingSessionId]);
 
   const handleClickOutside = useCallback((e: MouseEvent) => {
     if (
@@ -88,6 +102,25 @@ export function SidebarPanel({
   if (hasRole(["AIPlatform.Admin", "AIPlatform.Developer"])) {
     navItems.push({ tab: "admin", icon: ShieldAlert, label: "Admin" });
   }
+
+  const startEditing = (e: ReactMouseEvent, session: ChatSession) => {
+    e.stopPropagation();
+    setEditingSessionId(session.id);
+    setEditingTitle(session.title);
+  };
+
+  const cancelEditing = () => {
+    setEditingSessionId(null);
+    setEditingTitle("");
+  };
+
+  const commitEditing = (session: ChatSession) => {
+    const nextTitle = editingTitle.trim().replace(/\s+/g, " ");
+    if (nextTitle && nextTitle !== session.title) {
+      onRenameSession(session.id, nextTitle);
+    }
+    cancelEditing();
+  };
 
   if (isSidebarCollapsed) {
     return (
@@ -160,10 +193,14 @@ export function SidebarPanel({
               No recent conversations.
             </div>
           ) : (
-            chatSessions.map((sess) => (
+            chatSessions.map((sess) => {
+              const isEditing = editingSessionId === sess.id;
+              return (
               <div
                 key={sess.id}
-                onClick={() => onSelectSession(sess)}
+                onClick={() => {
+                  if (!isEditing) onSelectSession(sess);
+                }}
                 className={`group p-2.5 rounded-xl cursor-pointer transition-all flex items-center justify-between border ${
                   activeSession?.id === sess.id && activeTab === "chat"
                     ? "glass-active"
@@ -171,21 +208,71 @@ export function SidebarPanel({
                 }`}
               >
                 <div className="overflow-hidden flex-1 pr-2">
-                  <p className="text-xs font-semibold truncate leading-tight text-default">
-                    {sess.title}
-                  </p>
+                  {isEditing ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        commitEditing(sess);
+                      }}
+                    >
+                      <input
+                        ref={editInputRef}
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={() => commitEditing(sess)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelEditing();
+                          }
+                        }}
+                        className="w-full bg-transparent text-xs font-semibold leading-tight text-default outline-none"
+                        maxLength={80}
+                      />
+                    </form>
+                  ) : (
+                    <p className="text-xs font-semibold truncate leading-tight text-default" title={sess.title}>
+                      {sess.title}
+                    </p>
+                  )}
                 </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteSession(sess.id);
-                  }}
-                  className="opacity-0 group-hover:opacity-100 text-soft hover:text-[var(--color-danger)] p-1 rounded hover-bg-surface transition-all shrink-0"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+                {isEditing ? (
+                  <button
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      commitEditing(sess);
+                    }}
+                    className="text-soft hover-text-default p-1 rounded hover-bg-surface transition-all shrink-0"
+                    title="Save title"
+                  >
+                    <Check className="w-3 h-3" />
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-0.5 shrink-0 opacity-80 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition-all">
+                    <button
+                      onClick={(e) => startEditing(e, sess)}
+                      className="text-soft hover-text-default p-1 rounded hover-bg-surface transition-all"
+                      title="Rename chat"
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteSession(sess.id);
+                      }}
+                      className="text-soft hover:text-[var(--color-danger)] p-1 rounded hover-bg-surface transition-all"
+                      title="Delete chat"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

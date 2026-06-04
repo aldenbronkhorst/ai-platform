@@ -16,6 +16,7 @@ interface AppShellProps {
   onNewChat: () => void;
   onSelectSession: (session: ChatSession) => void;
   onDeleteSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
   onToggleCollapse: (collapsed: boolean) => void;
   onToggleProfileMenu: () => void;
   onSignOut: () => void;
@@ -35,6 +36,7 @@ export function AppShell({
   onNewChat,
   onSelectSession,
   onDeleteSession,
+  onRenameSession,
   onToggleCollapse,
   onToggleProfileMenu,
   onSignOut,
@@ -55,6 +57,7 @@ export function AppShell({
           onNewChat={onNewChat}
           onSelectSession={onSelectSession}
           onDeleteSession={onDeleteSession}
+          onRenameSession={onRenameSession}
           onToggleCollapse={onToggleCollapse}
           onToggleProfileMenu={onToggleProfileMenu}
           onSignOut={onSignOut}

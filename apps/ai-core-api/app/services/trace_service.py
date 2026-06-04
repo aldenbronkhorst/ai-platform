@@ -29,6 +29,92 @@ NON_SECRET_TOKEN_KEYS = {
     "tokens_used",
 }
 
+TEXT_PREVIEW_CHARS = 180
+
+
+def _preview_text(value: Any, limit: int = TEXT_PREVIEW_CHARS) -> str:
+    text = str(value or "").strip().replace("\n", " ")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _tool_connector(tool_name: str) -> str:
+    if tool_name.startswith("odoo"):
+        return "Odoo"
+    if tool_name.startswith("azure"):
+        return "Azure"
+    if tool_name.startswith("github"):
+        return "GitHub"
+    return tool_name.replace("_", " ").title() if tool_name else "Tool"
+
+
+def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
+    connector = _tool_connector(tool_name)
+    if tool_name == "odoo_ops_runner":
+        mode = str(args.get("mode") or args.get("operation") or "operation")
+        model = str(args.get("model") or "").strip()
+        report = str(args.get("report_name") or args.get("report") or "").strip()
+        if mode in {"query", "records", "count", "aggregate", "schema"} and model:
+            return f"{mode.title()} {model}"
+        if mode in {"report", "account_report"} and report:
+            return f"Run Odoo report: {report}"
+        if mode in {"create", "write", "delete", "mutation"} and model:
+            operation = str(args.get("operation") or mode).title()
+            return f"{operation} {model}"
+        if model:
+            return f"Odoo {mode}: {model}"
+        return f"Odoo {mode}"
+
+    command = _preview_text(args.get("command"))
+    if command:
+        return f"{connector} CLI: {command}"
+    resource = _preview_text(args.get("resource") or args.get("query"))
+    return f"{connector}: {resource}" if resource else connector
+
+
+def _safe_tool_arguments(args: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "command", "query", "model", "mode", "operation", "method", "resource",
+        "timeout", "report_name", "fields", "limit", "order",
+    }
+    safe: dict[str, Any] = {}
+    for key in allowed:
+        if key not in args or args[key] in (None, ""):
+            continue
+        value = args[key]
+        if isinstance(value, str):
+            safe[key] = _preview_text(value)
+        elif isinstance(value, list):
+            safe[key] = value[:8]
+        elif isinstance(value, dict):
+            safe[key] = sorted(value.keys())[:8]
+        else:
+            safe[key] = value
+    if safe:
+        return safe
+    return {"argument_keys": sorted(args.keys())[:8]}
+
+
+def _result_count(result: Any) -> int | None:
+    if isinstance(result, list):
+        return len(result)
+    if not isinstance(result, dict):
+        return None
+    for key in ("count", "total", "total_items", "total_count"):
+        value = result.get(key)
+        if isinstance(value, int):
+            return value
+    for key in ("records", "items", "results", "data", "value"):
+        value = result.get(key)
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            nested_count = _result_count(value)
+            if nested_count is not None:
+                return nested_count
+    return None
+
 
 def redact_value(key: str, value: Any, depth: int = 0) -> Any:
     """Redact sensitive values recursively. Returns a safe-for-storage copy."""
@@ -72,7 +158,7 @@ def make_span_id() -> str:
 def summarize_payload(data: Any, max_keys: int = 10) -> dict:
     """Create a compact summary of a payload for trace storage."""
     if isinstance(data, dict):
-        return {k: _summarize_value(v) for k in list(data.keys())[:max_keys]}
+        return {k: _summarize_value(data[k]) for k in list(data.keys())[:max_keys]}
     if isinstance(data, list):
         return {"count": len(data), "sample": [_summarize_value(v) for v in data[:3]]}
     return _summarize_value(data)
@@ -116,42 +202,77 @@ def _activity_input_summary(span_type: str, data: dict[str, Any]) -> dict[str, A
         }
     if span_type == "tool_call":
         args = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+        tool_name = str(data.get("tool_name") or "")
         return {
-            "tool_name": data.get("tool_name"),
-            "arguments": {
-                key: value
-                for key, value in args.items()
-                if key in {"command", "query", "model", "operation", "resource", "timeout"}
-            } or {"argument_keys": sorted(args.keys())[:8]},
+            "tool_name": tool_name,
+            "connector": _tool_connector(tool_name),
+            "action": _tool_action(tool_name, args),
+            "arguments": _safe_tool_arguments(args),
         }
     if span_type == "context_build":
         return {
             "task_type": data.get("task_type"),
             "request_id": data.get("request_id"),
             "message_count": data.get("message_count"),
+            "user_message_preview": _preview_text(data.get("user_message")),
         }
     return summarize_payload(data)
 
 
 def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, Any]:
+    if span_type == "context_build":
+        return {
+            "risk_level": data.get("risk_level"),
+            "selected_model": data.get("selected_model"),
+            "selected_provider": data.get("selected_provider"),
+            "connected_systems": data.get("connected_systems") if isinstance(data.get("connected_systems"), list) else [],
+            "tools": data.get("tools") if isinstance(data.get("tools"), list) else [],
+            "tool_count": data.get("tool_count"),
+            "rules_injected": data.get("rules_injected"),
+            "facts_injected": data.get("facts_injected"),
+            "memories_injected": data.get("memories_injected"),
+            "search_results_injected": data.get("search_results_injected"),
+            "subtasks_injected": data.get("subtasks_injected"),
+        }
+    if span_type == "provider_call":
+        response = data.get("response") if isinstance(data.get("response"), dict) else {}
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        return {
+            "finish_reason": response.get("finish_reason"),
+            "tool_call_count": data.get("tool_call_count"),
+            "content_length": data.get("content_length"),
+            "latency_ms": data.get("latency_ms"),
+            "usage": {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+        }
+    if span_type == "model_request":
+        return {
+            "content_length": data.get("content_length"),
+            "tool_call_count": data.get("tool_call_count"),
+            "prompt_tokens": data.get("prompt_tokens"),
+            "completion_tokens": data.get("completion_tokens"),
+            "total_tokens": data.get("total_tokens"),
+        }
     if span_type == "tool_call":
         result = data.get("result")
         if isinstance(result, dict):
+            count = _result_count(result)
             return {
                 "result": {
                     "status": result.get("status"),
                     "error": bool(result.get("error")),
                     "error_type": result.get("error_type"),
-                    "message": result.get("message") or result.get("error"),
-                    "count": result.get("count") if isinstance(result.get("count"), int) else None,
+                    "message": _preview_text(result.get("message") or result.get("error")),
+                    "count": count,
                     "keys": sorted(result.keys())[:10],
                 }
             }
         if isinstance(result, list):
             return {"result": {"count": len(result), "type": "list"}}
         return {"result": {"type": type(result).__name__}}
-    if span_type in {"provider_call", "context_build", "model_request"}:
-        return summarize_payload(data)
     return summarize_payload(data)
 
 
