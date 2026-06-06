@@ -1,9 +1,33 @@
 import json
+import time
 from uuid import UUID
 
 import pytest
 
 from app.services import token_storage
+
+
+def test_token_status_from_data_reports_refreshed_connected_token():
+    status = token_storage.token_status_from_data("azure", {
+        "token_type": "Bearer",
+        "access_token": "fresh-token",
+        "expires_on": int(time.time()) + 3600,
+        "scope": "scope",
+        "username": "alden@example.com",
+    })
+
+    assert status["status"] == "connected"
+    assert status["provider"] == "azure"
+    assert status["username"] == "alden@example.com"
+
+
+def test_token_status_from_data_reports_expired_token():
+    status = token_storage.token_status_from_data("azure", {
+        "access_token": "old-token",
+        "expires_on": int(time.time()) - 1,
+    })
+
+    assert status["status"] == "expired"
 
 
 @pytest.mark.asyncio

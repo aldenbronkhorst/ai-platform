@@ -1,6 +1,7 @@
 """Shared connected-account state for delegated connector tokens."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
@@ -9,10 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import AIConnectedAccount
-from app.services.token_storage import token_secret_name, token_status
+from app.services.token_storage import token_secret_name, token_status, token_status_from_data
 
 
 DELEGATED_TOKEN_PROVIDERS = {"azure", "github"}
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -82,6 +84,19 @@ def _delegated_account_view(
     return view
 
 
+async def _delegated_token_status(provider: str, user_id: UUID) -> dict[str, Any]:
+    """Return delegated token status, refreshing providers that support it."""
+    if provider == "azure":
+        try:
+            from app.services.connector_commands import get_fresh_azure_token
+
+            token_data = await get_fresh_azure_token(user_id)
+            return token_status_from_data(provider, token_data)
+        except Exception as exc:
+            logger.warning("Azure token refresh status check failed for user %s: %s", user_id.hex[:12], exc)
+    return await token_status(provider, user_id)
+
+
 async def upsert_delegated_account(
     db: AsyncSession,
     provider: str,
@@ -148,7 +163,7 @@ async def sync_delegated_account_from_token(
     *,
     commit: bool = False,
 ) -> dict[str, Any]:
-    token_state = await token_status(provider, user_id)
+    token_state = await _delegated_token_status(provider, user_id)
     account = await get_account(db, user_id, provider)
     effective_status = effective_delegated_status(account, token_state)
 
@@ -185,7 +200,7 @@ async def record_delegated_diagnosis(
     *,
     commit: bool = False,
 ) -> None:
-    token_state = await token_status(provider, user_id)
+    token_state = await _delegated_token_status(provider, user_id)
     message = diagnosis.get("message") or diagnosis.get("error") or ""
     if diagnosis.get("status") == "success":
         await upsert_delegated_account(
@@ -251,7 +266,7 @@ async def effective_connected_accounts(
     by_provider = {account.provider: account for account in accounts}
 
     for provider in DELEGATED_TOKEN_PROVIDERS:
-        token_state = await token_status(provider, user_id)
+        token_state = await _delegated_token_status(provider, user_id)
         effective_status = effective_delegated_status(by_provider.get(provider), token_state)
         account = by_provider.get(provider)
         if account:

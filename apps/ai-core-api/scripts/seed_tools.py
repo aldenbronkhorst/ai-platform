@@ -29,7 +29,7 @@ TOOLS = [
                 "domain": {"type": "array", "items": {}, "description": "Search domain as list of filters"},
                 "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to return"},
                 "ids": {"type": "array", "items": {"type": "integer"}, "description": "Specific record IDs"},
-                "limit": {"type": "integer", "description": "Max records (default 50)", "default": 50},
+                "limit": {"type": "integer", "description": "Max records for this page (default 50)", "default": 50},
                 "offset": {"type": "integer", "description": "Records to skip", "default": 0},
                 "order": {"type": "string", "description": "Sort order, e.g. 'id desc'"},
                 "report_name": {"type": "string", "description": "Report name or alias (e.g. 'Profit and Loss', 'Trial Balance')"},

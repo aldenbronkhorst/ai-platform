@@ -69,6 +69,60 @@ class TestOdooOpsRunner:
         assert creds_arg.db == user_db
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_marks_short_first_page_complete_without_count_call(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": 1}, {"id": 2}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="account.move",
+                domain=[["write_date", ">=", "2026-06-04"]],
+                limit=50,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 2
+        assert data["total_count"] == 2
+        assert data["has_more"] is False
+        assert data["complete"] is True
+        mock_client.search_count.assert_not_called()
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_query_marks_full_page_incomplete_when_more_records_exist(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": i} for i in range(50)]
+        mock_client.search_count.return_value = 72
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="account.move",
+                domain=[["write_date", ">=", "2026-06-04"]],
+                limit=50,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 50
+        assert data["total_count"] == 72
+        assert data["has_more"] is True
+        assert data["complete"] is False
+        mock_client.search_count.assert_called_once_with(
+            model="account.move",
+            domain=[["write_date", ">=", "2026-06-04"]],
+        )
+
+    @patch("app.routers.ops_runner._get_client")
     def test_query_retries_without_invalid_requested_fields(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.search_read.side_effect = [
@@ -127,6 +181,42 @@ class TestOdooOpsRunner:
             "unlink",
             args=[[1]],
             kwargs={},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_search_read_returns_pagination_metadata(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": i} for i in range(10)]
+        mock_client.search_count.return_value = 10
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="mail.message",
+                method="search_read",
+                args=[[["date", ">=", "2026-06-04"]]],
+                kwargs={"fields": ["id", "date"], "limit": 10},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["method"] == "search_read"
+        assert data["returned_count"] == 10
+        assert data["total_count"] == 10
+        assert data["complete"] is True
+        assert data["result"][0]["id"] == 0
+        mock_client.search_read.assert_called_once_with(
+            model="mail.message",
+            domain=[["date", ">=", "2026-06-04"]],
+            fields=["id", "date"],
+            limit=10,
+            offset=0,
+            order=None,
+            include_ids=True,
         )
 
     @patch("app.routers.ops_runner.OdooReportService")

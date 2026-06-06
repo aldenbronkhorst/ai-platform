@@ -1,5 +1,5 @@
-import { useRef, useCallback, useEffect } from "react";
-import { Check, X } from "lucide-react";
+import { useRef, useCallback, useLayoutEffect, useState } from "react";
+import { CornerDownLeft, X } from "lucide-react";
 
 interface EditMessageProps {
   initialContent: string;
@@ -10,21 +10,31 @@ interface EditMessageProps {
 
 export function EditMessage({ initialContent, onSave, onCancel, isSaving }: EditMessageProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const valueRef = useRef(initialContent);
+  const [value, setValue] = useState(initialContent);
+  const [isExpanded, setIsExpanded] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  }, []);
+    const maxHeight = window.innerWidth < 640 ? 112 : 160;
+    ta.style.height = `${Math.min(ta.scrollHeight, maxHeight)}px`;
+    const stackThreshold = window.innerWidth < 640 ? 44 : 96;
+    setIsExpanded(value.includes("\n") || value.length > stackThreshold);
+  }, [value]);
+
+  const canSave = value.trim().length > 0 && !isSaving;
+
+  const submitEdit = useCallback(() => {
+    if (canSave) onSave(value);
+  }, [canSave, onSave, value]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Escape" && !e.nativeEvent.isComposing) {
@@ -34,60 +44,52 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
     }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      const val = (e.target as HTMLTextAreaElement).value;
-      if (val.trim()) {
-        onSave(val);
-      }
+      submitEdit();
     }
-  }, [onSave, onCancel]);
-
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    valueRef.current = e.target.value;
-  }, []);
+  }, [onCancel, submitEdit]);
 
   return (
-    <div className="max-w-[70%]">
-      <div className="p-3 rounded-2xl border bg-raised border-accent/40 shadow-sm">
-        <textarea
-          ref={textareaRef}
-          defaultValue={initialContent}
-          onChange={handleChange}
-          onKeyDown={handleKeyDown}
-          disabled={isSaving}
-          rows={2}
-          className="w-full bg-transparent border-0 focus:outline-none focus:ring-0 text-xs text-default placeholder-soft resize-none max-h-[200px] leading-relaxed"
-        />
-      </div>
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        submitEdit();
+      }}
+      className="w-full"
+    >
+      <div className="glass-composer">
+        <div className={isExpanded ? "flex flex-col gap-1 p-1 sm:p-1.5" : "flex items-center gap-1 p-1 sm:p-1.5"}>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isSaving}
+            rows={1}
+            className={`${isExpanded ? "w-full" : "flex-1"} min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-5 disabled:opacity-70`}
+          />
 
-      <div className="flex items-center gap-1.5 mt-1.5 justify-end">
-        <button
-          onClick={onCancel}
-          disabled={isSaving}
-          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold text-muted hover:text-default hover-bg-surface transition-all"
-          title="Cancel"
-          aria-label="Cancel edit"
-        >
-          <X className="w-3.5 h-3.5" />
-          Cancel
-        </button>
-        <button
-          onClick={() => {
-            const val = textareaRef.current?.value;
-            if (val && val.trim()) onSave(val);
-          }}
-          disabled={isSaving}
-          className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent text-white text-[11px] font-semibold hover:opacity-90 transition-all"
-          title="Save and resend"
-          aria-label="Save and resend"
-        >
-          {isSaving ? (
-            <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-          ) : (
-            <Check className="w-3.5 h-3.5" />
-          )}
-          Save & resend
-        </button>
+          <div className={isExpanded ? "flex min-h-9 items-center justify-between gap-2" : "flex items-center gap-1 shrink-0"}>
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isSaving}
+              className="h-9 inline-flex items-center justify-center rounded-lg px-3 text-sm font-medium text-muted transition-all hover-bg-surface hover-text-default disabled:cursor-not-allowed disabled:opacity-50"
+              title="Cancel"
+            >
+              <span className="hidden sm:inline">Cancel</span>
+              <X className="w-4 h-4 sm:hidden" />
+            </button>
+            <button
+              type="submit"
+              disabled={!canSave}
+              className="h-9 w-9 inline-flex items-center justify-center rounded-lg bg-raised hover-bg-surface text-default border border-default transition-all disabled:cursor-not-allowed disabled:opacity-40"
+              title="Send edited message"
+            >
+              <CornerDownLeft className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+    </form>
   );
 }

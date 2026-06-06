@@ -30,13 +30,14 @@ RATE_LIMIT_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded"}
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
+MAX_TOOL_RESULT_RECORD_ITEMS = 80
 MAX_TOOL_RESULT_DICT_KEYS = 60
-MAX_TOOL_RESULT_JSON_CHARS = 12000
+MAX_TOOL_RESULT_JSON_CHARS = 50000
 TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
 TOOL_FINALIZER_MAX_TOKENS = 4000
 TOOL_FINALIZER_MAX_TOOL_CALLS = 12
-TOOL_FINALIZER_RESULT_CHARS = 3500
-TOOL_FINALIZER_PAYLOAD_CHARS = 45000
+TOOL_FINALIZER_RESULT_CHARS = 20000
+TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
 CHAT_TITLE_MAX_CHARS = 70
@@ -56,6 +57,22 @@ CHAT_TITLE_SYSTEM_PROMPT = (
     "Use 3 to 6 words. "
     "Return only the title, with no quotes, no markdown, no trailing punctuation, and no generic words like chat or conversation."
 )
+CHAT_TITLE_FILLER_WORDS = {
+    "a", "all", "an", "and", "are", "as", "at", "be", "been", "being", "can", "could",
+    "did", "do", "does", "for", "from", "get", "give", "go", "how", "i", "if",
+    "in", "is", "it", "list", "me", "my", "of", "on", "or", "our", "please",
+    "show", "so", "tell", "the", "this", "to", "today", "tomorrow", "us", "was",
+    "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
+    "yesterday",
+}
+CHAT_TITLE_CANONICAL_WORDS = {
+    "ai": "AI",
+    "api": "API",
+    "azure": "Azure",
+    "github": "GitHub",
+    "odoo": "Odoo",
+    "mcp": "MCP",
+}
 TEXT_TOOL_CALL_RE = re.compile(
     r"<\|?tool_call_begin\|?>\s*(?P<name>.*?)\s*"
     r"<\|?tool_call_argument_begin\|?>\s*(?P<arguments>.*?)\s*"
@@ -712,6 +729,39 @@ def _sanitize_chat_title(title: Any) -> str | None:
     return text or None
 
 
+def _title_word(token: str) -> str:
+    canonical = CHAT_TITLE_CANONICAL_WORDS.get(token.lower())
+    if canonical:
+        return canonical
+    if token.isupper() and len(token) <= 6:
+        return token
+    return token[:1].upper() + token[1:].lower()
+
+
+def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
+    """Create a concise local title when the title model is unavailable."""
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        text = str(message.get("content") or "").strip()
+        if not text:
+            continue
+
+        text = TEXT_TOOL_CALL_SECTION_RE.sub(" ", text)
+        text = re.sub(r"https?://\S+", " ", text)
+        text = re.sub(r"[_*`~#>\[\]{}()]", " ", text)
+        tokens = re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", text)
+        if not tokens:
+            continue
+
+        useful = [token for token in tokens if token.lower() not in CHAT_TITLE_FILLER_WORDS]
+        selected = useful[:6] or tokens[:6]
+        title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))
+        if title:
+            return title
+    return None
+
+
 def _chat_title_source_text(messages: list[dict[str, Any]]) -> str:
     excerpts: list[str] = []
     for message in messages[:CHAT_TITLE_SOURCE_MESSAGES]:
@@ -769,13 +819,14 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
         return _truncate_tool_text(value)
 
     if isinstance(value, list):
-        compact_items = [_compact_tool_value(item, key, depth + 1) for item in value[:MAX_TOOL_RESULT_LIST_ITEMS]]
-        if len(value) <= MAX_TOOL_RESULT_LIST_ITEMS:
+        item_limit = MAX_TOOL_RESULT_RECORD_ITEMS if key_lower in {"records", "result", "lines", "groups"} else MAX_TOOL_RESULT_LIST_ITEMS
+        compact_items = [_compact_tool_value(item, key, depth + 1) for item in value[:item_limit]]
+        if len(value) <= item_limit:
             return compact_items
         return {
             "items": compact_items,
             "total_items": len(value),
-            "truncated_items": len(value) - MAX_TOOL_RESULT_LIST_ITEMS,
+            "truncated_items": len(value) - item_limit,
         }
 
     if isinstance(value, dict):
@@ -1164,6 +1215,12 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. "
             "For create/write/delete, use mode `mutation` with the `operation` field."
+        )
+        guidance_parts.append(
+            "Odoo query/content results include returned_count, total_count, has_more, and complete. "
+            "If complete is true, do not describe the result as truncated. "
+            "If the user asks for all records, full detail, or a timeline and has_more is true, "
+            "fetch the next page with the same query and a higher offset before answering."
         )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
@@ -1968,9 +2025,10 @@ async def generate_chat_title(
     trace_svc: Any = None,
 ) -> str | None:
     """Generate a compact chat title without exposing connector tools."""
+    fallback_title = _fallback_chat_title(messages)
     source_text = _chat_title_source_text(messages)
     if not source_text:
-        return None
+        return fallback_title
 
     try:
         route, model_obj, provider, _policy = await _select_route_model_provider(db, "general_chat", "low")
@@ -2018,11 +2076,11 @@ async def generate_chat_title(
         )
         if state.result.get("error"):
             logger.warning("Chat title generation failed: %s", state.result.get("message") or state.result.get("error_type"))
-            return None
-        return _sanitize_chat_title(state.result.get("content"))
+            return fallback_title
+        return _sanitize_chat_title(state.result.get("content")) or fallback_title
     except Exception as exc:
         logger.warning("Chat title generation skipped: %s", exc)
-        return None
+        return fallback_title
 
 
 async def execute_chat(

@@ -172,6 +172,11 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
         return {**token_data, "refresh_error": str(exc)}
 
 
+async def get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, Any]]:
+    """Return a stored Azure token, refreshing it first when possible."""
+    return await _get_fresh_azure_token(user_id)
+
+
 def _expires_on(token_data: dict[str, Any]) -> int:
     try:
         return int(token_data.get("expires_on") or 0)

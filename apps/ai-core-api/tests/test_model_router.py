@@ -17,6 +17,7 @@ from app.services.model_router import (
     RouteNotFoundError,
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
+    _fallback_chat_title,
     _sanitize_chat_title,
     _tool_selection_message,
 )
@@ -70,6 +71,23 @@ def test_chat_title_sanitizer_returns_short_plain_title():
     assert _sanitize_chat_title("1. Odoo Invoice Review\nextra") == "Odoo Invoice Review"
     assert _sanitize_chat_title("<|tool_call_begin|>bad") is None
     assert _sanitize_chat_title("New Chat") is None
+
+
+def test_fallback_chat_title_uses_first_user_request():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "can you check our azure and tell me all active resources"},
+        {"role": "assistant", "content": "I will check Azure."},
+    ])
+
+    assert title == "Check Azure Active Resources"
+
+
+def test_fallback_chat_title_preserves_business_terms():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "what did Penelope do today in Odoo, give me a timeline"},
+    ])
+
+    assert title == "Penelope Odoo Timeline"
 
 
 def test_tool_selection_message_inherits_context_for_date_correction():
@@ -176,6 +194,18 @@ async def mock_get_db_with_connector(connected_type="odoo"):
         status="connected",
     )
     yield MockSession(has_config=True, connected_accounts=[account])
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_title_falls_back_when_title_model_unavailable():
+    from app.services.model_router import generate_chat_title
+
+    title = await generate_chat_title(
+        MockSession(has_config=False),
+        [{"role": "user", "content": "what are all my azure resources and month to date costs"}],
+    )
+
+    assert title == "Azure Resources Month Date Costs"
 
 
 # ── Connector Context Tests ──
@@ -1234,10 +1264,55 @@ class TestToolExecution:
 
         payload = str(compacted)
         assert len(payload) < MAX_TOOL_RESULT_JSON_CHARS + 5000
-        assert compacted["records"]["total_items"] == 25
-        assert compacted["records"]["truncated_items"] == 20
-        assert compacted["records"]["items"][0]["datas"]["omitted"] is True
-        assert "truncated" in compacted["records"]["items"][0]["body"]
+        assert len(compacted["records"]) == 25
+        assert compacted["records"][0]["datas"]["omitted"] is True
+        assert "truncated" in compacted["records"][0]["body"]
+
+    def test_tool_result_compaction_caps_oversized_record_pages(self):
+        from app.services.model_router import _compact_tool_result_for_model, MAX_TOOL_RESULT_RECORD_ITEMS
+
+        compacted = _compact_tool_result_for_model({
+            "records": [{"id": i, "name": f"Record {i}"} for i in range(MAX_TOOL_RESULT_RECORD_ITEMS + 5)]
+        })
+
+        assert compacted["records"]["total_items"] == MAX_TOOL_RESULT_RECORD_ITEMS + 5
+        assert compacted["records"]["truncated_items"] == 5
+        assert len(compacted["records"]["items"]) == MAX_TOOL_RESULT_RECORD_ITEMS
+
+    def test_tool_finalizer_keeps_complete_odoo_page_visible(self):
+        from app.services.model_router import _tool_results_payload_for_finalizer
+
+        records = [
+            {
+                "id": i,
+                "display_name": f"BILL-2025-{i:05d} - Vendor",
+                "write_date": "2026-06-04 12:30:00",
+                "amount_total_money": {"formatted": f"R{i * 100}.00"},
+            }
+            for i in range(43)
+        ]
+        payload = _tool_results_payload_for_finalizer([
+            {
+                "tool_name": "odoo_ops_runner",
+                "arguments": {"mode": "query", "model": "account.move", "limit": 50},
+                "result": {
+                    "model": "account.move",
+                    "records": records,
+                    "count": 43,
+                    "returned_count": 43,
+                    "total_count": 43,
+                    "limit": 50,
+                    "offset": 0,
+                    "has_more": False,
+                    "complete": True,
+                },
+            }
+        ])
+
+        assert "BILL-2025-00042" in payload
+        assert '"complete": true' in payload
+        assert "Only a preview is available" not in payload
+        assert "finalizer payload truncated" not in payload
 
     def test_tool_result_compaction_keeps_practical_cli_stdout_complete(self):
         from app.services.model_router import _compact_tool_result_for_model

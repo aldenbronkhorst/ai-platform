@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleDashed, Loader2, Search, TerminalSquare, Wrench } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Search, TerminalSquare, Wrench } from "lucide-react";
 import type { ChatMessage } from "../../types";
 
 interface PendingAssistantProps {
@@ -29,6 +29,7 @@ interface ActivityRow {
   meta?: string;
   durationMs?: number | null;
   icon: "context" | "tool" | "model" | "default";
+  spanType?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -183,7 +184,7 @@ function titleFor(event: ActivityEvent) {
     if (toolCalls && toolCalls > 0) return `${modelName} requested ${toolCalls} tool${toolCalls === 1 ? "" : "s"}`;
     return `${modelName} responded`;
   }
-  if (type === "model_request") return status === "running" ? "Running assistant turn" : "Assistant turn complete";
+  if (type === "model_request") return status === "running" ? "Working" : "Finished";
   if (type === "tool_call") {
     const action = textValue(input.action) || displayToolName(name);
     if (status === "failed") return `${action} failed`;
@@ -281,46 +282,71 @@ function rowsFromEvents(events: ActivityEvent[]): ActivityRow[] {
     meta: metaFor(event),
     durationMs: event.duration_ms,
     icon: event.span_type === "tool_call" ? "tool" : event.span_type === "provider_call" ? "model" : event.span_type === "context_build" ? "context" : "default",
+    spanType: event.span_type,
   }));
 }
 
 function RowIcon({ row }: { row: ActivityRow }) {
   if (row.status === "success") return <CheckCircle2 className="mt-0.5 w-3.5 h-3.5 text-accent shrink-0" />;
-  if (row.status === "failed") return <CircleDashed className="mt-0.5 w-3.5 h-3.5 text-danger shrink-0" />;
-  if (row.icon === "tool") return <Wrench className="mt-0.5 w-3.5 h-3.5 text-accent shrink-0" />;
-  if (row.icon === "model") return <TerminalSquare className="mt-0.5 w-3.5 h-3.5 text-accent shrink-0" />;
-  if (row.icon === "context") return <Search className="mt-0.5 w-3.5 h-3.5 text-accent shrink-0" />;
+  if (row.status === "failed") return <AlertCircle className="mt-0.5 w-3.5 h-3.5 text-danger shrink-0" />;
+  if (row.status === "running") return <Loader2 className="mt-0.5 w-3.5 h-3.5 text-accent animate-spin shrink-0" />;
+  if (row.icon === "tool") return <Wrench className="mt-0.5 w-3.5 h-3.5 text-muted shrink-0" />;
+  if (row.icon === "model") return <TerminalSquare className="mt-0.5 w-3.5 h-3.5 text-muted shrink-0" />;
+  if (row.icon === "context") return <Search className="mt-0.5 w-3.5 h-3.5 text-muted shrink-0" />;
   return <Loader2 className="mt-0.5 w-3.5 h-3.5 text-accent animate-spin shrink-0" />;
 }
 
-function activitySummary(rows: ActivityRow[]) {
-  if (rows.length === 0) return "Starting";
-  const toolCount = rows.filter(row => row.icon === "tool").length;
-  const modelCount = rows.filter(row => row.icon === "model").length;
+function activitySummary(rows: ActivityRow[], elapsed: number, isTurnRunning: boolean) {
   const completed = rows.filter(row => row.status === "success").length;
-  const parts = [
-    `${rows.length} event${rows.length === 1 ? "" : "s"}`,
-    toolCount > 0 ? `${toolCount} tool${toolCount === 1 ? "" : "s"}` : "",
-    modelCount > 0 ? `${modelCount} model call${modelCount === 1 ? "" : "s"}` : "",
-    completed > 0 ? `${completed} done` : "",
-  ].filter(Boolean);
-  return parts.join(" · ");
+  const running = rows.find(row => row.status === "running");
+  if (running || isTurnRunning) return `Working for ${formatElapsed(elapsed)}`;
+  if (completed > 0) return `${plural(completed, "step")} done`;
+  return `Working for ${formatElapsed(elapsed)}`;
+}
+
+function visibleActivityRows(rows: ActivityRow[]) {
+  const nonUmbrella = rows.filter(row =>
+    row.spanType !== "model_request" &&
+    !(row.spanType === "provider_call" && row.status === "success")
+  );
+  const collapsed: ActivityRow[] = [];
+
+  for (const row of nonUmbrella) {
+    const previous = collapsed[collapsed.length - 1];
+    if (
+      previous &&
+      previous.status === "success" &&
+      row.status === "success" &&
+      previous.title === row.title &&
+      previous.detail === row.detail
+    ) {
+      continue;
+    }
+    collapsed.push(row);
+  }
+
+  return collapsed.slice(-7);
 }
 
 export function PendingAssistant({ message }: PendingAssistantProps) {
   const start = useMemo(() => startedAt(message), [message]);
   const [elapsed, setElapsed] = useState(() => elapsedSeconds(start));
   const rows = useMemo(() => rowsFromEvents(activityEvents(message)), [message]);
-  const current = [...rows].reverse().find(row => row.status === "running");
-  const summary = useMemo(() => activitySummary(rows), [rows]);
-  const visibleRows = rows.length > 0 ? rows : [{
+  const visibleRows = useMemo(() => visibleActivityRows(rows), [rows]);
+  const isTurnRunning = message.status === "pending" || message.status === "sending" || rows.some(row => row.spanType === "model_request" && row.status === "running");
+  const current = [...visibleRows].reverse().find(row => row.status === "running");
+  const summary = useMemo(() => activitySummary(visibleRows, elapsed, isTurnRunning), [visibleRows, elapsed, isTurnRunning]);
+  const displayedRows = visibleRows.length > 0 ? visibleRows : [{
     id: "starting",
     status: "running" as const,
-    title: "Starting assistant run",
-    detail: "Waiting for the first live activity event.",
+    title: "Starting",
+    detail: "Preparing the request.",
     meta: "starting",
     icon: "default" as const,
   }];
+  const lastCompleted = [...displayedRows].reverse().find(row => row.status === "success");
+  const headline = current?.title || (lastCompleted ? "Composing response" : "Starting");
+  const subtext = current?.detail || (lastCompleted ? "Using the gathered results to write the answer." : displayedRows[0].detail);
 
   useEffect(() => {
     const interval = setInterval(() => setElapsed(elapsedSeconds(start)), 1000);
@@ -330,44 +356,33 @@ export function PendingAssistant({ message }: PendingAssistantProps) {
   return (
     <div className="w-full flex justify-start">
       <div className="group w-full max-w-2xl min-w-0 py-1 text-sm">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 text-muted">
           <Loader2 className="w-4 h-4 text-accent animate-spin shrink-0" />
-          <span className="font-semibold text-default">
-            {current ? current.title : "Finalizing response"}
-          </span>
-          <span className="text-xs text-muted">· {formatElapsed(elapsed)}</span>
+          <span className="font-semibold text-default">{summary}</span>
         </div>
 
         <p className="mt-1 text-muted leading-relaxed">
-          {current ? current.detail : visibleRows[visibleRows.length - 1]?.detail}
+          <span className="text-default">{headline}</span>
+          {subtext ? <span className="text-muted"> · {subtext}</span> : null}
         </p>
 
-        <div className="mt-3 flex items-center gap-2 text-[11px] text-soft">
-          <span className="h-px flex-1 bg-default" />
-          <span>{summary}</span>
-        </div>
-
-        <div className="mt-3 space-y-2">
-          {visibleRows.map(row => (
+        <div className="mt-3 space-y-2 border-l border-default/70 pl-4">
+          {displayedRows.map(row => (
             <div
               key={row.id}
-              className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${
-                row.status === "running"
-                  ? "border-default bg-surface/70 text-default"
-                  : "border-transparent bg-transparent text-muted"
-              }`}
+              className={`flex items-start gap-2 ${row.status === "running" ? "text-default" : "text-muted"}`}
             >
               <RowIcon row={row} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 leading-snug">
-                  <span className="font-semibold truncate">{row.title}</span>
+                  <span className={row.status === "running" ? "font-semibold" : "font-medium"}>{row.title}</span>
                   {row.meta && (
-                    <span className="shrink-0 rounded-full border border-default px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-soft">
-                      {row.meta}
+                    <span className="shrink-0 text-[11px] uppercase tracking-wide text-soft">
+                      {row.meta.replace(/_/g, " ")}
                     </span>
                   )}
                 </div>
-                <div className="text-[11px] text-muted leading-snug break-words">{row.detail}</div>
+                <div className="text-xs text-muted leading-snug break-words">{row.detail}</div>
               </div>
             </div>
           ))}

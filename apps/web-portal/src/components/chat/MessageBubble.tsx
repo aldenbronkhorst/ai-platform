@@ -32,7 +32,7 @@ export function MessageBubble({
   if (message.role === "user") {
     if (isEditing) {
       return (
-        <div className="flex justify-end">
+        <div className="w-full flex justify-center">
           <EditMessage
             initialContent={message.content}
             onSave={(c) => onEditSave?.(c)}

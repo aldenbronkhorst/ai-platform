@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import {
-  Database, BookOpen, RefreshCw, CheckCircle2,
-  AlertTriangle, Trash2, Terminal, GitBranch,
-  ChevronRight, X,
+  Plug, RefreshCw, CheckCircle2,
+  AlertTriangle, Trash2, GitBranch,
+  ChevronRight, Search, X,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
 import { GlassInput } from "../components/ui/GlassInput";
@@ -20,7 +19,6 @@ interface ConnectorDef {
   key: string;
   name: string;
   subtitle: string;
-  icon: LucideIcon;
 }
 
 interface ConnectorMeta {
@@ -202,6 +200,42 @@ function InfoGrid({ rows }: { rows: { label: string; value: ReactNode }[] }) {
   );
 }
 
+function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connectorKey: string; className?: string }) {
+  if (connectorKey === "odoo") {
+    return (
+      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Odoo logo">
+        <path
+          fill="#714B67"
+          d="M21.1002 15.7957c-1.6015 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2979 2.8998-2.8998 2.8998zm0-1.2c.9388.0006 1.7003-.7601 1.7008-1.6989.0004-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zm-6.0655 1.2c-1.6014 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2999 2.8998-2.8998 2.8998zm0-1.2c.9389.0006 1.7003-.7601 1.7008-1.6989.0005-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zM11.865 12.858c0 1.6199-1.2979 2.9378-2.8977 2.9378s-2.8998-1.314-2.8998-2.9358 1.1799-2.8597 2.8998-2.8597c.6359 0 1.2239.134 1.6998.484v-1.68a.6.6 0 0 1 1.2 0v4.0537h-.002zm-2.8977 1.7399c.9388.0005 1.7002-.7602 1.7007-1.699.0005-.9388-.7602-1.7003-1.699-1.7007h-.0017c-.9389.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699zm-6.0675 1.1979C1.2983 15.7957 0 14.4974 0 12.8959s1.2983-2.8997 2.8998-2.8997 2.8997 1.2982 2.8997 2.8997c0 1.5999-1.2999 2.8998-2.8997 2.8998zm0-1.2c.9388.0006 1.7002-.7601 1.7007-1.699.0005-.9387-.7602-1.7002-1.699-1.7006h-.0017c-.9388.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699z"
+        />
+      </svg>
+    );
+  }
+
+  if (connectorKey === "azure") {
+    return (
+      <svg className={className} viewBox="0 0 96 96" role="img" aria-label="Microsoft Azure logo">
+        <path fill="#0669BC" d="M33.338 6.544h26.038l-27.03 80.087a4.152 4.152 0 0 1-3.933 2.824H8.149a4.145 4.145 0 0 1-3.928-5.47L29.404 9.368a4.152 4.152 0 0 1 3.934-2.825z" />
+        <path fill="#0078D4" d="M71.175 60.261h-41.29a1.911 1.911 0 0 0-1.305 3.309l26.532 24.764a4.171 4.171 0 0 0 2.846 1.121h23.38z" />
+        <path fill="#3CCBF4" d="M66.595 9.364a4.145 4.145 0 0 0-3.928-2.82H33.648a4.146 4.146 0 0 1 3.928 2.82l25.184 74.62a4.146 4.146 0 0 1-3.928 5.472h29.02a4.146 4.146 0 0 0 3.927-5.472z" />
+      </svg>
+    );
+  }
+
+  if (connectorKey === "github") {
+    return (
+      <svg className={`${className} text-default`} viewBox="0 0 24 24" role="img" aria-label="GitHub logo">
+        <path
+          fill="currentColor"
+          d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+        />
+      </svg>
+    );
+  }
+
+  return <div className={`${className} rounded-full bg-muted`} />;
+}
+
 function ConnectorDetailShell({
   connector,
   status,
@@ -215,13 +249,11 @@ function ConnectorDetailShell({
   hasStatusError?: boolean;
   children: ReactNode;
 }) {
-  const Icon = connector.icon;
-
   return (
     <div className="space-y-5">
       <div className="flex items-start gap-3">
         <div className="p-2.5 rounded-xl bg-canvas border border-default shrink-0">
-          <Icon className="w-5 h-5 text-muted" />
+          <ConnectorLogo connectorKey={connector.key} />
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="font-bold text-base text-default">{connector.name}</h3>
@@ -235,9 +267,9 @@ function ConnectorDetailShell({
 }
 
 const CONNECTORS: ConnectorDef[] = [
-  { key: "odoo", name: "Odoo Enterprise", subtitle: "ERP Proxy Connector", icon: Database },
-  { key: "azure", name: "Azure CLI", subtitle: "Native Azure CLI", icon: Terminal },
-  { key: "github", name: "GitHub CLI", subtitle: "Native GitHub CLI", icon: GitBranch },
+  { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
+  { key: "azure", name: "Azure", subtitle: "Native Azure CLI connector" },
+  { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
 ];
 
 interface ConnectionsPageProps { accessToken: string; }
@@ -258,6 +290,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [azurePolling, setAzurePolling] = useState(false);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
+  const [connectorSearch, setConnectorSearch] = useState("");
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -630,6 +663,25 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const availableConnectors = connectorMeta
     ? CONNECTORS.filter((connector) => connectorMeta[connector.key])
     : [];
+  const normalizedConnectorSearch = connectorSearch.trim().toLowerCase();
+  const filteredConnectors = normalizedConnectorSearch
+    ? availableConnectors.filter((connector) => {
+      const meta = connectorMeta?.[connector.key];
+      const searchable = [
+        connector.key,
+        connector.name,
+        connector.subtitle,
+        meta?.status,
+        meta?.state?.account_status,
+        meta?.state?.token_status,
+        meta?.state?.diagnostics_status,
+        meta?.state?.cli_status,
+        meta?.metadata?.provider_username,
+        meta?.metadata?.permission_summary,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return searchable.includes(normalizedConnectorSearch);
+    })
+    : availableConnectors;
   const activeConnector = selectedConnector && (!connectorMeta || connectorMeta[selectedConnector])
     ? selectedConnector
     : null;
@@ -638,12 +690,12 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
       <GlassPanel className="p-5 sm:p-8 rounded-2xl sm:rounded-3xl flex items-start sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-bold text-default mb-2">Connected Accounts</h2>
+          <h2 className="text-xl font-bold text-default mb-2">Connectors</h2>
           <p className="text-sm text-muted max-w-2xl">
-            Connect third-party integrations. Credentials are stored securely in Azure Key Vault.
+            Connect external systems and expose their account-specific tools to the AI platform.
           </p>
         </div>
-        <BookOpen className="hidden sm:block w-12 h-12 text-soft shrink-0" />
+        <Plug className="hidden sm:block w-12 h-12 text-soft shrink-0" />
       </GlassPanel>
 
       {connectorMeta === null && !connectorStatusError ? (
@@ -670,8 +722,24 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       ) : null}
 
       {availableConnectors.length > 0 ? (
+      <div className="space-y-4">
+        <div className="relative max-w-xl">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft pointer-events-none" />
+          <input
+            value={connectorSearch}
+            onChange={(e) => setConnectorSearch(e.target.value)}
+            placeholder="Search connectors..."
+            className="w-full rounded-2xl border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-all focus:border-soft"
+          />
+        </div>
+
+        {filteredConnectors.length === 0 ? (
+          <DetailCard>
+            <p className="text-sm text-muted">No connectors match your search.</p>
+          </DetailCard>
+        ) : (
       <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {availableConnectors.map((c) => {
+        {filteredConnectors.map((c) => {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
@@ -679,7 +747,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
-                <c.icon className="w-5 h-5 text-muted" />
+                <ConnectorLogo connectorKey={c.key} />
               </div>
               <ChevronRight className="w-4 h-4 text-soft group-hover:text-default transition-colors" />
             </div>
@@ -693,6 +761,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           </button>
         );})}
       </div>
+        )}
+      </div>
       ) : null}
 
       {/* Detail Drawer */}
@@ -700,9 +770,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm z-50 flex justify-end animate-fade-in">
           <div className="w-full max-w-lg bg-surface border-l border-default overflow-y-auto">
             <div className="p-4 sm:p-6 border-b border-default flex items-center justify-between">
-              <h2 className="font-bold text-lg text-default">
-                {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
-              </h2>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2 rounded-xl bg-canvas border border-default shrink-0">
+                  <ConnectorLogo connectorKey={activeConnector} />
+                </div>
+                <h2 className="font-bold text-lg text-default truncate">
+                  {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
+                </h2>
+              </div>
               <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />

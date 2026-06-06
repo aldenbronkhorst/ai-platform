@@ -15,7 +15,7 @@ export function MainHeader({
     chat: "Chat",
     tasks: "Tasks",
     artifacts: "Documents",
-    "connected-accounts": "Connected Accounts",
+    "connected-accounts": "Connectors",
     audit: "Audit Logs",
     settings: "Settings",
     admin: "Admin",

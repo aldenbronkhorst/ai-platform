@@ -117,10 +117,61 @@ def _query_records(client: OdooClient, req: OdooOpsRunnerRequest, fields: list[s
     )
 
 
+def _pagination_metadata(
+    client: OdooClient,
+    model: str,
+    domain: list[Any],
+    returned_count: int,
+    limit: int,
+    offset: int,
+    ids: list[int] | None = None,
+) -> dict[str, Any]:
+    if ids:
+        total_count = returned_count
+    elif limit and offset == 0 and returned_count < limit:
+        total_count = returned_count
+    else:
+        total_count = client.search_count(model=model, domain=domain or [])
+
+    has_more = (offset + returned_count) < total_count
+    return {
+        "returned_count": returned_count,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "complete": not has_more,
+    }
+
+
+def _paged_result(
+    client: OdooClient,
+    req: OdooOpsRunnerRequest,
+    records: list[dict[str, Any]],
+    *,
+    payload_key: str = "records",
+) -> dict[str, Any]:
+    returned_count = len(records)
+    return {
+        "model": req.model,
+        payload_key: records,
+        "count": returned_count,
+        **_pagination_metadata(
+            client,
+            req.model,
+            req.domain or [],
+            returned_count,
+            req.limit,
+            req.offset,
+            req.ids,
+        ),
+    }
+
+
 def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     try:
         records = _query_records(client, req, req.fields)
-        return {"model": req.model, "records": records, "count": len(records)}
+        return _paged_result(client, req, records)
     except Exception as exc:
         if not req.fields or not req.model or not _invalid_field_error(exc):
             raise
@@ -137,9 +188,7 @@ def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
 
     records = _query_records(client, req, valid_fields)
     return {
-        "model": req.model,
-        "records": records,
-        "count": len(records),
+        **_paged_result(client, req, records),
         "warning": "Some requested fields do not exist on this Odoo model and were omitted.",
         "omitted_invalid_fields": invalid_fields,
         "field_errors": schema.get("field_errors"),
@@ -220,7 +269,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
             if not req.raw_html:
                 value = re.sub(r"<[^>]+>", "", value)
             record[field] = value[:req.max_content_chars] + "..." if len(value) > req.max_content_chars else value
-    return {"model": req.model, "records": records, "count": len(records)}
+    return _paged_result(client, req, records)
 
 
 def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
@@ -290,6 +339,33 @@ def _run_mutation(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, An
 def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     if not req.model or not req.method:
         raise HTTPException(status_code=400, detail={"error": "execute requires model and method"})
+    if req.method == "search_read":
+        kwargs = req.kwargs or {}
+        args = req.args or []
+        domain = req.domain if req.domain is not None else (args[0] if args and isinstance(args[0], list) else [])
+        fields = req.fields or kwargs.get("fields")
+        if not fields and len(args) > 1 and isinstance(args[1], list):
+            fields = args[1]
+        limit = int(kwargs.get("limit") or req.limit)
+        offset = int(kwargs.get("offset") or req.offset)
+        order = kwargs.get("order") or req.order
+        records = client.search_read(
+            model=req.model,
+            domain=domain,
+            fields=fields,
+            limit=limit,
+            offset=offset,
+            order=order,
+            include_ids=req.include_ids,
+        )
+        returned_count = len(records)
+        return {
+            "model": req.model,
+            "method": req.method,
+            "result": records,
+            "count": returned_count,
+            **_pagination_metadata(client, req.model, domain, returned_count, limit, offset),
+        }
     result = client.call_with_transport(req.model, req.method, args=req.args or [], kwargs=req.kwargs or {})
     return {"model": req.model, "method": req.method, "result": result}
 

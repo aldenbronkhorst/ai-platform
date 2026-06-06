@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   FileText,
-  Database,
+  Plug,
   ClipboardList,
   Plus,
   X,
@@ -96,7 +96,7 @@ export function SidebarPanel({
   const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
     { tab: "tasks", icon: ClipboardList, label: "Tasks Tracker" },
     { tab: "artifacts", icon: FileText, label: "Documents Vault" },
-    { tab: "connected-accounts", icon: Database, label: "Connected Accounts" },
+    { tab: "connected-accounts", icon: Plug, label: "Connectors" },
   ];
 
   if (hasRole(["AIPlatform.Admin", "AIPlatform.Developer"])) {

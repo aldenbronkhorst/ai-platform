@@ -91,9 +91,8 @@ async def delete_token(provider: str, user_id: UUID) -> bool:
         return False
 
 
-async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
-    """Check if a token exists and its expiry status."""
-    token = await retrieve_token(provider, user_id)
+def token_status_from_data(provider: str, token: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Return connection status metadata for an already-loaded token payload."""
     if not token:
         return {"status": "not_connected", "provider": provider}
     expires_on = token.get("expires_on")
@@ -101,18 +100,10 @@ async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
         expires_ts = int(expires_on) if expires_on else None
     except (TypeError, ValueError):
         expires_ts = None
-    if expires_ts and expires_ts <= int(time.time()):
-        return {
-            "status": "expired",
-            "provider": provider,
-            "token_type": token.get("token_type", "unknown"),
-            "expires_on": expires_on,
-            "scope": token.get("scope", ""),
-            "username": token.get("username") or token.get("login") or token.get("provider_username"),
-            "login": token.get("login"),
-        }
+
+    status = "expired" if expires_ts and expires_ts <= int(time.time()) else "connected"
     return {
-        "status": "connected",
+        "status": status,
         "provider": provider,
         "token_type": token.get("token_type", "unknown"),
         "expires_on": token.get("expires_on"),
@@ -120,3 +111,8 @@ async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
         "username": token.get("username") or token.get("login") or token.get("provider_username"),
         "login": token.get("login"),
     }
+
+
+async def token_status(provider: str, user_id: UUID) -> dict[str, Any]:
+    """Check if a token exists and its expiry status."""
+    return token_status_from_data(provider, await retrieve_token(provider, user_id))
