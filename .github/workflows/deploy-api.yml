@@ -135,8 +135,8 @@ jobs:
           }
 
           CONTAINER_APP=$(resolve_container_app "ca-ai-platform-api-prod-san-001")
-          CONNECTOR_APP=$(resolve_container_app "ca-ai-platform-odoo-connector-prod-san-001" "ca-odoo-connector-prod-san-001")
-          WORKER_APP=$(resolve_container_app "ca-ai-platform-worker-prod-san-001" "ca-ai-worker-prod")
+          CONNECTOR_APP=$(resolve_container_app "ca-odoo-connector-prod-san-001" "ca-ai-platform-odoo-connector-prod-san-001")
+          WORKER_APP=$(resolve_container_app "ca-ai-worker-prod" "ca-ai-platform-worker-prod-san-001")
           CONNECTOR_FQDN=$(az containerapp show --name "$CONNECTOR_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
 
           echo "resource_group=${RESOURCE_GROUP}" >> $GITHUB_OUTPUT

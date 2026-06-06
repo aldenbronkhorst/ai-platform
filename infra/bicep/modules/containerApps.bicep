@@ -63,7 +63,8 @@ param deploySearch bool = false
 
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
-var odooConnectorAppName = 'ca-${workload}-odoo-connector-${environment}-${regionCode}-${instance}'
+var odooConnectorAppName = 'ca-odoo-connector-${environment}-${regionCode}-${instance}'
+var workerAppName = 'ca-ai-worker-${environment}'
 var containerImage = '${acrLoginServer}/ai-core-api:${apiImageTag}'
 var odooConnectorImage = '${acrLoginServer}/odoo-connector-api:${odooConnectorImageTag}'
 
@@ -179,7 +180,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             {
               type: 'Readiness'
               httpGet: {
-                path: '/health'
+                path: '/health/ready'
                 port: 8000
               }
               initialDelaySeconds: 10
@@ -304,7 +305,7 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2024-03-01' = {
 }
 
 resource containerAppWorker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ca-${workload}-worker-${environment}-${regionCode}-${instance}'
+  name: workerAppName
   location: location
   tags: tags
   identity: {

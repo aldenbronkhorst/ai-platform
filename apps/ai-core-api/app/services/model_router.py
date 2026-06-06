@@ -33,6 +33,8 @@ MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_RECORD_ITEMS = 80
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 50000
+MAX_ODOO_RECORD_CONTEXT_CHARS = 20000
+MAX_ODOO_RECORD_CONTEXT_ITEMS = 25
 TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
 TOOL_FINALIZER_MAX_TOKENS = 4000
 TOOL_FINALIZER_MAX_TOOL_CALLS = 12
@@ -40,6 +42,15 @@ TOOL_FINALIZER_RESULT_CHARS = 20000
 TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
+DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
+DIRECT_BLANK_RETRY_MESSAGE = {
+    "role": "system",
+    "content": (
+        "Your previous response returned no user-visible content. "
+        "Answer the latest user message now, concisely, without calling tools. "
+        "If the available conversation does not contain enough evidence, say exactly what is missing."
+    ),
+}
 CHAT_TITLE_MAX_CHARS = 70
 CHAT_TITLE_SOURCE_MESSAGES = 6
 CHAT_TITLE_SOURCE_CHARS = 900
@@ -512,6 +523,29 @@ def _canonicalize_tool_call(call: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _connector_error_payload(raw_detail: Any, fallback_text: str = "") -> dict[str, Any]:
+    detail = raw_detail.get("detail") if isinstance(raw_detail, dict) and "detail" in raw_detail else raw_detail
+    if not isinstance(detail, dict):
+        message = str(detail or fallback_text or "Connector returned an error.")
+        return {
+            "error_type": "connector_http_error",
+            "message": _truncate_tool_text(message, 1200),
+        }
+
+    error_type = str(detail.get("error_type") or detail.get("error") or "connector_error")
+    raw_message = detail.get("message") or detail.get("detail") or fallback_text or error_type
+    message = json.dumps(raw_message, ensure_ascii=False, default=str) if isinstance(raw_message, (dict, list)) else str(raw_message)
+
+    safe: dict[str, Any] = {
+        "error_type": error_type,
+        "message": _truncate_tool_text(message, 1200),
+    }
+    for key in ("model", "field", "suggestion", "correlation_id", "status_code"):
+        if key in detail and detail[key] not in (None, ""):
+            safe[key] = detail[key]
+    return safe
+
+
 def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
     """Convert AITool records to OpenAI-compatible tool definitions.
     Normalizes names to comply with the API's allowed character set.
@@ -612,15 +646,16 @@ async def _execute_tool_call_impl(
             response = await client.post(url, json=payload, headers=headers)
         if response.status_code >= 400:
             try:
-                detail = response.json()
+                raw_detail = response.json()
             except Exception:
-                detail = {"error_type": "connector_http_error", "message": response.text}
+                raw_detail = {"error_type": "connector_http_error", "message": response.text}
+            detail = _connector_error_payload(raw_detail, response.text)
             return {
                 "error": True,
                 "status_code": response.status_code,
                 "connector_error": detail,
-                "error_type": detail.get("error_type") or detail.get("error") or "connector_error",
-                "message": detail.get("message") or detail.get("detail") or str(detail),
+                "error_type": detail.get("error_type") or "connector_error",
+                "message": detail.get("message") or "Connector returned an error.",
             }
         return response.json()
 
@@ -841,7 +876,35 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
     return value
 
 
+def _compact_odoo_record_page(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep broad Odoo pages useful without letting one page dominate prompts."""
+    records = result.get("records")
+    if not isinstance(records, list):
+        return result
+    try:
+        records_payload_chars = len(json.dumps(records, ensure_ascii=False, default=str))
+    except Exception:
+        records_payload_chars = len(str(records))
+    if records_payload_chars <= MAX_ODOO_RECORD_CONTEXT_CHARS:
+        return result
+
+    visible_records = records[:MAX_ODOO_RECORD_CONTEXT_ITEMS]
+    compacted = dict(result)
+    compacted["records"] = visible_records
+    compacted["records_compacted_for_model"] = True
+    compacted["visible_record_count"] = len(visible_records)
+    compacted["original_record_count"] = len(records)
+    compacted["original_records_chars"] = records_payload_chars
+    compacted["model_context_warning"] = (
+        "Only the first records are visible in model context because the Odoo page was large. "
+        "Use pagination, narrower fields, or a stricter domain for complete detail."
+    )
+    return compacted
+
+
 def _compact_tool_result_for_model(result: Any) -> Any:
+    if isinstance(result, dict) and isinstance(result.get("model"), str):
+        result = _compact_odoo_record_page(result)
     compacted = _compact_tool_value(result)
     payload = json.dumps(compacted, ensure_ascii=False, default=str)
     serializable = json.loads(payload)
@@ -1052,6 +1115,148 @@ def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
     return None
 
 
+def _strip_html_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _odoo_records_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    records = result.get("records")
+    if records is None:
+        records = result.get("result")
+    if isinstance(records, dict) and isinstance(records.get("items"), list):
+        records = records["items"]
+    if isinstance(records, list):
+        return [record for record in records if isinstance(record, dict)]
+    return []
+
+
+def _odoo_record_timestamp(record: dict[str, Any]) -> str:
+    for key in ("date", "create_date", "write_date"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _odoo_display_value(value: Any) -> str:
+    if isinstance(value, dict):
+        if value.get("name"):
+            return str(value["name"])
+        if value.get("id") is not None:
+            return str(value["id"])
+        return ", ".join(f"{k}={v}" for k, v in list(value.items())[:3])
+    if isinstance(value, list):
+        return ", ".join(_odoo_display_value(item) for item in value[:3])
+    if value is False or value is None:
+        return ""
+    return str(value)
+
+
+def _odoo_record_summary(model: str, record: dict[str, Any]) -> str:
+    name = (
+        record.get("display_name")
+        or record.get("record_name")
+        or record.get("name")
+        or record.get("summary")
+        or record.get("subject")
+    )
+    if not name and record.get("body"):
+        name = _strip_html_text(record.get("body"))
+    if not name:
+        name = f"{model} #{record.get('id') or record.get('res_id') or '?'}"
+
+    extras: list[str] = []
+    for key in ("model", "res_model", "move_type", "state", "message_type", "payment_type"):
+        value = _odoo_display_value(record.get(key))
+        if value:
+            extras.append(value)
+    partner = _odoo_display_value(record.get("partner_id"))
+    if partner:
+        extras.append(partner)
+    amount = record.get("amount_total", record.get("amount"))
+    if amount not in (None, ""):
+        extras.append(f"amount={amount}")
+    origin = _odoo_display_value(record.get("invoice_origin"))
+    if origin:
+        extras.append(f"origin={origin}")
+
+    summary = _strip_html_text(name)
+    if extras:
+        summary = f"{summary} ({'; '.join(extras[:4])})"
+    return _truncate_tool_text(summary, 260)
+
+
+def _build_odoo_evidence_fallback_answer(tool_results: list[dict[str, Any]]) -> str | None:
+    """Build a deterministic answer when the model cannot finalize Odoo tool output."""
+    odoo_results = [item for item in tool_results if item.get("tool_name") == "odoo_ops_runner"]
+    if not odoo_results:
+        return None
+
+    timeline: list[tuple[str, str, str]] = []
+    counts: list[str] = []
+    errors: list[str] = []
+    omitted = 0
+
+    for tool_result in odoo_results:
+        arguments = tool_result.get("arguments") or {}
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        model = str(result.get("model") or arguments.get("model") or "Odoo")
+        if result.get("error"):
+            error_type = str(result.get("error_type") or "tool_error")
+            message = str(result.get("message") or result.get("error_type") or "tool error")
+            errors.append(f"{model}: {error_type}: {_truncate_tool_text(message, 220)}")
+            continue
+
+        returned = result.get("returned_count", result.get("count"))
+        total = result.get("total_count")
+        if isinstance(returned, int):
+            if isinstance(total, int) and total != returned:
+                counts.append(f"{model}: {returned} of {total} records returned")
+            else:
+                counts.append(f"{model}: {returned} records")
+
+        records = _odoo_records_from_result(result)
+        for record in records:
+            timestamp = _odoo_record_timestamp(record)
+            if not timestamp:
+                omitted += 1
+                continue
+            timeline.append((timestamp, model, _odoo_record_summary(model, record)))
+
+    if timeline:
+        timeline.sort(key=lambda item: item[0])
+        max_items = 40
+        visible = timeline[:max_items]
+        lines = ["Here is the Odoo timeline I could reconstruct from the connector results:"]
+        for timestamp, model, summary in visible:
+            lines.append(f"- {timestamp} - {model}: {summary}")
+        hidden = len(timeline) - len(visible)
+        if hidden > 0:
+            lines.append(f"- ... {hidden} more timestamped Odoo records were omitted from this fallback summary.")
+        if omitted:
+            lines.append(f"Note: {omitted} Odoo records had no timestamp field and were not placed on the timeline.")
+        if errors:
+            lines.append("Connector notes: " + "; ".join(errors[:3]))
+        return "\n".join(lines)
+
+    if counts or errors:
+        lines = ["I gathered Odoo connector evidence, but there were no timestamped records to turn into a timeline."]
+        if counts:
+            lines.append("Record counts: " + "; ".join(counts[:6]))
+        if errors:
+            lines.append("Connector notes: " + "; ".join(errors[:3]))
+        return "\n".join(lines)
+
+    return None
+
+
+def _build_tool_fallback_answer(tool_results: list[dict[str, Any]]) -> str | None:
+    return _build_report_fallback_answer(tool_results) or _build_odoo_evidence_fallback_answer(tool_results)
+
+
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     return "/odoo/ops/run" if tool_name == "odoo_ops_runner" else ""
 
@@ -1221,6 +1426,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "If complete is true, do not describe the result as truncated. "
             "If the user asks for all records, full detail, or a timeline and has_more is true, "
             "fetch the next page with the same query and a higher offset before answering."
+        )
+        guidance_parts.append(
+            "Use Odoo `schema` to inspect models and fields. Use `query` with explicit fields for record lists. "
+            "Use `content` only for text/body fields on a narrow domain or specific ids; never use broad unfiltered "
+            "`content` calls for schema discovery or general user/activity lookups."
         )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
@@ -1821,6 +2031,13 @@ async def _finalize_blank_tool_response(
     if not _should_finalize_blank_tool_response(state, tool_results):
         return state
 
+    fallback = _build_tool_fallback_answer(tool_results)
+    if fallback:
+        logger.info("Used deterministic tool fallback before finalizer | user_id=%s tool_calls=%d", user_id, len(tool_results))
+        state.result["content"] = fallback
+        state.result["finish_reason"] = state.result.get("finish_reason") or "fallback"
+        return state
+
     finalizer_messages = _build_tool_finalizer_messages(original_messages, tool_results)
     finalizer_max_tokens = max(max_tokens, TOOL_FINALIZER_MAX_TOKENS)
     logger.warning(
@@ -1866,6 +2083,66 @@ async def _finalize_blank_tool_response(
         )
     else:
         logger.info("Recovered blank post-tool model response with finalizer | tool_calls=%d", len(tool_results))
+    return state
+
+
+def _should_retry_blank_direct_response(state: ModelCallState, tool_results: list[dict[str, Any]]) -> bool:
+    if tool_results:
+        return False
+    if state.result.get("error") or state.result.get("tool_calls"):
+        return False
+    return _is_blank_model_content(state.result)
+
+
+async def _retry_blank_direct_response(
+    db: AsyncSession,
+    route: AIRoute,
+    primary_model: AIModel,
+    state: ModelCallState,
+    messages: list[dict[str, Any]],
+    tool_results: list[dict[str, Any]],
+    temperature: float,
+    trace_svc: Any = None,
+) -> ModelCallState:
+    if not _should_retry_blank_direct_response(state, tool_results):
+        return state
+
+    retry_messages = messages + [DIRECT_BLANK_RETRY_MESSAGE]
+    logger.warning(
+        "Retrying blank direct model response without tools | finish_reason=%s max_tokens=%d",
+        state.result.get("finish_reason", ""),
+        DIRECT_BLANK_RETRY_MAX_TOKENS,
+    )
+    result, client = await _call_model(
+        state.used_model,
+        state.used_provider,
+        retry_messages,
+        min(temperature, 0.2),
+        DIRECT_BLANK_RETRY_MAX_TOKENS,
+        [],
+        trace_svc=trace_svc,
+        attempt_reason="blank_direct_retry",
+        client=state.client,
+    )
+    state.result = result
+    state.client = client
+    state.stats.add_result(state.result)
+    state = await _try_rate_limit_fallbacks(
+        db,
+        route,
+        primary_model,
+        state,
+        retry_messages,
+        min(temperature, 0.2),
+        DIRECT_BLANK_RETRY_MAX_TOKENS,
+        [],
+        reason="blank_direct_retry_quota_exceeded",
+        trace_svc=trace_svc,
+    )
+    if _is_blank_model_content(state.result):
+        logger.warning("Blank direct model retry returned blank content | finish_reason=%s", state.result.get("finish_reason", ""))
+    else:
+        logger.info("Recovered blank direct model response with no-tool retry")
     return state
 
 
@@ -1995,6 +2272,35 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
     }
 
 
+def _build_blank_direct_fallback_answer(messages: list, response: dict[str, Any]) -> str | None:
+    finish_reason = str(response.get("finish_reason") or "")
+    if finish_reason != "length":
+        return None
+
+    latest = _last_user_message(messages).lower()
+    recent_text = " ".join(
+        str(message.get("content") or "")
+        for message in messages[-4:]
+        if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
+    ).lower()
+    if "odoo" in recent_text and any(term in latest for term in ("strategy", "invalid field", "activity", "timeline", "schema")):
+        return (
+            "Safe repeatable Odoo read-only strategy:\n"
+            "- Start with `schema` for candidate models and fields; do not assume fields exist.\n"
+            "- Resolve the user with `res.users`, then query activity-bearing models using fields confirmed by schema.\n"
+            "- Prefer `create_uid`, `write_uid`, `create_date`, and `write_date` when the model supports them.\n"
+            "- For login/device style evidence, verify the available fields on `res.users.log`, `bus.presence`, or device-related models before filtering.\n"
+            "- Keep `query` fields explicit and narrow; use `content` only for specific ids or a tight domain.\n"
+            "- If a model has no user-link field, report that limitation instead of inventing a relationship."
+        )
+
+    return (
+        "I could not generate a usable answer for that turn because the model hit its output limit before "
+        "returning visible content. No new connector result was available for a deterministic answer. "
+        "Ask for a narrower slice or a shorter summary."
+    )
+
+
 async def _apply_blank_content_fallback(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -2007,11 +2313,18 @@ async def _apply_blank_content_fallback(
         return response
 
     if tool_results:
-        fallback = _build_report_fallback_answer(tool_results)
+        fallback = _build_tool_fallback_answer(tool_results)
         if fallback:
-            logger.info("Used report fallback answer (from tool results) | user_id=%s tool_calls=%d", user_id, len(tool_results))
+            logger.info("Used tool fallback answer (from tool results) | user_id=%s tool_calls=%d", user_id, len(tool_results))
             response["content"] = fallback
         return response
+
+    finish_reason = str(response.get("finish_reason") or "")
+    fallback = _build_blank_direct_fallback_answer(messages, response)
+    if fallback:
+        response["content"] = fallback
+        response["finish_reason"] = "fallback"
+        logger.info("Used blank direct-response fallback | user_id=%s finish_reason=%s", user_id, finish_reason)
 
     return response
 
@@ -2178,6 +2491,16 @@ async def execute_chat(
         tool_results,
         temperature,
         max_tokens,
+        trace_svc=trace_svc,
+    )
+    state = await _retry_blank_direct_response(
+        db,
+        route,
+        model_obj,
+        state,
+        full_messages,
+        tool_results,
+        temperature,
         trace_svc=trace_svc,
     )
 

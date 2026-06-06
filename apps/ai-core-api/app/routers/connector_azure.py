@@ -3,7 +3,7 @@ import uuid
 import time
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.security import api_key_auth
+from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.token_storage import store_token, delete_token
@@ -37,7 +37,7 @@ class AzureCliRequest(BaseModel):
 
 
 @router.post("/cli")
-async def azure_cli(req: AzureCliRequest, auth: dict = Depends(api_key_auth)):
+async def azure_cli(req: AzureCliRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
     """Execute an Azure CLI command as the connected user."""
     user_id = auth.get("user_id")
     return await run_azure_cli_command(req.command, user_id, timeout=req.timeout)

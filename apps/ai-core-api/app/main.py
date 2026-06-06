@@ -1,12 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import get_settings
 from app.routers import health, audit, artifact, context, job, task, tool, connected_accounts, chat, ai_config, memory, rules, admin_traces, connector_azure, connector_github
 
+settings = get_settings()
+docs_enabled = settings.app_env != "production"
 
 app = FastAPI(
     title="AI Platform Core API",
     version="0.1.0",
     description="Central operating layer for AI interfaces and tools",
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
 
 # Enforce secure CORS rules

@@ -221,6 +221,32 @@ class TestStructuredToolErrors:
         assert result.get("error_type") == "connector_http_error"
         assert "connection refused" in result.get("message", "").lower()
 
+    @pytest.mark.asyncio
+    async def test_connector_error_nested_detail_is_normalized(self):
+        from app.services.model_router import _execute_tool_call
+        from unittest.mock import AsyncMock, patch, MagicMock
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.json.return_value = {
+            "detail": {
+                "error_type": "invalid_domain_field",
+                "message": "Field 'user_id' does not exist on Odoo model 'res.users.log'.",
+                "model": "res.users.log",
+                "field": "user_id",
+            }
+        }
+        mock_resp.text = "raw fallback"
+        with patch("httpx.AsyncClient.post", return_value=mock_resp), \
+             patch("app.services.model_router._resolve_odoo_credentials_for_tool") as mc, \
+             patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), \
+             patch("app.services.model_router.ODOO_CONNECTOR_KEY", "test-key"):
+            mc.return_value = {"url": "https://test.odoo.com", "db": "test", "username": "admin", "api_key": "key"}
+            result = await _execute_tool_call(AsyncMock(), uuid4(), "odoo_ops_runner",
+                                              {"mode": "query", "model": "res.users.log"})
+        assert result["error_type"] == "invalid_domain_field"
+        assert result["connector_error"]["field"] == "user_id"
+        assert "Traceback" not in result["message"]
+
 
 class TestReportFallbackAnswer:
     """Tests for Fix 2/5: Fallback answer builder."""
@@ -354,6 +380,47 @@ class TestExecuteChatReportFallback:
             {"tool_name": "azure_cli", "result": {"stdout": ""}},
         ])
         assert fallback is None
+
+    def test_odoo_evidence_fallback_builds_timeline(self):
+        from app.services.model_router import _build_odoo_evidence_fallback_answer
+        fallback = _build_odoo_evidence_fallback_answer([
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "query", "model": "mail.message"}, "result": {
+                "model": "mail.message",
+                "records": [
+                    {
+                        "id": 2,
+                        "create_date": "2026-06-05 09:23:31",
+                        "model": "account.move",
+                        "res_id": 57912,
+                        "body": "<p>Vendor Bill Created</p>",
+                        "message_type": "notification",
+                    },
+                    {
+                        "id": 1,
+                        "create_date": "2026-06-05 07:54:41",
+                        "model": "account.move",
+                        "res_id": 33396,
+                        "body": "",
+                        "message_type": "notification",
+                    },
+                ],
+                "count": 2,
+                "returned_count": 2,
+                "total_count": 2,
+            }},
+            {"tool_name": "odoo_ops_runner", "arguments": {"mode": "query", "model": "res.users.log"}, "result": {
+                "error": True,
+                "error_type": "invalid_domain_field",
+                "message": "Field 'user_id' does not exist on Odoo model 'res.users.log'.",
+            }},
+        ])
+
+        assert fallback is not None
+        assert "2026-06-05 07:54:41" in fallback
+        assert "2026-06-05 09:23:31" in fallback
+        assert "Vendor Bill Created" in fallback
+        assert "<p>" not in fallback
+        assert "invalid_domain_field" in fallback
 
     def test_pnl_uses_generic_report_tool(self):
         """P&L question must route through odoo_ops_runner, not a dedicated tool."""

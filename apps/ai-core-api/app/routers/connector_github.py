@@ -1,12 +1,19 @@
 """GitHub connector — user-delegated OAuth flow + gh CLI execution."""
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import uuid
 import os
+import time
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.security import api_key_auth
+from app.core.config import get_settings
+from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.key_vault import get_secret_value
 from app.services.token_storage import store_token, delete_token
 from app.services.connected_account_state import (
     mark_delegated_account_disconnected,
@@ -22,6 +29,9 @@ logger = logging.getLogger(__name__)
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "https://ai.lotslotsmore.com/settings/connections")
+GITHUB_CLIENT_ID_SECRET_NAME = os.environ.get("GITHUB_CLIENT_ID_SECRET_NAME", "github-oauth-client-id")
+GITHUB_CLIENT_SECRET_SECRET_NAME = os.environ.get("GITHUB_CLIENT_SECRET_SECRET_NAME", "github-oauth-client-secret")
+OAUTH_STATE_TTL_SECONDS = 10 * 60
 
 
 def _is_configured_value(value: str) -> bool:
@@ -36,18 +46,85 @@ class GithubCliRequest(BaseModel):
 
 
 @router.post("/cli")
-async def github_cli(req: GithubCliRequest, auth: dict = Depends(api_key_auth)):
+async def github_cli(req: GithubCliRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
     """Execute a GitHub CLI command as the connected user."""
     return await run_github_cli_command(req.command, auth.get("user_id"), timeout=req.timeout)
+
+
+async def _resolve_secret_config(env_value: str, secret_name: str) -> str:
+    if _is_configured_value(env_value):
+        return env_value.strip()
+    try:
+        value = await get_secret_value(secret_name)
+    except Exception as exc:
+        logger.warning("Could not resolve GitHub OAuth config secret %s: %s", secret_name, exc)
+        return ""
+    return value.strip() if _is_configured_value(value) else ""
+
+
+async def _github_oauth_config() -> tuple[str, str]:
+    client_id = await _resolve_secret_config(GITHUB_CLIENT_ID, GITHUB_CLIENT_ID_SECRET_NAME)
+    client_secret = await _resolve_secret_config(GITHUB_CLIENT_SECRET, GITHUB_CLIENT_SECRET_SECRET_NAME)
+    return client_id, client_secret
+
+
+def _base64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _oauth_state_signing_key(client_secret: str) -> bytes:
+    settings = get_settings()
+    key = client_secret or settings.api_key
+    if not key:
+        raise HTTPException(status_code=500, detail="GitHub OAuth state signing is not configured.")
+    return key.encode("utf-8")
+
+
+def _sign_state_payload(payload: dict, client_secret: str) -> str:
+    raw_payload = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded_payload = _base64url_encode(raw_payload)
+    signature = hmac.new(_oauth_state_signing_key(client_secret), encoded_payload.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded_payload}.{_base64url_encode(signature)}"
+
+
+def _verify_state_payload(state: str, client_secret: str, user_id: object) -> None:
+    try:
+        encoded_payload, encoded_signature = state.split(".", 1)
+        expected = hmac.new(_oauth_state_signing_key(client_secret), encoded_payload.encode("ascii"), hashlib.sha256).digest()
+        actual = _base64url_decode(encoded_signature)
+        if not hmac.compare_digest(expected, actual):
+            raise ValueError("signature mismatch")
+        payload = json.loads(_base64url_decode(encoded_payload).decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid GitHub OAuth state.")
+
+    if str(payload.get("user_id")) != str(user_id):
+        raise HTTPException(status_code=400, detail="GitHub OAuth state does not match the current user.")
+    if int(payload.get("exp") or 0) < int(time.time()):
+        raise HTTPException(status_code=400, detail="GitHub OAuth state has expired.")
 
 
 @router.get("/auth-url")
 async def github_auth_url(auth: dict = Depends(api_key_auth)):
     """Return GitHub OAuth authorization URL for the current user."""
-    if not _is_configured_value(GITHUB_CLIENT_ID):
+    client_id, client_secret = await _github_oauth_config()
+    if not _is_configured_value(client_id):
         return {"status": "not_configured", "message": "GitHub OAuth client ID not configured."}
-    state = uuid.uuid4().hex[:16]
-    url = (f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}"
+    if not _is_configured_value(client_secret) and not _is_configured_value(get_settings().api_key):
+        return {"status": "not_configured", "message": "GitHub OAuth state signing is not configured."}
+    state = _sign_state_payload(
+        {
+            "user_id": str(auth.get("user_id")),
+            "nonce": uuid.uuid4().hex,
+            "exp": int(time.time()) + OAUTH_STATE_TTL_SECONDS,
+        },
+        client_secret,
+    )
+    url = (f"https://github.com/login/oauth/authorize?client_id={client_id}"
            f"&redirect_uri={GITHUB_REDIRECT_URI}&state={state}&scope=repo,workflow,read:org,admin:repo_hook")
     return {"status": "ready", "auth_url": url, "state": state}
 
@@ -61,17 +138,22 @@ async def github_oauth_callback(
     """Handle GitHub OAuth callback: exchange code for token, store in KV."""
     user_id = auth.get("user_id")
     code = req.get("code", "")
+    state = req.get("state", "")
     if not code or not user_id:
         raise HTTPException(status_code=400, detail="Missing code or configuration")
-    if not _is_configured_value(GITHUB_CLIENT_ID) or not _is_configured_value(GITHUB_CLIENT_SECRET):
+    client_id, client_secret = await _github_oauth_config()
+    if not _is_configured_value(client_id) or not _is_configured_value(client_secret):
         raise HTTPException(status_code=400, detail="GitHub OAuth is not configured.")
+    if not state:
+        raise HTTPException(status_code=400, detail="Missing GitHub OAuth state.")
+    _verify_state_payload(state, client_secret, user_id)
     request_id = uuid.uuid4().hex[:16]
     try:
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 "https://github.com/login/oauth/access_token",
-                data={"client_id": GITHUB_CLIENT_ID, "client_secret": GITHUB_CLIENT_SECRET,
+                data={"client_id": client_id, "client_secret": client_secret,
                       "code": code, "redirect_uri": GITHUB_REDIRECT_URI},
                 headers={"Accept": "application/json"},
             )

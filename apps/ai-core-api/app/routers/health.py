@@ -3,6 +3,7 @@ import os
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from azure.identity import DefaultAzureCredential
@@ -41,6 +42,17 @@ async def health_check():
 
 @router.get("/dependencies")
 async def dependency_health_check(db: AsyncSession = Depends(get_db)):
+    return await _dependency_health_payload(db)
+
+
+@router.get("/ready")
+async def readiness_check(db: AsyncSession = Depends(get_db)):
+    status_info = await _dependency_health_payload(db)
+    status_code = 200 if status_info["status"] == "healthy" else 503
+    return JSONResponse(content=status_info, status_code=status_code)
+
+
+async def _dependency_health_payload(db: AsyncSession):
     status_info = {
         "status": "healthy",
         "version": "0.1.0",
@@ -79,8 +91,8 @@ async def dependency_health_check(db: AsyncSession = Depends(get_db)):
             status_info["status"] = "degraded"
         status_info["config_issues"] = config_issues
 
-    # Always return 200 so Container App liveness/readiness probes never fail.
-    # Dependency issues are reported in the response body as informational.
+    # /health/dependencies returns this payload as informational HTTP 200.
+    # /health/ready uses the status field to decide whether readiness should fail.
     all_healthy = all(
         dep in ("reachable", "not_configured", "configured")
         for dep in status_info["dependencies"].values()

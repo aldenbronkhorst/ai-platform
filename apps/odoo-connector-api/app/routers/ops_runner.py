@@ -13,6 +13,12 @@ from app.services.odoo_report_service import OdooReportService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+MAX_UNFILTERED_CONTENT_LIMIT = 10
+INVALID_FIELD_PATTERNS = [
+    re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE),
+    re.compile(r"Invalid field ['\"](?P<field>[\w_]+)['\"] on model ['\"](?P<model>[\w.]+)['\"]", re.IGNORECASE),
+]
+
 
 class OdooOpsRunnerRequest(BaseModel):
     credentials: OdooCredentialsRequest
@@ -95,6 +101,37 @@ def _invalid_field_error(exc: Exception) -> bool:
     return "Invalid field" in str(exc)
 
 
+def _invalid_field_info(exc: Exception) -> dict[str, str] | None:
+    message = str(exc)
+    for pattern in INVALID_FIELD_PATTERNS:
+        match = pattern.search(message)
+        if match:
+            return {
+                "model": match.group("model"),
+                "field": match.group("field"),
+            }
+    return None
+
+
+def _invalid_domain_field_response(req: OdooOpsRunnerRequest, info: dict[str, str]) -> HTTPException:
+    model = info.get("model") or req.model or "unknown"
+    field = info.get("field") or "unknown"
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error": "invalid_domain_field",
+            "error_type": "invalid_domain_field",
+            "message": f"Field '{field}' does not exist on Odoo model '{model}'.",
+            "model": model,
+            "field": field,
+            "suggestion": (
+                "Run mode 'schema' for this model and retry with a valid field. "
+                "For user attribution, prefer create_uid/write_uid when the target model supports them."
+            ),
+        },
+    )
+
+
 def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[str]) -> tuple[list[str], list[str], dict[str, Any]]:
     schema = client.fields_get(model, fields=requested_fields)
     available_fields = set((schema.get("fields") or {}).keys())
@@ -173,6 +210,10 @@ def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
         records = _query_records(client, req, req.fields)
         return _paged_result(client, req, records)
     except Exception as exc:
+        invalid_field = _invalid_field_info(exc)
+        requested_fields = set(req.fields or [])
+        if invalid_field and invalid_field["field"] not in requested_fields:
+            raise _invalid_domain_field_response(req, invalid_field)
         if not req.fields or not req.model or not _invalid_field_error(exc):
             raise
 
@@ -186,7 +227,13 @@ def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
             "field_errors": schema.get("field_errors"),
         })
 
-    records = _query_records(client, req, valid_fields)
+    try:
+        records = _query_records(client, req, valid_fields)
+    except Exception as exc:
+        invalid_field = _invalid_field_info(exc)
+        if invalid_field:
+            raise _invalid_domain_field_response(req, invalid_field)
+        raise
     return {
         **_paged_result(client, req, records),
         "warning": "Some requested fields do not exist on this Odoo model and were omitted.",
@@ -250,26 +297,62 @@ def _run_attachment(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, 
 
 
 def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    if not req.model:
+        raise HTTPException(status_code=400, detail={"error": "content requires model"})
+
     metadata_fields = ["id", "name", "display_name", "create_date", "write_date"]
     content_fields = req.content_fields or ["body", "content", "message_body", "html_body", "note", "description"]
-    records = client.search_read(
-        model=req.model,
-        domain=req.domain or [],
-        fields=list(set(metadata_fields + content_fields)),
-        limit=req.limit,
-        offset=req.offset,
-        order=req.order,
-        include_ids=True,
-    )
+    requested_fields = list(dict.fromkeys(metadata_fields + content_fields))
+    valid_fields, invalid_fields, schema = _valid_query_fields(client, req.model, requested_fields)
+    valid_content_fields = [field for field in content_fields if field in valid_fields]
+    if not valid_fields:
+        raise HTTPException(status_code=400, detail={
+            "error": "invalid_content_fields",
+            "message": "None of the requested content fields exist on this Odoo model.",
+            "model": req.model,
+            "invalid_fields": invalid_fields,
+            "field_errors": schema.get("field_errors"),
+        })
+
+    limit = req.limit
+    warnings: list[str] = []
+    if not req.ids and not req.domain and limit > MAX_UNFILTERED_CONTENT_LIMIT:
+        limit = MAX_UNFILTERED_CONTENT_LIMIT
+        warnings.append(
+            "Unfiltered content reads are capped. Add a domain, ids, or a narrower limit for more records."
+        )
+
+    try:
+        records = client.search_read(
+            model=req.model,
+            domain=req.domain or [],
+            fields=valid_fields,
+            limit=limit,
+            offset=req.offset,
+            order=req.order,
+            include_ids=True,
+        )
+    except Exception as exc:
+        invalid_field = _invalid_field_info(exc)
+        if invalid_field:
+            raise _invalid_domain_field_response(req, invalid_field)
+        raise
     for record in records:
-        for field in content_fields:
+        for field in valid_content_fields:
             value = record.get(field)
             if not isinstance(value, str):
                 continue
             if not req.raw_html:
                 value = re.sub(r"<[^>]+>", "", value)
             record[field] = value[:req.max_content_chars] + "..." if len(value) > req.max_content_chars else value
-    return _paged_result(client, req, records)
+    result = _paged_result(client, req.model_copy(update={"limit": limit}), records)
+    if invalid_fields:
+        result["warning"] = "Some requested content fields do not exist on this Odoo model and were omitted."
+        result["omitted_invalid_fields"] = invalid_fields
+        result["field_errors"] = schema.get("field_errors")
+    if warnings:
+        result["content_warnings"] = warnings
+    return result
 
 
 def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
