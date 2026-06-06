@@ -53,8 +53,8 @@ async def _resolve_secret_config(env_value: str, secret_name: str) -> str:
         return env_value.strip()
     try:
         value = await get_secret_value(secret_name)
-    except Exception as exc:
-        logger.warning("Could not resolve GitHub OAuth config secret %s: %s", secret_name, exc.__class__.__name__)
+    except Exception:
+        logger.warning("Could not resolve GitHub OAuth config secret.")
         return ""
     return value.strip() if _is_configured_value(value) else ""
 
