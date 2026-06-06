@@ -315,8 +315,11 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         })
 
     limit = req.limit
+    content_domain = list(req.domain or [])
+    if req.ids:
+        content_domain = [["id", "in", req.ids], *content_domain]
     warnings: list[str] = []
-    if not req.ids and not req.domain and limit > MAX_UNFILTERED_CONTENT_LIMIT:
+    if not content_domain and limit > MAX_UNFILTERED_CONTENT_LIMIT:
         limit = MAX_UNFILTERED_CONTENT_LIMIT
         warnings.append(
             "Unfiltered content reads are capped. Add a domain, ids, or a narrower limit for more records."
@@ -325,7 +328,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
     try:
         records = client.search_read(
             model=req.model,
-            domain=req.domain or [],
+            domain=content_domain,
             fields=valid_fields,
             limit=limit,
             offset=req.offset,
@@ -345,7 +348,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
             if not req.raw_html:
                 value = re.sub(r"<[^>]+>", "", value)
             record[field] = value[:req.max_content_chars] + "..." if len(value) > req.max_content_chars else value
-    result = _paged_result(client, req.model_copy(update={"limit": limit}), records)
+    result = _paged_result(client, req.model_copy(update={"domain": content_domain, "limit": limit}), records)
     if invalid_fields:
         result["warning"] = "Some requested content fields do not exist on this Odoo model and were omitted."
         result["omitted_invalid_fields"] = invalid_fields

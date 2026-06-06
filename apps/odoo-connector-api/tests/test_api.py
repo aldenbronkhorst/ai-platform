@@ -234,6 +234,42 @@ class TestOdooOpsRunner:
         assert search_kwargs["fields"] == ["id", "name", "create_date", "write_date", "ip"]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_content_ids_constrain_search_domain(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "res.users.log",
+            "fields": {
+                "name": {},
+                "create_date": {},
+                "write_date": {},
+                "ip": {},
+            },
+        }
+        mock_client.search_read.return_value = [{"id": 123, "ip": "127.0.0.1"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "content",
+                model="res.users.log",
+                ids=[123],
+                content_fields=["ip"],
+                limit=50,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 50
+        assert data["returned_count"] == 1
+        assert "content_warnings" not in data
+        search_kwargs = mock_client.search_read.call_args.kwargs
+        assert search_kwargs["domain"] == [["id", "in", [123]]]
+        assert search_kwargs["limit"] == 50
+
+    @patch("app.routers.ops_runner._get_client")
     def test_content_returns_concise_invalid_domain_field_error(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.fields_get.return_value = {
