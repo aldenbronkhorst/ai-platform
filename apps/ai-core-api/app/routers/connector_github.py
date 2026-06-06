@@ -1,12 +1,9 @@
 """GitHub connector — user-delegated OAuth flow + gh CLI execution."""
-import base64
-import hashlib
-import hmac
-import json
 import logging
 import uuid
 import os
 import time
+import jwt
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.config import get_settings
@@ -57,7 +54,7 @@ async def _resolve_secret_config(env_value: str, secret_name: str) -> str:
     try:
         value = await get_secret_value(secret_name)
     except Exception as exc:
-        logger.warning("Could not resolve GitHub OAuth config secret %s: %s", secret_name, exc)
+        logger.warning("Could not resolve GitHub OAuth config secret %s: %s", secret_name, exc.__class__.__name__)
         return ""
     return value.strip() if _is_configured_value(value) else ""
 
@@ -66,14 +63,6 @@ async def _github_oauth_config() -> tuple[str, str]:
     client_id = await _resolve_secret_config(GITHUB_CLIENT_ID, GITHUB_CLIENT_ID_SECRET_NAME)
     client_secret = await _resolve_secret_config(GITHUB_CLIENT_SECRET, GITHUB_CLIENT_SECRET_SECRET_NAME)
     return client_id, client_secret
-
-
-def _base64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def _base64url_decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
 def _oauth_state_signing_key(client_secret: str) -> bytes:
@@ -85,27 +74,24 @@ def _oauth_state_signing_key(client_secret: str) -> bytes:
 
 
 def _sign_state_payload(payload: dict, client_secret: str) -> str:
-    raw_payload = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    encoded_payload = _base64url_encode(raw_payload)
-    signature = hmac.new(_oauth_state_signing_key(client_secret), encoded_payload.encode("ascii"), hashlib.sha256).digest()
-    return f"{encoded_payload}.{_base64url_encode(signature)}"
+    return jwt.encode(payload, _oauth_state_signing_key(client_secret), algorithm="HS256")
 
 
 def _verify_state_payload(state: str, client_secret: str, user_id: object) -> None:
     try:
-        encoded_payload, encoded_signature = state.split(".", 1)
-        expected = hmac.new(_oauth_state_signing_key(client_secret), encoded_payload.encode("ascii"), hashlib.sha256).digest()
-        actual = _base64url_decode(encoded_signature)
-        if not hmac.compare_digest(expected, actual):
-            raise ValueError("signature mismatch")
-        payload = json.loads(_base64url_decode(encoded_payload).decode("utf-8"))
-    except Exception:
+        payload = jwt.decode(
+            state,
+            _oauth_state_signing_key(client_secret),
+            algorithms=["HS256"],
+            options={"require": ["exp", "nonce", "user_id"]},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=400, detail="GitHub OAuth state has expired.")
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=400, detail="Invalid GitHub OAuth state.")
 
     if str(payload.get("user_id")) != str(user_id):
         raise HTTPException(status_code=400, detail="GitHub OAuth state does not match the current user.")
-    if int(payload.get("exp") or 0) < int(time.time()):
-        raise HTTPException(status_code=400, detail="GitHub OAuth state has expired.")
 
 
 @router.get("/auth-url")

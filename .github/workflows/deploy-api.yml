@@ -1,6 +1,13 @@
 name: Build and Deploy API
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/ai-core-api/**'
+      - 'apps/odoo-connector-api/**'
+      - 'apps/web-portal/**'
+      - '.github/workflows/deploy-api.yml'
   push:
     branches: [main]
     paths:

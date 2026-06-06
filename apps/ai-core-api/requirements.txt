@@ -6,6 +6,7 @@ alembic==1.18.4
 psycopg2-binary==2.9.12
 pydantic==2.13.4
 pydantic-settings==2.14.1
+PyJWT==2.13.0
 azure-identity==1.25.3
 azure-keyvault-secrets==4.11.0
 azure-storage-blob==12.29.0
