@@ -271,6 +271,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     enableLocalMock,
     inProgress,
     instance,
+    isTokenLoading,
     signInLocalMock,
     signOut,
   } = usePortalAuth();
@@ -339,7 +340,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   };
 
   const fetchChatSessions = useCallback(async () => {
-    if (!accessToken) return;
+    if (!accessToken || !activeUserEmail) return;
     setIsSessionsLoading(true);
     try {
       const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions`, { headers: getHeaders() });
@@ -536,13 +537,25 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   };
 
   useEffect(() => {
-    if (!accessToken) return;
     const timerId = window.setTimeout(() => {
-      const cached = readCachedChatSessions(activeUserEmail);
-      if (cached.length > 0) {
-        setChatSessions(cached);
-        setActiveSession(prev => prev || cached[0]);
+      if (!activeUserEmail) {
+        setChatSessions([]);
+        setActiveSession(null);
+        setChatMessages([]);
+        return;
       }
+
+      const cached = readCachedChatSessions(activeUserEmail);
+      setChatSessions(cached);
+      setActiveSession(cached[0] || null);
+      setChatMessages([]);
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [activeUserEmail]);
+
+  useEffect(() => {
+    if (!accessToken || !activeUserEmail) return;
+    const timerId = window.setTimeout(() => {
       void fetchChatSessions();
     }, 0);
     return () => window.clearTimeout(timerId);
@@ -831,7 +844,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     );
   }
 
-  if (!activeUser) {
+  if (!activeUser || (activeUser && !accessToken && authError)) {
     return (
       <LoginPage
         inProgress={inProgress}
@@ -846,6 +859,19 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         loginRequest={loginRequest}
         accounts={accounts}
       />
+    );
+  }
+
+  if (!accessToken) {
+    return (
+      <div className="flex h-screen bg-canvas text-default items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-10 h-10 border-2 border-muted border-t-default rounded-full animate-spin mx-auto" />
+          <p className="text-sm font-semibold text-muted">
+            {isTokenLoading ? "Restoring Microsoft session..." : "Preparing Microsoft session..."}
+          </p>
+        </div>
+      </div>
     );
   }
 
