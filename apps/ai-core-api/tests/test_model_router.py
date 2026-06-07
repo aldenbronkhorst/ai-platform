@@ -1205,6 +1205,51 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
     @pytest.mark.asyncio
+    async def test_odoo_ops_runner_missing_mode_is_handled_before_connector(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        db = MockSession(has_config=True)
+        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=mock_credentials,
+        ):
+            result = await _execute_tool_call_impl(db, uuid.uuid4(), "odoo_ops_runner", {})
+
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert result["missing"] == ["mode"]
+        mock_credentials.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_odoo_attachment_without_attachment_id_is_handled_before_connector(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        db = MockSession(has_config=True)
+        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=mock_credentials,
+        ):
+            result = await _execute_tool_call_impl(
+                db,
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {"mode": "attachment", "model": "account.move", "ids": [57508]},
+            )
+
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert result["missing"] == ["attachment_id", "attachment_ids"]
+        mock_credentials.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_turnover_without_report_name_uses_model_path(self):
         from app.services.model_router import execute_chat
 
@@ -1278,6 +1323,32 @@ class TestToolExecution:
         assert compacted["records"]["total_items"] == MAX_TOOL_RESULT_RECORD_ITEMS + 5
         assert compacted["records"]["truncated_items"] == 5
         assert len(compacted["records"]["items"]) == MAX_TOOL_RESULT_RECORD_ITEMS
+
+    def test_tool_result_compaction_caps_large_odoo_record_pages_before_generic_limit(self):
+        from app.services.model_router import _compact_tool_result_for_model, MAX_ODOO_RECORD_CONTEXT_ITEMS
+
+        compacted = _compact_tool_result_for_model({
+            "model": "res.device.log",
+            "records": [
+                {
+                    "id": i,
+                    "create_date": "2026-06-06 08:00:00",
+                    "description": "x" * 2500,
+                }
+                for i in range(50)
+            ],
+            "count": 50,
+            "returned_count": 50,
+            "total_count": 52,
+            "has_more": True,
+            "complete": False,
+        })
+
+        assert compacted["records_compacted_for_model"] is True
+        assert compacted["visible_record_count"] == MAX_ODOO_RECORD_CONTEXT_ITEMS
+        assert compacted["original_record_count"] == 50
+        assert len(compacted["records"]) == MAX_ODOO_RECORD_CONTEXT_ITEMS
+        assert "model_context_warning" in compacted
 
     def test_tool_finalizer_keeps_complete_odoo_page_visible(self):
         from app.services.model_router import _tool_results_payload_for_finalizer
@@ -1611,6 +1682,175 @@ class TestToolExecution:
         assert finalizer_call.kwargs["max_tokens"] == 4000
         assert "Tool results:" in finalizer_call.kwargs["messages"][1]["content"]
         assert "WH01-IN-2026-02586" in finalizer_call.kwargs["messages"][1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_uses_odoo_evidence_fallback_for_blank_timeline(self):
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "account.move", "fields": ["create_date", "name"]}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "",
+                    "finish_reason": "length",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 2000,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+        odoo_result = {
+            "model": "account.move",
+            "records": [
+                {
+                    "id": 57912,
+                    "create_date": "2026-06-05 09:23:31",
+                    "name": "BILL-2026-02555",
+                    "move_type": "in_invoice",
+                    "state": "posted",
+                    "amount_total": 5400.0,
+                    "partner_id": {"id": 48, "name": "Reddish Store"},
+                },
+            ],
+            "count": 1,
+            "returned_count": 1,
+            "total_count": 1,
+        }
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value=odoo_result)
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "give me a full Odoo timeline please"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert "Here is the Odoo timeline" in result["content"]
+        assert "2026-06-05 09:23:31 - account.move: BILL-2026-02555" in result["content"]
+        assert "Reddish Store" in result["content"]
+        assert client.chat_completion.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_retries_blank_direct_response_without_tools(self):
+        from app.services.model_router import execute_chat
+
+        db = MockSession(has_config=True)
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": "",
+                    "finish_reason": "length",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 2000,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+                {
+                    "content": "Use schema first, then query with valid fields and a narrow domain.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 30,
+                    "completion_tokens": 14,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "Explain the safest Odoo activity query strategy"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "Use schema first, then query with valid fields and a narrow domain."
+        assert result["finish_reason"] == "stop"
+        assert result["total_tokens"] == 2064
+        assert client.chat_completion.call_count == 2
+        retry_call = client.chat_completion.call_args_list[1]
+        assert retry_call.kwargs["tools"] is None
+        assert retry_call.kwargs["max_tokens"] == 1000
+        assert "previous response returned no user-visible content" in retry_call.kwargs["messages"][-1]["content"]
+
+    def test_blank_direct_fallback_returns_odoo_strategy_for_activity_followup(self):
+        from app.services.model_router import _build_blank_direct_fallback_answer
+
+        fallback = _build_blank_direct_fallback_answer(
+            [
+                {"role": "user", "content": "In Odoo, inspect activity schema."},
+                {"role": "assistant", "content": "res.users.log has create_date and ip."},
+                {"role": "user", "content": "Explain the safest repeatable query strategy without invalid fields."},
+            ],
+            {"content": "", "finish_reason": "length"},
+        )
+
+        assert fallback is not None
+        assert "Start with `schema`" in fallback
+        assert "create_uid" in fallback
+        assert "If a model has no user-link field" in fallback
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):

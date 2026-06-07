@@ -164,6 +164,142 @@ class TestOdooOpsRunner:
         assert retry_kwargs["fields"] == ["id", "old_value_char", "new_value_char", "mail_message_id"]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_returns_concise_invalid_domain_field_error(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.side_effect = ValueError(
+            "ValueError: Invalid field res.users.log.user_id in leaf ('user_id', '=', 782)"
+        )
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="res.users.log",
+                domain=[["user_id", "=", 782]],
+                fields=["create_date", "ip"],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()["detail"]
+        assert data["error_type"] == "invalid_domain_field"
+        assert data["model"] == "res.users.log"
+        assert data["field"] == "user_id"
+        assert "Traceback" not in data["message"]
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_content_omits_invalid_fields_and_caps_unfiltered_reads(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "res.users.log",
+            "fields": {
+                "name": {},
+                "create_date": {},
+                "write_date": {},
+                "ip": {},
+            },
+            "field_errors": {
+                "body": "Invalid field 'body' on model 'res.users.log'",
+                "display_name": "Invalid field 'display_name' on model 'res.users.log'",
+            },
+        }
+        mock_client.search_read.return_value = [{"id": i, "ip": "127.0.0.1"} for i in range(10)]
+        mock_client.search_count.return_value = 50
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "content",
+                model="res.users.log",
+                content_fields=["ip", "body"],
+                limit=50,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 10
+        assert data["returned_count"] == 10
+        assert data["total_count"] == 50
+        assert data["has_more"] is True
+        assert "body" in data["omitted_invalid_fields"]
+        assert "display_name" in data["omitted_invalid_fields"]
+        assert data["content_warnings"]
+        search_kwargs = mock_client.search_read.call_args.kwargs
+        assert search_kwargs["limit"] == 10
+        assert search_kwargs["fields"] == ["id", "name", "create_date", "write_date", "ip"]
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_content_ids_constrain_search_domain(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "res.users.log",
+            "fields": {
+                "name": {},
+                "create_date": {},
+                "write_date": {},
+                "ip": {},
+            },
+        }
+        mock_client.search_read.return_value = [{"id": 123, "ip": "127.0.0.1"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "content",
+                model="res.users.log",
+                ids=[123],
+                content_fields=["ip"],
+                limit=50,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["limit"] == 50
+        assert data["returned_count"] == 1
+        assert "content_warnings" not in data
+        search_kwargs = mock_client.search_read.call_args.kwargs
+        assert search_kwargs["domain"] == [["id", "in", [123]]]
+        assert search_kwargs["limit"] == 50
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_content_returns_concise_invalid_domain_field_error(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "res.users.log",
+            "fields": {"create_date": {}, "ip": {}},
+        }
+        mock_client.search_read.side_effect = ValueError(
+            "ValueError: Invalid field res.users.log.user_id in leaf ('user_id', '=', 782)"
+        )
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "content",
+                model="res.users.log",
+                domain=[["user_id", "=", 782]],
+                content_fields=["ip"],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()["detail"]
+        assert data["error_type"] == "invalid_domain_field"
+        assert data["model"] == "res.users.log"
+        assert data["field"] == "user_id"
+        assert "Traceback" not in data["message"]
+
+    @patch("app.routers.ops_runner._get_client")
     def test_execute_unlink_passes_through_to_odoo(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = True

@@ -3,6 +3,7 @@ import os
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from azure.identity import DefaultAzureCredential
@@ -41,6 +42,17 @@ async def health_check():
 
 @router.get("/dependencies")
 async def dependency_health_check(db: AsyncSession = Depends(get_db)):
+    return await _dependency_health_payload(db, deep=True)
+
+
+@router.get("/ready")
+async def readiness_check(db: AsyncSession = Depends(get_db)):
+    status_info = await _dependency_health_payload(db, deep=_deep_dependency_checks_enabled())
+    status_code = 200 if status_info["status"] == "healthy" else 503
+    return JSONResponse(content=status_info, status_code=status_code)
+
+
+async def _dependency_health_payload(db: AsyncSession, deep: bool = False):
     status_info = {
         "status": "healthy",
         "version": "0.1.0",
@@ -56,20 +68,20 @@ async def dependency_health_check(db: AsyncSession = Depends(get_db)):
 
     kv_uri = os.environ.get("KEY_VAULT_URI")
     if kv_uri:
-        status_info["dependencies"]["key_vault"] = await _check_key_vault(kv_uri, deep=True)
+        status_info["dependencies"]["key_vault"] = await _check_key_vault(kv_uri, deep=deep)
     else:
         status_info["dependencies"]["key_vault"] = "not_configured"
 
     storage_name = os.environ.get("STORAGE_ACCOUNT_NAME")
     if storage_name:
-        status_info["dependencies"]["blob_storage"] = await _check_blob_storage(storage_name, deep=True)
+        status_info["dependencies"]["blob_storage"] = await _check_blob_storage(storage_name, deep=deep)
     else:
         status_info["dependencies"]["blob_storage"] = "not_configured"
 
     sb_namespace = os.environ.get("AZURE_SERVICE_BUS_NAMESPACE") or os.environ.get("SERVICE_BUS_NAMESPACE")
     if sb_namespace:
         queue_name = os.environ.get("AZURE_SERVICE_BUS_QUEUE_NAME", "ai-jobs")
-        status_info["dependencies"]["service_bus"] = await _check_service_bus(sb_namespace, queue_name, deep=True)
+        status_info["dependencies"]["service_bus"] = await _check_service_bus(sb_namespace, queue_name, deep=deep)
     else:
         status_info["dependencies"]["service_bus"] = "not_configured"
 
@@ -79,8 +91,8 @@ async def dependency_health_check(db: AsyncSession = Depends(get_db)):
             status_info["status"] = "degraded"
         status_info["config_issues"] = config_issues
 
-    # Always return 200 so Container App liveness/readiness probes never fail.
-    # Dependency issues are reported in the response body as informational.
+    # /health/dependencies returns a deep diagnostic payload as informational HTTP 200.
+    # /health/ready is shallow by default unless HEALTH_CHECK_DEEP is enabled.
     all_healthy = all(
         dep in ("reachable", "not_configured", "configured")
         for dep in status_info["dependencies"].values()

@@ -79,7 +79,7 @@ class ArtifactService:
         return list(result.scalars().all())
 
     async def generate_sas_url(self, container: str, blob_name: str) -> str:
-        """Generates a read-only URL for the blob. Uses SAS if account key is available."""
+        """Generate a short-lived read-only URL for the blob."""
         from datetime import datetime, timedelta
         from azure.storage.blob import generate_blob_sas, BlobSasPermissions
 
@@ -108,5 +108,5 @@ class ArtifactService:
                 expiry=datetime.utcnow() + timedelta(minutes=15),
             )
             return f"{blob_url}?{sas_token}"
-        except Exception:
-            return blob_url
+        except Exception as exc:
+            raise RuntimeError("Could not generate a signed artifact download URL.") from exc

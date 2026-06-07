@@ -98,6 +98,12 @@ async def download_artifact(
     
     container = svc._get_container(artifact.artifact_type)
     blob_name = f"{artifact.job_id or 'standalone'}/{artifact.filename}"
-    sas_url = await svc.generate_sas_url(container, blob_name)
+    try:
+        sas_url = await svc.generate_sas_url(container, blob_name)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Artifact download URL could not be generated.",
+        )
     
     return {"download_url": sas_url}

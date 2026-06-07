@@ -17,6 +17,27 @@ class TestHealth:
         assert data["status"] == "healthy"
         assert data["version"] == "0.1.0"
 
+    @pytest.mark.asyncio
+    async def test_readiness_payload_uses_shallow_dependency_checks_by_default(self, monkeypatch):
+        from app.routers import health
+
+        class Db:
+            async def execute(self, _stmt):
+                return None
+
+        monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
+        monkeypatch.setenv("STORAGE_ACCOUNT_NAME", "storageexample")
+        monkeypatch.setenv("AZURE_SERVICE_BUS_NAMESPACE", "sb-example")
+        monkeypatch.setattr(health, "_startup_config_issues", lambda: [])
+
+        payload = await health._dependency_health_payload(Db(), deep=False)
+
+        assert payload["status"] == "healthy"
+        assert payload["dependencies"]["postgresql"] == "reachable"
+        assert payload["dependencies"]["key_vault"] == "configured"
+        assert payload["dependencies"]["blob_storage"] == "configured"
+        assert payload["dependencies"]["service_bus"] == "configured"
+
 
 class TestJobs:
     def test_create_job(self, client):

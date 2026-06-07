@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 
+from app.routers import connector_github
 from app.services import connector_commands
 
 
@@ -66,3 +67,41 @@ async def test_run_github_cli_uses_user_scoped_profile(monkeypatch, tmp_path):
     assert result["auth_method"] == "user_scoped_gh_cli"
     assert captured["env"] == {"GH_CONFIG_DIR": str(tmp_path)}
     assert captured["allowed_binaries"] == connector_commands.GITHUB_ALLOWED_BINARIES
+
+
+def test_github_oauth_state_round_trip_for_user():
+    user_id = uuid.uuid4()
+    signing_key = "state-signing-key-with-at-least-32-bytes"
+    state = connector_github._sign_state_payload(
+        {"user_id": str(user_id), "nonce": "nonce", "exp": 4_102_444_800},
+        client_secret=signing_key,
+    )
+
+    connector_github._verify_state_payload(state, client_secret=signing_key, user_id=user_id)
+
+
+def test_github_oauth_state_rejects_wrong_user():
+    signing_key = "state-signing-key-with-at-least-32-bytes"
+    state = connector_github._sign_state_payload(
+        {"user_id": str(uuid.uuid4()), "nonce": "nonce", "exp": 4_102_444_800},
+        client_secret=signing_key,
+    )
+
+    with pytest.raises(Exception):
+        connector_github._verify_state_payload(state, client_secret=signing_key, user_id=uuid.uuid4())
+
+
+@pytest.mark.asyncio
+async def test_github_oauth_config_falls_back_to_key_vault(monkeypatch):
+    monkeypatch.setattr(connector_github, "GITHUB_CLIENT_ID", "")
+    monkeypatch.setattr(connector_github, "GITHUB_CLIENT_SECRET", "")
+
+    async def fake_get_secret_value(name: str):
+        return {
+            connector_github.GITHUB_CLIENT_ID_SECRET_NAME: "client-id",
+            connector_github.GITHUB_CLIENT_SECRET_SECRET_NAME: "client-secret",
+        }[name]
+
+    monkeypatch.setattr(connector_github, "get_secret_value", fake_get_secret_value)
+
+    assert await connector_github._github_oauth_config() == ("client-id", "client-secret")

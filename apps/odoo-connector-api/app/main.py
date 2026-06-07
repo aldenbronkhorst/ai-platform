@@ -1,4 +1,5 @@
 import logging
+import re
 import xmlrpc.client
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -28,6 +29,9 @@ if settings.appinsights_connection_string:
     )
 else:
     tracer = None
+
+MAX_CONNECTOR_ERROR_CHARS = 1200
+INVALID_FIELD_RE = re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE)
 
 app = FastAPI(
     title=settings.app_name,
@@ -71,11 +75,37 @@ async def odoo_auth_error_handler(request: Request, exc: OdooAuthError):
 
 @app.exception_handler(OdooError)
 async def odoo_error_handler(request: Request, exc: OdooError):
+    raw_message = str(exc)
+    invalid_field = INVALID_FIELD_RE.search(raw_message)
+    if invalid_field:
+        message = (
+            f"Field '{invalid_field.group('field')}' does not exist on "
+            f"Odoo model '{invalid_field.group('model')}'."
+        )
+        error_type = "invalid_domain_field"
+    else:
+        message = raw_message
+        error_type = "odoo_error"
+        if message.startswith("Both Odoo API transports failed"):
+            message = "Odoo returned an internal error while processing the request."
+        elif "Traceback" in message:
+            prefix = message.split("Traceback", 1)[0].strip(" ;:\n")
+            message = (
+                prefix
+                if prefix and len(prefix) < 500
+                else "Odoo returned an internal error while processing the request."
+            )
+        if len(message) > MAX_CONNECTOR_ERROR_CHARS:
+            message = (
+                message[:MAX_CONNECTOR_ERROR_CHARS].rstrip()
+                + f"... [truncated {len(raw_message) - MAX_CONNECTOR_ERROR_CHARS} chars]"
+            )
     return JSONResponse(
         status_code=400,
         content={
-            "error": "odoo_error",
-            "message": str(exc),
+            "error": error_type,
+            "error_type": error_type,
+            "message": message,
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )
