@@ -163,11 +163,22 @@ function toolDetail(input: Record<string, unknown> | undefined) {
 function resultDetail(output: Record<string, unknown> | undefined, status: string, durationMs?: number | null) {
   if (status === "failed") return "The operation returned an error.";
   const result = isRecord(output?.result) ? output.result : output;
+  if (isRecord(result) && result.error === true) {
+    const message = textValue(result.message);
+    return `${message ? truncateText(message) : "Handled a recoverable tool issue."}${formatDuration(durationMs)}`;
+  }
   const countValue = isRecord(result) ? numberValue(result.count) : null;
   const count = countValue !== null ? `${countValue} result${countValue === 1 ? "" : "s"}` : "";
   const keys = compactKeys(result);
   const summary = count || (keys ? `Returned: ${keys}` : "Completed.");
   return `${summary}${formatDuration(durationMs)}`;
+}
+
+function hasHandledToolIssue(event: ActivityEvent) {
+  if (event.status === "failed" || event.span_type !== "tool_call" || event.event !== "span_finished") return false;
+  const output = event.output_summary || {};
+  const result = isRecord(output.result) ? output.result : {};
+  return result.error === true;
 }
 
 function titleFor(event: ActivityEvent) {
@@ -188,6 +199,7 @@ function titleFor(event: ActivityEvent) {
   if (type === "tool_call") {
     const action = textValue(input.action) || displayToolName(name);
     if (status === "failed") return `${action} failed`;
+    if (hasHandledToolIssue(event)) return `${action} skipped`;
     return status === "running" ? runningToolTitle(action) : completedToolTitle(action);
   }
   return status === "running" ? `Running ${name}` : `${name} complete`;
@@ -256,6 +268,11 @@ function detailFor(event: ActivityEvent) {
 
 function metaFor(event: ActivityEvent) {
   if (event.status === "failed") return event.error_type || "failed";
+  if (hasHandledToolIssue(event)) {
+    const output = event.output_summary || {};
+    const result = isRecord(output.result) ? output.result : {};
+    return textValue(result.error_type) || "handled";
+  }
   if (event.span_type === "tool_call") {
     const input = event.input_summary || {};
     return textValue(input.connector) || displayToolName(event.span_name || "");

@@ -337,6 +337,24 @@ def _normalize_tool_name(name: str) -> str:
 
 
 TOOL_NAME_MAP: dict[str, str] = {}
+ODOO_OPS_RUNNER_MODES = {
+    "health",
+    "schema",
+    "query",
+    "records",
+    "count",
+    "aggregate",
+    "report",
+    "account_report",
+    "attachment",
+    "content",
+    "message",
+    "mutation",
+    "write",
+    "create",
+    "delete",
+    "execute",
+}
 
 
 def _strip_function_prefix(name: str) -> str:
@@ -546,6 +564,43 @@ def _connector_error_payload(raw_detail: Any, fallback_text: str = "") -> dict[s
     return safe
 
 
+def _handled_tool_argument_error(message: str, missing: list[str] | None = None, suggestion: str | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "error": True,
+        "handled": True,
+        "status": "skipped",
+        "error_type": "invalid_tool_arguments",
+        "message": message,
+    }
+    if missing:
+        result["missing"] = missing
+    if suggestion:
+        result["suggestion"] = suggestion
+    return result
+
+
+def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    mode = str(arguments.get("mode") or "").strip()
+    if not mode:
+        return _handled_tool_argument_error(
+            "The Odoo tool call was missing the required mode, so it was skipped before reaching the connector.",
+            missing=["mode"],
+            suggestion="Retry with mode set to schema, query, records, count, report, attachment, content, message, mutation, or execute.",
+        )
+    if mode not in ODOO_OPS_RUNNER_MODES:
+        return _handled_tool_argument_error(
+            f"Unknown Odoo tool mode: {mode}.",
+            suggestion="Use one of the supported Odoo ops runner modes.",
+        )
+    if mode == "attachment" and not arguments.get("attachment_id") and not arguments.get("attachment_ids"):
+        return _handled_tool_argument_error(
+            "The Odoo attachment request was missing attachment_id or attachment_ids, so it was skipped before reaching the connector.",
+            missing=["attachment_id", "attachment_ids"],
+            suggestion="Query ir.attachment first, then call attachment mode with attachment_id or attachment_ids.",
+        )
+    return None
+
+
 def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
     """Convert AITool records to OpenAI-compatible tool definitions.
     Normalizes names to comply with the API's allowed character set.
@@ -629,6 +684,10 @@ async def _execute_tool_call_impl(
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name.startswith("odoo_"):
+        if tool_name == "odoo_ops_runner":
+            validation_error = _validate_odoo_ops_runner_arguments(arguments)
+            if validation_error:
+                return validation_error
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         path = _map_odoo_tool_to_path(tool_name)
         if not path:
@@ -698,7 +757,9 @@ async def _execute_tool_call(
         raise
 
     if trace_svc and span_id:
-        failed = isinstance(result, dict) and bool(result.get("error") or result.get("status") == "failed")
+        failed = isinstance(result, dict) and bool(
+            (result.get("error") or result.get("status") == "failed") and not result.get("handled")
+        )
         error_type = result.get("error_type") if isinstance(result, dict) else None
         error_message = (result.get("message") or result.get("error")) if isinstance(result, dict) else None
         trace_svc.end_span(
