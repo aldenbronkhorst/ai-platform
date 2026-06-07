@@ -7,6 +7,7 @@ os.environ["DEBUG"] = "true"
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.main import app
+from app.core.odoo_client import OdooError
 
 client = TestClient(app)
 
@@ -45,6 +46,61 @@ class TestHealth:
 
 
 class TestOdooOpsRunner:
+    @patch("app.routers.ops_runner._get_client")
+    def test_schema_handles_unavailable_candidate_model(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.side_effect = OdooError(
+            "Both Odoo API transports failed. JSON-RPC: Traceback ...; XML-RPC: Traceback ..."
+        )
+        mock_client.search_read.return_value = []
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload("schema", model="auditlog.log"),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error"] is True
+        assert data["handled"] is True
+        assert data["status"] == "skipped"
+        assert data["error_type"] == "model_unavailable"
+        assert data["model"] == "auditlog.log"
+        assert data["fields"] == {}
+        assert data["model_exists"] is False
+        assert "Traceback" not in data["reason"]
+        mock_client.search_read.assert_called_once_with(
+            model="ir.model",
+            domain=[["model", "=", "auditlog.log"]],
+            fields=["model", "name"],
+            limit=1,
+            include_ids=True,
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_schema_handles_existing_model_that_cannot_be_inspected(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.side_effect = OdooError("Access denied while reading model fields")
+        mock_client.search_read.return_value = [{"id": 10, "model": "auditlog.log", "name": "Audit Log"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload("schema", model="auditlog.log"),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error"] is True
+        assert data["handled"] is True
+        assert data["status"] == "skipped"
+        assert data["error_type"] == "schema_unavailable"
+        assert data["model_exists"] is True
+        assert "could not be inspected" in data["message"]
+
     @patch("app.routers.ops_runner._get_client")
     def test_query_passes_db_unchanged(self, mock_get_client):
         mock_client = MagicMock()

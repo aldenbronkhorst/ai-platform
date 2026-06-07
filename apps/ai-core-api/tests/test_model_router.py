@@ -1250,6 +1250,84 @@ class TestToolExecution:
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_odoo_schema_connector_error_is_handled_for_trace(self):
+        from app.services.model_router import _execute_tool_call
+
+        class FakeResponse:
+            status_code = 400
+            text = "Odoo returned an internal error while processing the request."
+
+            def json(self):
+                return {
+                    "detail": {
+                        "error": "odoo_error",
+                        "error_type": "odoo_error",
+                        "message": "Odoo returned an internal error while processing the request.",
+                        "correlation_id": "corr-123",
+                    }
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        class TraceRecorder:
+            def __init__(self):
+                self.ended = None
+
+            def start_span(self, *args, **kwargs):
+                return "span-1"
+
+            def end_span(self, span_id, **kwargs):
+                self.ended = {"span_id": span_id, **kwargs}
+
+            def span_error(self, *args, **kwargs):
+                raise AssertionError("handled schema errors should not call span_error")
+
+        db = MockSession(has_config=True)
+        trace = TraceRecorder()
+        fake_credentials = {
+            "url": "https://example.odoo.com",
+            "db": "example",
+            "username": "user@example.com",
+            "api_key": "secret",
+            "transport": "auto",
+        }
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value=fake_credentials),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call(
+                db,
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {"mode": "schema", "model": "auditlog.log"},
+                trace_svc=trace,
+            )
+
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "schema_unavailable"
+        assert result["model"] == "auditlog.log"
+        assert trace.ended["status"] == "success"
+        assert trace.ended["error_type"] is None
+        assert trace.ended["output_summary"]["result"]["connector_error"]["correlation_id"] == "corr-123"
+
+    @pytest.mark.asyncio
     async def test_turnover_without_report_name_uses_model_path(self):
         from app.services.model_router import execute_chat
 
