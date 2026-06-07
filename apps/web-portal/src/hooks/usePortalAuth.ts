@@ -26,6 +26,7 @@ function clearMsalStorage(storage: Storage) {
 export function usePortalAuth() {
   const { instance, accounts, inProgress } = useMsal();
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isTokenLoading, setIsTokenLoading] = useState(false);
   const [localMockAuthenticated, setLocalMockAuthenticated] = useState(false);
   const [localMockUser, setLocalMockUser] = useState<UserProfile | null>(null);
   const [tokenResult, setTokenResult] = useState<TokenResult | null>(null);
@@ -61,10 +62,18 @@ export function usePortalAuth() {
   }, [activeAccount, localMockAuthenticated, localMockUser, tokenResult]);
 
   useEffect(() => {
-    if (!activeAccount) return;
+    if (!activeAccount) {
+      const timerId = window.setTimeout(() => {
+        setTokenResult(null);
+        setIsTokenLoading(false);
+        if (!localMockAuthenticated) setAuthError(null);
+      }, 0);
+      return () => window.clearTimeout(timerId);
+    }
 
     let cancelled = false;
-    const acquireToken = () => {
+    const acquireToken = (showLoading: boolean) => {
+      if (showLoading) setIsTokenLoading(true);
       instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
         .then(response => {
           if (cancelled) return;
@@ -72,17 +81,23 @@ export function usePortalAuth() {
           setAuthError(null);
         })
         .catch(() => {
-          if (!cancelled) setAuthError("Token acquisition failed. Please sign in again.");
+          if (!cancelled) {
+            if (showLoading) setTokenResult(null);
+            setAuthError("Token acquisition failed. Please sign in again.");
+          }
+        })
+        .finally(() => {
+          if (!cancelled && showLoading) setIsTokenLoading(false);
         });
     };
 
-    acquireToken();
-    const refreshInterval = window.setInterval(acquireToken, 30 * 60 * 1000);
+    acquireToken(true);
+    const refreshInterval = window.setInterval(() => acquireToken(false), 30 * 60 * 1000);
     return () => {
       cancelled = true;
       window.clearInterval(refreshInterval);
     };
-  }, [activeAccount, instance]);
+  }, [activeAccount, instance, localMockAuthenticated]);
 
   const signInLocalMock = useCallback(() => {
     setLocalMockUser({
@@ -119,6 +134,7 @@ export function usePortalAuth() {
     enableLocalMock: ENABLE_LOCAL_MOCK,
     inProgress,
     instance,
+    isTokenLoading,
     signInLocalMock,
     signOut,
   };
