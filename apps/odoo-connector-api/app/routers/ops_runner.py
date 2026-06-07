@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional, Callable
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import internal_api_key_auth
-from app.core.odoo_client import OdooClient, OdooCredentials
+from app.core.odoo_client import OdooAuthError, OdooClient, OdooCredentials
 from app.models.schemas import OdooCredentialsRequest, OdooExecuteReportRequest
 from app.services.odoo_report_service import OdooReportService
 
@@ -14,6 +14,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_UNFILTERED_CONTENT_LIMIT = 10
+MAX_SCHEMA_ERROR_CHARS = 400
 INVALID_FIELD_PATTERNS = [
     re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE),
     re.compile(r"Invalid field ['\"](?P<field>[\w_]+)['\"] on model ['\"](?P<model>[\w.]+)['\"]", re.IGNORECASE),
@@ -83,6 +84,58 @@ def _run_health(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]
         return {"status": "error", "authenticated": False, "error": str(exc)}
 
 
+def _compact_schema_error(exc: Exception) -> str:
+    message = str(exc)
+    if message.startswith("Both Odoo API transports failed") or "Traceback" in message:
+        return "Odoo could not inspect this model's schema."
+    if len(message) > MAX_SCHEMA_ERROR_CHARS:
+        return message[:MAX_SCHEMA_ERROR_CHARS].rstrip() + f"... [truncated {len(message) - MAX_SCHEMA_ERROR_CHARS} chars]"
+    return message
+
+
+def _schema_model_exists(client: OdooClient, model: str) -> bool | None:
+    try:
+        matches = client.search_read(
+            model="ir.model",
+            domain=[["model", "=", model]],
+            fields=["model", "name"],
+            limit=1,
+            include_ids=True,
+        )
+    except OdooAuthError:
+        raise
+    except Exception:
+        return None
+    return bool(matches)
+
+
+def _handled_schema_model_error(client: OdooClient, req: OdooOpsRunnerRequest, exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, OdooAuthError):
+        raise exc
+
+    model = req.model or "unknown"
+    model_exists = _schema_model_exists(client, model)
+    if model_exists is False:
+        error_type = "model_unavailable"
+        message = f"Odoo model '{model}' is not installed or is not available to this connected account."
+    else:
+        error_type = "schema_unavailable"
+        message = f"Odoo model '{model}' could not be inspected by this connected account."
+
+    return {
+        "model": model,
+        "fields": {},
+        "error": True,
+        "handled": True,
+        "status": "skipped",
+        "error_type": error_type,
+        "message": message,
+        "model_exists": model_exists,
+        "reason": _compact_schema_error(exc),
+        "suggestion": "Use mode 'schema' with query to discover installed models, or inspect a different candidate model.",
+    }
+
+
 def _run_schema(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     if req.query:
         models = client.call_with_transport(
@@ -93,7 +146,10 @@ def _run_schema(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]
         ) or []
         return {"models": models}
     if req.model:
-        return {"model": req.model, "fields": client.fields_get(req.model, fields=req.fields)}
+        try:
+            return {"model": req.model, "fields": client.fields_get(req.model, fields=req.fields)}
+        except Exception as exc:
+            return _handled_schema_model_error(client, req, exc)
     return {"warning": "Provide model or query for schema inspection."}
 
 

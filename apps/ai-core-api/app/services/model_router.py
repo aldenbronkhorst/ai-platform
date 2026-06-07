@@ -579,6 +579,47 @@ def _handled_tool_argument_error(message: str, missing: list[str] | None = None,
     return result
 
 
+def _handled_odoo_schema_connector_error(
+    arguments: dict[str, Any],
+    detail: dict[str, Any],
+    status_code: int,
+) -> dict[str, Any] | None:
+    mode = str(arguments.get("mode") or "").strip()
+    if mode != "schema":
+        return None
+
+    raw_error_type = str(detail.get("error_type") or "connector_error")
+    handled_schema_errors = {
+        "model_unavailable",
+        "schema_unavailable",
+        "invalid_domain_field",
+        "odoo_error",
+        "connector_http_error",
+        "internal_error",
+    }
+    if raw_error_type not in handled_schema_errors or status_code not in {400, 404, 422, 500}:
+        return None
+
+    model = str(arguments.get("model") or detail.get("model") or "unknown")
+    error_type = raw_error_type if raw_error_type in {"model_unavailable", "schema_unavailable"} else "schema_unavailable"
+    message = (
+        detail.get("message")
+        if raw_error_type in {"model_unavailable", "schema_unavailable"}
+        else f"Odoo model '{model}' could not be inspected by this connected account, so the schema probe was skipped."
+    )
+    return {
+        "error": True,
+        "handled": True,
+        "status": "skipped",
+        "error_type": error_type,
+        "message": _truncate_tool_text(str(message), 600),
+        "model": model,
+        "status_code": status_code,
+        "connector_error": detail,
+        "suggestion": "Use mode 'schema' with query to discover installed models, or inspect a different candidate model.",
+    }
+
+
 def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
     mode = str(arguments.get("mode") or "").strip()
     if not mode:
@@ -709,6 +750,9 @@ async def _execute_tool_call_impl(
             except Exception:
                 raw_detail = {"error_type": "connector_http_error", "message": response.text}
             detail = _connector_error_payload(raw_detail, response.text)
+            handled = _handled_odoo_schema_connector_error(arguments, detail, response.status_code)
+            if handled:
+                return handled
             return {
                 "error": True,
                 "status_code": response.status_code,
