@@ -246,6 +246,57 @@ class TestOdooOpsRunner:
         assert "Traceback" not in data["message"]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_normalizes_mixed_implicit_and_or_domain(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": 23591}]
+        mock_get_client.return_value = mock_client
+
+        mixed_domain = [
+            ["user_id", "=", 782],
+            "|",
+            [
+                "&",
+                ["first_activity", ">=", "2026-06-05 22:00:00"],
+                ["first_activity", "<", "2026-06-06 22:00:00"],
+            ],
+            [
+                "&",
+                ["last_activity", ">=", "2026-06-05 22:00:00"],
+                ["last_activity", "<", "2026-06-06 22:00:00"],
+            ],
+        ]
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="res.device",
+                domain=mixed_domain,
+                fields=["id", "first_activity", "last_activity"],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["count"] == 1
+        search_kwargs = mock_client.search_read.call_args.kwargs
+        assert search_kwargs["domain"] == [
+            "&",
+            ["user_id", "=", 782],
+            "|",
+            [
+                "&",
+                ["first_activity", ">=", "2026-06-05 22:00:00"],
+                ["first_activity", "<", "2026-06-06 22:00:00"],
+            ],
+            [
+                "&",
+                ["last_activity", ">=", "2026-06-05 22:00:00"],
+                ["last_activity", "<", "2026-06-06 22:00:00"],
+            ],
+        ]
+
+    @patch("app.routers.ops_runner._get_client")
     def test_content_omits_invalid_fields_and_caps_unfiltered_reads(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.fields_get.return_value = {

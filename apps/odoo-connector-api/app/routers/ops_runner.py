@@ -19,6 +19,7 @@ INVALID_FIELD_PATTERNS = [
     re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE),
     re.compile(r"Invalid field ['\"](?P<field>[\w_]+)['\"] on model ['\"](?P<model>[\w.]+)['\"]", re.IGNORECASE),
 ]
+DOMAIN_LOGICAL_OPERATORS = {"&", "|", "!"}
 
 
 class OdooOpsRunnerRequest(BaseModel):
@@ -157,6 +158,40 @@ def _invalid_field_error(exc: Exception) -> bool:
     return "Invalid field" in str(exc)
 
 
+def _is_domain_operator(value: Any) -> bool:
+    return isinstance(value, str) and value in DOMAIN_LOGICAL_OPERATORS
+
+
+def _normalize_mixed_domain(domain: list[Any] | None) -> list[Any]:
+    """Convert implicit-leading AND domains before explicit operators to Odoo prefix form.
+
+    Odoo domains often allow consecutive leaf terms as an implicit AND, and
+    explicit operators such as "|" are prefix operators. Model-generated domains
+    can mix these styles, e.g. [A, "|", B, C]. Normalize that to ["&", A, "|", B, C]
+    before sending it to Odoo, because some models return server tracebacks for
+    the mixed form instead of a concise validation error.
+    """
+    if not domain:
+        return []
+
+    first_operator_index = next(
+        (idx for idx, item in enumerate(domain) if _is_domain_operator(item)),
+        None,
+    )
+    if first_operator_index is None or first_operator_index == 0:
+        return domain
+
+    leading_terms = domain[:first_operator_index]
+    expression = list(domain[first_operator_index:])
+    if not expression:
+        return domain
+
+    normalized = expression
+    for term in reversed(leading_terms):
+        normalized = ["&", term, *normalized]
+    return normalized
+
+
 def _invalid_field_info(exc: Exception) -> dict[str, str] | None:
     message = str(exc)
     for pattern in INVALID_FIELD_PATTERNS:
@@ -199,9 +234,10 @@ def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[s
 def _query_records(client: OdooClient, req: OdooOpsRunnerRequest, fields: list[str] | None = None) -> list[dict[str, Any]]:
     if req.ids:
         return client.read(model=req.model, ids=req.ids, fields=fields)
+    domain = _normalize_mixed_domain(req.domain or [])
     return client.search_read(
         model=req.model,
-        domain=req.domain or [],
+        domain=domain,
         fields=fields,
         limit=req.limit,
         offset=req.offset,
@@ -245,6 +281,7 @@ def _paged_result(
     payload_key: str = "records",
 ) -> dict[str, Any]:
     returned_count = len(records)
+    domain = _normalize_mixed_domain(req.domain or [])
     return {
         "model": req.model,
         payload_key: records,
@@ -252,7 +289,7 @@ def _paged_result(
         **_pagination_metadata(
             client,
             req.model,
-            req.domain or [],
+            domain,
             returned_count,
             req.limit,
             req.offset,
@@ -299,7 +336,13 @@ def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
 
 
 def _run_count(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
-    return {"model": req.model, "count": client.search_count(model=req.model, domain=req.domain or [])}
+    return {
+        "model": req.model,
+        "count": client.search_count(
+            model=req.model,
+            domain=_normalize_mixed_domain(req.domain or []),
+        ),
+    }
 
 
 def _run_aggregate(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
@@ -308,7 +351,7 @@ def _run_aggregate(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, A
     result = client.call_with_transport(
         req.model,
         "read_group",
-        args=[req.domain or [], req.fields, req.args],
+        args=[_normalize_mixed_domain(req.domain or []), req.fields, req.args],
         kwargs={"lazy": True},
     )
     return {"model": req.model, "groups": result}
@@ -374,6 +417,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
     content_domain = list(req.domain or [])
     if req.ids:
         content_domain = [["id", "in", req.ids], *content_domain]
+    content_domain = _normalize_mixed_domain(content_domain)
     warnings: list[str] = []
     if not content_domain and limit > MAX_UNFILTERED_CONTENT_LIMIT:
         limit = MAX_UNFILTERED_CONTENT_LIMIT
@@ -485,6 +529,7 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         kwargs = req.kwargs or {}
         args = req.args or []
         domain = req.domain if req.domain is not None else (args[0] if args and isinstance(args[0], list) else [])
+        domain = _normalize_mixed_domain(domain)
         fields = req.fields or kwargs.get("fields")
         if not fields and len(args) > 1 and isinstance(args[1], list):
             fields = args[1]
