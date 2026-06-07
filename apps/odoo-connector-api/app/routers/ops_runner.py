@@ -65,6 +65,7 @@ class OdooOpsRunnerRequest(BaseModel):
     method: Optional[str] = None
     args: Optional[list[Any]] = None
     kwargs: Optional[dict[str, Any]] = None
+    groupby: Optional[list[str]] = None
 
 
 def _get_client(creds):
@@ -346,15 +347,29 @@ def _run_count(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
 
 
 def _run_aggregate(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
-    if not req.model or not req.fields or not req.args:
-        raise HTTPException(status_code=400, detail={"error": "aggregate requires model, fields, and groupby"})
+    missing = [
+        name
+        for name, value in (("model", req.model), ("fields", req.fields))
+        if not value
+    ]
+    if missing:
+        return {
+            "error": True,
+            "handled": True,
+            "status": "skipped",
+            "error_type": "aggregate_arguments_required",
+            "message": "Aggregate mode requires model and fields. groupby is optional and may be empty for a global aggregate.",
+            "missing": missing,
+            "suggestion": "Retry with model and aggregate fields such as ['amount_total_signed:sum']; include groupby only when grouped rows are needed.",
+        }
+    groupby = req.groupby if req.groupby is not None else (req.args or [])
     result = client.call_with_transport(
         req.model,
         "read_group",
-        args=[_normalize_mixed_domain(req.domain or []), req.fields, req.args],
+        args=[_normalize_mixed_domain(req.domain or []), req.fields, groupby],
         kwargs={"lazy": True},
     )
-    return {"model": req.model, "groups": result}
+    return {"model": req.model, "groupby": groupby, "groups": result}
 
 
 def _run_report(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:

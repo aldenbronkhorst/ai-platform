@@ -297,6 +297,73 @@ class TestOdooOpsRunner:
         ]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_aggregate_allows_empty_groupby_for_global_totals(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = [{"amount_total_signed": 939677.63, "__count": 26}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "aggregate",
+                model="account.move",
+                domain=[
+                    ["state", "=", "posted"],
+                    ["move_type", "in", ["out_invoice", "out_refund"]],
+                    ["date", ">=", "2026-06-01"],
+                    ["date", "<=", "2026-06-08"],
+                ],
+                fields=["amount_total_signed:sum"],
+                groupby=[],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["groupby"] == []
+        assert data["groups"][0]["amount_total_signed"] == 939677.63
+        mock_client.call_with_transport.assert_called_once_with(
+            "account.move",
+            "read_group",
+            args=[
+                [
+                    ["state", "=", "posted"],
+                    ["move_type", "in", ["out_invoice", "out_refund"]],
+                    ["date", ">=", "2026-06-01"],
+                    ["date", "<=", "2026-06-08"],
+                ],
+                ["amount_total_signed:sum"],
+                [],
+            ],
+            kwargs={"lazy": True},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_aggregate_missing_fields_returns_handled_skip(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "aggregate",
+                model="account.move",
+                domain=[["state", "=", "posted"]],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error"] is True
+        assert data["handled"] is True
+        assert data["status"] == "skipped"
+        assert data["error_type"] == "aggregate_arguments_required"
+        assert data["missing"] == ["fields"]
+        mock_client.call_with_transport.assert_not_called()
+
+    @patch("app.routers.ops_runner._get_client")
     def test_content_omits_invalid_fields_and_caps_unfiltered_reads(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.fields_get.return_value = {
