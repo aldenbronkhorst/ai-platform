@@ -376,11 +376,12 @@ ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
 }
 ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
 ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION = {"message_post", "action_feedback", "action_done"}
+ODOO_QUERY_SHAPE_KEYS = {"domain", "fields", "limit", "offset", "order"}
 
 
 def _strip_function_prefix(name: str) -> str:
     value = (name or "").strip()
-    if value.startswith("functions."):
+    if value.lower().startswith("functions."):
         value = value[len("functions."):]
     if ":" in value:
         value = value.split(":", 1)[0]
@@ -397,6 +398,18 @@ def _odoo_positional_arg(arguments: dict[str, Any], index: int, default: Any = N
 def _odoo_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
     kwargs = arguments.get("kwargs")
     return kwargs if isinstance(kwargs, dict) else {}
+
+
+def _looks_like_odoo_query(arguments: dict[str, Any]) -> bool:
+    if not str(arguments.get("model") or "").strip():
+        return False
+    if arguments.get("mode") or arguments.get("operation") or arguments.get("method"):
+        return False
+    if arguments.get("values") is not None:
+        return False
+    if isinstance(arguments.get("ids"), list):
+        return False
+    return any(key in arguments for key in ODOO_QUERY_SHAPE_KEYS)
 
 
 def _odoo_query_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -449,8 +462,9 @@ def _odoo_mutation_arguments(arguments: dict[str, Any], operation: str) -> dict[
 
 def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str, Any]:
     method = str(arguments.get("method") or "").strip()
-    operation = alias.removeprefix("odoo_")
-    if alias == "odoo":
+    normalized_alias = alias.lower()
+    operation = normalized_alias.removeprefix("odoo_")
+    if normalized_alias == "odoo":
         operation = method
     if operation in {"search_read", "search"}:
         return _odoo_query_arguments(arguments)
@@ -482,13 +496,26 @@ def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str
             if key in arguments:
                 converted[key] = arguments[key]
         return converted
+    if _looks_like_odoo_query(arguments):
+        return _odoo_query_arguments(arguments)
     return {"mode": "execute", **arguments}
 
 
 def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     cleaned = _strip_function_prefix(name)
     normalized = _normalize_tool_name(cleaned)
-    mapped = TOOL_NAME_MAP.get(normalized, cleaned)
+    normalized_lower = normalized.lower()
+    mapped = TOOL_NAME_MAP.get(normalized) or TOOL_NAME_MAP.get(normalized_lower)
+    if not mapped:
+        mapped = (
+            normalized_lower
+            if (
+                normalized_lower in {"azure_cli", "github_cli", "odoo_ops_runner"}
+                or normalized_lower == "odoo"
+                or normalized_lower.startswith("odoo_")
+            )
+            else cleaned
+        )
     if mapped in {"azure_cli", "github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
@@ -764,6 +791,9 @@ def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
 def _normalize_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
     mode = str(normalized.get("mode") or "").strip()
+    if not mode and _looks_like_odoo_query(normalized):
+        normalized["mode"] = "query"
+        mode = "query"
     if mode == "message" and not normalized.get("operation"):
         normalized["operation"] = "post"
     return normalized
