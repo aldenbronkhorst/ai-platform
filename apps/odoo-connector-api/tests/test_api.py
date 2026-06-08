@@ -247,6 +247,44 @@ class TestOdooOpsRunner:
         assert "Traceback" not in data["message"]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_normalizes_mail_message_res_model_alias(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [
+            {"id": 10, "model": "purchase.order", "res_id": 55},
+            {"id": 11, "model": "purchase.order", "res_id": 56},
+        ]
+        mock_client.search_count.return_value = 2
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="mail.message",
+                domain=[["res_model", "=", "purchase.order"], ["res_id", "in", [55, 56]]],
+                fields=["id", "res_model", "res_id"],
+                limit=2,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["records"][0]["model"] == "purchase.order"
+        assert data["total_count"] == 2
+        expected_domain = [["model", "=", "purchase.order"], ["res_id", "in", [55, 56]]]
+        mock_client.search_read.assert_called_once_with(
+            model="mail.message",
+            domain=expected_domain,
+            fields=["id", "model", "res_id"],
+            limit=2,
+            offset=0,
+            order=None,
+            include_ids=True,
+        )
+        mock_client.search_count.assert_called_once_with(model="mail.message", domain=expected_domain)
+
+    @patch("app.routers.ops_runner._get_client")
     def test_query_normalizes_mixed_implicit_and_or_domain(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.search_read.return_value = [{"id": 23591}]

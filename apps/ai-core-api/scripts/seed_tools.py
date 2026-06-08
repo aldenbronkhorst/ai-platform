@@ -26,7 +26,7 @@ TOOLS = [
             "properties": {
                 "mode": {"type": "string", "enum": ["health", "schema", "query", "aggregate", "report", "attachment", "content", "message", "mutation", "execute"], "description": "Broad operation mode"},
                 "model": {"type": "string", "description": "Odoo model name (required for most modes)"},
-                "domain": {"type": "array", "items": {}, "description": "Search domain as list of filters"},
+                "domain": {"type": "array", "items": {}, "description": "Search domain as list of filters. For chatter, mail.activity uses res_model/res_id; mail.message uses model/res_id, not res_model."},
                 "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to return"},
                 "ids": {"type": "array", "items": {"type": "integer"}, "description": "Specific record IDs"},
                 "limit": {"type": "integer", "description": "Max records for this page (default 50)", "default": 50},
