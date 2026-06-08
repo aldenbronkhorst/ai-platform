@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -8,6 +10,7 @@ from app.schemas.schemas import AIArtifactCreate, AIArtifactResponse, AIAuditEve
 from uuid import UUID
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+logger = logging.getLogger(__name__)
 
 
 def _can_read_artifact(auth: dict, artifact) -> bool:
@@ -39,7 +42,18 @@ async def create_artifact(
         retention_policy=retention_policy,
     )
     content = await file.read()
-    artifact = await svc.upload(data, content, created_by_user_id=auth.get("user_id"))
+    try:
+        artifact = await svc.upload(data, content, created_by_user_id=auth.get("user_id"))
+    except Exception as exc:
+        logger.exception("Artifact upload failed | filename=%s artifact_type=%s", filename, artifact_type)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error_type": "artifact_upload_failed",
+                "error_message": "The file could not be uploaded to artifact storage.",
+                "technical_detail": str(exc),
+            },
+        ) from exc
 
     # Audit
     audit_svc = AuditService(db)

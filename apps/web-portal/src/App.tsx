@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
-import type { ChatSession, ChatMessage, AttachedFile } from "./types";
+import type { ChatAttachment, ChatSession, ChatMessage, AttachedFile } from "./types";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
 import { ChatView } from "./components/chat/ChatView";
@@ -149,6 +149,19 @@ async function chatFailureFromResponse(res: Response, requestId: string): Promis
     technicalDetail: detailString(body),
     httpStatus: res.status,
   };
+}
+
+async function uploadFailureFromResponse(res: Response, fallback: string): Promise<string> {
+  const body = await res.json().catch(() => null);
+  const detail = body && typeof body === "object" && "detail" in body
+    ? (body as { detail?: unknown }).detail
+    : body;
+
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const record = detail as Record<string, unknown>;
+    return detailString(record.error_message || record.message || record.error || detail, fallback);
+  }
+  return detailString(detail, fallback);
 }
 
 function appendActivityEvent(message: ChatMessage, event: unknown): ChatMessage {
@@ -680,14 +693,23 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     e.preventDefault();
     if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
     if (activeSessionId && sendingSessionIds.includes(activeSessionId)) return;
+    if (attachedFiles.some(file => file.uploading || file.error)) return;
 
     const content = chatInput;
-    const artifactIds = attachedFiles.filter(f => !f.uploading && f.id).map(f => f.id as string);
-    setChatInput("");
-    setAttachedFiles([]);
+    const attachedArtifacts: ChatAttachment[] = attachedFiles
+      .filter(file => !file.uploading && !file.error && file.id)
+      .map(file => file.artifact || {
+        id: file.id as string,
+        filename: file.file.name,
+        mime_type: file.file.type || "application/octet-stream",
+        artifact_type: "job-file",
+      });
+    const artifactIds = attachedArtifacts.map(artifact => artifact.id);
 
     const currentSess = activeSession || await createNewChat();
     if (!currentSess) return;
+    setChatInput("");
+    setAttachedFiles([]);
     touchChatSessionForMessage(currentSess);
 
     const requestId = crypto.randomUUID();
@@ -701,7 +723,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         content,
         created_at: createdAt,
         status: "completed",
-        metadata_json: { request_id: requestId },
+        metadata_json: { request_id: requestId, attachments: attachedArtifacts },
+        attachments: attachedArtifacts,
       },
       {
         id: pendingMsgId,
@@ -791,11 +814,16 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || !accessToken) return;
+    e.currentTarget.value = "";
+    if (!files) return;
+    if (!accessToken) {
+      alert("Please sign in again before uploading files.");
+      return;
+    }
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (file.size > 15 * 1024 * 1024) { alert(`File ${file.name} exceeds 15MB limit.`); continue; }
-      const tempId = Math.random().toString();
+      const tempId = crypto.randomUUID();
       setAttachedFiles(prev => [...prev, { file, id: tempId, uploading: true }]);
       const formData = new FormData();
       formData.append("file", file);
@@ -809,13 +837,29 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           body: formData,
         });
         if (r.ok) {
-          const art = await r.json();
-          setAttachedFiles(prev => prev.map(f => f.id === tempId ? { file, id: art.id, uploading: false } : f));
+          const art = await r.json() as ChatAttachment;
+          const attachment: ChatAttachment = {
+            id: art.id,
+            filename: art.filename || file.name,
+            mime_type: art.mime_type || file.type || "application/octet-stream",
+            artifact_type: art.artifact_type || "job-file",
+          };
+          setAttachedFiles(prev => prev.map(f => f.id === tempId ? {
+            file,
+            id: attachment.id,
+            artifact: attachment,
+            uploading: false,
+          } : f));
         } else {
-          setAttachedFiles(prev => prev.filter(f => f.id !== tempId));
+          const error = await uploadFailureFromResponse(r, `Upload failed with HTTP ${r.status}.`);
+          setAttachedFiles(prev => prev.map(f => f.id === tempId ? { ...f, uploading: false, error } : f));
         }
-      } catch {
-        setAttachedFiles(prev => prev.filter(f => f.id !== tempId));
+      } catch (err) {
+        setAttachedFiles(prev => prev.map(f => f.id === tempId ? {
+          ...f,
+          uploading: false,
+          error: `Upload failed: ${errorMessage(err)}`,
+        } : f));
       }
     }
   };

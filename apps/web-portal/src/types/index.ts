@@ -23,14 +23,24 @@ export interface ChatMessage {
   created_at: string;
   model_name?: string;
   metadata_json?: unknown;
+  attachments?: ChatAttachment[];
   status?: MessageStatus;
   error_message?: string;
+}
+
+export interface ChatAttachment {
+  id: string;
+  filename: string;
+  mime_type: string;
+  artifact_type: string;
 }
 
 export interface AttachedFile {
   file: File;
   id?: string;
+  artifact?: ChatAttachment;
   uploading: boolean;
+  error?: string;
 }
 
 export type VoiceState = "idle" | "listening" | "processing" | "unsupported" | "denied";

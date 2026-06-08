@@ -1,5 +1,5 @@
 import { useRef, useCallback, useLayoutEffect, useState } from "react";
-import { Plus, Mic, CornerDownLeft, FileText, RefreshCw } from "lucide-react";
+import { AlertCircle, Plus, Mic, CornerDownLeft, FileText, RefreshCw, X } from "lucide-react";
 import type { AttachedFile, VoiceState } from "../../types";
 
 interface ChatComposerProps {
@@ -31,15 +31,21 @@ export function ChatComposer({
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
 
   const formRef = useRef<HTMLFormElement>(null);
+  const hasPendingUpload = attachedFiles.some(file => file.uploading);
+  const hasFailedUpload = attachedFiles.some(file => Boolean(file.error));
+  const canSubmit = !isChatSending
+    && !hasPendingUpload
+    && !hasFailedUpload
+    && (chatInput.trim() || attachedFiles.length > 0);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      if (!isChatSending && (chatInput.trim() || attachedFiles.length > 0)) {
+      if (canSubmit) {
         formRef.current?.requestSubmit();
       }
     }
-  }, [isChatSending, chatInput, attachedFiles]);
+  }, [canSubmit]);
 
   useLayoutEffect(() => {
     const ta = textareaRef.current;
@@ -96,9 +102,9 @@ export function ChatComposer({
   const sendButton = (
     <button
       type="submit"
-      disabled={isChatSending || (!chatInput.trim() && attachedFiles.length === 0)}
+      disabled={!canSubmit}
       className={`${controlButtonClass} bg-raised hover-bg-surface text-default border border-default disabled:opacity-40 disabled:cursor-not-allowed`}
-      title="Send message"
+      title={hasPendingUpload ? "Waiting for file upload" : hasFailedUpload ? "Remove failed upload" : "Send message"}
     >
       <CornerDownLeft className="w-4 h-4" />
     </button>
@@ -121,23 +127,36 @@ export function ChatComposer({
       <div className="glass-composer">
         {attachedFiles.length > 0 && (
           <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1">
-            {attachedFiles.map((chip, idx) => (
+            {attachedFiles.map((chip) => (
               <div
-                key={idx}
-                className="flex items-center gap-1.5 px-3 py-1 bg-surface border border-default rounded-full text-xs text-default font-semibold"
+                key={chip.id || `${chip.file.name}-${chip.file.lastModified}`}
+                className={`flex items-center gap-1.5 px-3 py-1 bg-surface border rounded-full text-xs font-semibold ${
+                  chip.error
+                    ? "border-[var(--color-danger)]/60 text-[var(--color-danger)]"
+                    : "border-default text-default"
+                }`}
+                title={chip.error || chip.file.name}
               >
-                <FileText className="w-3.5 h-3.5 shrink-0 text-muted" />
+                {chip.error ? (
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <FileText className="w-3.5 h-3.5 shrink-0 text-muted" />
+                )}
                 <span className="truncate max-w-[120px]">{chip.file.name}</span>
                 {chip.uploading ? (
                   <RefreshCw className="w-3 h-3 animate-spin shrink-0 ml-1 text-soft" />
                 ) : (
+                  <>
+                    {chip.error && <span className="text-[10px] uppercase tracking-wide">Failed</span>}
                   <button
                     type="button"
                     onClick={() => chip.id && onRemoveFile(chip.id)}
-                    className="text-soft hover:text-default ml-1 text-xs shrink-0"
+                    className="text-soft hover:text-default ml-1 shrink-0"
+                    title="Remove file"
                   >
-                    ✕
+                    <X className="w-3 h-3" />
                   </button>
+                  </>
                 )}
               </div>
             ))}
