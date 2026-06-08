@@ -73,7 +73,7 @@ CHAT_TITLE_FILLER_WORDS = {
     "a", "all", "an", "and", "are", "as", "at", "be", "been", "being", "can", "could",
     "did", "do", "does", "for", "from", "get", "give", "go", "how", "i", "if",
     "in", "is", "it", "list", "me", "my", "of", "on", "or", "our", "please",
-    "show", "so", "tell", "the", "this", "to", "today", "tomorrow", "us", "was",
+    "show", "so", "tell", "the", "there", "this", "to", "today", "tomorrow", "us", "was",
     "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
     "yesterday",
 }
@@ -1136,7 +1136,7 @@ def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
         if not tokens:
             continue
 
-        useful = [token for token in tokens if token.lower() not in CHAT_TITLE_FILLER_WORDS]
+        useful = [token for token in tokens if token.lower() not in CHAT_TITLE_FILLER_WORDS and not token.isdigit()]
         selected = useful[:6] or tokens[:6]
         title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))
         if title:
@@ -2761,63 +2761,14 @@ async def generate_chat_title(
     request_id: Optional[str] = None,
     trace_svc: Any = None,
 ) -> str | None:
-    """Generate a compact chat title without exposing connector tools."""
-    fallback_title = _fallback_chat_title(messages)
-    source_text = _chat_title_source_text(messages)
-    if not source_text:
-        return fallback_title
+    """Generate a compact local chat title without making a model call.
 
-    try:
-        route, model_obj, provider, _policy = await _select_route_model_provider(db, "general_chat", "low")
-        title_messages = [
-            {"role": "system", "content": CHAT_TITLE_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"Conversation excerpt:\n{source_text}\n\nTitle:",
-            },
-        ]
-        stats = ModelCallStats()
-        result, client = await _call_model(
-            model_obj,
-            provider,
-            title_messages,
-            temperature=0.1,
-            max_tokens=CHAT_TITLE_MAX_TOKENS,
-            tool_definitions=[],
-            trace_svc=trace_svc,
-            attempt_reason="chat_title",
-        )
-        stats.add_result(result)
-        state = ModelCallState(result=result, used_model=model_obj, used_provider=provider, client=client, stats=stats)
-        state = await _try_rate_limit_fallbacks(
-            db,
-            route,
-            model_obj,
-            state,
-            title_messages,
-            temperature=0.1,
-            max_tokens=CHAT_TITLE_MAX_TOKENS,
-            tool_definitions=[],
-            reason="chat_title_quota_exceeded",
-            trace_svc=trace_svc,
-        )
-        await _log_usage(
-            db,
-            route,
-            "chat_title",
-            chat_session_id,
-            user_id,
-            state,
-            request_id=f"{request_id}:title" if request_id else None,
-            trace_id=trace_svc.trace_id if trace_svc else None,
-        )
-        if state.result.get("error"):
-            logger.warning("Chat title generation failed: %s", state.result.get("message") or state.result.get("error_type"))
-            return fallback_title
-        return _sanitize_chat_title(state.result.get("content")) or fallback_title
-    except Exception as exc:
-        logger.warning("Chat title generation skipped: %s", exc)
-        return fallback_title
+    Title creation is a cosmetic side effect of a chat turn. It must never delay
+    user-visible answers or appear as a long-running model step in the activity
+    stream.
+    """
+    _ = (db, chat_session_id, user_id, request_id, trace_svc)
+    return _fallback_chat_title(messages)
 
 
 async def execute_chat(
