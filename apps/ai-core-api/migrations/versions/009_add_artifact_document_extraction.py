@@ -1,13 +1,13 @@
 """Add document extraction fields to artifacts.
 
-Revision ID: 009_add_artifact_document_extraction
+Revision ID: 009_doc_extract
 Revises: 008_add_usage_trace_correlation
 Create Date: 2026-06-08
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "009_add_artifact_document_extraction"
+revision = "009_doc_extract"
 down_revision = "008_add_usage_trace_correlation"
 branch_labels = None
 depends_on = None
