@@ -1,4 +1,5 @@
 import os
+import xmlrpc.client
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -492,6 +493,95 @@ class TestOdooOpsRunner:
             args=[[1]],
             kwargs={},
         )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_write_normalizes_bare_x2many_set_command(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "hr.employee",
+            "fields": {
+                "contract_ids": {"type": "one2many", "relation": "hr.contract"},
+                "work_email": {"type": "char"},
+            },
+        }
+        mock_client.call_with_transport.return_value = True
+        mock_client.read.return_value = [{"id": 76, "display_name": "Gerhard Wayne Cloete"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "mutation",
+                operation="write",
+                model="hr.employee",
+                ids=[76],
+                values={"contract_ids": [6, 0, [12]], "work_email": "gerhard@example.com"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "hr.employee",
+            "write",
+            args=[[76], {"contract_ids": [[6, 0, [12]]], "work_email": "gerhard@example.com"}],
+            kwargs={},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_write_rejects_invalid_x2many_shape_before_odoo(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.fields_get.return_value = {
+            "model": "hr.employee",
+            "fields": {"contract_ids": {"type": "one2many", "relation": "hr.contract"}},
+        }
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "mutation",
+                operation="write",
+                model="hr.employee",
+                ids=[76],
+                values={"contract_ids": [{"id": 12}]},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()["detail"]
+        assert data["error_type"] == "invalid_x2many_value"
+        assert data["field"] == "contract_ids"
+        mock_client.call_with_transport.assert_not_called()
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_raw_xmlrpc_fault_returns_structured_odoo_error(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.side_effect = xmlrpc.client.Fault(
+            1,
+            "Traceback (most recent call last):\n"
+            "psycopg2.errors.UndefinedFunction: operator does not exist: integer <> integer[]\n",
+        )
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "mutation",
+                operation="write",
+                model="hr.employee",
+                ids=[76],
+                values={"work_email": "gerhard@example.com"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error_type"] == "odoo_rpc_fault"
+        assert "operator does not exist" in data["message"]
+        assert "Traceback" not in data["message"]
 
     @patch("app.routers.ops_runner._get_client")
     def test_execute_search_read_returns_pagination_metadata(self, mock_get_client):
