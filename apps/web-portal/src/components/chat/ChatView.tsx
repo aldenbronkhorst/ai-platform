@@ -10,6 +10,7 @@ interface ChatViewProps {
   chatMessages: ChatMessage[];
   chatInput: string;
   attachedFiles: AttachedFile[];
+  voiceInterimTranscript: string;
   voiceState: VoiceState;
   isMessagesLoading: boolean;
   isChatSending: boolean;
@@ -30,6 +31,7 @@ export function ChatView({
   chatMessages,
   chatInput,
   attachedFiles,
+  voiceInterimTranscript,
   voiceState,
   isMessagesLoading,
   isChatSending,
@@ -155,6 +157,7 @@ export function ChatView({
         <ChatComposer
           chatInput={chatInput}
           attachedFiles={attachedFiles}
+          voiceInterimTranscript={voiceInterimTranscript}
           voiceState={voiceState}
           isChatSending={isChatSending}
           placeholder={placeholder}

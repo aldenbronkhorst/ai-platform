@@ -100,3 +100,35 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "function mergeFetchedChatSessions" in content
     assert "if (activeSessionId && !byId.has(activeSessionId))" in content
     assert "return prev;" in content
+
+
+def test_voice_keeps_microphone_stream_open_while_listening():
+    hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
+    with open(hook_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "micStreamRef" in content
+    assert "getUserMedia({ audio: true })" in content
+    assert "releaseMicStream" in content
+    assert "micStreamRef.current?.getTracks().forEach(track => track.stop())" in content
+
+
+def test_voice_commits_final_results_and_tracks_interim_text():
+    hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
+    with open(hook_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "const startIndex = Math.max(0, event.resultIndex || 0);" in content
+    assert "committedResultIndexesRef.current.add(i)" in content
+    assert "emitTranscript(finalSegments.join(\" \"))" in content
+    assert "return { voiceState, toggleVoice, interimTranscript }" in content
+
+
+def test_voice_interim_text_is_visible_in_composer():
+    composer_path = os.path.join(SRC_DIR, "components", "chat", "ChatComposer.tsx")
+    with open(composer_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "voiceInterimTranscript" in content
+    assert "cleanVoiceInterim" in content
+    assert "bg-[var(--color-warning)] text-white" in content

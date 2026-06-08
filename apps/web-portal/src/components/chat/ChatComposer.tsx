@@ -5,6 +5,7 @@ import type { AttachedFile, VoiceState } from "../../types";
 interface ChatComposerProps {
   chatInput: string;
   attachedFiles: AttachedFile[];
+  voiceInterimTranscript: string;
   voiceState: VoiceState;
   isChatSending: boolean;
   placeholder?: string;
@@ -18,6 +19,7 @@ interface ChatComposerProps {
 export function ChatComposer({
   chatInput,
   attachedFiles,
+  voiceInterimTranscript,
   voiceState,
   isChatSending,
   placeholder = "Ask anything...",
@@ -33,6 +35,8 @@ export function ChatComposer({
   const formRef = useRef<HTMLFormElement>(null);
   const hasPendingUpload = attachedFiles.some(file => file.uploading);
   const hasFailedUpload = attachedFiles.some(file => Boolean(file.error));
+  const cleanVoiceInterim = voiceInterimTranscript.trim();
+  const hasComposerPreview = attachedFiles.length > 0 || cleanVoiceInterim.length > 0;
   const canSubmit = !isChatSending
     && !hasPendingUpload
     && !hasFailedUpload
@@ -90,7 +94,7 @@ export function ChatComposer({
       disabled={isVoiceDisabled}
       className={`${controlButtonClass} ${
         isListening || isVoiceProcessing
-          ? "bg-[var(--color-danger)]/15 text-[var(--color-danger)]"
+          ? "bg-[var(--color-warning)] text-white shadow-sm"
           : "text-muted hover-text-default hover-bg-surface"
       } disabled:opacity-40 disabled:cursor-not-allowed`}
       title={isVoiceDisabled ? "Voice not supported" : isVoiceProcessing ? "Transcribing voice input" : isListening ? "Stop listening" : "Voice input"}
@@ -125,8 +129,17 @@ export function ChatComposer({
   return (
     <div className="px-3 pb-3 sm:px-4 sm:pb-4 select-none">
       <div className="glass-composer">
-        {attachedFiles.length > 0 && (
+        {hasComposerPreview && (
           <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1">
+            {cleanVoiceInterim && (
+              <div
+                className="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-2.5 py-1 text-xs font-medium text-default"
+                title={cleanVoiceInterim}
+              >
+                <Mic className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />
+                <span className="max-w-[260px] truncate sm:max-w-[420px]">{cleanVoiceInterim}</span>
+              </div>
+            )}
             {attachedFiles.map((chip) => (
               <div
                 key={chip.id || `${chip.file.name}-${chip.file.lastModified}`}
