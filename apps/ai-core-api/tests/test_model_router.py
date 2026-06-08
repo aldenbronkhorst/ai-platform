@@ -2329,6 +2329,192 @@ class TestToolExecution:
         assert called_args[3]["mode"] == "query"
         assert called_args[3]["model"] == "res.users"
 
+    @pytest.mark.asyncio
+    async def test_execute_chat_converts_compact_text_tool_call_without_argument_marker(self):
+        """Compact textual calls must execute instead of leaking markup to the chat router."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        raw_tool_markup = (
+            "I'll merge the duplicate employee into the older record."
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.odoo_write:0 "
+            '{"model":"hr.employee","ids":[42],"values":{"parent_id":7,"notes":"move data before delete"}}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": raw_tool_markup,
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "Duplicate employee data was merged into the older record.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+        execute_tool = AsyncMock(return_value={"status": "success", "operation": "write", "updated": 1})
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=execute_tool,
+        ):
+            result = await execute_chat(
+                db,
+                [
+                    {"role": "user", "content": "there is duplicate gerhdard employee"},
+                    {"role": "user", "content": "move everything to the oldest one and delete the new one"},
+                ],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "Duplicate employee data was merged into the older record."
+        assert "<|tool_call" not in result["content"]
+        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        called_args = execute_tool.call_args.args
+        assert called_args[2] == "odoo_ops_runner"
+        assert called_args[3] == {
+            "mode": "write",
+            "operation": "write",
+            "model": "hr.employee",
+            "ids": [42],
+            "values": {"parent_id": 7, "notes": "move data before delete"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_converts_compact_text_tool_call_with_nested_json_strings(self):
+        """The compact parser must not stop at braces that appear inside JSON strings."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        raw_tool_markup = (
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.odoo_write:0 "
+            '{"model":"hr.employee","ids":[42],"values":{"notes":"contains } brace","metadata":{"old_id":7}}}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+        )
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": raw_tool_markup,
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "Nested JSON compact call executed.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+        execute_tool = AsyncMock(return_value={"status": "success", "operation": "write", "updated": 1})
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_foundry_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=execute_tool,
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "update the duplicate employee notes in Odoo"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "Nested JSON compact call executed."
+        called_args = execute_tool.call_args.args
+        assert called_args[3]["values"] == {
+            "notes": "contains } brace",
+            "metadata": {"old_id": 7},
+        }
+
 
 # ── Security Tests ──
 
