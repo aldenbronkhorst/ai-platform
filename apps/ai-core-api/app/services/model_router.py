@@ -1845,6 +1845,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "`content` calls for schema discovery or general user/activity lookups."
         )
         guidance_parts.append(
+            "For chatter/activity lookups: `mail.activity` uses `res_model` and `res_id`; "
+            "`mail.message` uses `model` and `res_id` for the related business record. "
+            "Do not filter `mail.message` by `res_model`."
+        )
+        guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
             "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."

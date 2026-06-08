@@ -23,6 +23,11 @@ DOMAIN_LOGICAL_OPERATORS = {"&", "|", "!"}
 X2MANY_FIELD_TYPES = {"many2many", "one2many"}
 MANY2ONE_FIELD_TYPES = {"many2one"}
 X2MANY_COMMANDS = {0, 1, 2, 3, 4, 5, 6}
+MODEL_FIELD_ALIASES: dict[str, dict[str, str]] = {
+    # mail.activity uses res_model/res_id; mail.message uses model/res_id.
+    # Models commonly confuse the two when tracing chatter records.
+    "mail.message": {"res_model": "model"},
+}
 
 
 class OdooOpsRunnerRequest(BaseModel):
@@ -196,6 +201,44 @@ def _normalize_mixed_domain(domain: list[Any] | None) -> list[Any]:
     return normalized
 
 
+def _model_field_aliases(model: str | None) -> dict[str, str]:
+    return MODEL_FIELD_ALIASES.get(model or "", {})
+
+
+def _normalize_fields(model: str | None, fields: list[str] | None) -> list[str] | None:
+    if fields is None:
+        return None
+    aliases = _model_field_aliases(model)
+    normalized = [aliases.get(field, field) for field in fields]
+    return list(dict.fromkeys(normalized))
+
+
+def _normalize_domain_field_aliases(model: str | None, domain: list[Any]) -> list[Any]:
+    aliases = _model_field_aliases(model)
+    if not aliases:
+        return domain
+
+    def normalize_item(item: Any) -> Any:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) >= 3
+            and isinstance(item[0], str)
+            and item[0] not in DOMAIN_LOGICAL_OPERATORS
+        ):
+            normalized_leaf = list(item)
+            normalized_leaf[0] = aliases.get(item[0], item[0])
+            return normalized_leaf
+        if isinstance(item, (list, tuple)):
+            return [normalize_item(value) for value in item]
+        return item
+
+    return [normalize_item(item) for item in domain]
+
+
+def _normalize_domain(model: str | None, domain: list[Any] | None) -> list[Any]:
+    return _normalize_domain_field_aliases(model, _normalize_mixed_domain(domain or []))
+
+
 def _invalid_field_info(exc: Exception) -> dict[str, str] | None:
     message = str(exc)
     for pattern in INVALID_FIELD_PATTERNS:
@@ -228,6 +271,7 @@ def _invalid_domain_field_response(req: OdooOpsRunnerRequest, info: dict[str, st
 
 
 def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[str]) -> tuple[list[str], list[str], dict[str, Any]]:
+    requested_fields = _normalize_fields(model, requested_fields) or []
     schema = client.fields_get(model, fields=requested_fields)
     available_fields = set((schema.get("fields") or {}).keys())
     valid_fields = [field for field in requested_fields if field == "id" or field in available_fields]
@@ -237,12 +281,12 @@ def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[s
 
 def _query_records(client: OdooClient, req: OdooOpsRunnerRequest, fields: list[str] | None = None) -> list[dict[str, Any]]:
     if req.ids:
-        return client.read(model=req.model, ids=req.ids, fields=fields)
-    domain = _normalize_mixed_domain(req.domain or [])
+        return client.read(model=req.model, ids=req.ids, fields=_normalize_fields(req.model, fields))
+    domain = _normalize_domain(req.model, req.domain)
     return client.search_read(
         model=req.model,
         domain=domain,
-        fields=fields,
+        fields=_normalize_fields(req.model, fields),
         limit=req.limit,
         offset=req.offset,
         order=req.order,
@@ -285,7 +329,7 @@ def _paged_result(
     payload_key: str = "records",
 ) -> dict[str, Any]:
     returned_count = len(records)
-    domain = _normalize_mixed_domain(req.domain or [])
+    domain = _normalize_domain(req.model, req.domain)
     return {
         "model": req.model,
         payload_key: records,
@@ -344,7 +388,7 @@ def _run_count(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
         "model": req.model,
         "count": client.search_count(
             model=req.model,
-            domain=_normalize_mixed_domain(req.domain or []),
+            domain=_normalize_domain(req.model, req.domain),
         ),
     }
 
@@ -369,7 +413,7 @@ def _run_aggregate(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, A
     result = client.call_with_transport(
         req.model,
         "read_group",
-        args=[_normalize_mixed_domain(req.domain or []), req.fields, groupby],
+        args=[_normalize_domain(req.model, req.domain), _normalize_fields(req.model, req.fields), groupby],
         kwargs={"lazy": True},
     )
     return {"model": req.model, "groupby": groupby, "groups": result}
@@ -435,7 +479,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
     content_domain = list(req.domain or [])
     if req.ids:
         content_domain = [["id", "in", req.ids], *content_domain]
-    content_domain = _normalize_mixed_domain(content_domain)
+    content_domain = _normalize_domain(req.model, content_domain)
     warnings: list[str] = []
     if not content_domain and limit > MAX_UNFILTERED_CONTENT_LIMIT:
         limit = MAX_UNFILTERED_CONTENT_LIMIT
@@ -447,7 +491,7 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         records = client.search_read(
             model=req.model,
             domain=content_domain,
-            fields=valid_fields,
+            fields=_normalize_fields(req.model, valid_fields),
             limit=limit,
             offset=req.offset,
             order=req.order,
@@ -640,7 +684,7 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         kwargs = req.kwargs or {}
         args = req.args or []
         domain = req.domain if req.domain is not None else (args[0] if args and isinstance(args[0], list) else [])
-        domain = _normalize_mixed_domain(domain)
+        domain = _normalize_domain(req.model, domain)
         fields = req.fields or kwargs.get("fields")
         if not fields and len(args) > 1 and isinstance(args[1], list):
             fields = args[1]
@@ -650,7 +694,7 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         records = client.search_read(
             model=req.model,
             domain=domain,
-            fields=fields,
+            fields=_normalize_fields(req.model, fields),
             limit=limit,
             offset=offset,
             order=order,
