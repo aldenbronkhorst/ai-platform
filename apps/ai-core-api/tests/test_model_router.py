@@ -947,6 +947,8 @@ class TestToolDefinitions:
         assert "Do not invent Odoo web URLs" in system_prompt
         assert "record_url" in system_prompt
         assert "cannot provide a verified link" in system_prompt
+        assert "effect_verified=true" in system_prompt
+        assert "not a private Discuss direct message" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
@@ -1356,7 +1358,7 @@ class TestToolExecution:
             status_code = 200
 
             def json(self):
-                return {"operation": "post", "result": 9002}
+                return {"operation": "post", "result": 9002, "effect_verified": True}
 
         class FakeAsyncClient:
             def __init__(self, *args, **kwargs):
@@ -1399,11 +1401,74 @@ class TestToolExecution:
                 },
             )
 
-        assert result == {"operation": "post", "result": 9002}
+        assert result == {"operation": "post", "result": 9002, "effect_verified": True}
         assert posted_payload["operation"] == "post"
         assert posted_payload["mode"] == "message"
         assert posted_payload["model"] == "res.partner"
         assert posted_payload["record_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_odoo_unverified_side_effect_is_guarded_before_model_answer(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "model": "mail.activity",
+                    "method": "action_feedback",
+                    "result": False,
+                    "verification": {"status": "still_open", "remaining_ids": [2180]},
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        fake_credentials = {
+            "url": "https://example.odoo.com",
+            "db": "example",
+            "username": "user@example.com",
+            "api_key": "secret",
+            "transport": "auto",
+        }
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value=fake_credentials),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call_impl(
+                MockSession(has_config=True),
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {
+                    "mode": "execute",
+                    "model": "mail.activity",
+                    "method": "action_feedback",
+                    "ids": [2180],
+                    "kwargs": {"feedback": "Receipt corrected"},
+                },
+            )
+
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "unverified_side_effect"
+        assert result["error_type"] == "unverified_side_effect"
+        assert result["verification"]["status"] == "still_open"
+        assert "Do not claim" in result["message"]
 
     @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):

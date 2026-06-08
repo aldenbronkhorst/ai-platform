@@ -538,6 +538,9 @@ class TestOdooOpsRunner:
     def test_message_mode_wraps_record_id_for_message_post(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = 9001
+        mock_client.read.return_value = [
+            {"id": 9001, "model": "purchase.order", "res_id": 23337, "message_type": "comment"}
+        ]
         mock_get_client.return_value = mock_client
 
         response = client.post(
@@ -557,6 +560,10 @@ class TestOdooOpsRunner:
         assert data["operation"] == "post"
         assert data["result"] == 9001
         assert data["message_id"] == 9001
+        assert data["effect_verified"] is True
+        assert data["verification"]["status"] == "verified"
+        assert data["message_scope"] == "record_chatter"
+        assert data["direct_message"] is False
         assert data["record_url"] == "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"
         mock_client.call_with_transport.assert_called_once_with(
             "purchase.order",
@@ -564,11 +571,17 @@ class TestOdooOpsRunner:
             args=[[23337]],
             kwargs={"body": "Fixed &amp; ready<br/>Proceed", "message_type": "comment"},
         )
+        mock_client.read.assert_called_once_with(
+            "mail.message",
+            [9001],
+            ["id", "model", "res_id", "message_type", "create_date", "write_date"],
+        )
 
     @patch("app.routers.ops_runner._get_client")
     def test_message_mode_defaults_missing_operation_to_post(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = 9002
+        mock_client.read.return_value = [{"id": 9002, "model": "res.partner", "res_id": 42}]
         mock_get_client.return_value = mock_client
 
         response = client.post(
@@ -587,6 +600,9 @@ class TestOdooOpsRunner:
         assert data["operation"] == "post"
         assert data["result"] == 9002
         assert data["message_id"] == 9002
+        assert data["effect_verified"] is True
+        assert data["direct_message"] is False
+        assert "not a private Discuss direct message" in data["warning"]
         assert data["record_url"] == "https://example.odoo.com/web#id=42&model=res.partner&view_type=form"
         mock_client.call_with_transport.assert_called_once_with(
             "res.partner",
@@ -599,6 +615,7 @@ class TestOdooOpsRunner:
     def test_record_url_strips_web_path_from_configured_url(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = 9003
+        mock_client.read.return_value = [{"id": 9003, "model": "purchase.order", "res_id": 23337}]
         mock_get_client.return_value = mock_client
 
         response = client.post(
@@ -620,6 +637,7 @@ class TestOdooOpsRunner:
     def test_execute_message_post_uses_record_id_when_args_missing(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = 9002
+        mock_client.read.return_value = [{"id": 9002, "model": "purchase.order", "res_id": 23337}]
         mock_get_client.return_value = mock_client
 
         response = client.post(
@@ -637,6 +655,10 @@ class TestOdooOpsRunner:
         assert response.status_code == 200
         data = response.json()
         assert data["message_id"] == 9002
+        assert data["effect_verified"] is True
+        assert data["verification"]["status"] == "verified"
+        assert data["message_scope"] == "record_chatter"
+        assert data["direct_message"] is False
         assert data["record_url"] == "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"
         assert data["record_urls"] == [
             {"id": 23337, "url": "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"}
@@ -649,9 +671,36 @@ class TestOdooOpsRunner:
         )
 
     @patch("app.routers.ops_runner._get_client")
+    def test_execute_message_post_marks_target_mismatch_unverified(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = 9002
+        mock_client.read.return_value = [{"id": 9002, "model": "res.partner", "res_id": 99}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="purchase.order",
+                method="message_post",
+                record_id=23337,
+                kwargs={"body": "Fixed"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["effect_verified"] is False
+        assert data["verification"]["status"] == "target_mismatch"
+        assert data["verification"]["actual_model"] == "res.partner"
+        assert data["verification"]["actual_record_id"] == 99
+
+    @patch("app.routers.ops_runner._get_client")
     def test_execute_action_feedback_uses_ids_when_args_missing(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = True
+        mock_client.search_read.return_value = []
         mock_get_client.return_value = mock_client
 
         response = client.post(
@@ -667,12 +716,49 @@ class TestOdooOpsRunner:
         )
 
         assert response.status_code == 200
+        data = response.json()
+        assert data["effect_verified"] is True
+        assert data["verification"]["status"] == "verified"
+        assert data["verification"]["closed_ids"] == [2180]
+        assert data["verification"]["remaining_ids"] == []
         mock_client.call_with_transport.assert_called_once_with(
             "mail.activity",
             "action_feedback",
             args=[[2180]],
             kwargs={"feedback": "Receipt corrected"},
         )
+        mock_client.search_read.assert_called_once_with(
+            model="mail.activity",
+            domain=[["id", "in", [2180]]],
+            fields=["id", "res_model", "res_id", "summary", "date_deadline"],
+            limit=1,
+            include_ids=True,
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_action_feedback_reports_unverified_when_activity_remains(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_client.search_read.return_value = [{"id": 2180, "summary": "Please check"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="mail.activity",
+                method="action_feedback",
+                ids=[2180],
+                kwargs={"feedback": "Receipt corrected"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["effect_verified"] is False
+        assert data["verification"]["status"] == "still_open"
+        assert data["verification"]["remaining_ids"] == [2180]
 
     @patch("app.routers.ops_runner._get_client")
     def test_execute_recordset_method_missing_ids_returns_400(self, mock_get_client):
@@ -700,6 +786,7 @@ class TestOdooOpsRunner:
     def test_execute_recordset_method_normalizes_bare_int_first_arg(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = True
+        mock_client.search_read.return_value = []
         mock_get_client.return_value = mock_client
 
         response = client.post(
