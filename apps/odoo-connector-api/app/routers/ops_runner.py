@@ -20,6 +20,9 @@ INVALID_FIELD_PATTERNS = [
     re.compile(r"Invalid field ['\"](?P<field>[\w_]+)['\"] on model ['\"](?P<model>[\w.]+)['\"]", re.IGNORECASE),
 ]
 DOMAIN_LOGICAL_OPERATORS = {"&", "|", "!"}
+X2MANY_FIELD_TYPES = {"many2many", "one2many"}
+MANY2ONE_FIELD_TYPES = {"many2one"}
+X2MANY_COMMANDS = {0, 1, 2, 3, 4, 5, 6}
 
 
 class OdooOpsRunnerRequest(BaseModel):
@@ -493,15 +496,108 @@ def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
     return {"operation": "post", "result": result}
 
 
+def _is_int_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+
+
+def _is_x2many_command(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and 1 <= len(value) <= 3
+        and isinstance(value[0], int)
+        and value[0] in X2MANY_COMMANDS
+    )
+
+
+def _is_x2many_command_list(value: Any) -> bool:
+    return isinstance(value, list) and all(_is_x2many_command(item) for item in value)
+
+
+def _normalize_x2many_value(field_name: str, value: Any) -> Any:
+    if value is None or value is False:
+        return value
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_x2many_value",
+                "error_type": "invalid_x2many_value",
+                "field": field_name,
+                "message": f"Field '{field_name}' expects Odoo x2many command syntax.",
+            },
+        )
+    if not value:
+        return value
+    if _is_x2many_command(value):
+        return [value]
+    if _is_int_list(value):
+        return [[6, 0, value]]
+    if _is_x2many_command_list(value):
+        return value
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": "invalid_x2many_value",
+            "error_type": "invalid_x2many_value",
+            "field": field_name,
+            "message": (
+                f"Field '{field_name}' expects a list of Odoo command triples, "
+                "for example [[6, 0, [1, 2]]]."
+            ),
+        },
+    )
+
+
+def _normalize_many2one_value(value: Any) -> Any:
+    if isinstance(value, list) and value and isinstance(value[0], int):
+        return value[0]
+    if isinstance(value, dict) and isinstance(value.get("id"), int):
+        return value["id"]
+    return value
+
+
+def _needs_mutation_schema(values: dict[str, Any]) -> bool:
+    return any(isinstance(value, (list, dict)) for value in values.values())
+
+
+def _mutation_field_schema(client: OdooClient, model: str, values: dict[str, Any]) -> dict[str, Any]:
+    if not values or not _needs_mutation_schema(values):
+        return {}
+    schema = client.fields_get(model, fields=list(values.keys()), attributes=["type", "relation", "readonly"])
+    fields = schema.get("fields") if isinstance(schema, dict) else None
+    return fields if isinstance(fields, dict) else {}
+
+
+def _normalize_mutation_values(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
+    values = dict(req.values or {})
+    if not req.model or not values:
+        return values
+    field_schema = _mutation_field_schema(client, req.model, values)
+    if not field_schema:
+        return values
+
+    normalized = dict(values)
+    for field_name, value in values.items():
+        info = field_schema.get(field_name)
+        if not isinstance(info, dict):
+            continue
+        field_type = str(info.get("type") or "")
+        if field_type in X2MANY_FIELD_TYPES:
+            normalized[field_name] = _normalize_x2many_value(field_name, value)
+        elif field_type in MANY2ONE_FIELD_TYPES:
+            normalized[field_name] = _normalize_many2one_value(value)
+    return normalized
+
+
 def _create_record(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
-    result = client.call_with_transport(req.model, "create", args=[req.values or {}], kwargs={})
+    result = client.call_with_transport(req.model, "create", args=[_normalize_mutation_values(client, req)], kwargs={})
     return result, [int(result)] if isinstance(result, int) else []
 
 
 def _write_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
     if not req.ids:
         raise HTTPException(status_code=400, detail={"error": "write requires ids"})
-    return client.call_with_transport(req.model, "write", args=[req.ids, req.values or {}], kwargs={}), req.ids
+    return client.call_with_transport(req.model, "write", args=[req.ids, _normalize_mutation_values(client, req)], kwargs={}), req.ids
 
 
 def _delete_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:

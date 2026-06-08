@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import ssl
 import xmlrpc.client
 from dataclasses import dataclass
@@ -49,6 +50,33 @@ class OdooAuthError(OdooError):
 
 class OdooPermissionError(OdooError):
     pass
+
+
+ODOO_ERROR_CAUSE_RE = re.compile(
+    r"(?m)^(?P<cause>(?:psycopg2\.errors\.[\w]+|odoo\.exceptions\.[\w]+|"
+    r"ValidationError|UserError|ValueError|TypeError|KeyError):[^\n]*)"
+)
+MAX_ODOO_ERROR_CHARS = 1200
+
+
+def compact_odoo_rpc_error(message: Any) -> str:
+    """Return a concise, safe error message from Odoo RPC fault text."""
+    text = str(message or "").strip()
+    if not text:
+        return "Odoo returned an error."
+
+    if "Traceback" in text:
+        matches = list(ODOO_ERROR_CAUSE_RE.finditer(text))
+        if matches:
+            text = matches[-1].group("cause").strip()
+        else:
+            text = "Odoo returned a server traceback while processing the request."
+
+    text = text.replace("\\n", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip(" '\"")
+    if len(text) > MAX_ODOO_ERROR_CHARS:
+        return text[:MAX_ODOO_ERROR_CHARS].rstrip() + "..."
+    return text
 
 
 @dataclass(frozen=True)
@@ -162,15 +190,19 @@ class OdooClient:
 
     def execute_kw_xmlrpc(self, model: str, method: str, args: list[Any] | None = None, kwargs: dict[str, Any] | None = None) -> Any:
         uid = self.authenticate()
-        return self.models.execute_kw(
-            self.credentials.db,
-            uid,
-            self.credentials.password_or_api_key,
-            model,
-            method,
-            args or [],
-            kwargs or {},
-        )
+        try:
+            return self.models.execute_kw(
+                self.credentials.db,
+                uid,
+                self.credentials.password_or_api_key,
+                model,
+                method,
+                args or [],
+                kwargs or {},
+            )
+        except xmlrpc.client.Fault as exc:
+            message = compact_odoo_rpc_error(exc.faultString)
+            raise OdooError(f"Odoo {model}.{method} failed: {message}") from exc
 
     def execute_kw_jsonrpc(self, model: str, method: str, args: list[Any] | None = None, kwargs: dict[str, Any] | None = None) -> Any:
         uid = self.authenticate()

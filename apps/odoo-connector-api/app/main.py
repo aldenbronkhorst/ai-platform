@@ -4,7 +4,7 @@ import xmlrpc.client
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
-from app.core.odoo_client import OdooError, OdooAuthError
+from app.core.odoo_client import OdooError, OdooAuthError, compact_odoo_rpc_error
 from app.core.middleware import CorrelationIdMiddleware
 from app.routers import health
 from app.routers import ops_runner as ops_runner_router
@@ -118,6 +118,19 @@ async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.Pro
         content={
             "error": "odoo_transport_error",
             "message": f"XML-RPC protocol error: {exc.errcode} {exc.errmsg}",
+            "correlation_id": getattr(request.state, "correlation_id", None),
+        },
+    )
+
+
+@app.exception_handler(xmlrpc.client.Fault)
+async def xmlrpc_fault_error_handler(request: Request, exc: xmlrpc.client.Fault):
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "odoo_rpc_fault",
+            "error_type": "odoo_rpc_fault",
+            "message": compact_odoo_rpc_error(exc.faultString),
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )
