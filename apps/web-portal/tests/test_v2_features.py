@@ -144,3 +144,13 @@ def test_connections_page_loads_backend_platform_tools():
     assert '`${APIM_BASE_URL}/tools`' in content
     assert "Platform Tools" in content
     assert "setPlatformTools(data.filter" in content
+
+
+def test_pending_activity_uses_result_keys_not_summary_object_keys():
+    component_path = os.path.join(SRC_DIR, "components", "chat", "PendingAssistant.tsx")
+    with open(component_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "function meaningfulResultKeys" in content
+    assert "stringList(result.keys)" in content
+    assert "`Returned: ${keys}`" not in content

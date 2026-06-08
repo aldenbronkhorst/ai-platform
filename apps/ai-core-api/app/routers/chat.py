@@ -756,6 +756,26 @@ def _token_usage(router_result: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _tool_error_summary(router_result: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = router_result.get("tool_error_summary")
+    return summary if isinstance(summary, list) else []
+
+
+def _tool_error_summary_text(tool_error_summary: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in tool_error_summary[:3]:
+        tool_name = str(item.get("tool_name") or "tool")
+        error_type = str(item.get("error_type") or "tool_error")
+        message = str(item.get("message") or "").strip()
+        if len(message) > 180:
+            message = message[:179].rstrip() + "..."
+        parts.append(f"{tool_name}: {error_type}{f' - {message}' if message else ''}")
+    hidden = len(tool_error_summary) - len(parts)
+    if hidden > 0:
+        parts.append(f"... {hidden} more tool issue(s)")
+    return "; ".join(parts)
+
+
 def _assistant_metadata(
     router_result: dict[str, Any],
     request_id: str,
@@ -768,6 +788,10 @@ def _assistant_metadata(
     }
     if router_result.get("context"):
         metadata["context"] = router_result["context"]
+    tool_error_summary = _tool_error_summary(router_result)
+    if tool_error_summary:
+        metadata["has_tool_errors"] = True
+        metadata["tool_error_summary"] = tool_error_summary
     if activity_events:
         metadata["activity_events"] = activity_events
     return metadata
@@ -834,6 +858,7 @@ async def _persist_success(
     user_id: UUID,
     request_id: str,
     context_data: dict[str, Any] | None,
+    tool_error_summary: list[dict[str, Any]] | None = None,
 ) -> None:
     db.add(assistant_msg)
     await _record_memory_usage(db, context_data, assistant_msg, session_id, user_id, request_id)
@@ -842,6 +867,7 @@ async def _persist_success(
     await db.commit()
     await db.refresh(assistant_msg)
 
+    partial_failure = bool(tool_error_summary)
     await AuditService(db).log_event(AIAuditEventCreate(
         action_type="chat_message",
         target_system="ai-platform",
@@ -849,8 +875,9 @@ async def _persist_success(
         target_record_id=str(assistant_msg.id),
         actor_user_id=user_id,
         input_summary=f"Sent chat message in session {session_id}",
+        output_summary=_tool_error_summary_text(tool_error_summary or []) if partial_failure else None,
         risk_level="low",
-        status="success",
+        status="partial_failure" if partial_failure else "success",
     ))
     await db.commit()
 
@@ -951,6 +978,7 @@ async def _process_chat_turn(
         raise
 
     context_data = router_result.get("context")
+    tool_error_summary = _tool_error_summary(router_result)
 
     assistant_msg = _build_assistant_message(
         session_id,
@@ -969,9 +997,14 @@ async def _process_chat_turn(
         request_id,
         trace_svc,
     )
-    await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data)
+    await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data, tool_error_summary)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)
-    await trace_svc.commit(status="success")
+    trace_status = "partial_failure" if tool_error_summary else "success"
+    await trace_svc.commit(
+        status=trace_status,
+        error_type="tool_partial_failure" if tool_error_summary else None,
+        error_message=_tool_error_summary_text(tool_error_summary) if tool_error_summary else None,
+    )
     await db.commit()
     return assistant_msg
 

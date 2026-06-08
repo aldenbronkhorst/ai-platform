@@ -1369,9 +1369,76 @@ class TestToolExecution:
         assert result["status"] == "skipped"
         assert result["error_type"] == "schema_unavailable"
         assert result["model"] == "auditlog.log"
-        assert trace.ended["status"] == "success"
-        assert trace.ended["error_type"] is None
+        assert trace.ended["status"] == "warning"
+        assert trace.ended["error_type"] == "schema_unavailable"
+        assert trace.ended["error_message"] == "Odoo model 'auditlog.log' could not be inspected by this connected account, so the schema probe was skipped."
         assert trace.ended["output_summary"]["result"]["connector_error"]["correlation_id"] == "corr-123"
+
+    def test_tool_result_error_summary_captures_handled_odoo_issue(self):
+        from app.services.model_router import _tool_result_error_summary
+
+        summary = _tool_result_error_summary([
+            {
+                "tool_name": "odoo_ops_runner",
+                "arguments": {
+                    "mode": "schema",
+                    "model": "auditlog.log",
+                    "api_key": "must-not-persist",
+                },
+                "result": {
+                    "error": True,
+                    "handled": True,
+                    "status": "skipped",
+                    "error_type": "model_unavailable",
+                    "message": "Odoo model 'auditlog.log' is not installed.",
+                },
+            }
+        ])
+
+        assert summary == [
+            {
+                "index": 1,
+                "tool_name": "odoo_ops_runner",
+                "status": "skipped",
+                "handled": True,
+                "error_type": "model_unavailable",
+                "message": "Odoo model 'auditlog.log' is not installed.",
+                "arguments": {"mode": "schema", "model": "auditlog.log"},
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_usage_log_marks_successful_answer_with_tool_issue_as_partial_failure(self):
+        from app.services.model_router import ModelCallState, ModelCallStats, _log_usage
+
+        db = MockSession(has_config=True)
+        state = ModelCallState(
+            result={"content": "I answered using the usable Odoo results.", "error": False},
+            used_model=db._model,
+            used_provider=db._provider,
+            client=AsyncMock(),
+            stats=ModelCallStats(prompt_tokens=10, completion_tokens=5, latency_ms=123),
+        )
+
+        await _log_usage(
+            db,
+            db._route,
+            "general_chat",
+            uuid.uuid4(),
+            uuid.uuid4(),
+            state,
+            request_id="req-123",
+            trace_id="trace_123",
+            tool_error_summary=[{
+                "tool_name": "odoo_ops_runner",
+                "error_type": "model_unavailable",
+                "message": "Odoo model 'auditlog.log' is not installed.",
+            }],
+        )
+
+        usage_log = next(obj for obj in db.added if isinstance(obj, AIUsageLog))
+        assert usage_log.status == "partial_failure"
+        assert usage_log.error_message == "odoo_ops_runner: model_unavailable - Odoo model 'auditlog.log' is not installed."
 
     @pytest.mark.asyncio
     async def test_turnover_without_report_name_uses_model_path(self):

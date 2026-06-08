@@ -89,6 +89,28 @@ class TestSecureArtifactDownloads:
 
 
 class TestChatResponseGuards:
+    def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):
+        from app.routers.chat import _assistant_metadata
+
+        summary = [{
+            "tool_name": "odoo_ops_runner",
+            "status": "skipped",
+            "handled": True,
+            "error_type": "model_unavailable",
+            "message": "Odoo model 'auditlog.log' is not installed.",
+        }]
+
+        metadata = _assistant_metadata(
+            {"content": "I answered.", "tool_error_summary": summary, "has_tool_errors": True},
+            "req-123",
+            "trace_123",
+        )
+
+        assert metadata["request_id"] == "req-123"
+        assert metadata["trace_id"] == "trace_123"
+        assert metadata["has_tool_errors"] is True
+        assert metadata["tool_error_summary"] == summary
+
     def test_unprocessed_textual_tool_call_is_rejected(self):
         import uuid
         from fastapi import HTTPException
