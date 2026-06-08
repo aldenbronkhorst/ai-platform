@@ -1,6 +1,6 @@
 import { AlertTriangle, User, Shield, RefreshCw } from "lucide-react";
 import type { InteractionStatus } from "@azure/msal-browser";
-import type { AccountInfo, IPublicClientApplication, PopupRequest } from "@azure/msal-browser";
+import type { AccountInfo, IPublicClientApplication, RedirectRequest } from "@azure/msal-browser";
 import { GlassButton } from "../ui/GlassButton";
 
 
@@ -14,7 +14,7 @@ interface LoginPageProps {
   onLocalMockSignIn: () => void;
   onToggleDiagnostics: () => void;
   instance: Pick<IPublicClientApplication, "acquireTokenRedirect">;
-  loginRequest: PopupRequest;
+  loginRequest: RedirectRequest;
   accounts: AccountInfo[];
 }
 

@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
+import { loginRequestWithAuthHint, readStoredAuthHint } from "./authSession";
 import type { ChatAttachment, ChatSession, ChatMessage, AttachedFile } from "./types";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
@@ -303,6 +304,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(mobileViewportMatches);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const hintedLoginRequest = useMemo(
+    () => loginRequestWithAuthHint(loginRequest, readStoredAuthHint()),
+    [],
+  );
 
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
@@ -920,11 +925,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         startupAuthError={startupAuthError}
         showDiagnostics={showDiagnostics}
         enableLocalMock={enableLocalMock}
-        onSignIn={() => instance.loginRedirect(loginRequest)}
+        onSignIn={() => instance.loginRedirect(hintedLoginRequest)}
         onLocalMockSignIn={signInLocalMock}
         onToggleDiagnostics={() => setShowDiagnostics(!showDiagnostics)}
         instance={instance}
-        loginRequest={loginRequest}
+        loginRequest={hintedLoginRequest}
         accounts={accounts}
       />
     );
