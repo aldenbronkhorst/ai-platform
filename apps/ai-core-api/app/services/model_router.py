@@ -129,7 +129,7 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "tasks, connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, GitHub, Azure, and documents "
+    "You may use connected tools such as Odoo, GitHub, Microsoft Admin, and documents "
     "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
@@ -324,7 +324,7 @@ KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure"]
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
     "github": "GitHub",
-    "azure": "Azure",
+    "azure": "Microsoft Admin",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
@@ -337,6 +337,8 @@ DELEGATED_AUTH_FAILURE_MARKERS = (
     "azure cli profile",
     "azure is not connected",
     "azure token is expired",
+    "microsoft admin is not connected",
+    "microsoft delegated credentials",
 )
 
 
@@ -510,13 +512,13 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
         mapped = (
             normalized_lower
             if (
-                normalized_lower in {"azure_cli", "github_cli", "odoo_ops_runner"}
+                normalized_lower in {"ms_admin", "azure_cli", "github_cli", "odoo_ops_runner"}
                 or normalized_lower == "odoo"
                 or normalized_lower.startswith("odoo_")
             )
             else cleaned
         )
-    if mapped in {"azure_cli", "github_cli", "odoo_ops_runner"}:
+    if mapped in {"ms_admin", "azure_cli", "github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
         return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
@@ -1128,11 +1130,13 @@ async def _execute_tool_call_impl(
             return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
-    if tool_name in ("azure_cli", "github_cli"):
-        from app.services.connector_commands import run_azure_cli_command, run_github_cli_command
+    if tool_name in ("ms_admin", "azure_cli", "github_cli"):
+        from app.services.connector_commands import run_azure_cli_command, run_github_cli_command, run_ms_admin_tool
 
         command = str(arguments.get("command", ""))
         timeout = int(arguments.get("timeout", 60))
+        if tool_name == "ms_admin":
+            return await run_ms_admin_tool(arguments, user_id, timeout=timeout)
         if tool_name == "azure_cli":
             return await run_azure_cli_command(command, user_id, timeout=timeout)
         return await run_github_cli_command(command, user_id, timeout=timeout)
@@ -1190,7 +1194,7 @@ async def _record_delegated_tool_auth_failure(
     tool_name: str,
     result: dict[str, Any],
 ) -> None:
-    if not user_id or tool_name != "azure_cli" or result.get("status") != "failed":
+    if not user_id or tool_name not in {"ms_admin", "azure_cli"} or result.get("status") != "failed":
         return
 
     message = " ".join(
@@ -1207,7 +1211,7 @@ async def _record_delegated_tool_auth_failure(
         "azure",
         user_id,
         status=status,
-        permission_summary=message[:500] if message else "Azure delegated credentials are not usable.",
+        permission_summary=message[:500] if message else "Microsoft delegated credentials are not usable.",
     )
 
 
@@ -1999,7 +2003,16 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if "azure_cli" in available_names:
+    if "ms_admin" in available_names:
+        guidance_parts.append(
+            "Microsoft Admin: use `ms_admin` only. Modes: status, azure_cli, powershell, bicep, graph_request. "
+            "Use azure_cli mode for Azure CLI, powershell mode for Microsoft Graph/Exchange/Teams/Az PowerShell cmdlets, "
+            "bicep mode for Bicep CLI validation/build work, and graph_request for direct Microsoft Graph calls. "
+            "In powershell mode, call Connect-AIPlatformAz, Connect-AIPlatformGraph, or Connect-AIPlatformExchange "
+            "before using authenticated Az, Microsoft.Graph, or ExchangeOnlineManagement cmdlets. "
+            "Do not use this connector for GitHub; use `github_cli` for GitHub work."
+        )
+    elif "azure_cli" in available_names:
         guidance_parts.append(
             "Azure: use `azure_cli` only. Use native az commands; Azure RBAC decides what the connected user can do."
         )

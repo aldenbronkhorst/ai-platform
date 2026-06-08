@@ -1,4 +1,4 @@
-"""Shared command execution service for azure_cli and github_cli connectors.
+"""Shared command execution service for native command connectors.
 
 Provides command execution with timeout, output limits, secret redaction,
 structured error classification, and connector-scoped binary validation.
@@ -21,6 +21,7 @@ SENSITIVE_PATTERNS = [
     re.compile(r'(?i)(token|secret|password|key|credential|connection.string|authorization)\s*[=:]\s*\S+'),
     re.compile(r'(?i)(-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----.*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----)'),
     re.compile(r'(?i)(ghp_|gho_|ghu_|ghs_|ghr_)[\w-]+'),
+    re.compile(r'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'),
     re.compile(r'(?i)pat=\S+|token=\S+|password=\S+'),
 ]
 

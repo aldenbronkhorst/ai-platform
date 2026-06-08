@@ -20,9 +20,10 @@ def _tool(name: str, target_system: str) -> AITool:
 
 def test_connector_tool_registry_exposes_one_tool_per_system():
     assert is_model_facing_tool("odoo_ops_runner", "odoo")
-    assert is_model_facing_tool("azure_cli", "azure")
+    assert is_model_facing_tool("ms_admin", "azure")
     assert is_model_facing_tool("github_cli", "github")
     assert not is_model_facing_tool("odoo_query", "odoo")
+    assert not is_model_facing_tool("azure_cli", "azure")
     assert not is_model_facing_tool("azure_logs_tool", "azure")
     assert not is_model_facing_tool("github_pr_tool", "github")
     assert is_model_facing_tool("internal_ai_platform_tool", "ai-platform")
@@ -50,6 +51,7 @@ async def test_tool_selection_skips_tools_without_connector_intent():
     tools = [
         _tool("odoo_ops_runner", "odoo"),
         _tool("odoo_query", "odoo"),
+        _tool("ms_admin", "azure"),
         _tool("azure_cli", "azure"),
         _tool("azure_logs_tool", "azure"),
         _tool("github_cli", "github"),
@@ -64,7 +66,7 @@ async def test_tool_selection_skips_tools_without_connector_intent():
     )
 
     assert result.selected == []
-    assert {tool.name for tool in result.excluded} == {"odoo_ops_runner", "azure_cli", "github_cli"}
+    assert {tool.name for tool in result.excluded} == {"odoo_ops_runner", "ms_admin", "github_cli"}
     assert result.intent == "no_connector_intent"
 
 
@@ -73,7 +75,7 @@ async def test_tool_selection_selects_only_matching_connected_system():
     tools = [
         _tool("odoo_ops_runner", "odoo"),
         _tool("odoo_report", "odoo"),
-        _tool("azure_cli", "azure"),
+        _tool("ms_admin", "azure"),
         _tool("azure_revision_tool", "azure"),
         _tool("github_cli", "github"),
         _tool("github_actions_tool", "github"),
@@ -86,7 +88,7 @@ async def test_tool_selection_selects_only_matching_connected_system():
         connected_systems={"odoo", "azure", "github"},
     )
 
-    assert [tool.name for tool in result.selected] == ["azure_cli"]
+    assert [tool.name for tool in result.selected] == ["ms_admin"]
     assert {tool.name for tool in result.excluded} == {"github_cli", "odoo_ops_runner"}
     assert result.intent == "azure"
     assert result.selection_reason == "message_intent_matched_connected_systems"
@@ -96,7 +98,7 @@ async def test_tool_selection_selects_only_matching_connected_system():
 async def test_tool_selection_does_not_select_unconnected_matching_system():
     tools = [
         _tool("odoo_ops_runner", "odoo"),
-        _tool("azure_cli", "azure"),
+        _tool("ms_admin", "azure"),
     ]
 
     result = await get_tool_selection(
@@ -114,7 +116,7 @@ async def test_tool_selection_does_not_select_unconnected_matching_system():
 async def test_tool_selection_selects_document_reader_for_uploaded_pdf_without_connectors():
     tools = [
         _tool("document_reader", "ai-platform"),
-        _tool("azure_cli", "azure"),
+        _tool("ms_admin", "azure"),
     ]
 
     result = await get_tool_selection(
@@ -128,3 +130,22 @@ async def test_tool_selection_selects_document_reader_for_uploaded_pdf_without_c
     assert result.excluded == []
     assert result.intent == "ai-platform"
     assert result.selection_reason == "message_intent_matched_available_tools"
+
+
+@pytest.mark.asyncio
+async def test_tool_selection_selects_microsoft_admin_for_exchange_intune_terms():
+    tools = [
+        _tool("ms_admin", "azure"),
+        _tool("github_cli", "github"),
+    ]
+
+    result = await get_tool_selection(
+        FakeDb(tools),
+        uuid.uuid4(),
+        "Check Exchange Online mailbox permissions and Intune managed devices",
+        connected_systems={"azure", "github"},
+    )
+
+    assert [tool.name for tool in result.selected] == ["ms_admin"]
+    assert {tool.name for tool in result.excluded} == {"github_cli"}
+    assert result.intent == "azure"

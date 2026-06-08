@@ -6,7 +6,7 @@ from typing import Mapping
 
 CONNECTOR_TOOL_BY_SYSTEM: Mapping[str, str] = {
     "odoo": "odoo_ops_runner",
-    "azure": "azure_cli",
+    "azure": "ms_admin",
     "github": "github_cli",
 }
 
