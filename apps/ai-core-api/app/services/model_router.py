@@ -87,17 +87,21 @@ CHAT_TITLE_CANONICAL_WORDS = {
 }
 TEXT_TOOL_CALL_RE = re.compile(
     r"<\|?tool_call_begin\|?>\s*(?P<name>.*?)\s*"
-    r"<\|?tool_call_argument_begin\|?>\s*(?P<arguments>.*?)\s*"
+    r"<\|?tool_call_arguments?_begin\|?>\s*(?P<arguments>.*?)\s*"
     r"<\|?tool_call_end\|?>",
-    re.DOTALL,
+    re.DOTALL | re.IGNORECASE,
 )
 TEXT_TOOL_CALL_COMPACT_RE = re.compile(
     r"<\|?tool_call_begin\|?>\s*(?P<name>[^\s<>{]+)\s*(?P<body>.*?)\s*<\|?tool_call_end\|?>",
-    re.DOTALL,
+    re.DOTALL | re.IGNORECASE,
+)
+TEXT_TOOL_CALL_BLOCK_RE = re.compile(
+    r"<\|?tool_call(?:_begin)?\|?>\s*(?P<body>.*?)\s*(?:<\|?tool_call_end\|?>|</tool_call>)",
+    re.DOTALL | re.IGNORECASE,
 )
 TEXT_TOOL_CALL_SECTION_RE = re.compile(
     r"<\|?tool_calls_section_begin\|?>.*?<\|?tool_calls_section_end\|?>",
-    re.DOTALL,
+    re.DOTALL | re.IGNORECASE,
 )
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 TEXT_TOOL_ARGUMENT_MARKER_RE = re.compile(r"<\|?tool_call_arguments?_begin\|?>", re.IGNORECASE)
@@ -519,6 +523,52 @@ def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
     return any(start < existing_end and end > existing_start for existing_start, existing_end in spans)
 
 
+def _tool_arguments_text(value: Any) -> str:
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if isinstance(value, str):
+        return _extract_first_json_object(value) or value.strip()
+    return "{}"
+
+
+def _json_envelope_tool_invocation(body: str) -> tuple[str, str] | None:
+    payload = _parse_tool_arguments(_extract_first_json_object(body))
+    if not payload:
+        return None
+
+    function = payload.get("function") if isinstance(payload.get("function"), dict) else {}
+    raw_name = (
+        payload.get("name")
+        or payload.get("tool_name")
+        or payload.get("recipient_name")
+        or function.get("name")
+    )
+    if not raw_name:
+        return None
+
+    argument_value = None
+    argument_found = False
+    for source in (payload, function):
+        if not isinstance(source, dict):
+            continue
+        for key in ("arguments", "parameters", "params", "input", "args"):
+            if key in source:
+                argument_value = source[key]
+                argument_found = True
+                break
+        if argument_found:
+            break
+
+    if not argument_found:
+        argument_value = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"id", "type", "name", "tool_name", "recipient_name", "function"}
+        }
+
+    return str(raw_name), _tool_arguments_text(argument_value)
+
+
 def _iter_text_tool_invocations(content: str) -> list[tuple[str, str, tuple[int, int]]]:
     invocations: list[tuple[str, str, tuple[int, int]]] = []
     matched_spans: list[tuple[int, int]] = []
@@ -538,6 +588,26 @@ def _iter_text_tool_invocations(content: str) -> list[tuple[str, str, tuple[int,
             continue
         matched_spans.append(span)
         invocations.append((match.group("name"), arguments, span))
+
+    for match in TEXT_TOOL_CALL_BLOCK_RE.finditer(content):
+        span = match.span()
+        if _overlaps(span, matched_spans):
+            continue
+        body = TEXT_TOOL_ARGUMENT_MARKER_RE.sub(" ", match.group("body") or "").strip()
+        json_invocation = _json_envelope_tool_invocation(body)
+        if json_invocation:
+            matched_spans.append(span)
+            invocations.append((json_invocation[0], json_invocation[1], span))
+            continue
+
+        arguments = _extract_first_json_object(body)
+        if not arguments:
+            continue
+        raw_name = body[: body.find(arguments)].strip()
+        if not raw_name:
+            continue
+        matched_spans.append(span)
+        invocations.append((raw_name, arguments, span))
 
     return invocations
 

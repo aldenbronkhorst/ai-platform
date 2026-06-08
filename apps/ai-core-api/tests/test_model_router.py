@@ -1,4 +1,5 @@
 import os
+import json
 import uuid
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
@@ -2514,6 +2515,95 @@ class TestToolExecution:
             "notes": "contains } brace",
             "metadata": {"old_id": 7},
         }
+
+    def test_coerce_text_tool_call_from_json_envelope_block(self):
+        """Some models emit the tool name and arguments as one JSON object inside the marker block."""
+        from app.services.model_router import _coerce_text_tool_calls
+
+        result = _coerce_text_tool_calls(
+            {
+                "content": (
+                    "<|tool_calls_section_begin|>"
+                    "<|tool_call_begin|>"
+                    '{"name":"functions.odoo_write","arguments":{"model":"hr.employee","ids":[42],"values":{"parent_id":7}}}'
+                    "<|tool_call_end|>"
+                    "<|tool_calls_section_end|>"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "error": False,
+            },
+            [],
+        )
+
+        assert result["finish_reason"] == "tool_calls"
+        assert result["content"] is None
+        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
+        assert args == {
+            "mode": "write",
+            "operation": "write",
+            "model": "hr.employee",
+            "ids": [42],
+            "values": {"parent_id": 7},
+        }
+
+    def test_coerce_text_tool_call_from_xml_json_envelope_with_parameters(self):
+        """The parser must handle XML-style tool_call blocks with parameters instead of arguments."""
+        from app.services.model_router import _coerce_text_tool_calls
+
+        result = _coerce_text_tool_calls(
+            {
+                "content": (
+                    "<tool_call>"
+                    '{"tool_name":"odoo_ops_runner","parameters":{"mode":"query","model":"hr.employee",'
+                    '"domain":[["name","ilike","Gerhard"]],"fields":["id","name"],"limit":2}}'
+                    "</tool_call>"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "error": False,
+            },
+            [],
+        )
+
+        assert result["finish_reason"] == "tool_calls"
+        assert result["content"] is None
+        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
+        assert args == {
+            "mode": "query",
+            "model": "hr.employee",
+            "domain": [["name", "ilike", "Gerhard"]],
+            "fields": ["id", "name"],
+            "limit": 2,
+        }
+
+    def test_coerce_text_tool_call_from_function_payload_with_string_arguments(self):
+        """OpenAI-compatible function envelopes may nest a JSON string under function.arguments."""
+        from app.services.model_router import _coerce_text_tool_calls
+
+        result = _coerce_text_tool_calls(
+            {
+                "content": (
+                    "<|tool_call_begin|>"
+                    '{"type":"function","function":{"name":"functions.odoo_write",'
+                    '"arguments":"{\\"model\\":\\"hr.employee\\",\\"ids\\":[42],\\"values\\":{\\"parent_id\\":7}}"}}'
+                    "<|tool_call_end|>"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "error": False,
+            },
+            [],
+        )
+
+        assert result["finish_reason"] == "tool_calls"
+        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
+        assert args["mode"] == "write"
+        assert args["model"] == "hr.employee"
+        assert args["ids"] == [42]
+        assert args["values"] == {"parent_id": 7}
 
 
 # ── Security Tests ──
