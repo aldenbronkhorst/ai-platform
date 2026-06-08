@@ -692,12 +692,20 @@ def _blank_tool_error_details(tool_calls: list[dict[str, Any]]) -> list[dict[str
     ]
 
 
+def _tool_marker_preview(content: str, limit: int = 600) -> str:
+    text = " ".join(str(content or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
 def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, user_id: UUID, session_id: UUID) -> None:
     assistant_content = router_result.get("content", "")
     if TEXT_TOOL_MARKER_RE.search(str(assistant_content)):
+        preview = _tool_marker_preview(str(assistant_content))
         logger.warning(
-            "Unprocessed textual tool call in assistant content | request_id=%s user_id=%s session_id=%s",
-            request_id, user_id, session_id,
+            "Unprocessed textual tool call in assistant content | request_id=%s user_id=%s session_id=%s preview=%s",
+            request_id, user_id, session_id, preview,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -705,7 +713,10 @@ def _raise_on_blank_response(router_result: dict[str, Any], request_id: str, use
                 "request_id": request_id,
                 "error_type": "unprocessed_tool_call",
                 "error_message": "The model tried to use a tool, but the tool call was not executed.",
-                "technical_detail": "Assistant content contained textual tool-call markup after model routing.",
+                "technical_detail": {
+                    "message": "Assistant content contained textual tool-call markup after model routing.",
+                    "content_preview": preview,
+                },
             },
         )
     if assistant_content and assistant_content.strip():
