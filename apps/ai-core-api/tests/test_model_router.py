@@ -1293,6 +1293,63 @@ class TestToolExecution:
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_odoo_ops_runner_query_shaped_missing_mode_defaults_to_query(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        db = MockSession(has_config=True)
+        posted_payload = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "success", "records": [{"id": 5266}], "count": 1}
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                posted_payload.update(kwargs["json"])
+                return FakeResponse()
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value={
+                "url": "https://odoo.example.com",
+                "db": "prod",
+                "username": "u",
+                "api_key": "k",
+            }),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.httpx.AsyncClient", FakeAsyncClient
+        ):
+            result = await _execute_tool_call_impl(
+                db,
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {
+                    "model": "stock.picking",
+                    "domain": [["id", "=", 5266]],
+                    "fields": ["name", "state", "move_ids", "date_done"],
+                    "limit": 10,
+                },
+            )
+
+        assert result == {"status": "success", "records": [{"id": 5266}], "count": 1}
+        assert posted_payload["mode"] == "query"
+        assert posted_payload["model"] == "stock.picking"
+        assert posted_payload["domain"] == [["id", "=", 5266]]
+        assert posted_payload["fields"] == ["name", "state", "move_ids", "date_done"]
+        assert posted_payload["limit"] == 10
+
+    @pytest.mark.asyncio
     async def test_odoo_attachment_without_attachment_id_is_handled_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
@@ -2848,6 +2905,40 @@ class TestToolExecution:
             "model": "hr.employee",
             "ids": [42],
             "values": {"parent_id": 7},
+        }
+
+    def test_coerce_text_tool_call_from_cased_odoo_query_alias_without_mode(self):
+        """Production Kimi payloads may use functions.Odoo:0 with query args but no mode."""
+        from app.services.model_router import _coerce_text_tool_calls
+
+        result = _coerce_text_tool_calls(
+            {
+                "content": (
+                    "<|tool_calls_section_begin|>"
+                    "<|tool_call_begin|>functions.Odoo:0"
+                    "<|tool_call_argument_begin|>"
+                    '{"model":"stock.picking","domain":[["id","=",5266]],'
+                    '"fields":["name","state","move_ids","date_done"],"limit":10}'
+                    "<|tool_call_end|>"
+                    "<|tool_calls_section_end|>"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "error": False,
+            },
+            [],
+        )
+
+        assert result["finish_reason"] == "tool_calls"
+        assert result["content"] is None
+        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
+        assert args == {
+            "mode": "query",
+            "model": "stock.picking",
+            "domain": [["id", "=", 5266]],
+            "fields": ["name", "state", "move_ids", "date_done"],
+            "limit": 10,
         }
 
     def test_coerce_text_tool_call_from_xml_json_envelope_with_parameters(self):
