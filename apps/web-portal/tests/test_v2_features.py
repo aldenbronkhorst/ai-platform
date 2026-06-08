@@ -3,6 +3,7 @@ import glob
 import pytest
 
 BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dist"))
+SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../src"))
 
 
 def test_production_build_cleanliness():
@@ -75,3 +76,27 @@ def test_portal_html_metatags():
         
         # 3. No redundant generic bot wording
         assert "AI Platform Assistant" not in content
+
+
+def test_chat_upload_snapshots_file_list_before_reset():
+    app_path = os.path.join(SRC_DIR, "App.tsx")
+    with open(app_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    snapshot = "const files = Array.from(e.target.files || []);"
+    reset = 'e.currentTarget.value = "";'
+
+    assert snapshot in content
+    assert reset in content
+    assert content.index(snapshot) < content.index(reset)
+    assert "for (const file of files)" in content
+
+
+def test_chat_session_refresh_preserves_active_local_session():
+    app_path = os.path.join(SRC_DIR, "App.tsx")
+    with open(app_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "function mergeFetchedChatSessions" in content
+    assert "if (activeSessionId && !byId.has(activeSessionId))" in content
+    assert "return prev;" in content
