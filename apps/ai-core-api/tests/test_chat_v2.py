@@ -158,3 +158,97 @@ class TestChatTitleOwnership:
 
         assert session.metadata_json["title_source"] == "manual"
         assert not _can_auto_title_session(session)
+
+
+class TestChatAttachments:
+    def test_chat_message_payload_includes_attachments(self):
+        import uuid
+        from datetime import datetime
+        from app.models.models import AIChatMessage
+        from app.routers.chat import _chat_message_payload
+
+        session_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        message = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            user_id=user_id,
+            role="user",
+            content="Please inspect this.",
+            created_at=datetime.utcnow(),
+        )
+        attachment_id = uuid.uuid4()
+
+        payload = _chat_message_payload(message, [{
+            "id": attachment_id,
+            "filename": "statement.csv",
+            "mime_type": "text/csv",
+            "artifact_type": "job-file",
+        }])
+
+        assert payload["attachments"] == [{
+            "id": attachment_id,
+            "filename": "statement.csv",
+            "mime_type": "text/csv",
+            "artifact_type": "job-file",
+        }]
+
+    def test_content_with_attachment_context_handles_attachment_only_messages(self):
+        from app.routers.chat import _content_with_attachment_context
+
+        content = _content_with_attachment_context("", "[Attached file context]\nFile: statement.csv")
+
+        assert content.startswith("Please use the attached file(s).")
+        assert "statement.csv" in content
+
+    @pytest.mark.asyncio
+    async def test_owned_artifacts_rejects_missing_or_foreign_ids(self):
+        import uuid
+        from fastapi import HTTPException
+        from app.routers.chat import _owned_artifacts_for_chat
+
+        class EmptyResult:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return []
+
+        class Db:
+            async def execute(self, _stmt):
+                return EmptyResult()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _owned_artifacts_for_chat(Db(), uuid.uuid4(), [uuid.uuid4()])
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail["error_type"] == "artifact_not_found"
+
+    @pytest.mark.asyncio
+    async def test_attachment_context_uses_text_preview(self, monkeypatch):
+        import uuid
+        from app.models.models import AIArtifact
+        from app.routers import chat
+
+        class FakeArtifactService:
+            def __init__(self, _db):
+                pass
+
+            async def text_preview(self, _artifact, max_chars=12_000):
+                return "uploaded,csv,text"
+
+        monkeypatch.setattr(chat, "ArtifactService", FakeArtifactService)
+
+        artifact = AIArtifact(
+            id=uuid.uuid4(),
+            artifact_type="job-file",
+            filename="statement.csv",
+            mime_type="text/csv",
+            storage_uri="https://storage.example/job-files/standalone/statement.csv",
+        )
+
+        context = await chat._attachment_context(object(), [artifact])
+
+        assert "statement.csv" in context
+        assert "uploaded,csv,text" in context
+        assert "user-provided content" in context

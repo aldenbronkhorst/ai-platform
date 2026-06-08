@@ -20,6 +20,13 @@ param tags object
 @description('API managed identity principal ID')
 param apiManagedIdentityPrincipalId string
 
+@description('Storage firewall default action. Use Deny only when the app runtime has a working private endpoint or VNet route to Blob Storage.')
+@allowed([
+  'Allow'
+  'Deny'
+])
+param networkDefaultAction string = 'Allow'
+
 var sanitizedWorkload = replace(workload, '-', '')
 var storageName = 'st${sanitizedWorkload}${environment}${regionCode}${instance}'
 
@@ -38,7 +45,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
     networkAcls: {
-      defaultAction: 'Deny'
+      defaultAction: networkDefaultAction
       bypass: 'AzureServices'
     }
   }

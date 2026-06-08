@@ -16,12 +16,20 @@ class ArtifactService:
         self.db = db
         self.settings = get_settings()
         self._blob_client = None
+        self._credential = None
+
+    def _get_credential(self):
+        if self._credential is None:
+            kwargs = {}
+            if self.settings.azure_client_id:
+                kwargs["managed_identity_client_id"] = self.settings.azure_client_id
+            self._credential = DefaultAzureCredential(**kwargs)
+        return self._credential
 
     def _get_blob_client(self) -> BlobServiceClient:
         if self._blob_client is None:
-            credential = DefaultAzureCredential()
             account_url = f"https://{self.settings.storage_account_name}.blob.core.windows.net"
-            self._blob_client = BlobServiceClient(account_url=account_url, credential=credential)
+            self._blob_client = BlobServiceClient(account_url=account_url, credential=self._get_credential())
         return self._blob_client
 
     def _get_container(self, artifact_type: str) -> str:
@@ -38,9 +46,12 @@ class ArtifactService:
         }
         return mapping.get(artifact_type, "artifacts")
 
+    def _blob_name(self, job_id: Optional[UUID], filename: str) -> str:
+        return f"{job_id or 'standalone'}/{filename}"
+
     async def upload(self, data: AIArtifactCreate, file_content: bytes, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
         container = self._get_container(data.artifact_type)
-        blob_name = f"{data.job_id or 'standalone'}/{data.filename}"
+        blob_name = self._blob_name(data.job_id, data.filename)
 
         blob_client = self._get_blob_client().get_blob_client(container=container, blob=blob_name)
         await asyncio.to_thread(blob_client.upload_blob, file_content, overwrite=True)
@@ -57,6 +68,41 @@ class ArtifactService:
         self.db.add(artifact)
         await self.db.flush()
         return artifact
+
+    async def download_content(self, artifact: AIArtifact) -> bytes:
+        container = self._get_container(artifact.artifact_type)
+        blob_name = self._blob_name(artifact.job_id, artifact.filename)
+        blob_client = self._get_blob_client().get_blob_client(container=container, blob=blob_name)
+        stream = await asyncio.to_thread(blob_client.download_blob)
+        return await asyncio.to_thread(stream.readall)
+
+    def supports_text_preview(self, artifact: AIArtifact) -> bool:
+        mime_type = (artifact.mime_type or "").lower()
+        filename = (artifact.filename or "").lower()
+        if mime_type.startswith("text/"):
+            return True
+        if mime_type in {
+            "application/json",
+            "application/xml",
+            "application/csv",
+            "application/x-ndjson",
+            "application/yaml",
+            "application/x-yaml",
+        }:
+            return True
+        return filename.endswith((".txt", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".md", ".yaml", ".yml", ".log"))
+
+    async def text_preview(self, artifact: AIArtifact, max_chars: int = 12_000) -> Optional[str]:
+        if not self.supports_text_preview(artifact):
+            return None
+
+        content = await self.download_content(artifact)
+        text = content.decode("utf-8", errors="replace").replace("\x00", "").strip()
+        if not text:
+            return None
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
 
     async def upload_json(self, data: AIArtifactCreate, json_content: dict, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
         import json
@@ -87,12 +133,10 @@ class ArtifactService:
         blob_url = f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}"
 
         try:
-            from azure.identity import DefaultAzureCredential
-            credential = DefaultAzureCredential()
             from azure.storage.blob import BlobServiceClient
             blob_service = BlobServiceClient(
                 account_url=f"https://{account_name}.blob.core.windows.net",
-                credential=credential,
+                credential=self._get_credential(),
             )
             user_delegation_key = await asyncio.to_thread(
                 blob_service.get_user_delegation_key,
