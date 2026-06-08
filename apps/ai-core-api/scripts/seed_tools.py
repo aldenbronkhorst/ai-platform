@@ -19,7 +19,7 @@ TOOLS = [
     {
         "name": "odoo_ops_runner",
         "display_name": "Odoo Operations Runner",
-        "description": "Consolidated Odoo command center. Use one broad mode instead of feature-specific tools. Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. Normal ORM work uses XML-RPC; complex accounting reports use the connector report path.",
+        "description": "Consolidated Odoo command center. Use one broad mode instead of feature-specific tools. Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. Normal ORM work uses XML-RPC; complex accounting reports use the connector report path. Record-level results include verified record_url values when a link can be built; never infer Odoo hostnames.",
         "target_system": "odoo",
         "input_schema": {
             "type": "object",

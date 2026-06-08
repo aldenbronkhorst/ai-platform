@@ -2,6 +2,7 @@
 import html
 import logging
 import re
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from pydantic import BaseModel, Field
 from typing import Any, Optional, Callable
 from fastapi import APIRouter, Depends, HTTPException
@@ -95,6 +96,54 @@ def _get_client(creds):
         ),
         transport=creds.transport,
     )
+
+
+def _odoo_base_url(req: OdooOpsRunnerRequest) -> str:
+    raw_url = (req.credentials.url or "").strip().rstrip("/")
+    if not raw_url:
+        return ""
+
+    parsed = urlsplit(raw_url)
+    if not parsed.scheme or not parsed.netloc:
+        return raw_url[:-4] if raw_url.endswith("/web") else raw_url
+
+    path = parsed.path.rstrip("/")
+    if path == "/web":
+        path = ""
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _odoo_record_url(req: OdooOpsRunnerRequest, model: str | None, record_id: int | None) -> str | None:
+    if not model or not isinstance(record_id, int) or isinstance(record_id, bool):
+        return None
+    base_url = _odoo_base_url(req)
+    if not base_url:
+        return None
+    fragment = urlencode({"id": record_id, "model": model, "view_type": "form"})
+    return f"{base_url}/web#{fragment}"
+
+
+def _record_urls_for_ids(req: OdooOpsRunnerRequest, record_ids: list[int]) -> list[dict[str, Any]]:
+    urls = []
+    for record_id in record_ids:
+        record_url = _odoo_record_url(req, req.model, record_id)
+        if record_url:
+            urls.append({"id": record_id, "url": record_url})
+    return urls
+
+
+def _with_record_urls(req: OdooOpsRunnerRequest, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched_records = []
+    for record in records:
+        if not isinstance(record, dict):
+            enriched_records.append(record)
+            continue
+        enriched_record = dict(record)
+        record_url = _odoo_record_url(req, req.model, enriched_record.get("id"))
+        if record_url:
+            enriched_record["record_url"] = record_url
+        enriched_records.append(enriched_record)
+    return enriched_records
 
 
 def _run_health(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
@@ -343,7 +392,7 @@ def _paged_result(
     domain = _normalize_domain(req.model, req.domain)
     return {
         "model": req.model,
-        payload_key: records,
+        payload_key: _with_record_urls(req, records),
         "count": returned_count,
         **_pagination_metadata(
             client,
@@ -557,7 +606,18 @@ def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         kwargs["attachment_ids"] = message_attachment_ids
 
     result = client.call_with_transport(req.model, "message_post", args=[[req.record_id]], kwargs=kwargs)
-    return {"operation": "post", "result": result}
+    response: dict[str, Any] = {
+        "operation": "post",
+        "model": req.model,
+        "record_id": req.record_id,
+        "result": result,
+    }
+    record_url = _odoo_record_url(req, req.model, req.record_id)
+    if record_url:
+        response["record_url"] = record_url
+    if isinstance(result, int) and not isinstance(result, bool):
+        response["message_id"] = result
+    return response
 
 
 def _execute_method_requires_record_ids(method: str | None) -> bool:
@@ -748,12 +808,18 @@ def _run_mutation(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, An
         result, affected_ids = _delete_records(client, req)
     else:
         raise HTTPException(status_code=400, detail={"error": f"unknown mutation operation: {req.operation}"})
-    return {
+    response = {
         "operation": operation,
         "affected_ids": affected_ids,
         "result": result,
         "verified": _verify_mutation(client, req, operation, affected_ids),
     }
+    record_urls = _record_urls_for_ids(req, affected_ids)
+    if record_urls:
+        response["record_urls"] = record_urls
+        if len(record_urls) == 1:
+            response["record_url"] = record_urls[0]["url"]
+    return response
 
 
 def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
@@ -783,12 +849,27 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         return {
             "model": req.model,
             "method": req.method,
-            "result": records,
+            "result": _with_record_urls(req, records),
             "count": returned_count,
             **_pagination_metadata(client, req.model, domain, returned_count, limit, offset),
         }
-    result = client.call_with_transport(req.model, req.method, args=_normalize_execute_args(req), kwargs=req.kwargs or {})
-    return {"model": req.model, "method": req.method, "result": result}
+    args = _normalize_execute_args(req)
+    result = client.call_with_transport(req.model, req.method, args=args, kwargs=req.kwargs or {})
+    response: dict[str, Any] = {"model": req.model, "method": req.method, "result": result}
+    if _execute_method_requires_record_ids(req.method):
+        record_ids = _record_ids_from_execute_request(req)
+        if not record_ids and args and _is_int_list(args[0]):
+            record_ids = args[0]
+        if record_ids:
+            response["record_ids"] = record_ids
+            record_urls = _record_urls_for_ids(req, record_ids)
+            if record_urls:
+                response["record_urls"] = record_urls
+                if len(record_urls) == 1:
+                    response["record_url"] = record_urls[0]["url"]
+    if req.method == "message_post" and isinstance(result, int) and not isinstance(result, bool):
+        response["message_id"] = result
+    return response
 
 
 MODE_HANDLERS: dict[str, Callable[[OdooClient, OdooOpsRunnerRequest], dict[str, Any]]] = {
