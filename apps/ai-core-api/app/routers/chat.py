@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
+STREAM_HEARTBEAT_SECONDS = 15
 
 
 class ChatSessionCreate(BaseModel):
@@ -976,6 +977,11 @@ def _sse(event_type: str, payload: Any) -> str:
     return f"event: {event_type}\ndata: {json.dumps(jsonable_encoder(payload), default=str)}\n\n"
 
 
+def _stream_heartbeat_payload(request_id: str, started_at: datetime) -> dict[str, Any]:
+    elapsed_seconds = max(0, int((datetime.utcnow() - started_at).total_seconds()))
+    return {"request_id": request_id, "elapsed_seconds": elapsed_seconds}
+
+
 def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     payload = ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
     payload["attachments"] = attachments or []
@@ -1013,6 +1019,7 @@ async def stream_chat_message(
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     user_id = auth["user_id"]
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    stream_started_at = datetime.utcnow()
 
     def collect_activity(event: dict[str, Any]) -> None:
         queue.put_nowait({"type": "activity", "payload": event})
@@ -1045,13 +1052,21 @@ async def stream_chat_message(
         yield _sse("started", {"request_id": request_id})
         try:
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=STREAM_HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    yield _sse("heartbeat", _stream_heartbeat_payload(request_id, stream_started_at))
+                    continue
                 yield _sse(item["type"], item["payload"])
                 if item["type"] == "done":
                     break
         finally:
             if not task.done():
-                task.cancel()
+                logger.info(
+                    "Chat stream client disconnected; turn will continue in background | request_id=%s session_id=%s",
+                    request_id,
+                    session_id,
+                )
 
     return StreamingResponse(
         event_stream(),

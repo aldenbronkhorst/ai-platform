@@ -57,6 +57,15 @@ function sortChatSessions(sessions: ChatSession[]) {
   return [...sessions].sort((a, b) => chatSessionTime(b) - chatSessionTime(a));
 }
 
+function mergeFetchedChatSessions(fetched: ChatSession[], existing: ChatSession[], activeSessionId: string | null) {
+  const byId = new Map(fetched.map(session => [session.id, session]));
+  if (activeSessionId && !byId.has(activeSessionId)) {
+    const activeLocal = existing.find(session => session.id === activeSessionId);
+    if (activeLocal) byId.set(activeLocal.id, activeLocal);
+  }
+  return sortChatSessions(Array.from(byId.values()));
+}
+
 const CONNECTOR_PROGRESS_HINTS = [
   { label: "Azure", keywords: ["azure", "subscription", "resource group", "container app", "key vault", "foundry"] },
   { label: "GitHub", keywords: ["github", "repo", "pull request", "commit", "branch", "workflow", "actions"] },
@@ -358,13 +367,17 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     try {
       const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions`, { headers: getHeaders() });
       if (res.ok) {
-        const data = await res.json() as ChatSession[];
-        setChatSessions(data);
-        writeCachedChatSessions(activeUserEmail, data);
+        const data = sortChatSessions(await res.json() as ChatSession[]);
+        setChatSessions(prev => {
+          const merged = mergeFetchedChatSessions(data, prev, activeSessionIdRef.current);
+          writeCachedChatSessions(activeUserEmail, merged);
+          return merged;
+        });
         setActiveSession(prev => {
           if (prev) {
             const updatedActive = data.find(session => session.id === prev.id);
             if (updatedActive) return updatedActive;
+            return prev;
           }
           return data.length > 0 ? data[0] : null;
         });
@@ -502,7 +515,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       });
       if (res.ok) {
         const newSess = await res.json();
-        setChatSessions(prev => [newSess, ...prev]);
+        upsertChatSession(newSess);
         setActiveSession(newSess);
         setActiveTab("chat");
         return newSess;
@@ -516,7 +529,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       alert("Failed to create new chat. Please check your connection.");
     }
     return null;
-  }, [accessToken, getHeaders]);
+  }, [accessToken, getHeaders, upsertChatSession]);
 
   const fetchSessionMessages = useCallback(async (sid: string) => {
     setIsMessagesLoading(true);
@@ -686,6 +699,14 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       clearTimeout(timeoutId);
       unmarkSessionSending(session.id);
       void refreshChatSession(session.id);
+      if (activeSessionIdRef.current === session.id) {
+        window.setTimeout(() => {
+          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id);
+        }, 750);
+        window.setTimeout(() => {
+          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id);
+        }, 15_000);
+      }
     }
   };
 
@@ -813,15 +834,14 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+    const files = Array.from(e.target.files || []);
     e.currentTarget.value = "";
-    if (!files) return;
+    if (files.length === 0) return;
     if (!accessToken) {
       alert("Please sign in again before uploading files.");
       return;
     }
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (const file of files) {
       if (file.size > 15 * 1024 * 1024) { alert(`File ${file.name} exceeds 15MB limit.`); continue; }
       const tempId = crypto.randomUUID();
       setAttachedFiles(prev => [...prev, { file, id: tempId, uploading: true }]);
@@ -967,7 +987,13 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
 
   return (
     <>
-      <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" multiple />
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileUpload}
+        className="hidden"
+        multiple
+      />
       <AppShell
         activeTab={activeTab}
         chatSessions={chatSessions}
