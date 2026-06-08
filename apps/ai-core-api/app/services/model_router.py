@@ -1899,6 +1899,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "fetch the next page with the same query and a higher offset before answering."
         )
         guidance_parts.append(
+            "Do not invent Odoo web URLs, domains, or hostnames. Only provide Odoo links from connector results "
+            "such as record_url or record_urls. If no verified connector-provided URL is available, say you "
+            "cannot provide a verified link instead of guessing."
+        )
+        guidance_parts.append(
             "Use Odoo `schema` to inspect models and fields. Use `query` with explicit fields for record lists. "
             "Use `content` only for text/body fields on a narrow domain or specific ids; never use broad unfiltered "
             "`content` calls for schema discovery or general user/activity lookups."

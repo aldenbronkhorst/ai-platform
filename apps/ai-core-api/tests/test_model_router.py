@@ -931,6 +931,23 @@ class TestToolDefinitions:
         assert defs[0]["function"]["name"] == "odoo_ops_runner"
         assert "parameters" in defs[0]["function"]
 
+    def test_odoo_tool_guidance_forbids_invented_links(self):
+        from app.services.model_router import _append_tool_guidance, _build_tool_definitions, TOOL_NAME_MAP
+        TOOL_NAME_MAP.clear()
+        tool = AITool(
+            name="odoo_ops_runner",
+            display_name="Odoo Ops Runner",
+            description="Run Odoo operations",
+            target_system="odoo",
+            input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+        )
+
+        system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
+
+        assert "Do not invent Odoo web URLs" in system_prompt
+        assert "record_url" in system_prompt
+        assert "cannot provide a verified link" in system_prompt
+
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
         TOOL_NAME_MAP.clear()

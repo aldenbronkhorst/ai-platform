@@ -148,6 +148,8 @@ class TestOdooOpsRunner:
         assert data["total_count"] == 2
         assert data["has_more"] is False
         assert data["complete"] is True
+        assert data["records"][0]["record_url"] == "https://example.odoo.com/web#id=1&model=account.move&view_type=form"
+        assert data["records"][1]["record_url"] == "https://example.odoo.com/web#id=2&model=account.move&view_type=form"
         mock_client.search_count.assert_not_called()
 
     @patch("app.routers.ops_runner._get_client")
@@ -554,6 +556,8 @@ class TestOdooOpsRunner:
         data = response.json()
         assert data["operation"] == "post"
         assert data["result"] == 9001
+        assert data["message_id"] == 9001
+        assert data["record_url"] == "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"
         mock_client.call_with_transport.assert_called_once_with(
             "purchase.order",
             "message_post",
@@ -582,12 +586,35 @@ class TestOdooOpsRunner:
         data = response.json()
         assert data["operation"] == "post"
         assert data["result"] == 9002
+        assert data["message_id"] == 9002
+        assert data["record_url"] == "https://example.odoo.com/web#id=42&model=res.partner&view_type=form"
         mock_client.call_with_transport.assert_called_once_with(
             "res.partner",
             "message_post",
             args=[[42]],
             kwargs={"body": "Fixed the PO; you can bill now.", "message_type": "comment"},
         )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_record_url_strips_web_path_from_configured_url(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = 9003
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "message",
+                credentials={**CREDENTIALS, "url": "https://example.odoo.com/web"},
+                model="purchase.order",
+                record_id=23337,
+                body="Fixed",
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["record_url"] == "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"
 
     @patch("app.routers.ops_runner._get_client")
     def test_execute_message_post_uses_record_id_when_args_missing(self, mock_get_client):
@@ -608,6 +635,12 @@ class TestOdooOpsRunner:
         )
 
         assert response.status_code == 200
+        data = response.json()
+        assert data["message_id"] == 9002
+        assert data["record_url"] == "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"
+        assert data["record_urls"] == [
+            {"id": 23337, "url": "https://example.odoo.com/web#id=23337&model=purchase.order&view_type=form"}
+        ]
         mock_client.call_with_transport.assert_called_once_with(
             "purchase.order",
             "message_post",
