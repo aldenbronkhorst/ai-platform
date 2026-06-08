@@ -562,6 +562,34 @@ class TestOdooOpsRunner:
         )
 
     @patch("app.routers.ops_runner._get_client")
+    def test_message_mode_defaults_missing_operation_to_post(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = 9002
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "message",
+                model="res.partner",
+                record_id=42,
+                body="Fixed the PO; you can bill now.",
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["operation"] == "post"
+        assert data["result"] == 9002
+        mock_client.call_with_transport.assert_called_once_with(
+            "res.partner",
+            "message_post",
+            args=[[42]],
+            kwargs={"body": "Fixed the PO; you can bill now.", "message_type": "comment"},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
     def test_execute_message_post_uses_record_id_when_args_missing(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.call_with_transport.return_value = 9002
