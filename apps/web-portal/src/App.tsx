@@ -321,7 +321,11 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const handleTranscript = useCallback((transcript: string) => {
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
   }, []);
-  const { voiceState, toggleVoice: handleToggleVoice } = useSpeechRecognition(handleTranscript);
+  const {
+    voiceState,
+    toggleVoice: handleToggleVoice,
+    interimTranscript: voiceInterimTranscript,
+  } = useSpeechRecognition(handleTranscript);
   const activeUserEmail = activeUser?.email || "";
 
   useEffect(() => {
@@ -948,6 +952,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             chatMessages={chatMessages}
             chatInput={chatInput}
             attachedFiles={attachedFiles}
+            voiceInterimTranscript={voiceInterimTranscript}
             voiceState={voiceState}
             isMessagesLoading={isMessagesLoading}
             isChatSending={isActiveChatSending}
