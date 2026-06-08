@@ -42,6 +42,7 @@ TOOL_FINALIZER_RESULT_CHARS = 20000
 TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
+TOOL_ERROR_SUMMARY_LIMIT = 8
 DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
 DIRECT_BLANK_RETRY_MESSAGE = {
     "role": "system",
@@ -898,17 +899,19 @@ async def _execute_tool_call(
         raise
 
     if trace_svc and span_id:
-        failed = isinstance(result, dict) and bool(
-            (result.get("error") or result.get("status") == "failed") and not result.get("handled")
-        )
+        has_result_error = isinstance(result, dict) and bool(result.get("error") or result.get("status") == "failed")
+        handled = isinstance(result, dict) and bool(result.get("handled"))
+        span_status = "success"
+        if has_result_error:
+            span_status = "warning" if handled else "failed"
         error_type = result.get("error_type") if isinstance(result, dict) else None
         error_message = (result.get("message") or result.get("error")) if isinstance(result, dict) else None
         trace_svc.end_span(
             span_id,
-            status="failed" if failed else "success",
+            status=span_status,
             output_summary={"result": result},
-            error_type=error_type if failed else None,
-            error_message=str(error_message) if failed and error_message else None,
+            error_type=error_type if has_result_error else None,
+            error_message=str(error_message) if has_result_error and error_message else None,
         )
     return result
 
@@ -1457,6 +1460,71 @@ def _build_odoo_evidence_fallback_answer(tool_results: list[dict[str, Any]]) -> 
 
 def _build_tool_fallback_answer(tool_results: list[dict[str, Any]]) -> str | None:
     return _build_report_fallback_answer(tool_results) or _build_odoo_evidence_fallback_answer(tool_results)
+
+
+def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "command", "query", "model", "mode", "operation", "method", "resource",
+        "timeout", "report_name", "fields", "limit", "order",
+    }
+    safe: dict[str, Any] = {}
+    for key in allowed:
+        if key not in arguments or arguments[key] in (None, ""):
+            continue
+        value = arguments[key]
+        if isinstance(value, str):
+            safe[key] = _truncate_tool_text(value, 180)
+        elif isinstance(value, list):
+            safe[key] = value[:8]
+        elif isinstance(value, dict):
+            safe[key] = sorted(value.keys())[:8]
+        else:
+            safe[key] = value
+    return safe or {"argument_keys": sorted(arguments.keys())[:8]}
+
+
+def _tool_result_error_summary(tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for index, tool_result in enumerate(tool_results, start=1):
+        result = tool_result.get("result")
+        if not isinstance(result, dict):
+            continue
+
+        result_status = str(result.get("status") or "").strip().lower()
+        has_error = bool(result.get("error") or result_status == "failed")
+        is_skipped = result_status == "skipped"
+        if not has_error and not is_skipped:
+            continue
+
+        arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
+        message = str(result.get("message") or result.get("error") or result.get("error_type") or "Tool returned an error.")
+        summary.append({
+            "index": index,
+            "tool_name": tool_result.get("tool_name"),
+            "status": result_status or ("failed" if has_error else "unknown"),
+            "handled": bool(result.get("handled")),
+            "error_type": str(result.get("error_type") or "tool_error"),
+            "message": _truncate_tool_text(message, 500),
+            "arguments": _safe_tool_error_arguments(arguments),
+        })
+        if len(summary) >= TOOL_ERROR_SUMMARY_LIMIT:
+            break
+    return summary
+
+
+def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str | None:
+    if not tool_error_summary:
+        return None
+    parts: list[str] = []
+    for item in tool_error_summary[:3]:
+        tool_name = str(item.get("tool_name") or "tool")
+        error_type = str(item.get("error_type") or "tool_error")
+        message = _truncate_tool_text(str(item.get("message") or ""), 180)
+        parts.append(f"{tool_name}: {error_type}{f' - {message}' if message else ''}")
+    hidden = len(tool_error_summary) - len(parts)
+    if hidden > 0:
+        parts.append(f"... {hidden} more tool issue(s)")
+    return "; ".join(parts)
 
 
 def _map_odoo_tool_to_path(tool_name: str) -> str:
@@ -2362,7 +2430,14 @@ async def _log_usage(
     state: ModelCallState,
     request_id: Optional[str] = None,
     trace_id: Optional[str] = None,
+    tool_error_summary: Optional[list[dict[str, Any]]] = None,
 ) -> None:
+    usage_status = "failed" if state.result.get("error") else "success"
+    usage_error_message = state.result.get("message") if state.result.get("error") else None
+    if usage_status == "success" and tool_error_summary:
+        usage_status = "partial_failure"
+        usage_error_message = _tool_error_summary_message(tool_error_summary)
+
     db.add(AIUsageLog(
         request_id=request_id,
         trace_id=trace_id,
@@ -2376,8 +2451,8 @@ async def _log_usage(
         completion_tokens=state.stats.completion_tokens,
         total_tokens=state.stats.total_tokens,
         latency_ms=state.stats.latency_ms,
-        status="failed" if state.result.get("error") else "success",
-        error_message=state.result.get("message") if state.result.get("error") else None,
+        status=usage_status,
+        error_message=usage_error_message,
     ))
     await db.flush()
 
@@ -2710,6 +2785,7 @@ async def execute_chat(
         temperature,
         trace_svc=trace_svc,
     )
+    tool_error_summary = _tool_result_error_summary(tool_results)
 
     await _log_usage(
         db,
@@ -2720,6 +2796,7 @@ async def execute_chat(
         state,
         request_id=request_id,
         trace_id=trace_svc.trace_id if trace_svc else None,
+        tool_error_summary=tool_error_summary,
     )
     _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
 
@@ -2733,6 +2810,8 @@ async def execute_chat(
         "total_tokens": state.stats.total_tokens,
         "latency_ms": state.stats.latency_ms,
         "tool_calls": tool_results if tool_results else None,
+        "tool_error_summary": tool_error_summary if tool_error_summary else None,
+        "has_tool_errors": bool(tool_error_summary),
         "context": _context_metadata(injected, state, policy, model_obj),
         "tool_call_count": state.stats.tool_calls,
     }

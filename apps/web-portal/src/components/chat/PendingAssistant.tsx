@@ -84,6 +84,12 @@ function stringList(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function meaningfulResultKeys(result: Record<string, unknown>) {
+  return stringList(result.keys)
+    .filter(key => !["error", "error_type", "message", "status"].includes(key))
+    .slice(0, 4);
+}
+
 function compactKeys(value: unknown, limit = 4) {
   if (!isRecord(value)) return "";
   const keys = Object.keys(value).filter(key => value[key] !== undefined && value[key] !== null);
@@ -169,8 +175,8 @@ function resultDetail(output: Record<string, unknown> | undefined, status: strin
   }
   const countValue = isRecord(result) ? numberValue(result.count) : null;
   const count = countValue !== null ? `${countValue} result${countValue === 1 ? "" : "s"}` : "";
-  const keys = compactKeys(result);
-  const summary = count || (keys ? `Returned: ${keys}` : "Completed.");
+  const keys = isRecord(result) ? meaningfulResultKeys(result) : [];
+  const summary = count || (keys.length > 0 ? `Returned ${keys.join(", ")}` : "Completed.");
   return `${summary}${formatDuration(durationMs)}`;
 }
 
