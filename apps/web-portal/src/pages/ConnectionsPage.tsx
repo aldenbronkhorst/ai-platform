@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import {
   Plug, RefreshCw, CheckCircle2,
   AlertTriangle, Trash2, GitBranch,
-  ChevronRight, Search, X,
+  ChevronRight, Search, X, FileText, Wrench,
 } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
@@ -40,6 +40,18 @@ interface ConnectorMeta {
     odoo_url?: string | null;
     odoo_db?: string | null;
   };
+}
+
+interface PlatformTool {
+  id: string;
+  name: string;
+  display_name: string;
+  description?: string | null;
+  target_system: string;
+  version: string;
+  status: string;
+  requires_approval: string;
+  created_at: string;
 }
 
 interface OdooStatus {
@@ -236,6 +248,13 @@ function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connectorKey: 
   return <div className={`${className} rounded-full bg-muted`} />;
 }
 
+function ToolLogo({ toolName, className = "w-5 h-5" }: { toolName: string; className?: string }) {
+  if (toolName === "document_reader") {
+    return <FileText className={`${className} text-[var(--color-info)]`} />;
+  }
+  return <Wrench className={`${className} text-default`} />;
+}
+
 function ConnectorDetailShell({
   connector,
   status,
@@ -291,6 +310,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
   const [connectorSearch, setConnectorSearch] = useState("");
+  const [platformTools, setPlatformTools] = useState<PlatformTool[] | null>(null);
+  const [platformToolsError, setPlatformToolsError] = useState<string | null>(null);
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
@@ -322,6 +343,26 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     }
   }, [accessToken, headers]);
 
+  const fetchPlatformTools = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/tools`, { headers: headers() });
+      if (res.ok) {
+        const data = await res.json() as PlatformTool[];
+        setPlatformTools(data.filter(tool => !["odoo", "azure", "github"].includes(tool.target_system)));
+        setPlatformToolsError(null);
+      } else {
+        setPlatformToolsError(`Could not load platform tools (${res.status}).`);
+      }
+    } catch (err) {
+      setPlatformToolsError(
+        isAbortError(err)
+          ? "Platform tools are taking too long to load. Please retry."
+          : `Could not load platform tools: ${errorMessage(err)}`,
+      );
+    }
+  }, [accessToken, headers]);
+
   const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
@@ -340,8 +381,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   useEffect(() => {
     if (!accessToken) return;
-    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors()]));
-  }, [accessToken, fetchOdooStatus, fetchConnectors]);
+    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors(), fetchPlatformTools()]));
+  }, [accessToken, fetchOdooStatus, fetchConnectors, fetchPlatformTools]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -685,6 +726,18 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const activeConnector = selectedConnector && (!connectorMeta || connectorMeta[selectedConnector])
     ? selectedConnector
     : null;
+  const filteredPlatformTools = (platformTools || []).filter((tool) => {
+    if (!normalizedConnectorSearch) return true;
+    const searchable = [
+      tool.name,
+      tool.display_name,
+      tool.description,
+      tool.target_system,
+      tool.status,
+      tool.version,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return searchable.includes(normalizedConnectorSearch);
+  });
 
   return (
     <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
@@ -728,7 +781,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           <input
             value={connectorSearch}
             onChange={(e) => setConnectorSearch(e.target.value)}
-            placeholder="Search connectors..."
+            placeholder="Search connectors and tools..."
             className="w-full rounded-2xl border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-all focus:border-soft"
           />
         </div>
@@ -763,6 +816,48 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </div>
         )}
       </div>
+      ) : null}
+
+      {platformToolsError ? (
+        <DetailCard>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm text-muted">{platformToolsError}</p>
+            <GlassButton size="sm" onClick={fetchPlatformTools}>
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </GlassButton>
+          </div>
+        </DetailCard>
+      ) : null}
+
+      {platformTools && filteredPlatformTools.length > 0 ? (
+        <div className="space-y-4">
+          <div>
+            <h3 className="font-bold text-base text-default">Platform Tools</h3>
+            <p className="text-sm text-muted mt-1">Built-in capabilities registered by the backend.</p>
+          </div>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredPlatformTools.map((tool) => (
+              <div key={tool.id} className="text-left w-full p-5 rounded-2xl border border-default bg-surface">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="p-2.5 rounded-xl bg-surface border border-default">
+                    <ToolLogo toolName={tool.name} />
+                  </div>
+                  <StatusBadge status={tool.status} fallback="Unavailable" />
+                </div>
+                <h4 className="font-bold text-sm text-default truncate">{tool.display_name}</h4>
+                <p className="text-xs text-muted truncate mb-3">{tool.description || tool.target_system}</p>
+                <dl className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1.5 text-xs">
+                  <dt className="text-muted">Tool</dt>
+                  <dd className="text-default truncate">{tool.name}</dd>
+                  <dt className="text-muted">System</dt>
+                  <dd className="text-default truncate">{tool.target_system}</dd>
+                  <dt className="text-muted">Approval</dt>
+                  <dd className="text-default">{tool.requires_approval === "true" ? "Required" : "Not required"}</dd>
+                </dl>
+              </div>
+            ))}
+          </div>
+        </div>
       ) : null}
 
       {/* Detail Drawer */}

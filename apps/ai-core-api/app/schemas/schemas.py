@@ -117,6 +117,10 @@ class AIArtifactResponse(BaseModel):
     sha256: Optional[str]
     source_tool: Optional[str]
     stage: Optional[str]
+    extraction_status: Optional[str] = None
+    extraction_source: Optional[str] = None
+    extraction_metadata_json: Optional[dict] = None
+    extraction_error: Optional[str] = None
     created_at: datetime
 
 

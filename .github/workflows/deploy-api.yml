@@ -145,6 +145,7 @@ jobs:
           CONNECTOR_APP=$(resolve_container_app "ca-odoo-connector-prod-san-001" "ca-ai-platform-odoo-connector-prod-san-001")
           WORKER_APP=$(resolve_container_app "ca-ai-worker-prod" "ca-ai-platform-worker-prod-san-001")
           CONNECTOR_FQDN=$(az containerapp show --name "$CONNECTOR_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
+          DOCUMENT_INTELLIGENCE_ENDPOINT=$(az cognitiveservices account show --name "fnd-ai-platform-prod-san-001" --resource-group "$RESOURCE_GROUP" --query "properties.endpoint" -o tsv 2>/dev/null || true)
 
           echo "resource_group=${RESOURCE_GROUP}" >> $GITHUB_OUTPUT
           echo "acr_name=${ACR_NAME}" >> $GITHUB_OUTPUT
@@ -152,6 +153,7 @@ jobs:
           echo "connector_app=${CONNECTOR_APP}" >> $GITHUB_OUTPUT
           echo "worker_app=${WORKER_APP}" >> $GITHUB_OUTPUT
           echo "connector_url=https://${CONNECTOR_FQDN}" >> $GITHUB_OUTPUT
+          echo "document_intelligence_endpoint=${DOCUMENT_INTELLIGENCE_ENDPOINT}" >> $GITHUB_OUTPUT
 
       - name: ACR Login
         run: |
@@ -190,12 +192,16 @@ jobs:
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
+            --set-env-vars \
+              ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} \
+              AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=${{ steps.env.outputs.document_intelligence_endpoint }}
           az containerapp update \
             --name ${{ steps.env.outputs.worker_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
-            --set-env-vars ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
+            --set-env-vars \
+              ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} \
+              AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=${{ steps.env.outputs.document_intelligence_endpoint }}
 
       - name: Deploy Odoo Connector
         run: |

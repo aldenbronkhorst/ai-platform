@@ -9,6 +9,11 @@ from azure.storage.blob import BlobServiceClient
 from app.models.models import AIArtifact
 from app.schemas.schemas import AIArtifactCreate
 from app.core.config import get_settings
+from app.services.document_processing import (
+    DocumentExtractionResult,
+    DocumentProcessingService,
+    is_supported_document,
+)
 
 
 class ArtifactService:
@@ -49,6 +54,29 @@ class ArtifactService:
     def _blob_name(self, job_id: Optional[UUID], filename: str) -> str:
         return f"{job_id or 'standalone'}/{filename}"
 
+    def _apply_extraction_result(self, artifact: AIArtifact, result: DocumentExtractionResult) -> None:
+        artifact.extraction_status = result.status
+        artifact.extraction_source = result.source
+        artifact.extracted_text = result.text
+        artifact.extraction_metadata_json = result.metadata or None
+        artifact.extraction_error = result.error
+
+    async def _extract_and_store_text(self, artifact: AIArtifact, file_content: bytes) -> None:
+        try:
+            result = await DocumentProcessingService().extract(
+                artifact.filename,
+                artifact.mime_type,
+                file_content,
+            )
+        except Exception as exc:
+            result = DocumentExtractionResult(
+                status="failed",
+                source="document_reader",
+                error=str(exc),
+            )
+        self._apply_extraction_result(artifact, result)
+        await self.db.flush()
+
     async def upload(self, data: AIArtifactCreate, file_content: bytes, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
         container = self._get_container(data.artifact_type)
         blob_name = self._blob_name(data.job_id, data.filename)
@@ -67,6 +95,8 @@ class ArtifactService:
         )
         self.db.add(artifact)
         await self.db.flush()
+        if is_supported_document(artifact.filename, artifact.mime_type):
+            await self._extract_and_store_text(artifact, file_content)
         return artifact
 
     async def download_content(self, artifact: AIArtifact) -> bytes:
@@ -79,6 +109,8 @@ class ArtifactService:
     def supports_text_preview(self, artifact: AIArtifact) -> bool:
         mime_type = (artifact.mime_type or "").lower()
         filename = (artifact.filename or "").lower()
+        if is_supported_document(filename, mime_type):
+            return True
         if mime_type.startswith("text/"):
             return True
         if mime_type in {
@@ -94,6 +126,33 @@ class ArtifactService:
 
     async def text_preview(self, artifact: AIArtifact, max_chars: int = 12_000) -> Optional[str]:
         if not self.supports_text_preview(artifact):
+            return None
+
+        if getattr(artifact, "extracted_text", None):
+            text = (artifact.extracted_text or "").strip()
+            if len(text) <= max_chars:
+                return text
+            return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
+
+        if is_supported_document(artifact.filename, artifact.mime_type):
+            status = getattr(artifact, "extraction_status", None) or "not_required"
+            should_attempt = status in {"not_required", "queued", "pending", "processing"} or (
+                status == "needs_ocr" and bool(self.settings.azure_document_intelligence_endpoint)
+            )
+            if should_attempt:
+                content = await self.download_content(artifact)
+                await self._extract_and_store_text(artifact, content)
+                if artifact.extracted_text:
+                    text = artifact.extracted_text.strip()
+                    if len(text) <= max_chars:
+                        return text
+                    return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
+
+            if getattr(artifact, "extraction_status", None) in {"needs_ocr", "failed"}:
+                error = getattr(artifact, "extraction_error", None)
+                detail = f" {error}" if error else ""
+                return f"[Document Reader could not extract text from this file. Status: {artifact.extraction_status}.{detail}]"
+
             return None
 
         content = await self.download_content(artifact)

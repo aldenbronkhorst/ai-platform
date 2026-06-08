@@ -14,7 +14,7 @@ import httpx
 
 from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AICompanyFact,
-    AIMemory,
+    AIMemory, AIArtifact,
 )
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
@@ -717,6 +717,100 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     }
 
 
+async def _execute_document_reader_tool(
+    db: AsyncSession,
+    user_id: UUID,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Return read-only extraction status or text for one uploaded artifact."""
+    if not user_id:
+        return {
+            "error": True,
+            "status": "failed",
+            "error_type": "authentication_required",
+            "message": "Document Reader requires an authenticated user.",
+        }
+
+    raw_artifact_id = str(arguments.get("artifact_id") or "").strip()
+    if not raw_artifact_id:
+        return {
+            "error": True,
+            "status": "failed",
+            "error_type": "invalid_tool_arguments",
+            "missing": ["artifact_id"],
+            "message": "Provide artifact_id for Document Reader.",
+        }
+    try:
+        artifact_id = UUID(raw_artifact_id)
+    except (TypeError, ValueError):
+        return {
+            "error": True,
+            "status": "failed",
+            "error_type": "invalid_tool_arguments",
+            "message": "artifact_id must be a valid UUID.",
+        }
+
+    mode = str(arguments.get("mode") or "preview").strip().lower()
+    if mode not in {"status", "preview", "extract"}:
+        return {
+            "error": True,
+            "status": "failed",
+            "error_type": "invalid_tool_arguments",
+            "message": "mode must be one of: status, preview, extract.",
+        }
+
+    try:
+        max_chars = int(arguments.get("max_chars") or 12000)
+    except (TypeError, ValueError):
+        max_chars = 12000
+    max_chars = max(1000, min(max_chars, 50000))
+
+    result = await db.execute(
+        select(AIArtifact).where(
+            AIArtifact.id == artifact_id,
+            or_(AIArtifact.created_by_user_id == user_id, AIArtifact.created_by_user_id.is_(None)),
+        )
+    )
+    artifact = result.scalar_one_or_none()
+    if not artifact:
+        return {
+            "error": True,
+            "status": "failed",
+            "error_type": "not_found",
+            "message": "Uploaded artifact was not found for this user.",
+        }
+
+    payload: dict[str, Any] = {
+        "status": "success",
+        "tool_name": "document_reader",
+        "artifact_id": str(artifact.id),
+        "filename": artifact.filename,
+        "mime_type": artifact.mime_type,
+        "extraction_status": getattr(artifact, "extraction_status", None),
+        "extraction_source": getattr(artifact, "extraction_source", None),
+        "extraction_metadata": getattr(artifact, "extraction_metadata_json", None),
+        "extraction_error": getattr(artifact, "extraction_error", None),
+    }
+    if mode == "status":
+        return payload
+
+    from app.services.artifact import ArtifactService
+
+    preview = await ArtifactService(db).text_preview(artifact, max_chars=max_chars)
+    payload.update(
+        {
+            "extraction_status": getattr(artifact, "extraction_status", None),
+            "extraction_source": getattr(artifact, "extraction_source", None),
+            "extraction_metadata": getattr(artifact, "extraction_metadata_json", None),
+            "extraction_error": getattr(artifact, "extraction_error", None),
+            "text": preview or "",
+            "character_count": len(preview or ""),
+            "truncated": bool(preview and len(preview) >= max_chars),
+        }
+    )
+    return payload
+
+
 async def _execute_tool_call_impl(
     db: AsyncSession,
     user_id: UUID,
@@ -724,6 +818,9 @@ async def _execute_tool_call_impl(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
+    if tool_name == "document_reader":
+        return await _execute_document_reader_tool(db, user_id, arguments)
+
     if tool_name.startswith("odoo_"):
         if tool_name == "odoo_ops_runner":
             validation_error = _validate_odoo_ops_runner_arguments(arguments)
@@ -1550,6 +1647,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
     if "github_cli" in available_names:
         guidance_parts.append(
             "GitHub: use `github_cli` only. Use native gh/git/rg/jq commands; GitHub permissions decide access."
+        )
+    if "document_reader" in available_names:
+        guidance_parts.append(
+            "Documents: use `document_reader` for uploaded PDFs/images when the injected attachment preview is missing "
+            "or insufficient. It is read-only; use the artifact id from the attachment context."
         )
     return system_prompt + "\n".join(guidance_parts) if guidance_parts else system_prompt
 

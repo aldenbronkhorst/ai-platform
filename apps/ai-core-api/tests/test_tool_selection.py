@@ -108,3 +108,23 @@ async def test_tool_selection_does_not_select_unconnected_matching_system():
 
     assert result.selected == []
     assert result.intent == "no_connector_intent"
+
+
+@pytest.mark.asyncio
+async def test_tool_selection_selects_document_reader_for_uploaded_pdf_without_connectors():
+    tools = [
+        _tool("document_reader", "ai-platform"),
+        _tool("azure_cli", "azure"),
+    ]
+
+    result = await get_tool_selection(
+        FakeDb(tools),
+        uuid.uuid4(),
+        "Please read the uploaded PDF.\n\n[Attached file context]\nFile: agreement.pdf (application/pdf, id=abc)",
+        connected_systems=set(),
+    )
+
+    assert [tool.name for tool in result.selected] == ["document_reader"]
+    assert result.excluded == []
+    assert result.intent == "ai-platform"
+    assert result.selection_reason == "message_intent_matched_available_tools"
