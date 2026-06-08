@@ -35,6 +35,7 @@ RECORDSET_METHODS_REQUIRE_IDS = {
     "write",
 }
 RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
+ACTIVITY_DONE_METHODS = {"action_feedback", "action_done"}
 MODEL_FIELD_ALIASES: dict[str, dict[str, str]] = {
     # mail.activity uses res_model/res_id; mail.message uses model/res_id.
     # Models commonly confuse the two when tracing chatter records.
@@ -144,6 +145,100 @@ def _with_record_urls(req: OdooOpsRunnerRequest, records: list[dict[str, Any]]) 
             enriched_record["record_url"] = record_url
         enriched_records.append(enriched_record)
     return enriched_records
+
+
+def _verification_failure(reason: str, **details: Any) -> dict[str, Any]:
+    return {"status": "unverified", "reason": reason, **details}
+
+
+def _verify_message_post(
+    client: OdooClient,
+    *,
+    target_model: str,
+    target_record_id: int,
+    message_result: Any,
+) -> tuple[bool, dict[str, Any]]:
+    verification: dict[str, Any] = {
+        "operation": "message_post",
+        "expected_model": target_model,
+        "expected_record_id": target_record_id,
+    }
+    if not isinstance(message_result, int) or isinstance(message_result, bool):
+        return False, _verification_failure(
+            "message_post did not return a numeric mail.message id",
+            **verification,
+            returned_type=type(message_result).__name__,
+        )
+
+    verification["message_id"] = message_result
+    try:
+        messages = client.read(
+            "mail.message",
+            [message_result],
+            ["id", "model", "res_id", "message_type", "create_date", "write_date"],
+        )
+    except Exception as exc:
+        return False, _verification_failure("Could not read created mail.message", **verification, error=str(exc))
+
+    if not messages:
+        return False, _verification_failure("Created mail.message was not found after posting", **verification)
+
+    message = messages[0]
+    actual_model = message.get("model")
+    actual_record_id = message.get("res_id")
+    verification.update(
+        {
+            "status": "verified" if actual_model == target_model and actual_record_id == target_record_id else "target_mismatch",
+            "actual_model": actual_model,
+            "actual_record_id": actual_record_id,
+            "message_type": message.get("message_type"),
+            "create_date": message.get("create_date"),
+            "write_date": message.get("write_date"),
+        }
+    )
+    return verification["status"] == "verified", verification
+
+
+def _verify_activities_closed(client: OdooClient, activity_ids: list[int]) -> tuple[bool, dict[str, Any]]:
+    verification: dict[str, Any] = {"operation": "activity_done", "activity_ids": activity_ids}
+    if not activity_ids:
+        return False, _verification_failure("No activity ids were available to verify", **verification)
+
+    try:
+        remaining = client.search_read(
+            model="mail.activity",
+            domain=[["id", "in", activity_ids]],
+            fields=["id", "res_model", "res_id", "summary", "date_deadline"],
+            limit=len(activity_ids),
+            include_ids=True,
+        )
+    except Exception as exc:
+        return False, _verification_failure("Could not query mail.activity after completion call", **verification, error=str(exc))
+
+    remaining_ids = [record.get("id") for record in remaining if isinstance(record.get("id"), int)]
+    verification.update(
+        {
+            "status": "verified" if not remaining_ids else "still_open",
+            "closed_ids": [activity_id for activity_id in activity_ids if activity_id not in remaining_ids],
+            "remaining_ids": remaining_ids,
+            "remaining": remaining,
+        }
+    )
+    return verification["status"] == "verified", verification
+
+
+def _message_delivery_metadata(model: str | None) -> dict[str, Any]:
+    metadata = {
+        "message_scope": "record_chatter",
+        "direct_message": False,
+        "delivery_note": "message_post creates a chatter message on the target Odoo record, not a private Discuss direct message.",
+    }
+    if model == "res.partner":
+        metadata["warning"] = (
+            "message_post on res.partner posts to the contact record's chatter. "
+            "It is not a private Discuss direct message to that person."
+        )
+    return metadata
 
 
 def _run_health(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
@@ -606,11 +701,20 @@ def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         kwargs["attachment_ids"] = message_attachment_ids
 
     result = client.call_with_transport(req.model, "message_post", args=[[req.record_id]], kwargs=kwargs)
+    effect_verified, verification = _verify_message_post(
+        client,
+        target_model=req.model,
+        target_record_id=req.record_id,
+        message_result=result,
+    )
     response: dict[str, Any] = {
         "operation": "post",
         "model": req.model,
         "record_id": req.record_id,
         "result": result,
+        "effect_verified": effect_verified,
+        "verification": verification,
+        **_message_delivery_metadata(req.model),
     }
     record_url = _odoo_record_url(req, req.model, req.record_id)
     if record_url:
@@ -869,6 +973,30 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
                     response["record_url"] = record_urls[0]["url"]
     if req.method == "message_post" and isinstance(result, int) and not isinstance(result, bool):
         response["message_id"] = result
+    if req.method == "message_post":
+        response.update(_message_delivery_metadata(req.model))
+        record_ids = response.get("record_ids") or []
+        if len(record_ids) == 1:
+            effect_verified, verification = _verify_message_post(
+                client,
+                target_model=req.model,
+                target_record_id=record_ids[0],
+                message_result=result,
+            )
+        else:
+            effect_verified = False
+            verification = _verification_failure(
+                "message_post verification requires exactly one target record id",
+                operation="message_post",
+                target_record_ids=record_ids,
+            )
+        response["effect_verified"] = effect_verified
+        response["verification"] = verification
+    elif req.model == "mail.activity" and req.method in ACTIVITY_DONE_METHODS:
+        record_ids = response.get("record_ids") or []
+        effect_verified, verification = _verify_activities_closed(client, record_ids)
+        response["effect_verified"] = effect_verified
+        response["verification"] = verification
     return response
 
 

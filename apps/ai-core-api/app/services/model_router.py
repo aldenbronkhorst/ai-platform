@@ -375,6 +375,7 @@ ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
     "write",
 }
 ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
+ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION = {"message_post", "action_feedback", "action_done"}
 
 
 def _strip_function_prefix(name: str) -> str:
@@ -843,6 +844,39 @@ def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, 
     return None
 
 
+def _odoo_side_effect_requires_verification(arguments: dict[str, Any]) -> bool:
+    mode = str(arguments.get("mode") or "").strip()
+    if mode == "message":
+        return True
+    if mode != "execute":
+        return False
+    method = str(arguments.get("method") or "").strip()
+    return method in ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION
+
+
+def _guard_unverified_odoo_side_effect(arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if not _odoo_side_effect_requires_verification(arguments):
+        return result
+    if result.get("error") or result.get("effect_verified") is True:
+        return result
+
+    guarded = dict(result)
+    guarded.update(
+        {
+            "error": True,
+            "handled": True,
+            "status": "unverified_side_effect",
+            "error_type": "unverified_side_effect",
+            "message": (
+                "The Odoo side-effect call returned, but the connector did not verify that the change "
+                "persisted. Do not claim the activity was completed or the message was sent."
+            ),
+        }
+    )
+    guarded.setdefault("verification", {"status": "missing"})
+    return guarded
+
+
 def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
     """Convert AITool records to OpenAI-compatible tool definitions.
     Normalizes names to comply with the API's allowed character set.
@@ -1059,7 +1093,10 @@ async def _execute_tool_call_impl(
                 "error_type": detail.get("error_type") or "connector_error",
                 "message": detail.get("message") or "Connector returned an error.",
             }
-        return response.json()
+        result = response.json()
+        if tool_name == "odoo_ops_runner" and isinstance(result, dict):
+            return _guard_unverified_odoo_side_effect(arguments, result)
+        return result
 
     if tool_name in ("azure_cli", "github_cli"):
         from app.services.connector_commands import run_azure_cli_command, run_github_cli_command
@@ -1915,8 +1952,16 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         )
         guidance_parts.append(
             "Use Odoo mode `message` to post chatter comments with model, record_id, operation='post', and body. "
+            "Odoo message_post posts to the target record's chatter; it is not a private Discuss direct message. "
+            "Do not tell the user a private/direct message was sent unless a direct-message-capable tool result "
+            "explicitly verifies that delivery. "
             "For record methods in mode `execute` such as message_post, action_feedback, action_done, "
             "button_validate, or unlink, always include ids/record_id or args=[[id]]. Never call these with empty args."
+        )
+        guidance_parts.append(
+            "For Odoo side effects such as message_post and mail.activity action_feedback/action_done, only say the "
+            "message was sent or the activity was marked done when the tool result has effect_verified=true. "
+            "If the result is unverified, say the call could not be verified and do not present it as completed."
         )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
