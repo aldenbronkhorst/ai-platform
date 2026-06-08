@@ -33,6 +33,16 @@ else:
 MAX_CONNECTOR_ERROR_CHARS = 1200
 INVALID_FIELD_RE = re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE)
 
+
+def _classify_odoo_error_message(message: str, default: str) -> str:
+    lower = message.lower()
+    if "cannot delete" in lower:
+        if any(marker in lower for marker in ("pos config", "pos session", "active pos", "point of sale")):
+            return "odoo_delete_blocked_active_pos_session"
+        return "odoo_delete_blocked"
+    return default
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
@@ -100,6 +110,7 @@ async def odoo_error_handler(request: Request, exc: OdooError):
                 message[:MAX_CONNECTOR_ERROR_CHARS].rstrip()
                 + f"... [truncated {len(raw_message) - MAX_CONNECTOR_ERROR_CHARS} chars]"
             )
+        error_type = _classify_odoo_error_message(message, error_type)
     return JSONResponse(
         status_code=400,
         content={
@@ -125,12 +136,14 @@ async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.Pro
 
 @app.exception_handler(xmlrpc.client.Fault)
 async def xmlrpc_fault_error_handler(request: Request, exc: xmlrpc.client.Fault):
+    message = compact_odoo_rpc_error(exc.faultString)
+    error_type = _classify_odoo_error_message(message, "odoo_rpc_fault")
     return JSONResponse(
         status_code=400,
         content={
-            "error": "odoo_rpc_fault",
-            "error_type": "odoo_rpc_fault",
-            "message": compact_odoo_rpc_error(exc.faultString),
+            "error": error_type,
+            "error_type": error_type,
+            "message": message,
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )
