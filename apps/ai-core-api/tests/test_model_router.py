@@ -1230,6 +1230,29 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_report_intent")
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
+    def test_odoo_alias_execute_preserves_record_ids(self):
+        from app.services.model_router import _canonical_tool_invocation
+
+        tool_name, arguments = _canonical_tool_invocation(
+            "odoo",
+            {
+                "model": "mail.activity",
+                "method": "action_feedback",
+                "ids": [2180],
+                "kwargs": {"feedback": "Receipt corrected"},
+            },
+        )
+
+        assert tool_name == "odoo_ops_runner"
+        assert arguments == {
+            "mode": "execute",
+            "model": "mail.activity",
+            "method": "action_feedback",
+            "args": [],
+            "kwargs": {"feedback": "Receipt corrected"},
+            "ids": [2180],
+        }
+
     @pytest.mark.asyncio
     async def test_odoo_ops_runner_missing_mode_is_handled_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
@@ -1273,6 +1296,37 @@ class TestToolExecution:
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
         assert result["missing"] == ["attachment_id", "attachment_ids"]
+        mock_credentials.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_odoo_execute_recordset_method_without_ids_is_handled_before_connector(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        db = MockSession(has_config=True)
+        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=mock_credentials,
+        ):
+            result = await _execute_tool_call_impl(
+                db,
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {
+                    "mode": "execute",
+                    "model": "mail.activity",
+                    "method": "action_feedback",
+                    "kwargs": {"feedback": "Receipt corrected"},
+                },
+            )
+
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert result["missing"] == ["ids", "record_id", "args[0]"]
+        assert "record-bound" in result["message"]
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio

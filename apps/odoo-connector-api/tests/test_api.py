@@ -533,6 +533,161 @@ class TestOdooOpsRunner:
         )
 
     @patch("app.routers.ops_runner._get_client")
+    def test_message_mode_wraps_record_id_for_message_post(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = 9001
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "message",
+                model="purchase.order",
+                record_id=23337,
+                operation="post",
+                body="Fixed & ready\nProceed",
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["operation"] == "post"
+        assert data["result"] == 9001
+        mock_client.call_with_transport.assert_called_once_with(
+            "purchase.order",
+            "message_post",
+            args=[[23337]],
+            kwargs={"body": "Fixed &amp; ready<br/>Proceed", "message_type": "comment"},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_message_post_uses_record_id_when_args_missing(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = 9002
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="purchase.order",
+                method="message_post",
+                record_id=23337,
+                kwargs={"body": "Fixed"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "purchase.order",
+            "message_post",
+            args=[[23337]],
+            kwargs={"body": "Fixed"},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_action_feedback_uses_ids_when_args_missing(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="mail.activity",
+                method="action_feedback",
+                ids=[2180],
+                kwargs={"feedback": "Receipt corrected"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "mail.activity",
+            "action_feedback",
+            args=[[2180]],
+            kwargs={"feedback": "Receipt corrected"},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_recordset_method_missing_ids_returns_400(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="mail.activity",
+                method="action_feedback",
+                kwargs={"feedback": "Receipt corrected"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()["detail"]
+        assert data["error_type"] == "record_ids_required"
+        assert data["missing"] == ["ids", "record_id", "args[0]"]
+        mock_client.call_with_transport.assert_not_called()
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_recordset_method_normalizes_bare_int_first_arg(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="mail.activity",
+                method="action_feedback",
+                args=[2180],
+                kwargs={"feedback": "Receipt corrected"},
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "mail.activity",
+            "action_feedback",
+            args=[[2180]],
+            kwargs={"feedback": "Receipt corrected"},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_execute_recordset_method_prepends_ids_to_non_id_args(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="res.partner",
+                method="write",
+                ids=[42],
+                args=[{"name": "Updated"}],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        mock_client.call_with_transport.assert_called_once_with(
+            "res.partner",
+            "write",
+            args=[[42], {"name": "Updated"}],
+            kwargs={},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
     def test_write_normalizes_bare_x2many_set_command(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.fields_get.return_value = {

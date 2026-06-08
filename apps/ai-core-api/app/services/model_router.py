@@ -364,6 +364,17 @@ ODOO_OPS_RUNNER_MODES = {
     "delete",
     "execute",
 }
+ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
+    "message_post",
+    "message_subscribe",
+    "message_unsubscribe",
+    "action_feedback",
+    "action_done",
+    "action_cancel",
+    "unlink",
+    "write",
+}
+ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
 
 
 def _strip_function_prefix(name: str) -> str:
@@ -459,13 +470,17 @@ def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str
     if operation in {"create", "write", "unlink", "delete"}:
         return _odoo_mutation_arguments(arguments, "delete" if operation == "unlink" else operation)
     if method:
-        return {
+        converted = {
             "mode": "execute",
             "model": arguments.get("model"),
             "method": method,
             "args": arguments.get("args") or [],
             "kwargs": arguments.get("kwargs") or {},
         }
+        for key in ("ids", "record_id"):
+            if key in arguments:
+                converted[key] = arguments[key]
+        return converted
     return {"mode": "execute", **arguments}
 
 
@@ -722,6 +737,29 @@ def _handled_tool_argument_error(message: str, missing: list[str] | None = None,
     return result
 
 
+def _odoo_execute_method_requires_record_ids(method: str | None) -> bool:
+    normalized = (method or "").strip()
+    return normalized in ODOO_RECORDSET_METHODS_REQUIRE_IDS or normalized.startswith(ODOO_RECORDSET_METHOD_PREFIXES)
+
+
+def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
+    ids = arguments.get("ids")
+    if isinstance(ids, list) and any(isinstance(item, int) and not isinstance(item, bool) for item in ids):
+        return True
+
+    record_id = arguments.get("record_id")
+    if isinstance(record_id, int) and not isinstance(record_id, bool):
+        return True
+
+    args = arguments.get("args")
+    if not isinstance(args, list) or not args:
+        return False
+    first_arg = args[0]
+    if isinstance(first_arg, int) and not isinstance(first_arg, bool):
+        return True
+    return isinstance(first_arg, list) and any(isinstance(item, int) and not isinstance(item, bool) for item in first_arg)
+
+
 def _handled_odoo_schema_connector_error(
     arguments: dict[str, Any],
     detail: dict[str, Any],
@@ -782,6 +820,18 @@ def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, 
             missing=["attachment_id", "attachment_ids"],
             suggestion="Query ir.attachment first, then call attachment mode with attachment_id or attachment_ids.",
         )
+    if mode == "execute":
+        method = str(arguments.get("method") or "").strip()
+        if _odoo_execute_method_requires_record_ids(method) and not _odoo_execute_has_record_ids(arguments):
+            return _handled_tool_argument_error(
+                f"The Odoo method '{method}' is record-bound and cannot be called without target record IDs.",
+                missing=["ids", "record_id", "args[0]"],
+                suggestion=(
+                    "Retry with ids, record_id, or args=[[id]]. For chatter posts, prefer mode 'message' "
+                    "with model, record_id, operation='post', and body. For mail.activity completion, "
+                    "use mode 'execute' with ids=[activity_id]."
+                ),
+            )
     return None
 
 
@@ -1848,6 +1898,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "For chatter/activity lookups: `mail.activity` uses `res_model` and `res_id`; "
             "`mail.message` uses `model` and `res_id` for the related business record. "
             "Do not filter `mail.message` by `res_model`."
+        )
+        guidance_parts.append(
+            "Use Odoo mode `message` to post chatter comments with model, record_id, operation='post', and body. "
+            "For record methods in mode `execute` such as message_post, action_feedback, action_done, "
+            "button_validate, or unlink, always include ids/record_id or args=[[id]]. Never call these with empty args."
         )
         guidance_parts.append(
             "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
