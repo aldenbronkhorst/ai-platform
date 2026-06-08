@@ -760,6 +760,14 @@ def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
     return isinstance(first_arg, list) and any(isinstance(item, int) and not isinstance(item, bool) for item in first_arg)
 
 
+def _normalize_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(arguments)
+    mode = str(normalized.get("mode") or "").strip()
+    if mode == "message" and not normalized.get("operation"):
+        normalized["operation"] = "post"
+    return normalized
+
+
 def _handled_odoo_schema_connector_error(
     arguments: dict[str, Any],
     detail: dict[str, Any],
@@ -1016,6 +1024,7 @@ async def _execute_tool_call_impl(
 
     if tool_name.startswith("odoo_"):
         if tool_name == "odoo_ops_runner":
+            arguments = _normalize_odoo_ops_runner_arguments(arguments)
             validation_error = _validate_odoo_ops_runner_arguments(arguments)
             if validation_error:
                 return validation_error

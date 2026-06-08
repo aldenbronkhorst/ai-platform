@@ -1330,6 +1330,65 @@ class TestToolExecution:
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_odoo_message_mode_defaults_operation_to_post_before_connector(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        posted_payload = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"operation": "post", "result": 9002}
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                posted_payload.update(kwargs["json"])
+                return FakeResponse()
+
+        fake_credentials = {
+            "url": "https://example.odoo.com",
+            "db": "example",
+            "username": "user@example.com",
+            "api_key": "secret",
+            "transport": "auto",
+        }
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value=fake_credentials),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call_impl(
+                MockSession(has_config=True),
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {
+                    "mode": "message",
+                    "model": "res.partner",
+                    "record_id": 42,
+                    "body": "Fixed the PO; you can bill now.",
+                },
+            )
+
+        assert result == {"operation": "post", "result": 9002}
+        assert posted_payload["operation"] == "post"
+        assert posted_payload["mode"] == "message"
+        assert posted_payload["model"] == "res.partner"
+        assert posted_payload["record_id"] == 42
+
+    @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
         from app.models.models import AIArtifact
         from app.services.model_router import _execute_tool_call_impl

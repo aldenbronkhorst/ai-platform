@@ -40,7 +40,7 @@ TOOLS = [
                 "attachment_id": {"type": "integer", "description": "Single attachment ID"},
                 "attachment_ids": {"type": "array", "items": {"type": "integer"}, "description": "Multiple attachment IDs"},
                 "content_fields": {"type": "array", "items": {"type": "string"}, "description": "Content fields to read"},
-                "operation": {"type": "string", "enum": ["create", "write", "delete", "post"], "description": "Mutation operation, or post for message mode"},
+                "operation": {"type": "string", "enum": ["create", "write", "delete", "post"], "description": "Mutation operation, or post for message mode. Message mode defaults to post when omitted."},
                 "values": {"type": "object", "description": "Field values for create/write"},
                 "body": {"type": "string", "description": "Message body text for message mode"},
                 "message_type": {"type": "string", "description": "Odoo chatter message type, usually comment"},

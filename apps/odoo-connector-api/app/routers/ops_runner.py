@@ -532,8 +532,9 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
 
 
 def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
-    if req.operation != "post":
-        raise HTTPException(status_code=400, detail={"error": "unsupported_operation", "message": f"message mode: {req.operation}"})
+    operation = req.operation or "post"
+    if operation != "post":
+        raise HTTPException(status_code=400, detail={"error": "unsupported_operation", "message": f"message mode: {operation}"})
     if not req.model or not req.record_id:
         raise HTTPException(status_code=400, detail={
             "error": "message_target_required",
