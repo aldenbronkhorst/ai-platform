@@ -91,12 +91,16 @@ TEXT_TOOL_CALL_RE = re.compile(
     r"<\|?tool_call_end\|?>",
     re.DOTALL,
 )
+TEXT_TOOL_CALL_COMPACT_RE = re.compile(
+    r"<\|?tool_call_begin\|?>\s*(?P<name>[^\s<>{]+)\s*(?P<body>.*?)\s*<\|?tool_call_end\|?>",
+    re.DOTALL,
+)
 TEXT_TOOL_CALL_SECTION_RE = re.compile(
     r"<\|?tool_calls_section_begin\|?>.*?<\|?tool_calls_section_end\|?>",
     re.DOTALL,
 )
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
-TEXT_TOOL_ARGUMENT_MARKER_RE = re.compile(r"<\|?tool_call_argument_begin\|?>", re.IGNORECASE)
+TEXT_TOOL_ARGUMENT_MARKER_RE = re.compile(r"<\|?tool_call_arguments?_begin\|?>", re.IGNORECASE)
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -480,6 +484,74 @@ def _parse_tool_arguments(arguments_text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _extract_first_json_object(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start: idx + 1]
+    return ""
+
+
+def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+    start, end = span
+    return any(start < existing_end and end > existing_start for existing_start, existing_end in spans)
+
+
+def _iter_text_tool_invocations(content: str) -> list[tuple[str, str, tuple[int, int]]]:
+    invocations: list[tuple[str, str, tuple[int, int]]] = []
+    matched_spans: list[tuple[int, int]] = []
+
+    for match in TEXT_TOOL_CALL_RE.finditer(content):
+        span = match.span()
+        matched_spans.append(span)
+        invocations.append((match.group("name"), match.group("arguments").strip(), span))
+
+    for match in TEXT_TOOL_CALL_COMPACT_RE.finditer(content):
+        span = match.span()
+        if _overlaps(span, matched_spans):
+            continue
+        body = TEXT_TOOL_ARGUMENT_MARKER_RE.sub(" ", match.group("body") or "")
+        arguments = _extract_first_json_object(body)
+        if not arguments:
+            continue
+        matched_spans.append(span)
+        invocations.append((match.group("name"), arguments, span))
+
+    return invocations
+
+
+def _strip_text_tool_call_markup(content: str, spans: list[tuple[int, int]]) -> str:
+    stripped = TEXT_TOOL_CALL_SECTION_RE.sub("", content)
+    if stripped != content:
+        return stripped.strip()
+
+    for start, end in sorted(spans, reverse=True):
+        stripped = stripped[:start] + stripped[end:]
+    return stripped.strip()
+
+
 def _textual_tool_call_allowed(canonical_name: str, tool_definitions: list[dict[str, Any]]) -> bool:
     if canonical_name in CONSOLIDATED_TOOL_NAMES:
         return True
@@ -496,17 +568,17 @@ def _coerce_text_tool_calls(result: dict[str, Any], tool_definitions: list[dict[
     if result.get("error") or result.get("tool_calls"):
         return result
     content = str(result.get("content") or "")
-    if not TEXT_TOOL_MARKER_RE.search(content) or not TEXT_TOOL_ARGUMENT_MARKER_RE.search(content):
+    if not TEXT_TOOL_MARKER_RE.search(content):
         return result
 
     calls: list[dict[str, Any]] = []
-    for idx, match in enumerate(TEXT_TOOL_CALL_RE.finditer(content), start=1):
-        raw_name = match.group("name")
-        raw_arguments = match.group("arguments").strip()
+    matched_spans: list[tuple[int, int]] = []
+    for idx, (raw_name, raw_arguments, span) in enumerate(_iter_text_tool_invocations(content), start=1):
         parsed_arguments = _parse_tool_arguments(raw_arguments)
         canonical_name, canonical_arguments = _canonical_tool_invocation(raw_name, parsed_arguments)
         if not _textual_tool_call_allowed(canonical_name, tool_definitions):
             continue
+        matched_spans.append(span)
         calls.append({
             "id": f"text_call_{idx}",
             "type": "function",
@@ -519,7 +591,7 @@ def _coerce_text_tool_calls(result: dict[str, Any], tool_definitions: list[dict[
     if not calls:
         return result
 
-    cleaned_content = TEXT_TOOL_CALL_SECTION_RE.sub("", content).strip()
+    cleaned_content = _strip_text_tool_call_markup(content, matched_spans)
     result["content"] = cleaned_content or None
     result["tool_calls"] = calls
     result["finish_reason"] = "tool_calls"
