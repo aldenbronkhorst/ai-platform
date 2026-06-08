@@ -120,7 +120,10 @@ def test_voice_commits_final_results_and_tracks_interim_text():
 
     assert "const startIndex = Math.max(0, event.resultIndex || 0);" in content
     assert "committedResultIndexesRef.current.add(i)" in content
-    assert "emitTranscript(finalSegments.join(\" \"))" in content
+    assert "spokenTranscriptRef" in content
+    assert "emittedTranscriptRef" in content
+    assert "const pending = pendingTranscript();" in content
+    assert "markTranscriptEmitted(pending)" in content
     assert "return { voiceState, toggleVoice, interimTranscript }" in content
 
 

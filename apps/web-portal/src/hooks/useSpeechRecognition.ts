@@ -61,6 +61,8 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
   const restartTimerRef = useRef<number | null>(null);
   const stopFlushTimerRef = useRef<number | null>(null);
   const interimTranscriptRef = useRef("");
+  const spokenTranscriptRef = useRef("");
+  const emittedTranscriptRef = useRef("");
   const committedResultIndexesRef = useRef<Set<number>>(new Set());
   const onTranscriptRef = useRef(onTranscript);
 
@@ -94,25 +96,53 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     micStreamRef.current = await window.navigator.mediaDevices.getUserMedia({ audio: true });
   }, []);
 
+  const normalizeTranscript = useCallback((transcript: string) => {
+    return transcript.replace(/\s+/g, " ").trim();
+  }, []);
+
   const clearInterimTranscript = useCallback(() => {
     interimTranscriptRef.current = "";
     setInterimTranscript("");
   }, []);
 
   const resetTranscriptBuffer = useCallback(() => {
+    spokenTranscriptRef.current = "";
+    emittedTranscriptRef.current = "";
     committedResultIndexesRef.current.clear();
     clearInterimTranscript();
   }, [clearInterimTranscript]);
 
   const emitTranscript = useCallback((transcript: string) => {
-    const cleanTranscript = transcript.replace(/\s+/g, " ").trim();
+    const cleanTranscript = normalizeTranscript(transcript);
     if (cleanTranscript) onTranscriptRef.current(cleanTranscript);
-  }, []);
+  }, [normalizeTranscript]);
+
+  const pendingTranscript = useCallback(() => {
+    const spoken = normalizeTranscript(spokenTranscriptRef.current);
+    const emitted = normalizeTranscript(emittedTranscriptRef.current);
+    if (!spoken) return normalizeTranscript(interimTranscriptRef.current);
+    if (!emitted) return spoken;
+    if (spoken.toLowerCase().startsWith(emitted.toLowerCase())) {
+      return normalizeTranscript(spoken.slice(emitted.length));
+    }
+    const interim = normalizeTranscript(interimTranscriptRef.current);
+    return interim && !emitted.toLowerCase().includes(interim.toLowerCase()) ? interim : "";
+  }, [normalizeTranscript]);
+
+  const markTranscriptEmitted = useCallback((transcript: string) => {
+    const cleanTranscript = normalizeTranscript(transcript);
+    if (!cleanTranscript) return;
+    emittedTranscriptRef.current = normalizeTranscript(
+      `${emittedTranscriptRef.current} ${cleanTranscript}`,
+    );
+  }, [normalizeTranscript]);
 
   const flushTranscriptBuffer = useCallback(() => {
-    emitTranscript(interimTranscriptRef.current);
+    const pending = pendingTranscript();
+    emitTranscript(pending);
+    markTranscriptEmitted(pending);
     clearInterimTranscript();
-  }, [clearInterimTranscript, emitTranscript]);
+  }, [clearInterimTranscript, emitTranscript, markTranscriptEmitted, pendingTranscript]);
 
   useEffect(() => {
     const SpeechRecognition = getSpeechRecognitionConstructor();
@@ -131,7 +161,13 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     recognition.onresult = (event) => {
       const finalSegments: string[] = [];
       const interimSegments: string[] = [];
+      const allSegments: string[] = [];
       const startIndex = Math.max(0, event.resultIndex || 0);
+      for (let i = 0; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0]?.transcript?.trim();
+        if (transcript) allSegments.push(transcript);
+      }
+      spokenTranscriptRef.current = normalizeTranscript(allSegments.join(" "));
       for (let i = startIndex; i < event.results.length; i += 1) {
         const result = event.results[i];
         const transcript = result[0]?.transcript?.trim();
@@ -143,8 +179,11 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
           interimSegments.push(transcript);
         }
       }
-      emitTranscript(finalSegments.join(" "));
-      const interim = interimSegments.join(" ").replace(/\s+/g, " ").trim();
+      const finalTranscript = finalSegments.join(" ");
+      emitTranscript(finalTranscript);
+      markTranscriptEmitted(finalTranscript);
+      const pending = pendingTranscript();
+      const interim = pending || normalizeTranscript(interimSegments.join(" "));
       interimTranscriptRef.current = interim;
       setInterimTranscript(interim);
     };
@@ -210,7 +249,17 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       }
       recognitionRef.current = null;
     };
-  }, [clearRestartTimer, clearStopFlushTimer, emitTranscript, flushTranscriptBuffer, releaseMicStream, resetTranscriptBuffer]);
+  }, [
+    clearRestartTimer,
+    clearStopFlushTimer,
+    emitTranscript,
+    flushTranscriptBuffer,
+    markTranscriptEmitted,
+    normalizeTranscript,
+    pendingTranscript,
+    releaseMicStream,
+    resetTranscriptBuffer,
+  ]);
 
   const toggleVoice = useCallback(() => {
     if (voiceState === "unsupported") return;
