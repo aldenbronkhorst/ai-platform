@@ -60,6 +60,9 @@ param deploySearch bool = false
 @allowed(['free', 'basic', 'standard'])
 param searchSku string = 'free'
 
+@description('Azure Document Intelligence endpoint for OCR fallback')
+param documentIntelligenceEndpoint string = ''
+
 // Naming helper variables
 var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
 
@@ -215,6 +218,7 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
     deploySearch: deploySearch
+    documentIntelligenceEndpoint: documentIntelligenceEndpoint
   }
 }
 

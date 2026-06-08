@@ -50,3 +50,17 @@ def test_artifact_service_passes_user_assigned_identity_client_id(monkeypatch):
 
     assert isinstance(service._get_credential(), FakeCredential)
     assert captured_kwargs == {"managed_identity_client_id": "client-id-123"}
+
+
+def test_artifact_service_supports_pdf_text_preview():
+    from app.models.models import AIArtifact
+    from app.services.artifact import ArtifactService
+
+    artifact = AIArtifact(
+        artifact_type="job-file",
+        filename="Employment Agreement.pdf",
+        mime_type="application/pdf",
+        storage_uri="https://storage.example/job-files/standalone/Employment Agreement.pdf",
+    )
+
+    assert ArtifactService(db=None).supports_text_preview(artifact)

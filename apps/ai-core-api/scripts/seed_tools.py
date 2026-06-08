@@ -80,6 +80,21 @@ TOOLS = [
             "required": ["command"],
         },
     },
+    {
+        "name": "document_reader",
+        "display_name": "Document Reader",
+        "description": "Built-in platform tool for uploaded documents. Extracts text from text-based PDFs locally and uses Azure Document Intelligence for OCR when a PDF or image does not contain extractable text. Does not depend on Azure AI Search.",
+        "target_system": "ai-platform",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_id": {"type": "string", "description": "Uploaded artifact ID to inspect"},
+                "mode": {"type": "string", "enum": ["status", "preview", "extract"], "description": "Read-only document operation"},
+                "max_chars": {"type": "integer", "description": "Maximum extracted text characters to return", "default": 12000},
+            },
+            "required": ["artifact_id", "mode"],
+        },
+    },
 ]
 
 

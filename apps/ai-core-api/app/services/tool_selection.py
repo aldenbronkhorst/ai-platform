@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from uuid import UUID
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITool
 from app.services.connected_account_state import effective_connected_accounts
@@ -14,6 +14,8 @@ from app.services.tool_registry import CONNECTOR_TOOL_BY_SYSTEM, CONSOLIDATED_TO
 logger = logging.getLogger(__name__)
 
 TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
+DOCUMENT_READER_TOOL = "document_reader"
+PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
 SYSTEM_INTENT_KEYWORDS = {
     "odoo": {
         "odoo", "invoice", "invoices", "bill", "bills", "credit note", "refund",
@@ -41,6 +43,11 @@ SYSTEM_INTENT_KEYWORDS = {
         "action run", "ci", "release", "releases", "tag", "tags", "deploy key",
         "code search",
     },
+}
+DOCUMENT_INTENT_KEYWORDS = {
+    "attached file", "attached files", "attachment", "attachments", "uploaded",
+    "upload", "document", "documents", "pdf", "ocr", "scan", "scanned",
+    "extract text", "read the file", "read this file", "summarize the file",
 }
 SHORT_KEYWORDS = {"az", "gh", "git", "pr", "prs", "pnl"}
 BROAD_CONNECTED_PATTERNS = {
@@ -90,6 +97,15 @@ def _requested_systems(user_message: str, task_type: str) -> set[str]:
     return requested
 
 
+def _requested_platform_tools(user_message: str, task_type: str) -> set[str]:
+    message = (user_message or "").lower()
+    if "[attached file context]" in message or any(keyword in message for keyword in DOCUMENT_INTENT_KEYWORDS):
+        return {DOCUMENT_READER_TOOL}
+    if task_type in {"document", "documents", "attachment"}:
+        return {DOCUMENT_READER_TOOL}
+    return set()
+
+
 async def get_tool_selection(
     db: AsyncSession,
     user_id: UUID,
@@ -104,24 +120,42 @@ async def get_tool_selection(
     if connected_systems is None:
         accounts = await effective_connected_accounts(db, user_id)
         connected_systems = {a.provider for a in accounts if a.status in ("connected", "active")}
-    if not connected_systems:
-        return result
 
     requested_systems = _requested_systems(_user_message, _task_type)
+    requested_platform_tools = _requested_platform_tools(_user_message, _task_type)
     eligible_systems = connected_systems.intersection(requested_systems)
-    result.intent = ",".join(sorted(eligible_systems)) if eligible_systems else "no_connector_intent"
+    intent_parts = sorted(eligible_systems)
+    if requested_platform_tools:
+        intent_parts.append("ai-platform")
+    result.intent = ",".join(intent_parts) if intent_parts else "no_connector_intent"
+
+    tool_filters = []
+    if connected_systems:
+        tool_filters.append(
+            and_(
+                AITool.target_system.in_(connected_systems),
+                AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
+            )
+        )
+    if requested_platform_tools:
+        tool_filters.append(AITool.name.in_(requested_platform_tools))
+    if not tool_filters:
+        return result
 
     tool_result = await db.execute(
         select(AITool).where(
             AITool.status == "active",
-            AITool.target_system.in_(connected_systems),
-            AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
+            or_(*tool_filters),
         ).order_by(AITool.name)
     )
     all_tools = [
         tool
         for tool in tool_result.scalars().all()
         if is_model_facing_tool(tool.name, tool.target_system)
+        and (
+            (tool.target_system in connected_systems and tool.name in CONSOLIDATED_TOOL_NAMES)
+            or tool.name in requested_platform_tools
+        )
     ]
     if not all_tools:
         return result
@@ -129,15 +163,19 @@ async def get_tool_selection(
     result.schema_size_before = _schema_size(all_tools)
 
     selected_tool_names = {TOOL_BY_SYSTEM[system] for system in eligible_systems if system in TOOL_BY_SYSTEM}
+    selected_tool_names.update(requested_platform_tools)
     selected = [t for t in all_tools if t.name in selected_tool_names]
 
     result.selected = selected
     result.excluded = [t for t in all_tools if t.name not in selected_tool_names]
-    result.selection_reason = (
-        "message_intent_matched_connected_systems"
-        if selected
-        else "no_matching_connector_intent"
-    )
+    if selected:
+        result.selection_reason = (
+            "message_intent_matched_available_tools"
+            if requested_platform_tools
+            else "message_intent_matched_connected_systems"
+        )
+    else:
+        result.selection_reason = "no_matching_connector_intent"
     result.schema_size_after = _schema_size(result.selected)
 
     logger.info(

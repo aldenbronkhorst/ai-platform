@@ -132,3 +132,15 @@ def test_voice_interim_text_is_visible_in_composer():
     assert "voiceInterimTranscript" in content
     assert "cleanVoiceInterim" in content
     assert "bg-[var(--color-warning)] text-white" in content
+
+
+def test_connections_page_loads_backend_platform_tools():
+    page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
+    with open(page_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "interface PlatformTool" in content
+    assert "fetchPlatformTools" in content
+    assert '`${APIM_BASE_URL}/tools`' in content
+    assert "Platform Tools" in content
+    assert "setPlatformTools(data.filter" in content

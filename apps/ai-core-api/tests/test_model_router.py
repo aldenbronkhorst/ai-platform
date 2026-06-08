@@ -1250,6 +1250,52 @@ class TestToolExecution:
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_document_reader_returns_read_only_artifact_preview(self):
+        from app.models.models import AIArtifact
+        from app.services.model_router import _execute_tool_call_impl
+
+        user_id = uuid.uuid4()
+        artifact_id = uuid.uuid4()
+        artifact = AIArtifact(
+            id=artifact_id,
+            artifact_type="upload",
+            filename="agreement.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/agreement.pdf",
+            created_by_user_id=user_id,
+            extraction_status="ready",
+            extraction_source="native_pdf",
+        )
+
+        class ArtifactDb:
+            async def execute(self, _stmt):
+                class Result:
+                    def scalar_one_or_none(self):
+                        return artifact
+
+                return Result()
+
+            async def flush(self):
+                pass
+
+        with patch(
+            "app.services.artifact.ArtifactService.text_preview",
+            new=AsyncMock(return_value="Agreement text from PDF"),
+        ):
+            result = await _execute_tool_call_impl(
+                ArtifactDb(),
+                user_id,
+                "document_reader",
+                {"artifact_id": str(artifact_id), "mode": "preview", "max_chars": 5000},
+            )
+
+        assert result["status"] == "success"
+        assert result["tool_name"] == "document_reader"
+        assert result["artifact_id"] == str(artifact_id)
+        assert result["text"] == "Agreement text from PDF"
+        assert result["extraction_source"] == "native_pdf"
+
+    @pytest.mark.asyncio
     async def test_odoo_schema_connector_error_is_handled_for_trace(self):
         from app.services.model_router import _execute_tool_call
 

@@ -141,6 +141,11 @@ class AIArtifact(Base, AuditMixin):
     stage = Column(String(50), nullable=True)  # intermediate, final, debug
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
     retention_policy = Column(String(20), default="standard", nullable=False)
+    extraction_status = Column(String(30), default="not_required", nullable=False)
+    extraction_source = Column(String(100), nullable=True)
+    extracted_text = Column(Text, nullable=True)
+    extraction_metadata_json = Column(JSON, nullable=True)
+    extraction_error = Column(Text, nullable=True)
 
 
 class AITool(Base, AuditMixin):
