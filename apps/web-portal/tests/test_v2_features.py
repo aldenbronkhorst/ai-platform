@@ -1,9 +1,11 @@
 import os
 import glob
+import json
 import pytest
 
 BUILD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../dist"))
 SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../src"))
+PUBLIC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../public"))
 
 
 def test_production_build_cleanliness():
@@ -77,6 +79,13 @@ def test_portal_html_metatags():
         # 3. No redundant generic bot wording
         assert "AI Platform Assistant" not in content
 
+        # 4. PWA/iOS install metadata for stable home-screen behavior
+        assert 'rel="manifest" href="/manifest.webmanifest"' in content
+        assert 'rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"' in content
+        assert 'name="apple-mobile-web-app-capable" content="yes"' in content
+        assert 'name="apple-mobile-web-app-title" content="AI Platform"' in content
+        assert 'name="apple-mobile-web-app-status-bar-style" content="black-translucent"' in content
+
 
 def test_chat_upload_snapshots_file_list_before_reset():
     app_path = os.path.join(SRC_DIR, "App.tsx")
@@ -135,6 +144,56 @@ def test_voice_interim_text_is_visible_in_composer():
     assert "voiceInterimTranscript" in content
     assert "cleanVoiceInterim" in content
     assert "bg-[var(--color-warning)] text-white" in content
+
+
+def test_ios_pwa_manifest_and_icons_are_declared():
+    manifest_path = os.path.join(PUBLIC_DIR, "manifest.webmanifest")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    assert manifest["name"] == "AI Platform"
+    assert manifest["start_url"] == "/"
+    assert manifest["scope"] == "/"
+    assert manifest["display"] == "standalone"
+    assert manifest["theme_color"] == "#08060d"
+
+    icon_sources = {icon["src"]: icon for icon in manifest["icons"]}
+    assert icon_sources["/apple-touch-icon.png"]["sizes"] == "180x180"
+    assert icon_sources["/pwa-icon-192.png"]["sizes"] == "192x192"
+    assert icon_sources["/pwa-icon-512.png"]["sizes"] == "512x512"
+    assert os.path.exists(os.path.join(PUBLIC_DIR, "apple-touch-icon.png"))
+    assert os.path.exists(os.path.join(PUBLIC_DIR, "pwa-icon-192.png"))
+    assert os.path.exists(os.path.join(PUBLIC_DIR, "pwa-icon-512.png"))
+
+
+def test_auth_session_restores_ios_pwa_accounts_promptlessly_once():
+    auth_session_path = os.path.join(SRC_DIR, "authSession.ts")
+    auth_hook_path = os.path.join(SRC_DIR, "hooks", "usePortalAuth.ts")
+    main_path = os.path.join(SRC_DIR, "main.tsx")
+    app_path = os.path.join(SRC_DIR, "App.tsx")
+
+    with open(auth_session_path, "r", encoding="utf-8") as f:
+        auth_session = f.read()
+    with open(auth_hook_path, "r", encoding="utf-8") as f:
+        auth_hook = f.read()
+    with open(main_path, "r", encoding="utf-8") as f:
+        main = f.read()
+    with open(app_path, "r", encoding="utf-8") as f:
+        app = f.read()
+
+    assert "AUTH_HINT_COOKIE" in auth_session
+    assert "ai_platform_last_account" in auth_session
+    assert "prompt: \"none\"" in auth_session
+    assert "shouldAttemptPromptlessRestore" in auth_session
+    assert "markPromptlessRestoreAttempted" in auth_session
+    assert "window.sessionStorage.setItem(key, \"1\")" in auth_session
+    assert "const storedHint = readStoredAuthHint();" in auth_hook
+    assert "instance.loginRedirect(promptlessLoginRequest(loginRequest, storedHint))" in auth_hook
+    assert "rememberAuthAccount(response.account || activeAccount)" in auth_hook
+    assert "instance.acquireTokenRedirect(promptlessLoginRequest(loginRequest, activeAccount))" in auth_hook
+    assert "clearStoredAuthHint()" in auth_hook
+    assert "rememberAuthAccount(redirectResponse.account)" in main
+    assert "loginRequestWithAuthHint(loginRequest, readStoredAuthHint())" in app
 
 
 def test_connections_page_loads_backend_platform_tools():

@@ -5,6 +5,7 @@ import { PublicClientApplication, EventType } from "@azure/msal-browser";
 import type { AuthenticationResult } from "@azure/msal-browser";
 import { MsalProvider } from "@azure/msal-react";
 import { msalConfig } from "./authConfig";
+import { rememberAuthAccount } from "./authSession";
 import { ThemeProvider } from "./theme";
 import "./index.css";
 import App from "./App.tsx";
@@ -46,10 +47,12 @@ msalInstance.initialize().then(async () => {
 
     if (redirectResponse?.account) {
       msalInstance.setActiveAccount(redirectResponse.account);
+      rememberAuthAccount(redirectResponse.account);
     } else {
       const accounts = msalInstance.getAllAccounts();
       if (accounts.length > 0) {
         msalInstance.setActiveAccount(accounts[0]);
+        rememberAuthAccount(accounts[0]);
       }
     }
   } catch (err: unknown) {
@@ -62,6 +65,7 @@ msalInstance.initialize().then(async () => {
       const payload = event.payload as AuthenticationResult;
       if (payload.account) {
         msalInstance.setActiveAccount(payload.account);
+        rememberAuthAccount(payload.account);
       }
     }
   });

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMsal } from "@azure/msal-react";
 import { loginRequest } from "../authConfig";
+import {
+  clearStoredAuthHint,
+  markPromptlessRestoreAttempted,
+  promptlessLoginRequest,
+  readStoredAuthHint,
+  rememberAuthAccount,
+  shouldAttemptPromptlessRestore,
+} from "../authSession";
 import type { UserProfile } from "../types";
 
 interface TokenClaims {
@@ -63,6 +71,19 @@ export function usePortalAuth() {
 
   useEffect(() => {
     if (!activeAccount) {
+      const storedHint = readStoredAuthHint();
+      if (
+        !localMockAuthenticated &&
+        inProgress === "none" &&
+        storedHint &&
+        shouldAttemptPromptlessRestore(storedHint)
+      ) {
+        markPromptlessRestoreAttempted(storedHint);
+        instance.loginRedirect(promptlessLoginRequest(loginRequest, storedHint)).catch(error => {
+          setAuthError(error instanceof Error ? error.message : "Microsoft session restore failed.");
+        });
+        return;
+      }
       const timerId = window.setTimeout(() => {
         setTokenResult(null);
         setIsTokenLoading(false);
@@ -77,13 +98,26 @@ export function usePortalAuth() {
       instance.acquireTokenSilent({ ...loginRequest, account: activeAccount })
         .then(response => {
           if (cancelled) return;
+          rememberAuthAccount(response.account || activeAccount);
           setTokenResult({ accountId: activeAccount.homeAccountId, accessToken: response.accessToken });
           setAuthError(null);
         })
-        .catch(() => {
+        .catch(error => {
           if (!cancelled) {
             if (showLoading) setTokenResult(null);
             setAuthError("Token acquisition failed. Please sign in again.");
+            if (
+              showLoading &&
+              inProgress === "none" &&
+              shouldAttemptPromptlessRestore(activeAccount)
+            ) {
+              markPromptlessRestoreAttempted(activeAccount);
+              instance.acquireTokenRedirect(promptlessLoginRequest(loginRequest, activeAccount)).catch(() => {
+                setAuthError(
+                  error instanceof Error ? error.message : "Token acquisition failed. Please sign in again.",
+                );
+              });
+            }
           }
         })
         .finally(() => {
@@ -97,7 +131,7 @@ export function usePortalAuth() {
       cancelled = true;
       window.clearInterval(refreshInterval);
     };
-  }, [activeAccount, instance, localMockAuthenticated]);
+  }, [activeAccount, inProgress, instance, localMockAuthenticated]);
 
   const signInLocalMock = useCallback(() => {
     setLocalMockUser({
@@ -120,6 +154,7 @@ export function usePortalAuth() {
     } catch {
       // Fall back to explicit browser cache cleanup below.
     } finally {
+      clearStoredAuthHint();
       clearMsalStorage(sessionStorage);
       clearMsalStorage(localStorage);
       window.location.href = "/";
