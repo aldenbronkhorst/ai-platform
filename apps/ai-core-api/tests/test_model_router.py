@@ -91,6 +91,14 @@ def test_fallback_chat_title_preserves_business_terms():
     assert title == "Penelope Odoo Timeline"
 
 
+def test_fallback_chat_title_drops_question_scaffolding_and_standalone_counts():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "there are 2 gerhard employees in my odoo?"},
+    ])
+
+    assert title == "Gerhard Employees Odoo"
+
+
 def test_tool_selection_message_inherits_context_for_date_correction():
     messages = [
         {"role": "user", "content": "what did Penelope do in Odoo today, give me a timeline"},
@@ -207,6 +215,23 @@ async def test_generate_chat_title_falls_back_when_title_model_unavailable():
     )
 
     assert title == "Azure Resources Month Date Costs"
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_title_does_not_call_model():
+    from app.services.model_router import generate_chat_title
+
+    with patch("app.services.model_router._call_model", new=AsyncMock()) as call_model:
+        title = await generate_chat_title(
+            MockSession(has_config=True),
+            [{"role": "user", "content": "there are 2 gerhard employees in my odoo?"}],
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            request_id="req-title",
+        )
+
+    assert title == "Gerhard Employees Odoo"
+    assert call_model.await_count == 0
 
 
 # ── Connector Context Tests ──

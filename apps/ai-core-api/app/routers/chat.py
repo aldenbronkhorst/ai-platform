@@ -426,7 +426,7 @@ async def _maybe_generate_session_title(
         return
 
     session.title = title
-    _set_session_title_source(session, "ai")
+    _set_session_title_source(session, "local")
 
 
 def _attachment_response(artifact: AIArtifact) -> dict[str, Any]:
