@@ -23,6 +23,17 @@ DOMAIN_LOGICAL_OPERATORS = {"&", "|", "!"}
 X2MANY_FIELD_TYPES = {"many2many", "one2many"}
 MANY2ONE_FIELD_TYPES = {"many2one"}
 X2MANY_COMMANDS = {0, 1, 2, 3, 4, 5, 6}
+RECORDSET_METHODS_REQUIRE_IDS = {
+    "message_post",
+    "message_subscribe",
+    "message_unsubscribe",
+    "action_feedback",
+    "action_done",
+    "action_cancel",
+    "unlink",
+    "write",
+}
+RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
 MODEL_FIELD_ALIASES: dict[str, dict[str, str]] = {
     # mail.activity uses res_model/res_id; mail.message uses model/res_id.
     # Models commonly confuse the two when tracing chatter records.
@@ -523,9 +534,17 @@ def _run_content(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
 def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     if req.operation != "post":
         raise HTTPException(status_code=400, detail={"error": "unsupported_operation", "message": f"message mode: {req.operation}"})
+    if not req.model or not req.record_id:
+        raise HTTPException(status_code=400, detail={
+            "error": "message_target_required",
+            "error_type": "message_target_required",
+            "message": "Message mode requires model and record_id.",
+            "missing": [name for name, value in (("model", req.model), ("record_id", req.record_id)) if not value],
+        })
 
+    body = req.body or ""
     kwargs: dict[str, Any] = {
-        "body": html.escape(req.body or "").replace("\n", "<br/>"),
+        "body": body if req.raw_html else html.escape(body).replace("\n", "<br/>"),
         "message_type": req.message_type or "comment",
     }
     if req.subtype_xmlid:
@@ -536,8 +555,67 @@ def _run_message(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
     if message_attachment_ids:
         kwargs["attachment_ids"] = message_attachment_ids
 
-    result = client.call_with_transport(req.model, "message_post", args=[req.record_id], kwargs=kwargs)
+    result = client.call_with_transport(req.model, "message_post", args=[[req.record_id]], kwargs=kwargs)
     return {"operation": "post", "result": result}
+
+
+def _execute_method_requires_record_ids(method: str | None) -> bool:
+    normalized = (method or "").strip()
+    return normalized in RECORDSET_METHODS_REQUIRE_IDS or normalized.startswith(RECORDSET_METHOD_PREFIXES)
+
+
+def _record_ids_from_execute_request(req: OdooOpsRunnerRequest) -> list[int]:
+    if req.ids:
+        return req.ids
+    if req.record_id:
+        return [req.record_id]
+    return []
+
+
+def _normalize_execute_args(req: OdooOpsRunnerRequest) -> list[Any]:
+    args = list(req.args or [])
+    if not _execute_method_requires_record_ids(req.method):
+        return args
+
+    if args:
+        first_arg = args[0]
+        if isinstance(first_arg, int) and not isinstance(first_arg, bool):
+            return [[first_arg], *args[1:]]
+        if _is_int_list(first_arg) and first_arg:
+            return args
+        record_ids = _record_ids_from_execute_request(req)
+        if record_ids:
+            return [record_ids, *args]
+        raise HTTPException(status_code=400, detail={
+            "error": "invalid_recordset_args",
+            "error_type": "invalid_recordset_args",
+            "message": (
+                f"Odoo method '{req.method}' is a record method and requires record IDs as "
+                "the first positional argument, e.g. args=[[123]], or via ids/record_id."
+            ),
+            "method": req.method,
+            "model": req.model,
+            "suggestion": "Retry with ids, record_id, or args whose first item is a non-empty list of record IDs.",
+        })
+
+    record_ids = _record_ids_from_execute_request(req)
+    if record_ids:
+        return [record_ids]
+
+    raise HTTPException(status_code=400, detail={
+        "error": "record_ids_required",
+        "error_type": "record_ids_required",
+        "message": (
+            f"Odoo method '{req.method}' is a record method and cannot be called without target record IDs."
+        ),
+        "method": req.method,
+        "model": req.model,
+        "missing": ["ids", "record_id", "args[0]"],
+        "suggestion": (
+            "For chatter posts, prefer mode 'message' with model, record_id, operation='post', and body. "
+            "For mail.activity completion, use mode 'execute' with model='mail.activity', method='action_feedback', ids=[activity_id], and kwargs.feedback."
+        ),
+    })
 
 
 def _is_int_list(value: Any) -> bool:
@@ -708,7 +786,7 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
             "count": returned_count,
             **_pagination_metadata(client, req.model, domain, returned_count, limit, offset),
         }
-    result = client.call_with_transport(req.model, req.method, args=req.args or [], kwargs=req.kwargs or {})
+    result = client.call_with_transport(req.model, req.method, args=_normalize_execute_args(req), kwargs=req.kwargs or {})
     return {"model": req.model, "method": req.method, "result": result}
 
 
