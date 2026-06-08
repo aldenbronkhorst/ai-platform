@@ -584,6 +584,57 @@ class TestOdooOpsRunner:
         assert "Traceback" not in data["message"]
 
     @patch("app.routers.ops_runner._get_client")
+    def test_delete_blocked_by_active_pos_session_is_classified(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.side_effect = OdooError(
+            "Odoo hr.employee.unlink failed: You cannot delete an employee that may be used "
+            "in an active PoS session, close the session(s) first: "
+            "Employee: Gerhard Wayne Cloete - PoS Config(s): Gallagher Convention Center"
+        )
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "mutation",
+                operation="delete",
+                model="hr.employee",
+                ids=[77],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error_type"] == "odoo_delete_blocked_active_pos_session"
+        assert "active PoS session" in data["message"]
+        assert "Gallagher Convention Center" in data["message"]
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_delete_blocked_does_not_treat_possible_as_pos(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.side_effect = OdooError(
+            "You cannot delete this record. Archive it if possible because another record still references it."
+        )
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "mutation",
+                operation="delete",
+                model="hr.employee",
+                ids=[77],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error_type"] == "odoo_delete_blocked"
+        assert data["error_type"] != "odoo_delete_blocked_active_pos_session"
+
+    @patch("app.routers.ops_runner._get_client")
     def test_execute_search_read_returns_pagination_metadata(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.search_read.return_value = [{"id": i} for i in range(10)]

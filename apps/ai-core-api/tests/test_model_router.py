@@ -1400,6 +1400,88 @@ class TestToolExecution:
         assert trace.ended["error_message"] == "Odoo model 'auditlog.log' could not be inspected by this connected account, so the schema probe was skipped."
         assert trace.ended["output_summary"]["result"]["connector_error"]["correlation_id"] == "corr-123"
 
+    @pytest.mark.asyncio
+    async def test_odoo_delete_blocked_error_is_preserved_for_model_and_trace(self):
+        from app.services.model_router import _execute_tool_call
+
+        blocked_message = (
+            "Odoo hr.employee.unlink failed: You cannot delete an employee that may be used "
+            "in an active PoS session, close the session(s) first: "
+            "Employee: Gerhard Wayne Cloete - PoS Config(s): Gallagher Convention Center"
+        )
+
+        class FakeResponse:
+            status_code = 400
+            text = blocked_message
+
+            def json(self):
+                return {
+                    "error": "odoo_delete_blocked_active_pos_session",
+                    "error_type": "odoo_delete_blocked_active_pos_session",
+                    "message": blocked_message,
+                    "correlation_id": "corr-pos",
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, *args, **kwargs):
+                return FakeResponse()
+
+        class TraceRecorder:
+            def __init__(self):
+                self.ended = None
+
+            def start_span(self, *args, **kwargs):
+                return "span-pos"
+
+            def end_span(self, span_id, **kwargs):
+                self.ended = {"span_id": span_id, **kwargs}
+
+            def span_error(self, *args, **kwargs):
+                raise AssertionError("connector HTTP errors should finish the span, not raise")
+
+        db = MockSession(has_config=True)
+        trace = TraceRecorder()
+        fake_credentials = {
+            "url": "https://example.odoo.com",
+            "db": "example",
+            "username": "user@example.com",
+            "api_key": "secret",
+            "transport": "auto",
+        }
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value=fake_credentials),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call(
+                db,
+                uuid.uuid4(),
+                "odoo_ops_runner",
+                {"mode": "mutation", "operation": "delete", "model": "hr.employee", "ids": [77]},
+                trace_svc=trace,
+            )
+
+        assert result["error"] is True
+        assert result["status_code"] == 400
+        assert result["error_type"] == "odoo_delete_blocked_active_pos_session"
+        assert "active PoS session" in result["message"]
+        assert "Gallagher Convention Center" in result["message"]
+        assert trace.ended["status"] == "failed"
+        assert trace.ended["error_type"] == "odoo_delete_blocked_active_pos_session"
+        assert "Gallagher Convention Center" in trace.ended["error_message"]
+
     def test_tool_result_error_summary_captures_handled_odoo_issue(self):
         from app.services.model_router import _tool_result_error_summary
 
