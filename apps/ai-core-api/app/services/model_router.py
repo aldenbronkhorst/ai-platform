@@ -2131,7 +2131,7 @@ def _microsoft_admin_tool_summary_has_connected_access_error(tool_error_summary:
             continue
         error_type = str(item.get("error_type") or "").lower()
         message = str(item.get("message") or "").lower()
-        if error_type in {"not_connected", "unsupported_costmanagement_query_cli"}:
+        if error_type == "not_connected":
             continue
         haystack = f"{error_type} {message}"
         if any(marker in haystack for marker in AZURE_CONNECTED_ACCESS_ERROR_MARKERS):

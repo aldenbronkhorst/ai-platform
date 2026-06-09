@@ -19,7 +19,7 @@ from app.services.connector_commands import (
     AZURE_TOKEN_ENDPOINT,
     MICROSOFT_ADMIN_PROVIDER,
     diagnose_microsoft_admin_connection,
-    extract_azure_username,
+    extract_microsoft_admin_username,
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string,
@@ -116,7 +116,7 @@ async def device_code_callback(
             "expires_in": data.get("expires_in"),
             "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
         }
-        token_payload["username"] = extract_azure_username(token_payload)
+        token_payload["username"] = extract_microsoft_admin_username(token_payload)
         existing_token = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id) or {}
         existing_token_is_current = not microsoft_admin_token_client_error(existing_token)
         delegated_tokens = dict(existing_token.get("delegated_tokens") or {}) if existing_token_is_current else {}
@@ -156,23 +156,22 @@ async def device_code_callback(
                 **warmed_profiles.get("exchange", {"status": "missing", "message": "Exchange Online token was not returned."}),
             },
             "teams": {
-                "status": "available",
                 "label": microsoft_admin_scope_label("teams"),
-                "message": "Uses the consented Microsoft Graph profile.",
+                **warmed_profiles.get("teams", {"status": "missing", "message": "Microsoft Teams admin token was not returned."}),
             },
             "sharepoint": {
-                "status": "available",
+                "status": "not_checked",
                 "label": microsoft_admin_scope_label("sharepoint"),
-                "message": "Uses the consented Microsoft Graph profile for Graph-backed SharePoint work.",
+                "message": "SharePoint/PnP tokens are target-site scoped and are acquired when a site_url or admin_url is supplied.",
             },
         }
         missing_profiles = [
             profile["label"]
             for profile in authorization_profiles.values()
-            if profile.get("status") != "available"
+            if profile.get("status") == "missing"
         ]
         message = (
-            "Microsoft Admin connected. Graph, Azure Resource Manager, and Exchange tokens were acquired."
+            "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens were acquired."
             if not missing_profiles
             else (
                 "Microsoft Admin connected with one sign-in. "

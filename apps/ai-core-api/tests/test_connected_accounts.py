@@ -207,10 +207,10 @@ class TestConnectedAccountsFlow:
             "graph": "authorized",
             "arm": "missing",
             "exchange": "authorized",
-            "teams": "authorized",
-            "sharepoint": "authorized",
+            "teams": "missing",
+            "sharepoint": "not_checked",
         }
-        assert "Missing: Azure Resource Manager" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert "Missing: Azure Resource Manager, Teams Admin" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
 
     @pytest.mark.asyncio
     async def test_microsoft_admin_token_state_refreshes_before_reporting_expired(self):

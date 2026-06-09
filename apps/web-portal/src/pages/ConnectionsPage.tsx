@@ -159,13 +159,13 @@ function formatOptionalStatus(status?: string | null) {
 function formatMicrosoftAdminConnectMessage(profiles?: Record<string, MicrosoftAuthorizationProfileResult>) {
   if (!profiles) return "";
   const missing = Object.values(profiles)
-    .filter(profile => profile.status !== "available")
+    .filter(profile => profile.status === "missing")
     .map(profile => profile.label)
     .filter(Boolean);
   if (missing.length) {
     return `Microsoft Admin connected with one sign-in. Additional tenant consent is still required for: ${missing.join(", ")}.`;
   }
-  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange tokens are available.";
+  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens are available.";
 }
 
 function formatDateTime(value?: string | null) {
@@ -565,7 +565,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setMicrosoftAdminDeviceCode(data);
         setMicrosoftAdminPolling(true);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
-        setCliTestResult({ status: "pending", connector: "microsoft_admin", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager and Exchange tokens will be acquired silently when tenant consent is available.` });
+        setCliTestResult({ status: "pending", connector: "microsoft_admin", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager, Exchange Online, and Teams tokens will be acquired silently when tenant consent is available.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
           try {
@@ -732,7 +732,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
           <DetailCard>
             <p className="text-sm text-muted">
-              Connect with one Microsoft Admin sign-in. Microsoft Graph, Azure Resource Manager, and Exchange tokens are acquired silently when tenant consent is available.
+              Connect with one Microsoft Admin sign-in. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens are acquired silently when tenant consent is available.
             </p>
           </DetailCard>
 

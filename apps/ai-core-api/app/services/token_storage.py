@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 KEY_VAULT_SECRET_VALUE_SOFT_LIMIT = 25_000
 
-AZURE_TOKEN_TOP_LEVEL_KEYS = {
+MICROSOFT_ADMIN_TOKEN_TOP_LEVEL_KEYS = {
     "provider",
     "client_id",
     "token_type",
@@ -36,7 +36,7 @@ AZURE_TOKEN_TOP_LEVEL_KEYS = {
     "error_type",
 }
 
-AZURE_DELEGATED_TOKEN_KEYS = {
+MICROSOFT_ADMIN_DELEGATED_TOKEN_KEYS = {
     "client_id",
     "token_type",
     "access_token",
@@ -74,7 +74,7 @@ def _has_value(value: Any) -> bool:
     return value is not None and value != "" and value != {}
 
 
-def _azure_delegated_tokens_for_storage(
+def _microsoft_admin_delegated_tokens_for_storage(
     token_data: dict[str, Any],
     compact_token_data: dict[str, Any],
     *,
@@ -94,7 +94,7 @@ def _azure_delegated_tokens_for_storage(
 
         compact_profile = {
             key: profile_token.get(key)
-            for key in AZURE_DELEGATED_TOKEN_KEYS
+            for key in MICROSOFT_ADMIN_DELEGATED_TOKEN_KEYS
             if _has_value(profile_token.get(key))
         }
         compact_profile.setdefault("scope_profile", profile)
@@ -110,7 +110,7 @@ def _azure_delegated_tokens_for_storage(
     return compact_delegated_tokens
 
 
-def _compact_azure_token_for_storage(
+def _compact_microsoft_admin_token_for_storage(
     token_data: dict[str, Any],
     *,
     include_delegated_access_tokens: bool = True,
@@ -125,10 +125,10 @@ def _compact_azure_token_for_storage(
     """
     compact_token_data = {
         key: token_data.get(key)
-        for key in AZURE_TOKEN_TOP_LEVEL_KEYS
+        for key in MICROSOFT_ADMIN_TOKEN_TOP_LEVEL_KEYS
         if _has_value(token_data.get(key))
     }
-    delegated_tokens = _azure_delegated_tokens_for_storage(
+    delegated_tokens = _microsoft_admin_delegated_tokens_for_storage(
         token_data,
         compact_token_data,
         include_delegated_access_tokens=include_delegated_access_tokens,
@@ -142,12 +142,12 @@ def _token_for_storage(provider: str, token_data: dict[str, Any]) -> dict[str, A
     if provider != "microsoft_admin":
         return token_data
 
-    compact_token_data = _compact_azure_token_for_storage({**token_data, "provider": provider})
+    compact_token_data = _compact_microsoft_admin_token_for_storage({**token_data, "provider": provider})
     secret_value = json.dumps(compact_token_data, separators=(",", ":"))
     if len(secret_value) <= KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
         return compact_token_data
 
-    compact_token_data = _compact_azure_token_for_storage(
+    compact_token_data = _compact_microsoft_admin_token_for_storage(
         {**token_data, "provider": provider},
         include_delegated_access_tokens=False,
     )

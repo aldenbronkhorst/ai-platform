@@ -21,12 +21,6 @@ CONNECTOR_TOOLS_BY_SYSTEM: Mapping[str, frozenset[str]] = {
     "github": frozenset({"github_cli"}),
 }
 
-CONNECTOR_TOOL_BY_SYSTEM: Mapping[str, str] = {
-    "odoo": "odoo_ops_runner",
-    "microsoft_admin": "ms_graph",
-    "github": "github_cli",
-}
-
 CONNECTOR_SYSTEMS = frozenset(CONNECTOR_TOOLS_BY_SYSTEM)
 CONSOLIDATED_TOOL_NAMES = frozenset(
     tool_name

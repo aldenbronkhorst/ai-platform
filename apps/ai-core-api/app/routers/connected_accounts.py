@@ -356,9 +356,6 @@ def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]
             ):
                 authorized.add(microsoft_admin_scope_profile(profile))
 
-    if "graph" in authorized:
-        authorized.update({"teams", "sharepoint"})
-
     return {profile for profile in authorized if profile in MICROSOFT_ADMIN_PROFILE_ORDER}
 
 
@@ -378,6 +375,8 @@ async def _microsoft_admin_authorization_metadata(
             profile_status = "not_connected"
         elif not include_token_state:
             profile_status = "not_checked"
+        elif profile == "sharepoint":
+            profile_status = "authorized" if profile in authorized_profiles else "not_checked"
         else:
             profile_status = "authorized" if profile in authorized_profiles else "missing"
         profile_rows.append({
