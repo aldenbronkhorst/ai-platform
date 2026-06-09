@@ -22,6 +22,7 @@ from app.services.model_router import (
     _canonical_tool_invocation,
     _sanitize_chat_title,
     _tool_selection_message,
+    _compact_tool_result_for_model,
 )
 
 
@@ -118,6 +119,23 @@ def test_legacy_azure_cli_tool_call_canonicalizes_to_ms_admin():
 
     assert tool_name == "ms_admin"
     assert args == {"command": "account show", "mode": "azure_cli"}
+
+
+def test_compact_tool_result_preserves_small_graph_collections():
+    result = {
+        "status": "success",
+        "connector": "ms_admin",
+        "mode": "graph_request",
+        "result": {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+            "value": [{"id": str(index), "displayName": f"User {index}"} for index in range(14)],
+        },
+    }
+
+    compacted = _compact_tool_result_for_model(result)
+
+    assert len(compacted["result"]["value"]) == 14
+    assert "truncated_items" not in compacted["result"]["value"]
 
 
 # ── Mock DB that can simulate empty / configured / connector states ──
