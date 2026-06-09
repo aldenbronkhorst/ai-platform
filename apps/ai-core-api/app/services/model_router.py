@@ -399,6 +399,19 @@ AZURE_FALSE_DENIAL_RE = re.compile(
     r"|\badd/authorize\s+an\s+azure\s+connector\b"
     r")"
 )
+AZURE_CONNECTED_ACCESS_ERROR_MARKERS = (
+    "authorizationfailed",
+    "authorization failed",
+    "forbidden",
+    "permission",
+    "permissions",
+    "rbac",
+    "billing",
+    "access denied",
+    "insufficient privileges",
+    "does not have authorization",
+    "not authorized",
+)
 DELEGATED_AUTH_FAILURE_MARKERS = (
     "does not exist in msal token cache",
     "run `az login`",
@@ -2097,6 +2110,21 @@ def _ms_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str,
     return False
 
 
+def _ms_admin_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
+    for item in tool_error_summary:
+        tool_name = str(item.get("tool_name") or "")
+        if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
+            continue
+        error_type = str(item.get("error_type") or "").lower()
+        message = str(item.get("message") or "").lower()
+        if error_type in {"not_connected", "unsupported_costmanagement_query_cli"}:
+            continue
+        haystack = f"{error_type} {message}"
+        if any(marker in haystack for marker in AZURE_CONNECTED_ACCESS_ERROR_MARKERS):
+            return True
+    return False
+
+
 def _guard_connected_system_denial(
     content: str,
     connected_systems: set[str],
@@ -2107,6 +2135,8 @@ def _guard_connected_system_denial(
     if not AZURE_FALSE_DENIAL_RE.search(content):
         return content
     if _ms_admin_tool_summary_says_not_connected(tool_error_summary):
+        return content
+    if _ms_admin_tool_summary_has_connected_access_error(tool_error_summary):
         return content
 
     logger.warning("Correcting assistant response that contradicted connected Microsoft Admin / Azure account")

@@ -251,6 +251,22 @@ def test_guard_replaces_false_azure_not_connected_denial_when_connected():
     assert "Connected Accounts" not in guarded
 
 
+def test_guard_preserves_real_connected_azure_permission_error():
+    content = "I do not have access to your Azure cost data because the Cost Management query returned AuthorizationFailed."
+
+    guarded = _guard_connected_system_denial(
+        content,
+        {"azure"},
+        [{
+            "tool_name": "ms_azure_cli",
+            "error_type": "AuthorizationFailed",
+            "message": "The client does not have authorization to perform action Microsoft.CostManagement/query/read.",
+        }],
+    )
+
+    assert guarded == content
+
+
 def test_guard_allows_real_ms_admin_not_connected_tool_error():
     content = "Azure is not connected. Go to Connected Accounts."
 
