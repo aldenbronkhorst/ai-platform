@@ -64,6 +64,12 @@ param deploySearch bool = false
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
+@description('Microsoft Admin public client app ID for Graph/Exchange delegated device auth')
+param microsoftAdminClientId string = ''
+
+@description('Microsoft Admin public client display name')
+param microsoftAdminAppDisplayName string = 'AI Platform Microsoft Admin'
+
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
 var odooConnectorAppName = 'ca-odoo-connector-${environment}-${regionCode}-${instance}'
@@ -164,6 +170,8 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
             { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
+            { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
+            { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
           ]
           resources: {
             cpu: json('0.25')
@@ -376,6 +384,8 @@ resource containerAppWorker 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
             { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
+            { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
+            { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
           ]
           resources: {
             cpu: json('0.5')

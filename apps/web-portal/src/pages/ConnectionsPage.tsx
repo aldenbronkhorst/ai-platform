@@ -100,6 +100,10 @@ interface AzureDeviceCode {
   user_code: string;
   verification_url: string;
   scope_profile?: string;
+  scope_label?: string;
+  scope_summary?: string;
+  auth_app_name?: string;
+  client_id?: string;
   interval?: number;
 }
 
@@ -471,8 +475,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
     const consentSteps = [
-      { profile: "arm", label: "Azure" },
-      { profile: "graph", label: "Microsoft Graph" },
+      { profile: "arm", label: "Azure CLI / Azure Resource Manager" },
+      { profile: "graph", label: "Microsoft Graph Admin" },
       { profile: "exchange", label: "Exchange Online" },
     ];
     const startConsentStep = async (stepIndex: number) => {
@@ -486,7 +490,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       if (data.status === "device_code_ready") {
         setAzureDeviceCode(data);
         setAzurePolling(true);
-        setCliTestResult({ status: "pending", connector: "azure", message: `Authorize ${step.label} access with the device code.` });
+        const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
+        setCliTestResult({ status: "pending", connector: "azure", message: `Authorize ${data.scope_label || step.label}${authApp} with the device code.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
           try {
@@ -494,10 +499,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               method: "POST", headers: headers(),
               body: JSON.stringify({ device_code: data.device_code, scope_profile: data.scope_profile || step.profile }),
             });
-            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number; scope_profile?: string };
+            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number; scope_profile?: string; scope_label?: string; auth_app_name?: string };
             if (pd.status === "connected") {
               if (stepIndex < consentSteps.length - 1) {
-                setCliTestResult({ status: "pending", connector: "azure", message: `${step.label} authorized. Continue with ${consentSteps[stepIndex + 1].label}.` });
+                setCliTestResult({ status: "pending", connector: "azure", message: `${pd.scope_label || step.label} authorized. Continue with ${consentSteps[stepIndex + 1].label}.` });
                 void startConsentStep(stepIndex + 1).catch((err) => {
                   setAzurePolling(false);
                   setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) });
@@ -684,6 +689,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           <DetailCard>
             <div className="text-sm space-y-2">
               <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
+              <p className="text-muted text-xs">
+                {azureDeviceCode.scope_label || "Microsoft Admin"} via {azureDeviceCode.auth_app_name || "Microsoft"}.
+              </p>
               <p className="text-muted text-xs">
                 Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.
               </p>
