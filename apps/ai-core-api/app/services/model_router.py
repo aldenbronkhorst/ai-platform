@@ -21,7 +21,7 @@ from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.schemas.schemas import ContextRequest
-from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES
+from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, MICROSOFT_ADMIN_TOOL_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
 TOOL_ERROR_SUMMARY_LIMIT = 8
+MICROSOFT_NATIVE_TOOL_NAMES = frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"})
 DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
 DIRECT_BLANK_RETRY_MESSAGE = {
     "role": "system",
@@ -71,9 +72,9 @@ CHAT_TITLE_SYSTEM_PROMPT = (
 )
 CHAT_TITLE_FILLER_WORDS = {
     "a", "all", "an", "and", "are", "as", "at", "be", "been", "being", "can", "could",
-    "did", "do", "does", "for", "from", "get", "give", "go", "how", "i", "if",
-    "in", "is", "it", "list", "me", "my", "of", "on", "or", "our", "please",
-    "show", "so", "tell", "the", "there", "this", "to", "today", "tomorrow", "us", "was",
+    "check", "current", "did", "do", "does", "double", "for", "from", "get", "give", "go", "how", "i", "if",
+    "in", "is", "it", "list", "me", "my", "now", "of", "on", "or", "our", "please",
+    "show", "so", "tell", "that", "the", "there", "this", "though", "to", "today", "tomorrow", "us", "was",
     "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
     "yesterday",
 }
@@ -81,9 +82,66 @@ CHAT_TITLE_CANONICAL_WORDS = {
     "ai": "AI",
     "api": "API",
     "azure": "Azure",
+    "bicep": "Bicep",
+    "ci": "CI",
+    "entra": "Entra",
+    "exchange": "Exchange",
     "github": "GitHub",
+    "intune": "Intune",
+    "m365": "M365",
     "odoo": "Odoo",
     "mcp": "MCP",
+    "ms": "MS",
+    "ocr": "OCR",
+    "pdf": "PDF",
+    "po": "PO",
+    "pr": "PR",
+    "sharepoint": "SharePoint",
+    "teams": "Teams",
+    "ui": "UI",
+}
+CHAT_TITLE_TYPO_CORRECTIONS = {
+    "acess": "access",
+    "acessed": "accessed",
+    "adress": "address",
+    "atrochus": "atrocious",
+    "caost": "cost",
+    "caosts": "costs",
+    "chnage": "change",
+    "chnages": "changes",
+    "combibne": "combine",
+    "connecotrs": "connectors",
+    "converstaion": "conversation",
+    "converstaions": "conversations",
+    "employe": "employee",
+    "emplopyee": "employee",
+    "emplopyees": "employees",
+    "emplyee": "employee",
+    "erros": "errors",
+    "exchnage": "exchange",
+    "exhancge": "exchange",
+    "faliour": "failure",
+    "faliours": "failures",
+    "gerhardd": "gerhard",
+    "halllucination": "hallucination",
+    "halllucinations": "hallucinations",
+    "idnetfy": "identify",
+    "odne": "done",
+    "ood": "odoo",
+    "oodo": "odoo",
+    "repsonse": "response",
+    "repsonses": "responses",
+    "recepit": "receipt",
+    "reciept": "receipt",
+    "rgerads": "regards",
+    "uerer": "user",
+    "usre": "user",
+}
+CHAT_TITLE_PERSON_STOPWORDS = CHAT_TITLE_FILLER_WORDS | {
+    "access", "account", "activity", "admin", "attachment", "attachments", "azure", "billing",
+    "breakdown", "chat", "connector", "connectors", "cost", "costing", "costs", "employee",
+    "employees", "error", "errors", "exchange", "github", "intune", "microsoft", "odoo",
+    "pdf", "po", "receipt", "resources", "teams", "title", "user", "voice",
 }
 TEXT_TOOL_CALL_RE = re.compile(
     r"<\|?tool_call_begin\|?>\s*(?P<name>.*?)\s*"
@@ -141,6 +199,8 @@ CANONICAL_SYSTEM_PROMPT = (
     "If a tool result says it was truncated or incomplete, never infer missing "
     "records from naming patterns; run a narrower tool query or state that the "
     "output is incomplete. "
+    "Never invent quantitative connected-system facts such as costs, counts, or balances from prior assistant "
+    "messages; use successful current tool results or clearly say what could not be verified. "
     "Keep responses practical, business-focused, and clear."
 )
 
@@ -324,13 +384,34 @@ KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure"]
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
     "github": "GitHub",
-    "azure": "Microsoft Admin",
+    "azure": "Microsoft Admin / Azure",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
 
 ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
+AZURE_FALSE_DENIAL_RE = re.compile(
+    r"(?i)("
+    r"\bazure(?:\s+(?:connector|account|cost\s+management))?\s*(?:is|was|[-—])\s*not\s+connected\b"
+    r"|\bi\s+do\s+not\s+have\s+access\s+to\s+your\s+azure(?:\s+cost)?\s+data\b"
+    r"|\byou\s+(?:would\s+)?need\s+to\s+connect\s+an\s+azure\s+account\b"
+    r"|\badd/authorize\s+an\s+azure\s+connector\b"
+    r")"
+)
+AZURE_CONNECTED_ACCESS_ERROR_MARKERS = (
+    "authorizationfailed",
+    "authorization failed",
+    "forbidden",
+    "permission",
+    "permissions",
+    "rbac",
+    "billing",
+    "access denied",
+    "insufficient privileges",
+    "does not have authorization",
+    "not authorized",
+)
 DELEGATED_AUTH_FAILURE_MARKERS = (
     "does not exist in msal token cache",
     "run `az login`",
@@ -503,6 +584,20 @@ def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str
     return {"mode": "execute", **arguments}
 
 
+def _canonical_ms_admin_invocation(arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    converted = dict(arguments)
+    mode = str(converted.pop("mode", "") or "").strip().lower()
+    if mode in {"azure_cli", "az"}:
+        return "ms_azure_cli", converted
+    if mode == "graph_request":
+        return "ms_graph", converted
+    if mode in {"powershell", "pwsh"}:
+        return "ms_powershell", converted
+    if mode == "bicep":
+        return "ms_bicep", converted
+    return "ms_admin", arguments
+
+
 def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     cleaned = _strip_function_prefix(name)
     normalized = _normalize_tool_name(cleaned)
@@ -512,17 +607,26 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
         mapped = (
             normalized_lower
             if (
-                normalized_lower in {"ms_admin", "azure_cli", "github_cli", "odoo_ops_runner"}
+                normalized_lower in {
+                    "ms_admin",
+                    "azure_cli",
+                    "ms_azure_cli",
+                    "ms_graph",
+                    "ms_powershell",
+                    "ms_bicep",
+                    "github_cli",
+                    "odoo_ops_runner",
+                }
                 or normalized_lower == "odoo"
                 or normalized_lower.startswith("odoo_")
             )
             else cleaned
         )
     if mapped == "azure_cli":
-        converted = dict(arguments)
-        converted.setdefault("mode", "azure_cli")
-        return "ms_admin", converted
-    if mapped in {"ms_admin", "github_cli", "odoo_ops_runner"}:
+        return "ms_azure_cli", arguments
+    if mapped == "ms_admin":
+        return _canonical_ms_admin_invocation(arguments)
+    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
         return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
@@ -1134,11 +1238,26 @@ async def _execute_tool_call_impl(
             return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
-    if tool_name in ("ms_admin", "github_cli"):
-        from app.services.connector_commands import run_github_cli_command, run_ms_admin_tool
+    if tool_name in MICROSOFT_ADMIN_TOOL_NAMES or tool_name == "github_cli":
+        from app.services.connector_commands import (
+            run_github_cli_command,
+            run_ms_admin_tool,
+            run_ms_azure_cli_tool,
+            run_ms_bicep_tool,
+            run_ms_graph_tool,
+            run_ms_powershell_tool,
+        )
 
         command = str(arguments.get("command", ""))
         timeout = int(arguments.get("timeout", 60))
+        if tool_name == "ms_azure_cli":
+            return await run_ms_azure_cli_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_graph":
+            return await run_ms_graph_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_powershell":
+            return await run_ms_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_bicep":
+            return await run_ms_bicep_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_admin":
             return await run_ms_admin_tool(arguments, user_id, timeout=timeout)
         return await run_github_cli_command(command, user_id, timeout=timeout)
@@ -1196,7 +1315,7 @@ async def _record_delegated_tool_auth_failure(
     tool_name: str,
     result: dict[str, Any],
 ) -> None:
-    if not user_id or tool_name != "ms_admin" or result.get("status") != "failed":
+    if not user_id or tool_name not in MICROSOFT_ADMIN_TOOL_NAMES or result.get("status") != "failed":
         return
 
     message = " ".join(
@@ -1244,35 +1363,206 @@ def _sanitize_chat_title(title: Any) -> str | None:
 
 
 def _title_word(token: str) -> str:
-    canonical = CHAT_TITLE_CANONICAL_WORDS.get(token.lower())
+    corrected = CHAT_TITLE_TYPO_CORRECTIONS.get(token.lower(), token)
+    canonical = CHAT_TITLE_CANONICAL_WORDS.get(corrected.lower())
     if canonical:
         return canonical
-    if token.isupper() and len(token) <= 6:
-        return token
-    return token[:1].upper() + token[1:].lower()
+    if corrected.isupper() and len(corrected) <= 6:
+        return corrected
+    return corrected[:1].upper() + corrected[1:].lower()
+
+
+def _normalize_title_text(text: str) -> str:
+    text = TEXT_TOOL_CALL_SECTION_RE.sub(" ", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = text.replace("&", " and ")
+    text = re.sub(r"[_*`~#>\[\]{}()]", " ", text)
+
+    def replace_token(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return CHAT_TITLE_TYPO_CORRECTIONS.get(token.lower(), token)
+
+    text = re.sub(r"[A-Za-z][A-Za-z0-9'-]*", replace_token, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _title_tokens(text: str) -> list[str]:
+    normalized = _normalize_title_text(text)
+    return re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", normalized)
+
+
+def _first_user_title_text(messages: list[dict[str, Any]]) -> str:
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "user":
+            text = _normalize_title_text(str(message.get("content") or ""))
+            if text:
+                return text
+    return ""
+
+
+def _title_context_text(messages: list[dict[str, Any]]) -> str:
+    excerpts: list[str] = []
+    for message in messages[:CHAT_TITLE_SOURCE_MESSAGES]:
+        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+            continue
+        text = _normalize_title_text(str(message.get("content") or ""))
+        if text:
+            excerpts.append(_truncate_tool_text(text, CHAT_TITLE_SOURCE_CHARS))
+    return " ".join(excerpts)
+
+
+def _has_title_pattern(text: str, pattern: str) -> bool:
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
+def _extract_title_po_number(text: str) -> str | None:
+    match = re.search(r"\bPO[-\s]?(\d{4})[-\s]?(\d{4,6})\b", text, re.IGNORECASE)
+    if not match:
+        return None
+    return f"PO-{match.group(1)}-{match.group(2)}"
+
+
+def _extract_title_person(text: str) -> str | None:
+    tokens = _title_tokens(text)
+    if not tokens:
+        return None
+
+    lowered = [token.lower() for token in tokens]
+    employee_markers = {"employee", "employees", "user", "for"}
+    for index, lower in enumerate(lowered):
+        if lower not in employee_markers:
+            continue
+        nearby = list(range(index + 1, min(len(tokens), index + 4)))
+        nearby.extend(range(max(0, index - 3), index))
+        for candidate_index in nearby:
+            candidate = tokens[candidate_index]
+            candidate_lower = candidate.lower()
+            if candidate_lower not in CHAT_TITLE_PERSON_STOPWORDS and candidate.isalpha() and len(candidate) > 2:
+                return _title_word(candidate)
+
+    for index, candidate in enumerate(tokens):
+        candidate_lower = candidate.lower()
+        if index == 0 or candidate_lower in CHAT_TITLE_PERSON_STOPWORDS:
+            continue
+        if candidate[:1].isupper() and candidate.isalpha() and len(candidate) > 2:
+            return _title_word(candidate)
+    return None
+
+
+def _semantic_chat_title(first_user_text: str, context_text: str) -> str | None:
+    first_lower = first_user_text.lower()
+    context_lower = context_text.lower()
+    combined = f"{first_lower} {context_lower}".strip()
+    po_number = _extract_title_po_number(context_text)
+    person = _extract_title_person(first_user_text) or _extract_title_person(context_text)
+
+    if _has_title_pattern(combined, r"\b(chat\s+)?title|naming|name\s+of\s+chat\b"):
+        return "Chat Title Generation"
+
+    if _has_title_pattern(combined, r"\bhallucination|hallucinations|made\s+up|lied\b"):
+        if _has_title_pattern(combined, r"\bazure|access\b"):
+            return "Azure Access Hallucination"
+        return "Chat Response Hallucinations"
+
+    if _has_title_pattern(combined, r"\bthinking\b") and _has_title_pattern(combined, r"\berror|errors|failure|failures|failed\b"):
+        if _has_title_pattern(combined, r"\bodoo\b"):
+            return "Odoo Thinking Errors"
+        if _has_title_pattern(combined, r"\bazure|microsoft|ms admin\b"):
+            return "Microsoft Admin Thinking Errors"
+        return "Thinking Error Investigation"
+
+    if _has_title_pattern(combined, r"\b(?:voice|microphone|mic|dictation|speech)\b"):
+        return "Voice Dictation Issue"
+
+    if _has_title_pattern(combined, r"\battachment|attachments|upload|uploads\b"):
+        if _has_title_pattern(combined, r"\bpdf\b"):
+            return "PDF Attachment Upload"
+        return "Attachment Upload Issue"
+
+    if _has_title_pattern(combined, r"\bpdf\b") and _has_title_pattern(combined, r"\bextract|read|ocr|document\b"):
+        return "PDF Text Extraction"
+
+    if _has_title_pattern(combined, r"\biphone|phone|mobile\b") and _has_title_pattern(combined, r"\bsign\s*in|login|microsoft\b"):
+        return "iPhone Microsoft Sign-In"
+
+    if po_number:
+        if _has_title_pattern(combined, r"\breceipt|received|stock|valuation|avco|adjust"):
+            return f"{po_number} Receipt Review"
+        if _has_title_pattern(combined, r"\bmessage|activity|done|chatter\b"):
+            return f"{po_number} Activity Follow-Up"
+        return f"{po_number} Review"
+
+    if (
+        _has_title_pattern(combined, r"\bduplicate|combine|merge\b")
+        or _has_title_pattern(combined, r"\bthere\s+are\s+(?:2|two)\b.*\bemployees\b")
+    ) and _has_title_pattern(combined, r"\bemployee|employees\b"):
+        return f"{person} Employee Duplicates" if person else "Duplicate Employee Review"
+
+    if _has_title_pattern(combined, r"\b(create|add|make|new)\b") and _has_title_pattern(combined, r"\bmicrosoft|entra|azure\s+ad|m365\b") and _has_title_pattern(combined, r"\buser|account\b"):
+        return f"Create Microsoft User for {person}" if person else "Create Microsoft User"
+
+    if _has_title_pattern(combined, r"\bodoo\b") and _has_title_pattern(combined, r"\btimeline|activity|activities\b") and person:
+        return f"{person} Odoo Timeline"
+
+    if _has_title_pattern(combined, r"\bodoo\b") and _has_title_pattern(combined, r"\bemployee|employees\b"):
+        return f"{person} Odoo Employees" if person else "Odoo Employee Review"
+
+    if _has_title_pattern(combined, r"\bexchange\b"):
+        return "Exchange Admin Setup" if _has_title_pattern(combined, r"\bconnector|admin|powershell\b") else "Exchange Admin"
+
+    if _has_title_pattern(combined, r"\bintune\b"):
+        return "Intune Admin"
+
+    if _has_title_pattern(combined, r"\bazure|cost management|billing\b") and _has_title_pattern(combined, r"\bcost|costs|costing|spend|billing\b"):
+        if _has_title_pattern(first_lower, r"\bcosting\s+so\s+much|what'?s\s+costing|breakdown|why\b"):
+            return "Azure Cost Breakdown"
+        if _has_title_pattern(combined, r"\bresource|resources\b") and _has_title_pattern(combined, r"\bcost|costs|spend\b"):
+            return "Azure Resources and Costs"
+        if _has_title_pattern(combined, r"\bmonth\s+to\s+date|mtd|this\s+month|current\s+month\b"):
+            return "Azure Month-To-Date Costs"
+        return "Azure Costs"
+
+    if _has_title_pattern(combined, r"\bazure\b") and _has_title_pattern(combined, r"\bresource|resources\b"):
+        return "Azure Resource Inventory"
+
+    if _has_title_pattern(combined, r"\bconnector|connectors|tool|tools\b"):
+        if _has_title_pattern(combined, r"\bmicrosoft|azure|ms admin\b"):
+            return "Microsoft Admin Connector"
+        if _has_title_pattern(combined, r"\bodoo\b"):
+            return "Odoo Connector Errors" if _has_title_pattern(combined, r"\berror|failed|failure\b") else "Odoo Connector"
+        return "Connector Configuration"
+
+    return None
 
 
 def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
     """Create a concise local title when the title model is unavailable."""
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        text = str(message.get("content") or "").strip()
-        if not text:
-            continue
+    first_user_text = _first_user_title_text(messages)
+    if not first_user_text:
+        return None
 
-        text = TEXT_TOOL_CALL_SECTION_RE.sub(" ", text)
-        text = re.sub(r"https?://\S+", " ", text)
-        text = re.sub(r"[_*`~#>\[\]{}()]", " ", text)
-        tokens = re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", text)
-        if not tokens:
-            continue
+    context_text = _title_context_text(messages) or first_user_text
+    semantic_title = _semantic_chat_title(first_user_text, context_text)
+    if semantic_title:
+        return _sanitize_chat_title(semantic_title)
 
-        useful = [token for token in tokens if token.lower() not in CHAT_TITLE_FILLER_WORDS and not token.isdigit()]
-        selected = useful[:6] or tokens[:6]
-        title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))
-        if title:
-            return title
+    tokens = _title_tokens(first_user_text)
+    useful: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        lower = token.lower()
+        if lower in CHAT_TITLE_FILLER_WORDS or token.isdigit():
+            continue
+        corrected_lower = CHAT_TITLE_TYPO_CORRECTIONS.get(lower, lower)
+        if corrected_lower in seen:
+            continue
+        seen.add(corrected_lower)
+        useful.append(CHAT_TITLE_TYPO_CORRECTIONS.get(lower, token))
+
+    selected = useful[:6] or tokens[:6]
+    title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))
+    if title:
+        return title
     return None
 
 
@@ -1482,7 +1772,10 @@ def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, 
                 "Do not call tools. Use only the conversation excerpt and tool results provided. "
                 "If the evidence is enough, answer directly and concisely. "
                 "If the evidence is partial, truncated, or blocked by tool errors, say exactly what is known "
-                "and what is still missing. Do not invent data."
+                "and what is still missing. Do not invent data. "
+                "For Microsoft Admin / Azure, distinguish connector availability from operation failures: "
+                "a failed command or unsupported CLI subcommand does not mean Azure is disconnected unless the "
+                "tool result explicitly says not_connected."
             ),
         },
         {
@@ -1805,6 +2098,56 @@ def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str
     return "; ".join(parts)
 
 
+def _ms_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
+    for item in tool_error_summary:
+        tool_name = str(item.get("tool_name") or "")
+        if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
+            continue
+        error_type = str(item.get("error_type") or "").lower()
+        message = str(item.get("message") or "").lower()
+        if error_type == "not_connected" or "not connected" in message:
+            return True
+    return False
+
+
+def _ms_admin_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
+    for item in tool_error_summary:
+        tool_name = str(item.get("tool_name") or "")
+        if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
+            continue
+        error_type = str(item.get("error_type") or "").lower()
+        message = str(item.get("message") or "").lower()
+        if error_type in {"not_connected", "unsupported_costmanagement_query_cli"}:
+            continue
+        haystack = f"{error_type} {message}"
+        if any(marker in haystack for marker in AZURE_CONNECTED_ACCESS_ERROR_MARKERS):
+            return True
+    return False
+
+
+def _guard_connected_system_denial(
+    content: str,
+    connected_systems: set[str],
+    tool_error_summary: list[dict[str, Any]],
+) -> str:
+    if "azure" not in connected_systems or not content:
+        return content
+    if not AZURE_FALSE_DENIAL_RE.search(content):
+        return content
+    if _ms_admin_tool_summary_says_not_connected(tool_error_summary):
+        return content
+    if _ms_admin_tool_summary_has_connected_access_error(tool_error_summary):
+        return content
+
+    logger.warning("Correcting assistant response that contradicted connected Microsoft Admin / Azure account")
+    return (
+        "Microsoft Admin / Azure is connected for this user. I cannot verify Azure cost figures or a cost "
+        "breakdown unless they come from a successful Azure Cost Management tool result. For this request, "
+        "I should query Cost Management through `ms_azure_cli` using `az rest`, or report the exact command, RBAC, "
+        "billing, or permission error if that query fails."
+    )
+
+
 def _map_odoo_tool_to_path(tool_name: str) -> str:
     return "/odoo/ops/run" if tool_name == "odoo_ops_runner" else ""
 
@@ -1848,6 +2191,12 @@ async def _get_connector_context(
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"
             lines.append(f"  {icon} {display_name}: {status}")
+            if conn_type == "azure" and status == "connected":
+                lines.append(
+                    "    Microsoft Admin / Azure includes Azure CLI, Az PowerShell, Bicep, Microsoft Graph, "
+                    "Exchange, Teams, and Microsoft 365 admin access through the signed-in Microsoft session. "
+                    "Specific operations can still fail because of RBAC, billing, or Graph consent."
+                )
         else:
             lines.append(f"  - {display_name}: not connected")
 
@@ -2009,16 +2358,30 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if "ms_admin" in available_names:
+    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names) or "ms_admin" in available_names:
         guidance_parts.append(
-            "Microsoft Admin: use `ms_admin` only. Modes: status, azure_cli, powershell, bicep, graph_request. "
-            "Use azure_cli mode for Azure CLI, powershell mode for Microsoft Graph/Exchange/Teams/Az PowerShell cmdlets, "
-            "bicep mode for Bicep CLI validation/build work, and graph_request for direct Microsoft Graph calls. "
-            "For Microsoft 365/Entra user management, use graph_request with POST/PATCH/GET /users or powershell "
+            "Microsoft Admin: use the broad native-interface tools only: `ms_azure_cli`, `ms_graph`, "
+            "`ms_powershell`, and `ms_bicep`. Do not invent detailed Microsoft tools and do not use `ms_admin` "
+            "unless handling a legacy call. "
+            "The Azure connected account is this Microsoft Admin connector; do not split Azure Cost Management into "
+            "a separate connector and do not claim Azure is disconnected while Microsoft Admin / Azure is connected. "
+            "Use `ms_azure_cli` for native Azure CLI commands, `ms_graph` for direct Microsoft Graph requests, "
+            "`ms_powershell` for Microsoft Graph/Exchange/Teams/Az/PnP PowerShell cmdlets, and `ms_bicep` for "
+            "Bicep CLI validation/build work. "
+            "For Azure Cost Management or spend questions, do not use `az costmanagement query`; use `ms_azure_cli` with "
+            "`az rest --method post --url https://management.azure.com/subscriptions/{subscriptionId}/providers/"
+            "Microsoft.CostManagement/query?api-version=2023-03-01` and a JSON body with type=Usage, "
+            "timeframe=Custom, timePeriod.from/to, dataset.granularity=Daily, and "
+            "dataset.aggregation.totalCost={name: PreTaxCost, function: Sum}. "
+            "For 'what is costing so much' questions, query a grouped Cost Management breakdown, for example by "
+            "ResourceName, ResourceGroupName, ServiceName, MeterCategory, or MeterSubCategory, then answer from the "
+            "successful tool result only. Never invent Azure cost totals or breakdowns from prior assistant text, "
+            "and do not turn a failed command into a disconnected-connector claim unless the tool result says not_connected. "
+            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users or `ms_powershell` "
             "with Connect-AIPlatformGraph plus Microsoft.Graph cmdlets such as New-MgUser/Update-MgUser; "
-            "do not say there is no Microsoft user-management tool while ms_admin is available. "
-            "Graph GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
-            "In powershell mode, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
+            "do not say there is no Microsoft user-management tool while `ms_graph` or `ms_powershell` is available. "
+            "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
+            "In `ms_powershell`, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
             "or Connect-AIPlatformTeams before using authenticated Microsoft admin cmdlets. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
         )
@@ -3060,9 +3423,14 @@ async def execute_chat(
         tool_error_summary=tool_error_summary,
     )
     _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
+    content = _guard_connected_system_denial(
+        str(state.result.get("content") or ""),
+        connected_accounts.connected_systems,
+        tool_error_summary,
+    )
 
     response = {
-        "content": state.result.get("content", ""),
+        "content": content,
         "finish_reason": state.result.get("finish_reason", ""),
         "model_provider": state.used_provider.name,
         "model_name": state.used_model.display_name,
