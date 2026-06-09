@@ -104,7 +104,7 @@ function truncateText(value: string, limit = 120) {
 
 function displayToolName(value: string) {
   if (value === "odoo_ops_runner") return "Odoo";
-  if (value === "azure_cli") return "Azure CLI";
+  if (value === "azure_cli") return "Microsoft Admin · Azure CLI";
   if (value === "github_cli") return "GitHub CLI";
   return value.replace(/_/g, " ");
 }

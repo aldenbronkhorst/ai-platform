@@ -1062,6 +1062,7 @@ async def get_connected_accounts(
                     "Microsoft Graph PowerShell",
                     "Exchange Online PowerShell",
                     "Microsoft Teams PowerShell",
+                    "PnP PowerShell",
                     "Az PowerShell",
                     "Azure CLI",
                     "Bicep CLI",

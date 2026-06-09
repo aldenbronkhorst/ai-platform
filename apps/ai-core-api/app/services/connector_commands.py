@@ -30,7 +30,6 @@ MICROSOFT_GRAPH_SCOPE = os.environ.get("MICROSOFT_GRAPH_SCOPE", "https://graph.m
 MICROSOFT_GRAPH_BASE_URL = os.environ.get("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com")
 EXCHANGE_ONLINE_SCOPE = os.environ.get("EXCHANGE_ONLINE_SCOPE", "https://outlook.office365.com/.default")
 GITHUB_HOST = os.environ.get("GITHUB_HOST", "github.com")
-AZURE_ALLOWED_BINARIES = {"az"}
 MS_ADMIN_ALLOWED_BINARIES = {"az", "pwsh", "bicep"}
 MS_ADMIN_FORBIDDEN_COMMAND_RE = re.compile(r"(?i)(^|[\s;&|`])(gh|git)(\.exe)?($|[\s;&|])")
 GITHUB_ALLOWED_BINARIES = {"gh", "git", "jq", "rg", "which"}
@@ -66,79 +65,62 @@ def azure_token_request_data() -> dict[str, str]:
     return {"scope": azure_device_scope_string(), "client_info": "1"}
 
 
-async def run_azure_cli_command(command: str, user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    request_id = uuid.uuid4().hex[:16]
+async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout: int, request_id: str) -> dict[str, Any]:
+    normalized = _normalize_azure_command(command)
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
     if not token_data or not token_data.get("access_token"):
-        return {
-            "stdout": "",
-            "stderr": "",
-            "exit_code": 1,
-            "timed_out": False,
-            "output_truncated": False,
-            "stdout_chars": 0,
-            "stderr_chars": 0,
-            "error": "Azure is not connected for this user.",
-            "command": _normalize_azure_command(command),
-            "connector": "azure_cli",
-            "request_id": request_id,
-            "status": "failed",
-            "auth_method": "not_connected",
-        }
+        result = _failed_ms_admin_result(
+            request_id=request_id,
+            mode="azure_cli",
+            message="Microsoft Admin is not connected for this user.",
+            command=normalized,
+            error_type="not_connected",
+        )
+        result["auth_method"] = "not_connected"
+        return result
     if _token_expired(token_data):
-        return {
-            "stdout": "",
-            "stderr": "",
-            "exit_code": 1,
-            "timed_out": False,
-            "output_truncated": False,
-            "stdout_chars": 0,
-            "stderr_chars": 0,
-            "error": "Azure token is expired. Reconnect Azure for this user.",
-            "command": _normalize_azure_command(command),
-            "connector": "azure_cli",
-            "request_id": request_id,
-            "status": "failed",
-            "auth_method": "expired_user_token",
-        }
+        result = _failed_ms_admin_result(
+            request_id=request_id,
+            mode="azure_cli",
+            message="Microsoft Admin token is expired. Reconnect Microsoft Admin for this user.",
+            command=normalized,
+            error_type="expired_user_token",
+        )
+        result["auth_method"] = "expired_user_token"
+        return result
 
     profile = await ensure_azure_cli_profile(user_id, token_data)
     if not profile.get("ready"):
-        return {
-            "stdout": "",
-            "stderr": "",
-            "exit_code": 1,
-            "timed_out": False,
-            "output_truncated": False,
-            "stdout_chars": 0,
-            "stderr_chars": 0,
-            "error": profile.get("message", "Azure CLI profile could not be prepared for this user."),
-            "command": _normalize_azure_command(command),
-            "connector": "azure_cli",
-            "request_id": request_id,
-            "status": "failed",
-            "auth_method": "user_scoped_azure_cli",
-        }
+        result = _failed_ms_admin_result(
+            request_id=request_id,
+            mode="azure_cli",
+            message=profile.get("message", "Microsoft Admin Azure CLI profile could not be prepared for this user."),
+            command=normalized,
+            error_type="profile_not_ready",
+        )
+        result["auth_method"] = "user_scoped_microsoft_admin_shell"
+        return result
 
     env: dict[str, str] = {
         "AZURE_TENANT_ID": TENANT_ID,
         "AZURE_CONFIG_DIR": _azure_config_dir(user_id),
     }
 
-    normalized = _normalize_azure_command(command)
     result = await run_command(
         normalized,
         timeout=timeout,
         env=env,
-        allowed_binaries=AZURE_ALLOWED_BINARIES,
+        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
     )
     output = result.to_dict()
     output.update({
         "command": normalized,
-        "connector": "azure_cli",
+        "connector": "ms_admin",
+        "mode": "azure_cli",
+        "subtool": "azure_cli",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
-        "auth_method": "user_scoped_azure_cli",
+        "auth_method": "user_scoped_microsoft_admin_shell",
     })
     return output
 
@@ -191,9 +173,7 @@ async def run_ms_admin_tool(arguments: dict[str, Any], user_id: Optional[UUID], 
         command = str(arguments.get("command") or "").strip()
         if not command:
             return _failed_ms_admin_result(request_id=request_id, mode=mode, message="Provide command for azure_cli mode.")
-        result = await run_azure_cli_command(command, user_id, timeout=timeout)
-        result.update({"connector": "ms_admin", "mode": "azure_cli", "subtool": "azure_cli"})
-        return result
+        return await _run_ms_admin_azure_cli(command, user_id, timeout=timeout, request_id=request_id)
 
     if mode in {"powershell", "pwsh"}:
         script = str(arguments.get("script") or arguments.get("command") or "").strip()
@@ -313,6 +293,11 @@ function Connect-AIPlatformExchange {
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
     Connect-ExchangeOnline -AccessToken $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN -UserPrincipalName $env:AI_PLATFORM_MS_USERNAME -ShowBanner:$false
 }
+function Connect-AIPlatformTeams {
+    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Reconnect Microsoft Admin with Graph consent.' }
+    Import-Module MicrosoftTeams -ErrorAction Stop
+    Connect-MicrosoftTeams -AccessTokens @($env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) | Out-Null
+}
 """
 
 
@@ -417,6 +402,7 @@ async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str
             "graph_powershell": "Microsoft.Graph",
             "exchange_online_powershell": "ExchangeOnlineManagement",
             "teams_powershell": "MicrosoftTeams",
+            "pnp_powershell": "PnP.PowerShell",
             "az_powershell": "Az",
             "azure_cli": "az",
             "bicep_cli": "bicep",
@@ -425,6 +411,7 @@ async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str
                 "Connect-AIPlatformAz",
                 "Connect-AIPlatformGraph",
                 "Connect-AIPlatformExchange",
+                "Connect-AIPlatformTeams",
             ],
         },
         "notes": [
@@ -818,16 +805,16 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
     if not access_token:
         return {
             "status": "failed",
-            "connector": "azure_cli",
+            "connector": "ms_admin",
             "request_id": request_id,
-            "message": "Azure is not connected for this user.",
+            "message": "Microsoft Admin is not connected for this user.",
         }
     if _token_expired(token_data):
         return {
             "status": "failed",
-            "connector": "azure_cli",
+            "connector": "ms_admin",
             "request_id": request_id,
-            "message": "Azure token is expired. Reconnect Azure for this user.",
+            "message": "Microsoft Admin token is expired. Reconnect Microsoft Admin for this user.",
         }
 
     try:
@@ -835,9 +822,9 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         if not subscriptions_result.get("ok"):
             return {
                 "status": "failed",
-                "connector": "azure_cli",
+                "connector": "ms_admin",
                 "request_id": request_id,
-                "message": subscriptions_result.get("message", "Azure token check failed."),
+                "message": subscriptions_result.get("message", "Microsoft Admin token check failed."),
                 "stderr": subscriptions_result.get("stderr", ""),
             }
         subscriptions = subscriptions_result.get("subscriptions", [])
@@ -845,9 +832,9 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         if not profile.get("ready"):
             return {
                 "status": "failed",
-                "connector": "azure_cli",
+                "connector": "ms_admin",
                 "request_id": request_id,
-                "message": profile.get("message", "Azure CLI profile could not be prepared for this user."),
+                "message": profile.get("message", "Microsoft Admin Azure CLI profile could not be prepared for this user."),
                 "cli_profile_ready": False,
                 "subscriptions": [
                     {
@@ -862,9 +849,9 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         if not cli_check.get("ready"):
             return {
                 "status": "failed",
-                "connector": "azure_cli",
+                "connector": "ms_admin",
                 "request_id": request_id,
-                "message": cli_check.get("message", "Azure CLI profile validation failed."),
+                "message": cli_check.get("message", "Microsoft Admin Azure CLI profile validation failed."),
                 "stderr": cli_check.get("stderr", ""),
                 "cli_profile_ready": False,
                 "subscriptions": [
@@ -878,9 +865,9 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
             }
         return {
             "status": "success",
-            "connector": "azure_cli",
+            "connector": "ms_admin",
             "request_id": request_id,
-            "message": f"Azure token is valid. Visible subscriptions: {len(subscriptions)}.",
+            "message": f"Microsoft Admin token is valid. Visible Azure subscriptions: {len(subscriptions)}.",
             "cli_profile_ready": bool(profile.get("ready")),
             "subscriptions": [
                 {
@@ -895,9 +882,9 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         logger.warning("Azure diagnostics failed for request_id=%s: %s", request_id, exc)
         return {
             "status": "failed",
-            "connector": "azure_cli",
+            "connector": "ms_admin",
             "request_id": request_id,
-            "message": "Azure diagnostics failed. Check connector logs with this request_id.",
+            "message": "Microsoft Admin diagnostics failed. Check connector logs with this request_id.",
         }
 
 
@@ -910,7 +897,7 @@ async def validate_azure_cli_profile(user_id: UUID, timeout: int = 20) -> dict[s
         "az account get-access-token --resource https://management.core.windows.net/ --only-show-errors -o json",
         timeout=timeout,
         env=env,
-        allowed_binaries=AZURE_ALLOWED_BINARIES,
+        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
     )
     if result.success:
         return {"ready": True, "stdout": result.stdout}

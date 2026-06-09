@@ -12,15 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Azure CLI via pip and jq via apt
-RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir azure-cli
-
 # Install Microsoft Admin shell tooling. GitHub tooling stays in the GitHub connector.
 RUN curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/microsoft.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/microsoft-prod.list \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main" > /etc/apt/sources.list.d/azure-cli.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends powershell \
+    && apt-get install -y --no-install-recommends azure-cli jq powershell \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -39,6 +36,7 @@ RUN pwsh -NoLogo -NoProfile -NonInteractive -Command "\
     Install-Module Microsoft.Graph -Scope AllUsers -Force -AllowClobber; \
     Install-Module ExchangeOnlineManagement -Scope AllUsers -Force -AllowClobber; \
     Install-Module MicrosoftTeams -Scope AllUsers -Force -AllowClobber; \
+    Install-Module PnP.PowerShell -Scope AllUsers -Force -AllowClobber; \
     Install-Module Az -Scope AllUsers -Force -AllowClobber"
 
 # Copy requirements first for better layer caching

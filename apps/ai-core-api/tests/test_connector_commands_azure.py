@@ -146,20 +146,51 @@ async def test_validate_azure_cli_profile_forces_msal_token_lookup(monkeypatch, 
     assert result["ready"] is True
     assert "account get-access-token" in str(called["command"])
     assert "account show" not in str(called["command"])
-    assert called["allowed_binaries"] == azure_commands.AZURE_ALLOWED_BINARIES
+    assert called["allowed_binaries"] == azure_commands.MS_ADMIN_ALLOWED_BINARIES
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_azure_cli_mode_delegates_to_user_scoped_azure_cli(monkeypatch):
+async def test_ms_admin_azure_cli_mode_uses_single_ms_admin_execution_path(monkeypatch):
     called: dict[str, object] = {}
 
-    async def fake_run_azure_cli_command(command, user_id, timeout=60):
-        called["command"] = command
-        called["user_id"] = user_id
-        called["timeout"] = timeout
-        return {"status": "success", "connector": "azure_cli", "stdout": "[]"}
+    class Result:
+        success = True
+        stdout = "[]"
 
-    monkeypatch.setattr(azure_commands, "run_azure_cli_command", fake_run_azure_cli_command)
+        def to_dict(self):
+            return {
+                "stdout": self.stdout,
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+                "output_truncated": False,
+                "stdout_chars": len(self.stdout),
+                "stderr_chars": 0,
+                "error": None,
+            }
+
+    async def fake_token(_user_id):
+        return {
+            "access_token": "access-token",
+            "expires_on": int(time.time()) + 3600,
+            "username": "alden@example.com",
+        }
+
+    async def fake_profile(user_id, token_data, subscriptions_result=None):
+        called["profile_user_id"] = user_id
+        called["profile_token"] = token_data["access_token"]
+        return {"ready": True}
+
+    async def fake_run_command(command, timeout, env, allowed_binaries=None):
+        called["command"] = command
+        called["timeout"] = timeout
+        called["env"] = env
+        called["allowed_binaries"] = allowed_binaries
+        return Result()
+
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", fake_token)
+    monkeypatch.setattr(azure_commands, "ensure_azure_cli_profile", fake_profile)
+    monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
     user_id = uuid.uuid4()
 
     result = await azure_commands.run_ms_admin_tool(
@@ -167,7 +198,10 @@ async def test_ms_admin_azure_cli_mode_delegates_to_user_scoped_azure_cli(monkey
         user_id,
     )
 
-    assert called == {"command": "account show", "user_id": user_id, "timeout": 30}
+    assert called["command"] == "az account show"
+    assert called["profile_user_id"] == user_id
+    assert called["timeout"] == 30
+    assert called["allowed_binaries"] == azure_commands.MS_ADMIN_ALLOWED_BINARIES
     assert result["status"] == "success"
     assert result["connector"] == "ms_admin"
     assert result["mode"] == "azure_cli"
