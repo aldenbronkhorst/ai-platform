@@ -45,12 +45,18 @@ def _tool_connector(tool_name: str) -> str:
         return "Azure Resource Manager"
     if tool_name == "ms_graph":
         return "Microsoft Graph"
-    if tool_name == "ms_powershell":
-        return "Microsoft Admin PowerShell"
+    if tool_name == "ms_graph_powershell":
+        return "Microsoft Graph PowerShell"
+    if tool_name == "ms_exchange_powershell":
+        return "Exchange Online PowerShell"
+    if tool_name == "ms_teams_powershell":
+        return "Microsoft Teams PowerShell"
+    if tool_name == "ms_sharepoint_pnp_powershell":
+        return "SharePoint PnP PowerShell"
+    if tool_name == "ms_az_powershell":
+        return "Azure PowerShell"
     if tool_name == "ms_bicep":
         return "Bicep"
-    if tool_name.startswith("azure"):
-        return "Azure Resource Manager"
     if tool_name.startswith("github"):
         return "GitHub"
     return tool_name.replace("_", " ").title() if tool_name else "Tool"
@@ -80,9 +86,15 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
         method = _preview_text(args.get("method") or "GET")
         path = _preview_text(args.get("path"))
         return f"Microsoft Graph {method}{f' {path}' if path else ''}"
-    if tool_name == "ms_powershell":
+    if tool_name in {
+        "ms_graph_powershell",
+        "ms_exchange_powershell",
+        "ms_teams_powershell",
+        "ms_sharepoint_pnp_powershell",
+        "ms_az_powershell",
+    }:
         script = _preview_text(args.get("script"))
-        return f"Microsoft Admin PowerShell{f': {script}' if script else ''}"
+        return f"{connector}{f': {script}' if script else ''}"
     resource = _preview_text(args.get("resource") or args.get("query"))
     return f"{connector}: {resource}" if resource else connector
 

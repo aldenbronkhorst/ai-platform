@@ -8,7 +8,7 @@ from app.services import token_storage
 
 
 def test_token_status_from_data_reports_refreshed_connected_token():
-    status = token_storage.token_status_from_data("azure", {
+    status = token_storage.token_status_from_data("microsoft_admin", {
         "token_type": "Bearer",
         "access_token": "fresh-token",
         "expires_on": int(time.time()) + 3600,
@@ -17,12 +17,12 @@ def test_token_status_from_data_reports_refreshed_connected_token():
     })
 
     assert status["status"] == "connected"
-    assert status["provider"] == "azure"
+    assert status["provider"] == "microsoft_admin"
     assert status["username"] == "alden@example.com"
 
 
 def test_token_status_from_data_reports_expired_token():
-    status = token_storage.token_status_from_data("azure", {
+    status = token_storage.token_status_from_data("microsoft_admin", {
         "access_token": "old-token",
         "expires_on": int(time.time()) - 1,
     })
@@ -31,7 +31,7 @@ def test_token_status_from_data_reports_expired_token():
 
 
 def test_token_status_from_data_reports_refresh_error_without_access_token():
-    status = token_storage.token_status_from_data("azure", {
+    status = token_storage.token_status_from_data("microsoft_admin", {
         "refresh_error": "Reconnect Microsoft Admin.",
         "error_type": "reconnect_required",
         "username": "alden@example.com",
@@ -46,7 +46,7 @@ def test_token_status_from_data_reports_refresh_error_without_access_token():
 async def test_store_token_recovers_soft_deleted_secret(monkeypatch):
     monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
     user_id = UUID("e4807f22-97c8-4000-8000-000000000001")
-    secret_name = token_storage.token_secret_name("azure", user_id)
+    secret_name = token_storage.token_secret_name("microsoft_admin", user_id)
     calls: list[tuple[str, str, str | None]] = []
 
     class RecoverableConflict(Exception):
@@ -63,7 +63,7 @@ async def test_store_token_recovers_soft_deleted_secret(monkeypatch):
     monkeypatch.setattr(token_storage, "set_secret_value", fake_set_secret_value)
     monkeypatch.setattr(token_storage, "recover_deleted_secret", fake_recover_deleted_secret)
 
-    stored = await token_storage.store_token("azure", user_id, {"access_token": "new-token"})
+    stored = await token_storage.store_token("microsoft_admin", user_id, {"access_token": "new-token"})
 
     assert stored is True
     assert calls == [
@@ -86,7 +86,7 @@ async def test_store_token_compacts_large_microsoft_admin_payload(monkeypatch):
     monkeypatch.setattr(token_storage, "set_secret_value", fake_set_secret_value)
 
     stored = await token_storage.store_token(
-        "azure",
+        "microsoft_admin",
         user_id,
         {
             "client_id": "microsoft-admin-client-id",
@@ -139,6 +139,7 @@ async def test_store_token_compacts_large_microsoft_admin_payload(monkeypatch):
     assert stored is True
     payload = json.loads(captured["value"])
     assert len(captured["value"]) < 25_600
+    assert payload["provider"] == "microsoft_admin"
     assert payload["refresh_token"] == "shared-refresh-token"
     assert payload["consented_scope_profiles"] == ["graph", "arm", "exchange"]
     assert "id_token" not in payload
@@ -165,6 +166,6 @@ async def test_store_token_does_not_recover_unrelated_write_failures(monkeypatch
     monkeypatch.setattr(token_storage, "set_secret_value", fake_set_secret_value)
     monkeypatch.setattr(token_storage, "recover_deleted_secret", fake_recover_deleted_secret)
 
-    stored = await token_storage.store_token("azure", UUID("e4807f22-97c8-4000-8000-000000000001"), {})
+    stored = await token_storage.store_token("microsoft_admin", UUID("e4807f22-97c8-4000-8000-000000000001"), {})
 
     assert stored is False

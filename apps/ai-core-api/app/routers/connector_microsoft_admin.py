@@ -2,10 +2,8 @@
 import logging
 import uuid
 import time
-from typing import Any
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, Body, Depends, HTTPException
-from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
+from app.core.security import api_key_auth
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.token_storage import retrieve_token, store_token, delete_token
@@ -19,7 +17,8 @@ from app.services.connector_commands import (
     AZURE_AUTHORITY_HOST,
     TENANT_ID,
     AZURE_TOKEN_ENDPOINT,
-    diagnose_azure_connection,
+    MICROSOFT_ADMIN_PROVIDER,
+    diagnose_microsoft_admin_connection,
     extract_azure_username,
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_client_id_for_scope_profile,
@@ -27,32 +26,11 @@ from app.services.connector_commands import (
     microsoft_admin_scope_label,
     microsoft_admin_scope_summary,
     microsoft_admin_token_client_error,
-    run_ms_admin_tool,
     warm_microsoft_admin_delegated_tokens,
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/connector/azure", tags=["Connector"])
-
-
-class MicrosoftAdminRequest(BaseModel):
-    mode: str = Field(..., description="status, azure_cli, powershell, bicep, or graph_request")
-    command: str = Field("", description="Command for azure_cli or bicep mode")
-    script: str = Field("", description="PowerShell script for powershell mode")
-    method: str = Field("GET", description="Graph HTTP method")
-    path: str = Field("", description="Graph path for graph_request mode")
-    api_version: str = Field("v1.0", description="Graph API version")
-    body: Any = Field(None, description="Graph request body")
-    headers: dict[str, Any] | None = Field(None, description="Additional Graph headers")
-    purpose: str = Field("", description="Purpose")
-    timeout: int = Field(60, description="Timeout", le=300)
-
-
-@router.post("/admin")
-async def microsoft_admin(req: MicrosoftAdminRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
-    """Execute a Microsoft Admin connector operation as the connected user."""
-    user_id = auth.get("user_id")
-    return await run_ms_admin_tool(req.model_dump(exclude_none=True), user_id, timeout=req.timeout)
+router = APIRouter(prefix="/connector/microsoft-admin", tags=["Connector"])
 
 
 @router.post("/device-code")
@@ -139,7 +117,7 @@ async def device_code_callback(
             "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
         }
         token_payload["username"] = extract_azure_username(token_payload)
-        existing_token = await retrieve_token("azure", user_id) or {}
+        existing_token = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id) or {}
         existing_token_is_current = not microsoft_admin_token_client_error(existing_token)
         delegated_tokens = dict(existing_token.get("delegated_tokens") or {}) if existing_token_is_current else {}
         delegated_tokens[scope_profile] = {
@@ -160,7 +138,7 @@ async def device_code_callback(
             scope_profile,
         })
 
-        stored = await store_token("azure", user_id, token_payload)
+        stored = await store_token(MICROSOFT_ADMIN_PROVIDER, user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
         warmed_profiles = await warm_microsoft_admin_delegated_tokens(user_id)
@@ -176,6 +154,16 @@ async def device_code_callback(
             "exchange": {
                 "label": microsoft_admin_scope_label("exchange"),
                 **warmed_profiles.get("exchange", {"status": "missing", "message": "Exchange Online token was not returned."}),
+            },
+            "teams": {
+                "status": "available",
+                "label": microsoft_admin_scope_label("teams"),
+                "message": "Uses the consented Microsoft Graph profile.",
+            },
+            "sharepoint": {
+                "status": "available",
+                "label": microsoft_admin_scope_label("sharepoint"),
+                "message": "Uses the consented Microsoft Graph profile for Graph-backed SharePoint work.",
             },
         }
         missing_profiles = [
@@ -193,7 +181,7 @@ async def device_code_callback(
         )
         await upsert_delegated_account(
             db,
-            "azure",
+            MICROSOFT_ADMIN_PROVIDER,
             user_id,
             token_data=token_payload,
             status="connected",
@@ -224,36 +212,36 @@ async def device_code_callback(
 
 
 @router.get("/status")
-async def azure_status(
+async def microsoft_admin_status(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Check Microsoft Admin connection status for the current user."""
     user_id = auth.get("user_id")
-    return await sync_delegated_account_from_token(db, "azure", user_id, commit=True) if user_id else {"status": "not_connected"}
+    return await sync_delegated_account_from_token(db, MICROSOFT_ADMIN_PROVIDER, user_id, commit=True) if user_id else {"status": "not_connected"}
 
 
 @router.post("/diagnose")
-async def azure_diagnose(
+async def microsoft_admin_diagnose(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Validate the stored Microsoft delegated token and shell profile."""
     user_id = auth.get("user_id")
-    result = await diagnose_azure_connection(user_id)
+    result = await diagnose_microsoft_admin_connection(user_id)
     if user_id:
-        await record_delegated_diagnosis(db, "azure", user_id, result, commit=True)
+        await record_delegated_diagnosis(db, MICROSOFT_ADMIN_PROVIDER, user_id, result, commit=True)
     return result
 
 
 @router.post("/disconnect")
-async def azure_disconnect(
+async def microsoft_admin_disconnect(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
     """Disconnect Microsoft Admin for the current user."""
     user_id = auth.get("user_id")
     if user_id:
-        await delete_token("azure", user_id)
-        await mark_delegated_account_disconnected(db, "azure", user_id, commit=True)
+        await delete_token(MICROSOFT_ADMIN_PROVIDER, user_id)
+        await mark_delegated_account_disconnected(db, MICROSOFT_ADMIN_PROVIDER, user_id, commit=True)
     return {"status": "disconnected"}

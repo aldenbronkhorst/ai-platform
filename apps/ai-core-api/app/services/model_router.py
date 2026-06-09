@@ -43,7 +43,18 @@ TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
 TOOL_ERROR_SUMMARY_LIMIT = 8
-MICROSOFT_NATIVE_TOOL_NAMES = frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"})
+MICROSOFT_NATIVE_TOOL_NAMES = frozenset(
+    {
+        "ms_graph",
+        "ms_graph_powershell",
+        "ms_exchange_powershell",
+        "ms_teams_powershell",
+        "ms_sharepoint_pnp_powershell",
+        "ms_az_powershell",
+        "ms_azure_cli",
+        "ms_bicep",
+    }
+)
 DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
 DIRECT_BLANK_RETRY_MESSAGE = {
     "role": "system",
@@ -380,12 +391,12 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
     )
 
 
-KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure"]
+KNOWN_CONNECTOR_TYPES = ["odoo", "github", "microsoft_admin"]
 
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
     "github": "GitHub",
-    "azure": "Microsoft Admin",
+    "microsoft_admin": "Microsoft Admin",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
@@ -585,20 +596,6 @@ def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str
     return {"mode": "execute", **arguments}
 
 
-def _canonical_ms_admin_invocation(arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    converted = dict(arguments)
-    mode = str(converted.pop("mode", "") or "").strip().lower()
-    if mode in {"azure_cli", "az"}:
-        return "ms_azure_cli", converted
-    if mode == "graph_request":
-        return "ms_graph", converted
-    if mode in {"powershell", "pwsh"}:
-        return "ms_powershell", converted
-    if mode == "bicep":
-        return "ms_bicep", converted
-    return "ms_admin", arguments
-
-
 def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     cleaned = _strip_function_prefix(name)
     normalized = _normalize_tool_name(cleaned)
@@ -609,11 +606,13 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
             normalized_lower
             if (
                 normalized_lower in {
-                    "ms_admin",
-                    "azure_cli",
                     "ms_azure_cli",
                     "ms_graph",
-                    "ms_powershell",
+                    "ms_graph_powershell",
+                    "ms_exchange_powershell",
+                    "ms_teams_powershell",
+                    "ms_sharepoint_pnp_powershell",
+                    "ms_az_powershell",
                     "ms_bicep",
                     "github_cli",
                     "odoo_ops_runner",
@@ -623,10 +622,6 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
             )
             else cleaned
         )
-    if mapped == "azure_cli":
-        return "ms_azure_cli", arguments
-    if mapped == "ms_admin":
-        return _canonical_ms_admin_invocation(arguments)
     if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
@@ -1242,11 +1237,14 @@ async def _execute_tool_call_impl(
     if tool_name in MICROSOFT_ADMIN_TOOL_NAMES or tool_name == "github_cli":
         from app.services.connector_commands import (
             run_github_cli_command,
-            run_ms_admin_tool,
+            run_ms_az_powershell_tool,
             run_ms_azure_cli_tool,
             run_ms_bicep_tool,
+            run_ms_exchange_powershell_tool,
+            run_ms_graph_powershell_tool,
             run_ms_graph_tool,
-            run_ms_powershell_tool,
+            run_ms_sharepoint_pnp_powershell_tool,
+            run_ms_teams_powershell_tool,
         )
 
         command = str(arguments.get("command", ""))
@@ -1255,15 +1253,29 @@ async def _execute_tool_call_impl(
             return await run_ms_azure_cli_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_graph":
             return await run_ms_graph_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_powershell":
-            return await run_ms_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_graph_powershell":
+            return await run_ms_graph_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_exchange_powershell":
+            return await run_ms_exchange_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_teams_powershell":
+            return await run_ms_teams_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_sharepoint_pnp_powershell":
+            return await run_ms_sharepoint_pnp_powershell_tool(arguments, user_id, timeout=timeout)
+        if tool_name == "ms_az_powershell":
+            return await run_ms_az_powershell_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_bicep":
             return await run_ms_bicep_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_admin":
-            return await run_ms_admin_tool(arguments, user_id, timeout=timeout)
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
-    return {"error": f"Unknown tool: {tool_name}"}
+    return {
+        "status": "failed",
+        "error": f"Unknown tool: {tool_name}",
+        "error_type": "unknown_tool",
+        "message": (
+            "This tool name is not part of the current tool registry. "
+            "Use the module-specific Microsoft Admin tools."
+        ),
+    }
 
 
 async def _execute_tool_call(
@@ -1330,7 +1342,7 @@ async def _record_delegated_tool_auth_failure(
     status = "expired" if "expired" in lower_message else "error"
     await upsert_delegated_account(
         db,
-        "azure",
+        "microsoft_admin",
         user_id,
         status=status,
         permission_summary=message[:500] if message else "Microsoft delegated credentials are not usable.",
@@ -2100,7 +2112,7 @@ def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str
     return "; ".join(parts)
 
 
-def _ms_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
+def _microsoft_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
     for item in tool_error_summary:
         tool_name = str(item.get("tool_name") or "")
         if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
@@ -2112,7 +2124,7 @@ def _ms_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str,
     return False
 
 
-def _ms_admin_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
+def _microsoft_admin_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
     for item in tool_error_summary:
         tool_name = str(item.get("tool_name") or "")
         if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
@@ -2132,13 +2144,13 @@ def _guard_connected_system_denial(
     connected_systems: set[str],
     tool_error_summary: list[dict[str, Any]],
 ) -> str:
-    if "azure" not in connected_systems or not content:
+    if "microsoft_admin" not in connected_systems or not content:
         return content
     if not AZURE_FALSE_DENIAL_RE.search(content):
         return content
-    if _ms_admin_tool_summary_says_not_connected(tool_error_summary):
+    if _microsoft_admin_tool_summary_says_not_connected(tool_error_summary):
         return content
-    if _ms_admin_tool_summary_has_connected_access_error(tool_error_summary):
+    if _microsoft_admin_tool_summary_has_connected_access_error(tool_error_summary):
         return content
 
     logger.warning("Correcting assistant response that contradicted connected Microsoft Admin account")
@@ -2193,7 +2205,7 @@ async def _get_connector_context(
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"
             lines.append(f"  {icon} {display_name}: {status}")
-            if conn_type == "azure" and status == "connected":
+            if conn_type == "microsoft_admin" and status == "connected":
                 lines.append(
                     "    Microsoft Admin exposes Microsoft Graph, Exchange, Teams, SharePoint/PnP, Intune, "
                     "Azure Resource Manager CLI, Az PowerShell, and Bicep through the signed-in Microsoft session. "
@@ -2362,11 +2374,12 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names) or "ms_admin" in available_names:
+    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
         guidance_parts.append(
-            "Microsoft Admin: use the broad native-interface tools only: `ms_azure_cli`, `ms_graph`, "
-            "`ms_powershell`, and `ms_bicep`. Do not invent detailed Microsoft tools and do not use `ms_admin` "
-            "unless handling a legacy call. "
+            "Microsoft Admin: use only these native-interface tools: `ms_graph`, `ms_graph_powershell`, "
+            "`ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, "
+            "`ms_az_powershell`, `ms_azure_cli`, and `ms_bicep`. "
+            "Do not invent detailed Microsoft tools and do not call removed generic Microsoft tools. "
             "Azure Resource Manager is one capability inside Microsoft Admin; do not split Azure Cost Management into "
             "a separate connector and do not claim Microsoft Admin is disconnected while this connector is connected. "
             "Microsoft Admin is delegated per signed-in user: Azure, Exchange, Intune, Teams, SharePoint, and Entra "
@@ -2375,7 +2388,9 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Exchange, or Intune access; verify the specific operation with the relevant tool result before saying it "
             "is accessible. "
             "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
-            "`ms_powershell` for Microsoft Graph/Exchange/Teams/Az/PnP PowerShell cmdlets, and `ms_bicep` for "
+            "`ms_graph_powershell` for Microsoft Graph PowerShell, `ms_exchange_powershell` for Exchange Online PowerShell, "
+            "`ms_teams_powershell` for Teams PowerShell, `ms_sharepoint_pnp_powershell` for SharePoint/PnP PowerShell, "
+            "`ms_az_powershell` for Az PowerShell, and `ms_bicep` for "
             "Bicep CLI validation/build work. "
             "For Azure Cost Management or spend questions, do not use `az costmanagement query`; use `ms_azure_cli` with "
             "`az rest --method post --url https://management.azure.com/subscriptions/{subscriptionId}/providers/"
@@ -2386,14 +2401,14 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "ResourceName, ResourceGroupName, ServiceName, MeterCategory, or MeterSubCategory, then answer from the "
             "successful tool result only. Never invent Azure cost totals or breakdowns from prior assistant text, "
             "and do not turn a failed command into a disconnected-connector claim unless the tool result says not_connected. "
-            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users or `ms_powershell` "
+            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users or `ms_graph_powershell` "
             "with Connect-AIPlatformGraph plus Microsoft.Graph cmdlets such as New-MgUser/Update-MgUser; "
-            "do not say there is no Microsoft user-management tool while `ms_graph` or `ms_powershell` is available. "
+            "do not say there is no Microsoft user-management tool while `ms_graph` or `ms_graph_powershell` is available. "
             "If a Microsoft user/group/license write fails, report the exact Graph/PowerShell permission or admin-role "
             "error and ask for the missing consent/role; do not downgrade that to 'no write-capable connector'. "
             "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
-            "In `ms_powershell`, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
-            "or Connect-AIPlatformTeams before using authenticated Microsoft admin cmdlets. "
+            "In Microsoft Admin PowerShell tools, call Connect-AIPlatformAz, Connect-AIPlatformGraph, "
+            "Connect-AIPlatformExchange, or Connect-AIPlatformTeams before using authenticated cmdlets. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
         )
     if "github_cli" in available_names:

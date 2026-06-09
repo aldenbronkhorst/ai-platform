@@ -262,7 +262,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
     assert called["require_account_metadata"] is True
     assert result["status"] == "success"
     assert result["connector"] == "ms_azure_cli"
-    assert result["mode"] == "azure_cli"
+    assert result["mode"] == "ms_azure_cli"
 
 
 @pytest.mark.asyncio
@@ -329,19 +329,19 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ms_powershell_rejects_github_commands(monkeypatch):
+async def test_ms_graph_powershell_rejects_github_commands(monkeypatch):
     async def unexpected_token_lookup(*_args, **_kwargs):
         raise AssertionError("token lookup should not run for rejected GitHub command")
 
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", unexpected_token_lookup)
 
-    result = await azure_commands.run_ms_powershell_tool(
+    result = await azure_commands.run_ms_graph_powershell_tool(
         {"script": "gh run list --repo owner/repo"},
         uuid.uuid4(),
     )
 
     assert result["status"] == "failed"
-    assert result["connector"] == "ms_powershell"
+    assert result["connector"] == "ms_graph_powershell"
     assert result["error_type"] == "unsupported_command"
     assert "GitHub connector" in result["error"]
 
@@ -366,12 +366,12 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
     captured: dict[str, object] = {}
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         return stored_token
 
     async def fake_store(provider, received_user_id, token_data):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         captured["stored"] = token_data
         return True
@@ -443,12 +443,12 @@ async def test_scoped_arm_token_without_cli_account_metadata_refreshes_when_requ
     client_info = _base64url_json({"uid": "uid-value", "utid": azure_commands.TENANT_ID})
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         return stored_token
 
     async def fake_store(provider, received_user_id, token_data):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         captured["stored"] = token_data
         return True
@@ -513,7 +513,7 @@ async def test_scoped_token_consent_required_does_not_return_primary_access_toke
     }
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         return stored_token
 
@@ -556,7 +556,7 @@ async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
     user_id = uuid.uuid4()
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "azure"
+        assert provider == "microsoft_admin"
         assert received_user_id == user_id
         return {
             "client_id": "04b07795-8ddb-461a-bbee-02f9e1bf7b46",

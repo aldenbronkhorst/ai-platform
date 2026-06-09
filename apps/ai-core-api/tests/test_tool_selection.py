@@ -4,7 +4,10 @@ import pytest
 
 from app.models.models import AITool
 from app.services.tool_selection import get_tool_selection
-from app.services.tool_registry import is_model_facing_tool
+from app.services.tool_registry import MICROSOFT_ADMIN_TOOL_NAMES, is_model_facing_tool
+
+
+MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_ADMIN_TOOL_NAMES))
 
 
 def _tool(name: str, target_system: str) -> AITool:
@@ -19,20 +22,29 @@ def _tool(name: str, target_system: str) -> AITool:
 
 
 def _microsoft_tools() -> list[AITool]:
-    return [_tool(name, "azure") for name in ("ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep")]
+    return [_tool(name, "microsoft_admin") for name in MICROSOFT_TOOL_NAMES]
 
 
 def test_connector_tool_registry_exposes_canonical_model_facing_tools():
     assert is_model_facing_tool("odoo_ops_runner", "odoo")
-    assert is_model_facing_tool("ms_azure_cli", "azure")
-    assert is_model_facing_tool("ms_graph", "azure")
-    assert is_model_facing_tool("ms_powershell", "azure")
-    assert is_model_facing_tool("ms_bicep", "azure")
+    assert set(MICROSOFT_TOOL_NAMES) == {
+        "ms_graph",
+        "ms_graph_powershell",
+        "ms_exchange_powershell",
+        "ms_teams_powershell",
+        "ms_sharepoint_pnp_powershell",
+        "ms_az_powershell",
+        "ms_azure_cli",
+        "ms_bicep",
+    }
+    for tool_name in MICROSOFT_TOOL_NAMES:
+        assert is_model_facing_tool(tool_name, "microsoft_admin")
     assert is_model_facing_tool("github_cli", "github")
     assert not is_model_facing_tool("odoo_query", "odoo")
-    assert not is_model_facing_tool("ms_admin", "azure")
-    assert not is_model_facing_tool("azure_cli", "azure")
-    assert not is_model_facing_tool("azure_logs_tool", "azure")
+    assert not is_model_facing_tool("ms_admin", "microsoft_admin")
+    assert not is_model_facing_tool("ms_powershell", "microsoft_admin")
+    assert not is_model_facing_tool("azure_cli", "microsoft_admin")
+    assert not is_model_facing_tool("azure_logs_tool", "microsoft_admin")
     assert not is_model_facing_tool("github_pr_tool", "github")
     assert is_model_facing_tool("internal_ai_platform_tool", "ai-platform")
 
@@ -60,8 +72,8 @@ async def test_tool_selection_skips_tools_without_connector_intent():
         _tool("odoo_ops_runner", "odoo"),
         _tool("odoo_query", "odoo"),
         *_microsoft_tools(),
-        _tool("azure_cli", "azure"),
-        _tool("azure_logs_tool", "azure"),
+        _tool("azure_cli", "microsoft_admin"),
+        _tool("azure_logs_tool", "microsoft_admin"),
         _tool("github_cli", "github"),
         _tool("github_pr_tool", "github"),
     ]
@@ -70,18 +82,14 @@ async def test_tool_selection_skips_tools_without_connector_intent():
         FakeDb(tools),
         uuid.uuid4(),
         "hi there",
-        connected_systems={"odoo", "azure", "github"},
+        connected_systems={"odoo", "microsoft_admin", "github"},
     )
 
     assert result.selected == []
     assert {tool.name for tool in result.excluded} == {
         "odoo_ops_runner",
-        "ms_azure_cli",
-        "ms_graph",
-        "ms_powershell",
-        "ms_bicep",
         "github_cli",
-    }
+    } | set(MICROSOFT_TOOL_NAMES)
     assert result.intent == "no_connector_intent"
 
 
@@ -91,7 +99,7 @@ async def test_tool_selection_selects_only_matching_connected_system():
         _tool("odoo_ops_runner", "odoo"),
         _tool("odoo_report", "odoo"),
         *_microsoft_tools(),
-        _tool("azure_revision_tool", "azure"),
+        _tool("azure_revision_tool", "microsoft_admin"),
         _tool("github_cli", "github"),
         _tool("github_actions_tool", "github"),
     ]
@@ -100,18 +108,15 @@ async def test_tool_selection_selects_only_matching_connected_system():
         FakeDb(tools),
         uuid.uuid4(),
         "List my Azure container app revisions and logs",
-        connected_systems={"odoo", "azure", "github"},
+        connected_systems={"odoo", "microsoft_admin", "github"},
     )
 
     assert [tool.name for tool in result.selected] == ["ms_azure_cli"]
     assert {tool.name for tool in result.excluded} == {
         "github_cli",
-        "ms_bicep",
-        "ms_graph",
-        "ms_powershell",
         "odoo_ops_runner",
-    }
-    assert result.intent == "azure"
+    } | (set(MICROSOFT_TOOL_NAMES) - {"ms_azure_cli"})
+    assert result.intent == "microsoft_admin"
     assert result.selection_reason == "message_intent_matched_connected_systems"
 
 
@@ -137,7 +142,7 @@ async def test_tool_selection_does_not_select_unconnected_matching_system():
 async def test_tool_selection_selects_document_reader_for_uploaded_pdf_without_connectors():
     tools = [
         _tool("document_reader", "ai-platform"),
-        _tool("ms_azure_cli", "azure"),
+        _tool("ms_azure_cli", "microsoft_admin"),
     ]
 
     result = await get_tool_selection(
@@ -164,12 +169,14 @@ async def test_tool_selection_selects_native_microsoft_tools_for_exchange_intune
         FakeDb(tools),
         uuid.uuid4(),
         "Check Exchange Online mailbox permissions and Intune managed devices",
-        connected_systems={"azure", "github"},
+        connected_systems={"microsoft_admin", "github"},
     )
 
-    assert {tool.name for tool in result.selected} == {"ms_graph", "ms_powershell"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_azure_cli", "ms_bicep"}
-    assert result.intent == "azure"
+    assert {tool.name for tool in result.selected} == {"ms_graph", "ms_exchange_powershell"}
+    assert {tool.name for tool in result.excluded} == {
+        "github_cli",
+    } | (set(MICROSOFT_TOOL_NAMES) - {"ms_graph", "ms_exchange_powershell"})
+    assert result.intent == "microsoft_admin"
 
 
 @pytest.mark.asyncio
@@ -184,12 +191,14 @@ async def test_tool_selection_selects_microsoft_admin_for_cross_system_user_crea
         FakeDb(tools),
         uuid.uuid4(),
         "create a microsoft uerer for employee gerhard in odoo",
-        connected_systems={"odoo", "azure", "github"},
+        connected_systems={"odoo", "microsoft_admin", "github"},
     )
 
     assert {tool.name for tool in result.selected} == {"odoo_ops_runner", "ms_graph"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_azure_cli", "ms_bicep", "ms_powershell"}
-    assert result.intent == "azure,odoo"
+    assert {tool.name for tool in result.excluded} == {
+        "github_cli",
+    } | (set(MICROSOFT_TOOL_NAMES) - {"ms_graph"})
+    assert result.intent == "microsoft_admin,odoo"
     assert result.selection_reason == "message_intent_matched_connected_systems"
 
 
@@ -205,12 +214,14 @@ async def test_tool_selection_treats_ms_admin_abbreviation_as_microsoft_with_adm
         FakeDb(tools),
         uuid.uuid4(),
         "add gerhard from odoo as a user in ms as gw.c@",
-        connected_systems={"odoo", "azure", "github"},
+        connected_systems={"odoo", "microsoft_admin", "github"},
     )
 
     assert {tool.name for tool in result.selected} == {"odoo_ops_runner", "ms_graph"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_azure_cli", "ms_bicep", "ms_powershell"}
-    assert result.intent == "azure,odoo"
+    assert {tool.name for tool in result.excluded} == {
+        "github_cli",
+    } | (set(MICROSOFT_TOOL_NAMES) - {"ms_graph"})
+    assert result.intent == "microsoft_admin,odoo"
 
 
 @pytest.mark.asyncio
@@ -221,7 +232,7 @@ async def test_tool_selection_does_not_treat_plain_ms_units_as_microsoft_admin()
         FakeDb(tools),
         uuid.uuid4(),
         "the request took 5 ms",
-        connected_systems={"azure"},
+        connected_systems={"microsoft_admin"},
     )
 
     assert result.selected == []
@@ -239,9 +250,9 @@ async def test_tool_selection_keeps_odoo_active_users_scoped_to_odoo():
         FakeDb(tools),
         uuid.uuid4(),
         "show active users in odoo",
-        connected_systems={"odoo", "azure"},
+        connected_systems={"odoo", "microsoft_admin"},
     )
 
     assert [tool.name for tool in result.selected] == ["odoo_ops_runner"]
-    assert {tool.name for tool in result.excluded} == {"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"}
+    assert {tool.name for tool in result.excluded} == set(MICROSOFT_TOOL_NAMES)
     assert result.intent == "odoo"
