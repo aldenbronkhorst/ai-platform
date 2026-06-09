@@ -158,6 +158,55 @@ class TestConnectedAccountsFlow:
         assert connectors["azure"]["state"]["token_status"] == "connected"
         assert connectors["azure"]["state"]["source"] == "token_store"
 
+    def test_get_connected_accounts_reports_microsoft_admin_profile_authorization_state(self):
+        async def fake_token_status(provider, _user_id):
+            return {"status": "not_connected", "provider": provider}
+
+        async def fake_fresh_azure_token(_user_id):
+            return {
+                "access_token": "fresh-access-token",
+                "expires_on": 4_102_444_800,
+                "username": "alden@example.com",
+                "scope": "https://graph.microsoft.com/User.Read",
+                "scope_profile": "graph",
+            }
+
+        async def fake_retrieve_token(_provider, _user_id):
+            return {
+                "access_token": "graph-access-token",
+                "expires_on": 4_102_444_800,
+                "username": "alden@example.com",
+                "scope_profile": "graph",
+                "consented_scope_profiles": ["graph", "exchange"],
+                "delegated_tokens": {
+                    "graph": {"access_token": "graph-access-token", "refresh_token": "graph-refresh-token"},
+                    "exchange": {"access_token": "exchange-access-token", "refresh_token": "exchange-refresh-token"},
+                },
+            }
+
+        with (
+            patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
+            patch("app.services.connector_commands.get_fresh_azure_token", new=AsyncMock(side_effect=fake_fresh_azure_token)),
+            patch("app.routers.connected_accounts.retrieve_token", new=AsyncMock(side_effect=fake_retrieve_token)),
+        ):
+            response = client.get(
+                "/connected-accounts?include_token_state=true",
+                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"},
+            )
+
+        assert response.status_code == 200
+        connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
+        profiles = {
+            profile["profile"]: profile["status"]
+            for profile in connectors["azure"]["metadata"]["authorization_profiles"]
+        }
+        assert profiles == {
+            "graph": "authorized",
+            "arm": "missing",
+            "exchange": "authorized",
+        }
+        assert "Missing: Azure Resource Manager" in connectors["azure"]["metadata"]["authorization_summary"]
+
     @pytest.mark.asyncio
     async def test_azure_token_state_refreshes_before_reporting_expired(self):
         from app.services.connected_account_state import effective_connected_accounts
