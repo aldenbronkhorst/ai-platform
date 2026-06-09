@@ -207,7 +207,7 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
     assert "do not use `az costmanagement query`" in prompt
     assert "az rest --method post" in prompt
     assert "Microsoft.CostManagement/query" in prompt
-    assert "do not claim Azure is disconnected" in prompt
+    assert "do not claim Microsoft Admin is disconnected" in prompt
     assert "Never invent Azure cost totals" in prompt
     assert "successful tool result only" in prompt
     assert "do not say there is no Microsoft user-management tool" in prompt
@@ -230,7 +230,7 @@ def test_tool_finalizer_keeps_ms_admin_connection_distinct_from_command_errors()
     finalizer_messages = _build_tool_finalizer_messages(messages, tool_results)
     system_text = finalizer_messages[0]["content"]
 
-    assert "failed command or unsupported CLI subcommand does not mean Azure is disconnected" in system_text
+    assert "failed command or unsupported CLI subcommand does not mean Microsoft Admin is disconnected" in system_text
 
 
 def test_guard_replaces_false_azure_not_connected_denial_when_connected():
@@ -246,7 +246,7 @@ def test_guard_replaces_false_azure_not_connected_denial_when_connected():
         [{"tool_name": "ms_azure_cli", "error_type": "unsupported_costmanagement_query_cli", "message": "Use az rest."}],
     )
 
-    assert "Microsoft Admin / Azure is connected" in guarded
+    assert "Microsoft Admin is connected" in guarded
     assert "successful Azure Cost Management tool result" in guarded
     assert "Connected Accounts" not in guarded
 
@@ -462,8 +462,8 @@ class TestConnectorContext:
 
         result = await _get_connector_context(db, user_id=uuid.uuid4())
 
-        assert "Microsoft Admin / Azure: connected" in result
-        assert "Azure CLI" in result
+        assert "Microsoft Admin: connected" in result
+        assert "Azure Resource Manager CLI" in result
         assert "Specific operations can still fail" in result
 
     @pytest.mark.asyncio
@@ -608,8 +608,8 @@ class TestConnectorContext:
         called_kwargs = mock_chat_completion.call_args[1]
         system_prompt_content = called_kwargs["messages"][0]["content"]
         tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
-        assert "Microsoft Admin / Azure: connected" in system_prompt_content
-        assert "do not claim Azure is disconnected" in system_prompt_content
+        assert "Microsoft Admin: connected" in system_prompt_content
+        assert "do not claim Microsoft Admin is disconnected" in system_prompt_content
         assert "ms_azure_cli" in tool_names
         assert "ms_admin" not in tool_names
         assert result["content"] == "Azure is connected."

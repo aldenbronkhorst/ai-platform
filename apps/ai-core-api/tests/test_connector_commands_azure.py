@@ -30,7 +30,7 @@ def test_azure_device_scope_matches_msal_device_auth_shape():
 
 def test_microsoft_admin_device_scopes_are_single_resource_profiles():
     assert azure_commands.microsoft_admin_scope_profile("graph") == "graph"
-    assert azure_commands.microsoft_admin_scope_profile("unknown") == "arm"
+    assert azure_commands.microsoft_admin_scope_profile("unknown") == "graph"
 
     arm_scope = azure_commands.microsoft_admin_device_scope_string("arm").split()
     graph_scope = azure_commands.microsoft_admin_device_scope_string("graph").split()
@@ -48,9 +48,10 @@ def test_microsoft_admin_device_scopes_are_single_resource_profiles():
 def test_microsoft_admin_client_id_is_profile_specific(monkeypatch):
     monkeypatch.setattr(azure_commands, "MICROSOFT_ADMIN_CLIENT_ID", "admin-client-id")
 
-    assert azure_commands.microsoft_admin_client_id_for_scope_profile("arm") == azure_commands.AZURE_CLI_CLIENT_ID
+    assert azure_commands.microsoft_admin_client_id_for_scope_profile("arm") == "admin-client-id"
     assert azure_commands.microsoft_admin_client_id_for_scope_profile("graph") == "admin-client-id"
     assert azure_commands.microsoft_admin_client_id_for_scope_profile("exchange") == "admin-client-id"
+    assert azure_commands.microsoft_admin_app_name_for_scope_profile("arm") == azure_commands.MICROSOFT_ADMIN_APP_DISPLAY_NAME
     assert azure_commands.microsoft_admin_app_name_for_scope_profile("graph") == azure_commands.MICROSOFT_ADMIN_APP_DISPLAY_NAME
 
 
@@ -58,7 +59,7 @@ def test_extract_azure_username_does_not_use_old_fake_fallback():
     assert azure_commands.extract_azure_username({"username": "azure-user"}) == ""
 
     claims = {
-        "aud": azure_commands.AZURE_CLI_CLIENT_ID,
+        "aud": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
         "exp": int(time.time()) + 3600,
         "iat": int(time.time()),
         "sub": "subject-id",
@@ -71,7 +72,7 @@ def test_extract_azure_username_does_not_use_old_fake_fallback():
 def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_path):
     user_name = "alden@example.com"
     claims = {
-        "aud": azure_commands.AZURE_CLI_CLIENT_ID,
+        "aud": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
         "exp": int(time.time()) + 3600,
         "iat": int(time.time()),
         "oid": "00000000-0000-0000-0000-000000000001",
@@ -80,7 +81,7 @@ def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_pat
         "tid": azure_commands.TENANT_ID,
     }
     token_data = {
-        "client_id": azure_commands.AZURE_CLI_CLIENT_ID,
+        "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
         "token_type": "Bearer",
         "access_token": "access-token",
         "refresh_token": "refresh-token",
@@ -179,7 +180,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
                 "error": None,
             }
 
-    async def fake_token(_user_id):
+    async def fake_token(_user_id, _scope):
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -198,7 +199,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", fake_token)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", fake_token)
     monkeypatch.setattr(azure_commands, "ensure_azure_cli_profile", fake_profile)
     monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
     user_id = uuid.uuid4()
@@ -253,7 +254,7 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
                 "error": None,
             }
 
-    async def fake_token(_user_id):
+    async def fake_token(_user_id, _scope):
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -266,7 +267,7 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
     async def fake_run_command(command, timeout, env, allowed_binaries=None):
         return Result()
 
-    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", fake_token)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", fake_token)
     monkeypatch.setattr(azure_commands, "ensure_azure_cli_profile", fake_profile)
     monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
 
@@ -299,16 +300,16 @@ async def test_ms_powershell_rejects_github_commands(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_scoped_token_refresh_uses_delegated_client_and_preserves_arm_refresh(monkeypatch):
+async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_primary_refresh(monkeypatch):
     user_id = uuid.uuid4()
     stored_token = {
-        "client_id": azure_commands.AZURE_CLI_CLIENT_ID,
-        "access_token": "arm-access",
-        "refresh_token": "arm-refresh",
+        "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "access_token": "primary-access",
+        "refresh_token": "primary-refresh",
         "expires_on": int(time.time()) + 3600,
         "delegated_tokens": {
             "graph": {
-                "client_id": "graph-client-id",
+                "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
                 "access_token": "old-graph-access",
                 "refresh_token": "graph-refresh",
                 "expires_on": int(time.time()) - 10,
@@ -363,12 +364,36 @@ async def test_scoped_token_refresh_uses_delegated_client_and_preserves_arm_refr
     result = await azure_commands._get_fresh_azure_token_for_scope(user_id, azure_commands.MICROSOFT_GRAPH_SCOPE)
 
     assert result["access_token"] == "new-graph-access"
-    assert captured["data"]["client_id"] == "graph-client-id"
+    assert captured["data"]["client_id"] == azure_commands.MICROSOFT_ADMIN_CLIENT_ID
     assert captured["data"]["refresh_token"] == "graph-refresh"
     assert "https://graph.microsoft.com/User.ReadWrite.All" in captured["data"]["scope"]
     stored = captured["stored"]
-    assert stored["refresh_token"] == "arm-refresh"
+    assert stored["refresh_token"] == "primary-refresh"
     assert stored["delegated_tokens"]["graph"]["refresh_token"] == "new-graph-refresh"
+
+
+@pytest.mark.asyncio
+async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
+    user_id = uuid.uuid4()
+
+    async def fake_retrieve(provider, received_user_id):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        return {
+            "client_id": "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "expires_on": int(time.time()) + 3600,
+            "username": "alden@example.com",
+        }
+
+    monkeypatch.setattr(azure_commands, "retrieve_token", fake_retrieve)
+
+    result = await azure_commands._get_fresh_azure_token(user_id)
+
+    assert result["error_type"] == "reconnect_required"
+    assert "access_token" not in result
+    assert "retired application" in result["refresh_error"]
 
 
 class _FakeGraphResponse:

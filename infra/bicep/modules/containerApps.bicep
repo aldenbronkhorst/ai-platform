@@ -64,7 +64,7 @@ param deploySearch bool = false
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
-@description('Microsoft Admin public client app ID for Graph/Exchange delegated device auth')
+@description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')
 param microsoftAdminClientId string = ''
 
 @description('Microsoft Admin public client display name')

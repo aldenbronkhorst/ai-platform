@@ -104,14 +104,17 @@ function truncateText(value: string, limit = 120) {
 
 function displayToolName(value: string) {
   if (value === "odoo_ops_runner") return "Odoo";
-  if (value === "azure_cli") return "Microsoft Admin · Azure CLI";
+  if (value === "azure_cli" || value === "ms_azure_cli") return "Azure Resource Manager";
+  if (value === "ms_graph") return "Microsoft Graph";
+  if (value === "ms_powershell") return "Microsoft Admin PowerShell";
+  if (value === "ms_bicep") return "Bicep";
   if (value === "github_cli") return "GitHub CLI";
   return value.replace(/_/g, " ");
 }
 
 function displaySystemName(value: string) {
   if (value === "odoo") return "Odoo";
-  if (value === "azure") return "Azure";
+  if (value === "azure") return "Microsoft Admin";
   if (value === "github") return "GitHub";
   return value.replace(/_/g, " ");
 }

@@ -540,8 +540,8 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     return null;
   }, [accessToken, getHeaders, upsertChatSession]);
 
-  const fetchSessionMessages = useCallback(async (sid: string) => {
-    setIsMessagesLoading(true);
+  const fetchSessionMessages = useCallback(async (sid: string, showLoading = true) => {
+    if (showLoading) setIsMessagesLoading(true);
     try {
       const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
       if (res.ok) {
@@ -553,7 +553,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     } catch (err) {
       console.error("Failed to fetch messages:", err);
     } finally {
-      if (activeSessionIdRef.current === sid) {
+      if (showLoading && activeSessionIdRef.current === sid) {
         setIsMessagesLoading(false);
       }
     }
@@ -710,10 +710,10 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       void refreshChatSession(session.id);
       if (activeSessionIdRef.current === session.id) {
         window.setTimeout(() => {
-          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id);
+          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id, false);
         }, 750);
         window.setTimeout(() => {
-          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id);
+          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id, false);
         }, 15_000);
       }
     }

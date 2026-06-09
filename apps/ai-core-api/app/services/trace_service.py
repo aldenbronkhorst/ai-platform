@@ -42,8 +42,16 @@ def _preview_text(value: Any, limit: int = TEXT_PREVIEW_CHARS) -> str:
 def _tool_connector(tool_name: str) -> str:
     if tool_name.startswith("odoo"):
         return "Odoo"
+    if tool_name == "ms_azure_cli":
+        return "Azure Resource Manager"
+    if tool_name == "ms_graph":
+        return "Microsoft Graph"
+    if tool_name == "ms_powershell":
+        return "Microsoft Admin PowerShell"
+    if tool_name == "ms_bicep":
+        return "Bicep"
     if tool_name.startswith("azure"):
-        return "Azure"
+        return "Azure Resource Manager"
     if tool_name.startswith("github"):
         return "GitHub"
     return tool_name.replace("_", " ").title() if tool_name else "Tool"
@@ -69,6 +77,13 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
     command = _preview_text(args.get("command"))
     if command:
         return f"{connector} CLI: {command}"
+    if tool_name == "ms_graph":
+        method = _preview_text(args.get("method") or "GET")
+        path = _preview_text(args.get("path"))
+        return f"Microsoft Graph {method}{f' {path}' if path else ''}"
+    if tool_name == "ms_powershell":
+        script = _preview_text(args.get("script"))
+        return f"Microsoft Admin PowerShell{f': {script}' if script else ''}"
     resource = _preview_text(args.get("resource") or args.get("query"))
     return f"{connector}: {resource}" if resource else connector
 
