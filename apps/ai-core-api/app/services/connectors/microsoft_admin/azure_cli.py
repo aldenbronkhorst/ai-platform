@@ -17,6 +17,9 @@ import httpx
 from app.services.ops_command_runner import run_command
 from app.services.connectors.microsoft_admin.constants import (
     AZURE_ARM_SCOPE,
+    AZURE_CLI_ARM_RESOURCE,
+    AZURE_CLI_ARM_TARGET,
+    AZURE_CLI_CLIENT_ID,
     AZURE_ENVIRONMENT_NAME,
     AZURE_TOKEN_ENDPOINT,
     MICROSOFT_ADMIN_CLIENT_ID,
@@ -242,20 +245,51 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
             cache = msal.SerializableTokenCache()
 
     client_info = _azure_client_info(token_data)
+    _add_msal_cache_token(
+        cache,
+        token_data,
+        client_info=client_info,
+        client_id=token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
+        scope=token_data.get("scope") or microsoft_admin_arm_device_scope_string(),
+        include_refresh_token=True,
+    )
+    # Azure CLI looks up ARM access tokens by its own first-party client id and
+    # legacy ARM resource target, even when the stored token came from our app.
+    _add_msal_cache_token(
+        cache,
+        token_data,
+        client_info=client_info,
+        client_id=AZURE_CLI_CLIENT_ID,
+        scope=AZURE_CLI_ARM_TARGET,
+        include_refresh_token=False,
+    )
+    _atomic_write(cache_path, cache.serialize(), mode=0o600)
+
+
+def _add_msal_cache_token(
+    cache: Any,
+    token_data: dict[str, Any],
+    *,
+    client_info: str,
+    client_id: str,
+    scope: str,
+    include_refresh_token: bool,
+) -> None:
     response = {
         "token_type": token_data.get("token_type") or "Bearer",
         "access_token": token_data.get("access_token"),
-        "refresh_token": token_data.get("refresh_token"),
         "id_token": token_data.get("id_token"),
         "id_token_claims": _microsoft_identity_claims(token_data),
         "client_info": client_info,
-        "scope": token_data.get("scope") or microsoft_admin_arm_device_scope_string(),
+        "scope": scope,
         "expires_in": int(token_data.get("expires_in") or max(_expires_on(token_data) - int(time.time()), 0) or 3600),
     }
+    if include_refresh_token:
+        response["refresh_token"] = token_data.get("refresh_token")
     response = {key: value for key, value in response.items() if value}
     event = {
-        "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
-        "scope": (token_data.get("scope") or microsoft_admin_arm_device_scope_string()).split(),
+        "client_id": client_id,
+        "scope": scope.split(),
         "token_endpoint": AZURE_TOKEN_ENDPOINT,
         "environment": "login.microsoftonline.com",
         "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -263,7 +297,6 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
         "data": {"username": token_data.get("username") or extract_microsoft_admin_username(token_data)},
     }
     cache.add(event)
-    _atomic_write(cache_path, cache.serialize(), mode=0o600)
 
 
 def _has_azure_cli_account_metadata(token_data: dict[str, Any]) -> bool:
@@ -345,7 +378,7 @@ async def validate_azure_cli_profile(user_id: UUID, timeout: int = 20) -> dict[s
         "AZURE_CONFIG_DIR": _azure_config_dir(user_id),
     }
     result = await run_command(
-        "az account get-access-token --resource https://management.core.windows.net/ --only-show-errors -o json",
+        f"az account get-access-token --resource {AZURE_CLI_ARM_RESOURCE} --only-show-errors -o json",
         timeout=timeout,
         env=env,
         allowed_binaries=MS_AZURE_CLI_ALLOWED_BINARIES,
