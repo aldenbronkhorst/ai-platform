@@ -209,17 +209,17 @@ def test_connections_page_loads_backend_platform_tools():
     assert "canonicalPlatformTools(data)" in content
 
 
-def test_microsoft_admin_connect_requests_all_authorization_profiles():
+def test_microsoft_admin_connect_uses_one_interactive_sign_in():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert '{ profile: "graph", label: "Microsoft Graph Admin" }' in content
-    assert '{ profile: "arm", label: "Azure Resource Manager" }' in content
-    assert '{ profile: "exchange", label: "Exchange Online" }' in content
+    assert 'body: JSON.stringify({ scope_profile: "graph" })' in content
+    assert "MICROSOFT_CONSENT_STEPS" not in content
+    assert "Authorize Missing Profiles" not in content
+    assert "One Microsoft Admin sign-in" in content
     assert "AuthorizationProfileList" in content
     assert "authorization_profiles" in content
-    assert "Authorize Missing Profiles" in content
 
 
 def test_pending_activity_uses_result_keys_not_summary_object_keys():
