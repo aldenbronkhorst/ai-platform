@@ -316,6 +316,52 @@ async def test_ms_admin_graph_users_skip_is_applied_locally(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ms_admin_graph_skip_is_not_rewritten_for_user_child_collections(monkeypatch):
+    calls: list[dict] = []
+    responses = [_FakeGraphResponse(200, {"value": [{"id": "message-2"}]})]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users/user-1/messages?$top=1&$skip=1"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert "$skip=1" in calls[0]["url"]
+    assert "warning" not in result["result"]
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_users_local_skip_fetches_past_skipped_items(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        _FakeGraphResponse(
+            200,
+            {
+                "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+                "value": [{"id": "1"}, {"id": "2"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/users?$skiptoken=abc",
+            },
+        ),
+        _FakeGraphResponse(200, {"value": [{"id": "3"}, {"id": "4"}]}),
+    ]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users?$skip=2&$select=id", "max_items": 2},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert len(calls) == 2
+    assert result["result"]["value"] == [{"id": "3"}, {"id": "4"}]
+    assert result["result"]["pagination"]["pre_skip_count"] == 4
+    assert result["result"]["pagination"]["returned_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_ms_admin_graph_request_surfaces_graph_error_message(monkeypatch):
     calls: list[dict] = []
     responses = [

@@ -358,6 +358,7 @@ async def _run_ms_admin_graph_request(arguments: dict[str, Any], user_id: Option
 
     local_skip = _local_graph_skip(path)
     request_path = local_skip["path"] if local_skip else path
+    fetch_max_items = max_items + int(local_skip["skip"]) if local_skip else max_items
     url = f"{MICROSOFT_GRAPH_BASE_URL.rstrip('/')}/{api_version}{request_path}"
     headers = {
         "Authorization": f"Bearer {token_data['access_token']}",
@@ -376,7 +377,7 @@ async def _run_ms_admin_graph_request(arguments: dict[str, Any], user_id: Option
                 headers=headers,
                 body=body,
                 max_pages=max_pages,
-                max_items=max_items,
+                max_items=fetch_max_items,
             )
         if local_skip and response.status_code < 400:
             data = _apply_local_graph_skip(data, int(local_skip["skip"]))
@@ -422,7 +423,7 @@ def _local_graph_skip(path: str) -> dict[str, Any] | None:
     apply the requested skip locally instead of surfacing a noisy failed span.
     """
     parts = urlsplit(path)
-    if not parts.path.lower().startswith("/users"):
+    if parts.path.rstrip("/").lower() != "/users":
         return None
 
     query = parse_qsl(parts.query, keep_blank_values=True)
