@@ -143,9 +143,10 @@ async def test_store_token_compacts_large_microsoft_admin_payload(monkeypatch):
     assert payload["consented_scope_profiles"] == ["graph", "arm", "exchange"]
     assert "id_token" not in payload
     assert "id_token_claims" not in payload
-    assert "client_info" not in payload
+    assert payload["client_info"] == "z" * 2_000
     assert "graph" not in payload["delegated_tokens"]
     assert payload["delegated_tokens"]["arm"]["access_token"] == "arm-access-token"
+    assert payload["delegated_tokens"]["arm"]["client_info"] == "z" * 2_000
     assert payload["delegated_tokens"]["exchange"]["access_token"] == "exchange-access-token"
     assert "refresh_token" not in payload["delegated_tokens"]["arm"]
     assert "id_token" not in payload["delegated_tokens"]["exchange"]

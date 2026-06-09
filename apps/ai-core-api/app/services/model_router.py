@@ -62,6 +62,7 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "content": (
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
+        "Do not tell users to run local `az login` for Microsoft Admin connector auth; report connector auth/profile failures as platform issues. "
         "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
     ),
 }
@@ -1775,7 +1776,8 @@ def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, 
                 "and what is still missing. Do not invent data. "
                 "For Microsoft Admin, distinguish connector availability from operation failures: "
                 "a failed command or unsupported CLI subcommand does not mean Microsoft Admin is disconnected unless the "
-                "tool result explicitly says not_connected."
+                "tool result explicitly says not_connected. Do not tell users to run local `az login`; Microsoft Admin "
+                "Azure CLI auth must be handled by the connector, so report connector auth/profile failures as platform issues."
             ),
         },
         {

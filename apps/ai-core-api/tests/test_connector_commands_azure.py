@@ -118,6 +118,51 @@ def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_pat
     assert accounts[0]["username"] == user_name
 
 
+def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tmp_path):
+    user_name = "alden@example.com"
+    oid = "00000000-0000-0000-0000-000000000001"
+    claims = {
+        "aud": "https://management.azure.com",
+        "exp": int(time.time()) + 3600,
+        "iat": int(time.time()),
+        "oid": oid,
+        "preferred_username": user_name,
+        "tid": azure_commands.TENANT_ID,
+    }
+    token_data = {
+        "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "token_type": "Bearer",
+        "access_token": _jwt(claims),
+        "refresh_token": "refresh-token",
+        "scope": azure_commands.azure_device_scope_string(),
+        "expires_in": 3600,
+        "expires_on": int(time.time()) + 3600,
+        "username": user_name,
+    }
+    subscriptions = [
+        {
+            "subscriptionId": "11111111-1111-1111-1111-111111111111",
+            "displayName": "Production",
+            "state": "Enabled",
+            "tenantId": azure_commands.TENANT_ID,
+        }
+    ]
+
+    azure_commands._write_azure_cli_files(str(tmp_path), token_data, user_name, subscriptions)
+
+    cache = msal.SerializableTokenCache()
+    cache.deserialize((tmp_path / "msal_token_cache.json").read_text(encoding="utf-8"))
+    accounts = list(
+        cache.search(
+            cache.CredentialType.ACCOUNT,
+            query={"environment": "login.microsoftonline.com"},
+        )
+    )
+    assert len(accounts) == 1
+    assert accounts[0]["home_account_id"] == f"{oid}.{azure_commands.TENANT_ID}"
+    assert accounts[0]["username"] == user_name
+
+
 @pytest.mark.asyncio
 async def test_ensure_azure_cli_profile_rejects_tokens_without_identity(monkeypatch, tmp_path):
     monkeypatch.setenv("AZURE_CLI_USER_CONFIG_ROOT", str(tmp_path))
@@ -180,7 +225,8 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
                 "error": None,
             }
 
-    async def fake_token(_user_id, _scope):
+    async def fake_token(_user_id, _scope, **_kwargs):
+        called["require_account_metadata"] = _kwargs.get("require_account_metadata")
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -213,6 +259,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
     assert called["profile_user_id"] == user_id
     assert called["timeout"] == 30
     assert called["allowed_binaries"] == azure_commands.MS_AZURE_CLI_ALLOWED_BINARIES
+    assert called["require_account_metadata"] is True
     assert result["status"] == "success"
     assert result["connector"] == "ms_azure_cli"
     assert result["mode"] == "azure_cli"
@@ -254,7 +301,7 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
                 "error": None,
             }
 
-    async def fake_token(_user_id, _scope):
+    async def fake_token(_user_id, _scope, **_kwargs):
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -370,6 +417,87 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
     stored = captured["stored"]
     assert stored["refresh_token"] == "primary-refresh"
     assert stored["delegated_tokens"]["graph"]["refresh_token"] == "new-graph-refresh"
+
+
+@pytest.mark.asyncio
+async def test_scoped_arm_token_without_cli_account_metadata_refreshes_when_required(monkeypatch):
+    user_id = uuid.uuid4()
+    stored_token = {
+        "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "access_token": "primary-graph-access",
+        "refresh_token": "primary-refresh",
+        "expires_on": int(time.time()) + 3600,
+        "scope_profile": "graph",
+        "username": "alden@example.com",
+        "delegated_tokens": {
+            "arm": {
+                "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
+                "access_token": "old-arm-access",
+                "scope": azure_commands.AZURE_ARM_SCOPE,
+                "scope_profile": "arm",
+                "expires_on": int(time.time()) + 3600,
+            }
+        },
+    }
+    captured: dict[str, object] = {}
+    client_info = _base64url_json({"uid": "uid-value", "utid": azure_commands.TENANT_ID})
+
+    async def fake_retrieve(provider, received_user_id):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        return stored_token
+
+    async def fake_store(provider, received_user_id, token_data):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        captured["stored"] = token_data
+        return True
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "token_type": "Bearer",
+                "access_token": "new-arm-access",
+                "refresh_token": "new-arm-refresh",
+                "scope": azure_commands.AZURE_ARM_SCOPE,
+                "client_info": client_info,
+                "expires_in": 3600,
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            captured["url"] = url
+            captured["data"] = data
+            return FakeResponse()
+
+    monkeypatch.setattr(azure_commands, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(azure_commands, "store_token", fake_store)
+    monkeypatch.setattr(azure_commands.httpx, "AsyncClient", FakeClient)
+
+    result = await azure_commands._get_fresh_azure_token_for_scope(
+        user_id,
+        azure_commands.AZURE_ARM_SCOPE,
+        require_account_metadata=True,
+    )
+
+    assert result["access_token"] == "new-arm-access"
+    assert result["client_info"] == client_info
+    assert captured["data"]["refresh_token"] == "primary-refresh"
+    stored = captured["stored"]
+    assert stored["delegated_tokens"]["arm"]["access_token"] == "new-arm-access"
+    assert stored["delegated_tokens"]["arm"]["client_info"] == client_info
 
 
 @pytest.mark.asyncio

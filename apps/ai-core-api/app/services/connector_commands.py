@@ -226,7 +226,11 @@ async def _run_ms_admin_azure_cli(
         unsupported["auth_method"] = "not_required"
         return unsupported
 
-    token_data = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
+    token_data = await _get_fresh_azure_token_for_scope(
+        user_id,
+        AZURE_ARM_SCOPE,
+        require_account_metadata=True,
+    ) if user_id else None
     if not token_data or not token_data.get("access_token"):
         message = (
             token_data.get("refresh_error")
@@ -956,7 +960,12 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
         return {**token_data, "refresh_error": "token_refresh_failed"}
 
 
-async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) -> Optional[dict[str, Any]]:
+async def _get_fresh_azure_token_for_scope(
+    user_id: Optional[UUID],
+    scope: str,
+    *,
+    require_account_metadata: bool = False,
+) -> Optional[dict[str, Any]]:
     """Return a fresh Microsoft token for a requested Microsoft Admin resource."""
     if not user_id:
         return None
@@ -970,13 +979,16 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
     if scope_profile and token_data.get("scope_profile") == scope_profile:
         expires_on = _expires_on(token_data)
         if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            return token_data
+            if not require_account_metadata or _has_azure_cli_account_metadata(token_data):
+                return token_data
     cached_token = (token_data.get("delegated_tokens") or {}).get(scope_profile) if scope_profile else None
     cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error(cached_token)
     if cached_token_is_current:
         expires_on = _expires_on(cached_token)
         if cached_token.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            return {**token_data, **cached_token}
+            merged_token = {**token_data, **cached_token}
+            if not require_account_metadata or _has_azure_cli_account_metadata(merged_token):
+                return merged_token
 
     refresh_token = cached_token.get("refresh_token") if cached_token_is_current else None
     refresh_token = refresh_token or token_data.get("refresh_token")
@@ -1246,13 +1258,14 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
         except Exception:
             cache = msal.SerializableTokenCache()
 
+    client_info = _azure_client_info(token_data)
     response = {
         "token_type": token_data.get("token_type") or "Bearer",
         "access_token": token_data.get("access_token"),
         "refresh_token": token_data.get("refresh_token"),
         "id_token": token_data.get("id_token"),
         "id_token_claims": _azure_identity_claims(token_data),
-        "client_info": token_data.get("client_info"),
+        "client_info": client_info,
         "scope": token_data.get("scope") or azure_device_scope_string(),
         "expires_in": int(token_data.get("expires_in") or max(_expires_on(token_data) - int(time.time()), 0) or 3600),
     }
@@ -1268,6 +1281,25 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
     }
     cache.add(event)
     _atomic_write(cache_path, cache.serialize(), mode=0o600)
+
+
+def _has_azure_cli_account_metadata(token_data: dict[str, Any]) -> bool:
+    return bool(_azure_client_info(token_data))
+
+
+def _azure_client_info(token_data: dict[str, Any]) -> str:
+    existing = str(token_data.get("client_info") or "").strip()
+    if existing:
+        return existing
+
+    claims = _azure_identity_claims(token_data) or _decode_jwt_claims(str(token_data.get("access_token") or ""))
+    uid = claims.get("oid") or claims.get("sub")
+    utid = claims.get("tid") or claims.get("tenant_id") or TENANT_ID
+    if not uid or not utid:
+        return ""
+
+    payload = json.dumps({"uid": uid, "utid": utid}, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
 def _write_azure_profile(config_dir: Path, username: str, subscriptions: list[dict[str, Any]]) -> str:
