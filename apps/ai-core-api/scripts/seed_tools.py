@@ -59,8 +59,8 @@ TOOLS = [
     },
     {
         "name": "ms_azure_cli",
-        "display_name": "Microsoft Azure CLI",
-        "description": "Native Azure CLI interface for the Microsoft Admin connector. Runs user-scoped az commands only, using the signed-in Microsoft/Azure CLI profile. Use for Azure subscriptions, resources, resource groups, Container Apps, Key Vault, storage, RBAC, logs, and Azure Cost Management via az rest. Do not use az costmanagement query; use az rest against the Microsoft.CostManagement query endpoint and answer cost questions only from successful tool results. GitHub commands are excluded.",
+        "display_name": "Azure Resource Manager CLI",
+        "description": "Azure Resource Manager CLI surface inside the Microsoft Admin connector. Runs user-scoped az commands only from the signed-in Microsoft Admin session. Use for Azure subscriptions, resources, resource groups, Container Apps, Key Vault, storage, RBAC, logs, and Azure Cost Management via az rest. Do not use az costmanagement query; use az rest against the Microsoft.CostManagement query endpoint and answer cost questions only from successful tool results. GitHub commands are excluded.",
         "target_system": "azure",
         "input_schema": {
             "type": "object",

@@ -231,10 +231,11 @@ function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connectorKey: 
 
   if (connectorKey === "azure") {
     return (
-      <svg className={className} viewBox="0 0 96 96" role="img" aria-label="Microsoft Azure logo">
-        <path fill="#0669BC" d="M33.338 6.544h26.038l-27.03 80.087a4.152 4.152 0 0 1-3.933 2.824H8.149a4.145 4.145 0 0 1-3.928-5.47L29.404 9.368a4.152 4.152 0 0 1 3.934-2.825z" />
-        <path fill="#0078D4" d="M71.175 60.261h-41.29a1.911 1.911 0 0 0-1.305 3.309l26.532 24.764a4.171 4.171 0 0 0 2.846 1.121h23.38z" />
-        <path fill="#3CCBF4" d="M66.595 9.364a4.145 4.145 0 0 0-3.928-2.82H33.648a4.146 4.146 0 0 1 3.928 2.82l25.184 74.62a4.146 4.146 0 0 1-3.928 5.472h29.02a4.146 4.146 0 0 0 3.927-5.472z" />
+      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Microsoft Admin logo">
+        <rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1" fill="#F25022" />
+        <rect x="13" y="2.5" width="8.5" height="8.5" rx="1" fill="#7FBA00" />
+        <rect x="2.5" y="13" width="8.5" height="8.5" rx="1" fill="#00A4EF" />
+        <rect x="13" y="13" width="8.5" height="8.5" rx="1" fill="#FFB900" />
       </svg>
     );
   }
@@ -292,11 +293,21 @@ function ConnectorDetailShell({
 
 const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
-  { key: "azure", name: "Microsoft Admin", subtitle: "Native Microsoft admin shell connector" },
+  { key: "azure", name: "Microsoft Admin", subtitle: "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager" },
   { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
 ];
 
 interface ConnectionsPageProps { accessToken: string; }
+
+function canonicalPlatformTools(tools: PlatformTool[]) {
+  const seen = new Set<string>();
+  return tools.filter(tool => !["odoo", "azure", "github"].includes(tool.target_system)).filter((tool) => {
+    const key = `${(tool.display_name || tool.name).trim().toLowerCase()}::${tool.target_system}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
@@ -354,7 +365,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetchWithTimeout(`${APIM_BASE_URL}/tools`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as PlatformTool[];
-        setPlatformTools(data.filter(tool => !["odoo", "azure", "github"].includes(tool.target_system)));
+        setPlatformTools(canonicalPlatformTools(data));
         setPlatformToolsError(null);
       } else {
         setPlatformToolsError(`Could not load platform tools (${res.status}).`);
@@ -475,9 +486,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
     const consentSteps = [
-      { profile: "arm", label: "Azure CLI / Azure Resource Manager" },
       { profile: "graph", label: "Microsoft Graph Admin" },
-      { profile: "exchange", label: "Exchange Online" },
     ];
     const startConsentStep = async (stepIndex: number) => {
       const step = consentSteps[stepIndex];
@@ -511,7 +520,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               } else {
                 setAzurePolling(false);
                 setAzureDeviceCode(null);
-                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected!" });
+                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected. Secondary Microsoft admin profiles are prepared silently where consent permits." });
                 void fetchConnectors();
               }
             } else if (pd.status === "pending") {
@@ -659,7 +668,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (key === "azure") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
         <DetailCard>
-          <p className="text-sm text-muted">Connect with Microsoft device authentication.</p>
+          <p className="text-sm text-muted">Connect with Microsoft Admin delegated authentication.</p>
         </DetailCard>
 
         <InfoGrid
@@ -667,7 +676,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             { label: "Account", value: formatOptionalStatus(connectorMeta?.azure?.state?.account_status || metaStatus) },
             { label: "Token", value: formatOptionalStatus(connectorMeta?.azure?.state?.token_status) },
             { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.azure?.state?.diagnostics_status) },
-            { label: "Shell", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
+            { label: "Admin Shell", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
             { label: "User", value: connectorMeta?.azure?.metadata?.provider_username || "—" },
             { label: "Last Verified", value: formatDateTime(connectorMeta?.azure?.last_verified_at) },
           ]}
@@ -675,7 +684,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
         <ActionGroup>
           <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
-            {azurePolling ? "Waiting for authentication..." : "Connect with Microsoft"}
+            {azurePolling ? "Waiting for authentication..." : "Connect Microsoft Admin"}
           </GlassButton>
           <GlassButton size="sm" onClick={handleAzureStatus}>
             <CheckCircle2 className="w-3.5 h-3.5" /> Check Status

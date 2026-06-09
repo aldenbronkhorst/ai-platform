@@ -30,6 +30,18 @@ def test_token_status_from_data_reports_expired_token():
     assert status["status"] == "expired"
 
 
+def test_token_status_from_data_reports_refresh_error_without_access_token():
+    status = token_storage.token_status_from_data("azure", {
+        "refresh_error": "Reconnect Microsoft Admin.",
+        "error_type": "reconnect_required",
+        "username": "alden@example.com",
+    })
+
+    assert status["status"] == "error"
+    assert status["error_type"] == "reconnect_required"
+    assert status["error"] == "Reconnect Microsoft Admin."
+
+
 @pytest.mark.asyncio
 async def test_store_token_recovers_soft_deleted_secret(monkeypatch):
     monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")

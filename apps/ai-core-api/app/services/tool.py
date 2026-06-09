@@ -49,4 +49,16 @@ class ToolService:
         tools = result.scalars().all()
         if include_internal:
             return tools
-        return [tool for tool in tools if is_model_facing_tool(tool.name, tool.target_system)]
+        return _dedupe_visible_tools([tool for tool in tools if is_model_facing_tool(tool.name, tool.target_system)])
+
+
+def _dedupe_visible_tools(tools: List[AITool]) -> List[AITool]:
+    seen: set[tuple[str, str]] = set()
+    unique: List[AITool] = []
+    for tool in tools:
+        key = ((tool.display_name or tool.name).strip().lower(), tool.target_system)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(tool)
+    return unique

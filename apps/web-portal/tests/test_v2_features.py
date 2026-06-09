@@ -111,15 +111,16 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "return prev;" in content
 
 
-def test_voice_keeps_microphone_stream_open_while_listening():
+def test_voice_uses_browser_recognition_without_shadow_microphone_stream():
     hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
     with open(hook_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "micStreamRef" in content
-    assert "getUserMedia({ audio: true })" in content
-    assert "releaseMicStream" in content
-    assert "micStreamRef.current?.getTracks().forEach(track => track.stop())" in content
+    assert "SpeechRecognition" in content
+    assert "micStreamRef" not in content
+    assert "getUserMedia" not in content
+    assert "recognitionRef.current?.start()" in content
+    assert "recognitionRef.current?.stop()" in content
 
 
 def test_voice_commits_final_results_and_tracks_interim_text():
@@ -205,7 +206,7 @@ def test_connections_page_loads_backend_platform_tools():
     assert "fetchPlatformTools" in content
     assert '`${APIM_BASE_URL}/tools`' in content
     assert "Platform Tools" in content
-    assert "setPlatformTools(data.filter" in content
+    assert "canonicalPlatformTools(data)" in content
 
 
 def test_pending_activity_uses_result_keys_not_summary_object_keys():

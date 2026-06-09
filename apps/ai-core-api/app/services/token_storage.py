@@ -95,6 +95,18 @@ def token_status_from_data(provider: str, token: Optional[dict[str, Any]]) -> di
     """Return connection status metadata for an already-loaded token payload."""
     if not token:
         return {"status": "not_connected", "provider": provider}
+    if token.get("refresh_error") and not token.get("access_token"):
+        return {
+            "status": "error",
+            "provider": provider,
+            "token_type": token.get("token_type", "unknown"),
+            "expires_on": token.get("expires_on"),
+            "scope": token.get("scope", ""),
+            "username": token.get("username") or token.get("login") or token.get("provider_username"),
+            "login": token.get("login"),
+            "error": token.get("refresh_error"),
+            "error_type": token.get("error_type"),
+        }
     expires_on = token.get("expires_on")
     try:
         expires_ts = int(expires_on) if expires_on else None

@@ -31,19 +31,17 @@ def _scope_values_from_env(env_name: str, default_values: tuple[str, ...]) -> tu
 
 
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
-AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
-AZURE_CLI_APP_DISPLAY_NAME = os.environ.get("AZURE_CLI_APP_DISPLAY_NAME", "Azure CLI")
 MICROSOFT_ADMIN_CLIENT_ID = (
     os.environ.get("MICROSOFT_ADMIN_CLIENT_ID")
     or os.environ.get("MS_ADMIN_CLIENT_ID")
-    or AZURE_CLI_CLIENT_ID
+    or "8a178920-de9e-41cf-af4e-c3012fc3bbd2"
 )
 MICROSOFT_ADMIN_APP_DISPLAY_NAME = os.environ.get("MICROSOFT_ADMIN_APP_DISPLAY_NAME", "AI Platform Microsoft Admin")
 AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com")
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
-AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.core.windows.net//.default")
-AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "openid", "profile", "offline_access"]
+AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.azure.com/user_impersonation")
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
+MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE = "graph"
 DEFAULT_MICROSOFT_GRAPH_SCOPES = (
     "https://graph.microsoft.com/User.Read",
     "https://graph.microsoft.com/User.ReadWrite.All",
@@ -81,7 +79,7 @@ MICROSOFT_ADMIN_SCOPE_PROFILES = {
     "exchange": EXCHANGE_ONLINE_SCOPES,
 }
 MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
-    "arm": "Azure CLI / Azure Resource Manager",
+    "arm": "Azure Resource Manager",
     "graph": "Microsoft Graph Admin",
     "exchange": "Exchange Online",
 }
@@ -110,12 +108,12 @@ def _tool_timeout(arguments: dict[str, Any], default: int = 60) -> int:
 
 
 def azure_device_scope_string() -> str:
-    return " ".join(AZURE_DEVICE_SCOPES)
+    return microsoft_admin_device_scope_string("arm")
 
 
 def microsoft_admin_scope_profile(profile: str | None) -> str:
-    normalized = str(profile or "arm").strip().lower()
-    return normalized if normalized in MICROSOFT_ADMIN_SCOPE_PROFILES else "arm"
+    normalized = str(profile or MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE).strip().lower()
+    return normalized if normalized in MICROSOFT_ADMIN_SCOPE_PROFILES else MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE
 
 
 def microsoft_admin_scope_values(profile: str | None = None) -> list[str]:
@@ -124,19 +122,32 @@ def microsoft_admin_scope_values(profile: str | None = None) -> list[str]:
 
 
 def microsoft_admin_client_id_for_scope_profile(profile: str | None = None) -> str:
-    scope_profile = microsoft_admin_scope_profile(profile)
-    if scope_profile == "arm":
-        return AZURE_CLI_CLIENT_ID
     return MICROSOFT_ADMIN_CLIENT_ID
 
 
 def microsoft_admin_app_name_for_scope_profile(profile: str | None = None) -> str:
-    scope_profile = microsoft_admin_scope_profile(profile)
-    if scope_profile == "arm":
-        return AZURE_CLI_APP_DISPLAY_NAME
-    if MICROSOFT_ADMIN_CLIENT_ID == AZURE_CLI_CLIENT_ID:
-        return AZURE_CLI_APP_DISPLAY_NAME
     return MICROSOFT_ADMIN_APP_DISPLAY_NAME
+
+
+def microsoft_admin_token_client_error(token_data: dict[str, Any] | None) -> str:
+    if not token_data:
+        return ""
+    client_id = str(token_data.get("client_id") or "").strip()
+    if client_id == MICROSOFT_ADMIN_CLIENT_ID:
+        return ""
+    if not client_id:
+        return "Stored Microsoft Admin token is missing its application identity. Reconnect Microsoft Admin."
+    return "Stored Microsoft Admin token was issued for a retired application. Reconnect Microsoft Admin."
+
+
+def _invalid_microsoft_admin_token(token_data: dict[str, Any], message: str) -> dict[str, Any]:
+    return {
+        "client_id": token_data.get("client_id"),
+        "scope_profile": token_data.get("scope_profile"),
+        "username": token_data.get("username"),
+        "refresh_error": message,
+        "error_type": "reconnect_required",
+    }
 
 
 def microsoft_admin_scope_label(profile: str | None = None) -> str:
@@ -160,7 +171,7 @@ def microsoft_admin_device_scope_string(profile: str | None = None) -> str:
 
 
 def azure_token_request_data() -> dict[str, str]:
-    """Return token request fields that mirror Azure CLI/MSAL device auth."""
+    """Return token request fields for the Microsoft Admin ARM profile."""
     return {"scope": azure_device_scope_string(), "client_info": "1"}
 
 
@@ -179,12 +190,12 @@ async def _run_ms_admin_azure_cli(
         unsupported["auth_method"] = "not_required"
         return unsupported
 
-    token_data = await _get_fresh_azure_token(user_id) if user_id else None
+    token_data = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
     if not token_data or not token_data.get("access_token"):
         result = _failed_ms_admin_result(
             request_id=request_id,
             mode="azure_cli",
-            message="Microsoft Admin is not connected for this user.",
+            message="Azure Resource Manager access is not connected for this Microsoft Admin user.",
             command=normalized,
             error_type="not_connected",
             connector=connector_name,
@@ -195,7 +206,7 @@ async def _run_ms_admin_azure_cli(
         result = _failed_ms_admin_result(
             request_id=request_id,
             mode="azure_cli",
-            message="Microsoft Admin token is expired. Reconnect Microsoft Admin for this user.",
+            message="Azure Resource Manager token is expired. Reconnect Microsoft Admin for this user.",
             command=normalized,
             error_type="expired_user_token",
             connector=connector_name,
@@ -208,7 +219,7 @@ async def _run_ms_admin_azure_cli(
         result = _failed_ms_admin_result(
             request_id=request_id,
             mode="azure_cli",
-            message=profile.get("message", "Microsoft Admin Azure CLI profile could not be prepared for this user."),
+            message=profile.get("message", "Azure Resource Manager CLI profile could not be prepared for this Microsoft Admin user."),
             command=normalized,
             error_type="profile_not_ready",
             connector=connector_name,
@@ -239,7 +250,7 @@ async def _run_ms_admin_azure_cli(
     })
     if not result.success:
         output.setdefault("error_type", "command_failed")
-        output.setdefault("message", _command_failure_message(output, "Microsoft Admin Azure CLI command failed."))
+        output.setdefault("message", _command_failure_message(output, "Azure Resource Manager CLI command failed."))
     return output
 
 
@@ -303,7 +314,7 @@ def _command_failure_message(output: dict[str, Any], default: str) -> str:
 
 
 async def run_ms_azure_cli_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute the native Azure CLI interface for the Microsoft Admin connector."""
+    """Execute the Azure Resource Manager CLI surface for the Microsoft Admin connector."""
     request_id = uuid.uuid4().hex[:16]
     timeout = _tool_timeout(arguments, timeout)
     command = str(arguments.get("command") or "").strip()
@@ -471,20 +482,11 @@ async def _run_ms_admin_powershell(
             error_type="not_connected",
             connector=connector_name,
         )
-    profile = await ensure_azure_cli_profile(user_id, token_data) if user_id else {"ready": False}
-    if not profile.get("ready"):
-        return _failed_ms_admin_result(
-            request_id=request_id,
-            mode="powershell",
-            message=profile.get("message", "Microsoft Admin shell profile could not be prepared for this user."),
-            command=script,
-            error_type="profile_not_ready",
-            connector=connector_name,
-        )
-
     env = _ms_admin_env(user_id)
     env["AI_PLATFORM_MS_USERNAME"] = extract_azure_username(token_data)
-    env["AI_PLATFORM_ARM_ACCESS_TOKEN"] = token_data.get("access_token", "")
+    arm_token = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
+    if arm_token and arm_token.get("access_token") and not arm_token.get("refresh_error"):
+        env["AI_PLATFORM_ARM_ACCESS_TOKEN"] = arm_token["access_token"]
     graph_token = await _get_fresh_azure_token_for_scope(user_id, MICROSOFT_GRAPH_SCOPE) if user_id else None
     if graph_token and graph_token.get("access_token") and not graph_token.get("refresh_error"):
         env["AI_PLATFORM_GRAPH_ACCESS_TOKEN"] = graph_token["access_token"]
@@ -518,7 +520,7 @@ def _ms_admin_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformAz {
-    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Microsoft Admin ARM token is not available.' }
+    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Azure Resource Manager token is not available. Reconnect Microsoft Admin or check ARM consent.' }
     Import-Module Az.Accounts -ErrorAction Stop
     $secureToken = ConvertTo-SecureString $env:AI_PLATFORM_ARM_ACCESS_TOKEN -AsPlainText -Force
     Connect-AzAccount -AccessToken $secureToken -AccountId $env:AI_PLATFORM_MS_USERNAME -Tenant $env:AZURE_TENANT_ID | Out-Null
@@ -804,6 +806,9 @@ async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str
     diagnosis = await diagnose_azure_connection(user_id)
     token_data = await retrieve_token("azure", user_id) if user_id else None
     consented_profiles = set((token_data or {}).get("consented_scope_profiles") or [])
+    primary_profile = (token_data or {}).get("scope_profile")
+    if primary_profile:
+        consented_profiles.add(microsoft_admin_scope_profile(primary_profile))
     return {
         **diagnosis,
         "connector": "ms_admin",
@@ -826,7 +831,7 @@ async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str
             "teams_powershell": "MicrosoftTeams",
             "pnp_powershell": "PnP.PowerShell",
             "az_powershell": "Az",
-            "azure_cli": "az",
+            "azure_resource_manager_cli": "az",
             "bicep_cli": "bicep",
             "direct_graph": "https://graph.microsoft.com",
             "powershell_helpers": [
@@ -856,21 +861,26 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
     token_data = await retrieve_token("azure", user_id)
     if not token_data:
         return None
+    client_error = microsoft_admin_token_client_error(token_data)
+    if client_error:
+        return _invalid_microsoft_admin_token(token_data, client_error)
     expires_on = _expires_on(token_data)
     if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
         return token_data
     refresh_token = token_data.get("refresh_token")
     if not refresh_token:
         return token_data
+    scope_profile = microsoft_admin_scope_profile(token_data.get("scope_profile"))
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 AZURE_TOKEN_ENDPOINT,
                 data={
                     "grant_type": "refresh_token",
-                    "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+                    "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
                     "refresh_token": refresh_token,
-                    **azure_token_request_data(),
+                    "scope": microsoft_admin_device_scope_string(scope_profile),
+                    "client_info": "1",
                 },
             )
         data = response.json()
@@ -878,11 +888,12 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
             return {**token_data, "refresh_error": data.get("error_description") or data.get("error") or response.text[:500]}
         updated = {
             **token_data,
-            "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+            "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
             "token_type": data.get("token_type", token_data.get("token_type")),
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token", refresh_token),
             "scope": data.get("scope", token_data.get("scope")),
+            "scope_profile": scope_profile,
             "id_token": data.get("id_token", token_data.get("id_token")),
             "id_token_claims": _azure_identity_claims({"id_token": data.get("id_token")}) or token_data.get("id_token_claims"),
             "client_info": data.get("client_info", token_data.get("client_info")),
@@ -891,39 +902,42 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
         }
         updated["username"] = extract_azure_username(updated)
         await store_token("azure", user_id, updated)
-        await ensure_azure_cli_profile(user_id, updated)
+        if scope_profile == "arm":
+            await ensure_azure_cli_profile(user_id, updated)
         return updated
     except Exception as exc:
-        logger.warning("Azure token refresh failed for user %s: %s", user_id.hex[:12], exc)
+        logger.warning("Microsoft Admin token refresh failed for user %s: %s", user_id.hex[:12], exc)
         return {**token_data, "refresh_error": "token_refresh_failed"}
 
 
 async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) -> Optional[dict[str, Any]]:
-    """Return a fresh Microsoft token for a non-ARM scope without replacing the ARM CLI cache."""
+    """Return a fresh Microsoft token for a requested Microsoft Admin resource."""
     if not user_id:
         return None
     token_data = await retrieve_token("azure", user_id)
     if not token_data:
         return None
+    client_error = microsoft_admin_token_client_error(token_data)
+    if client_error:
+        return _invalid_microsoft_admin_token(token_data, client_error)
     scope_profile = _scope_profile_for_scope(scope)
+    if scope_profile and token_data.get("scope_profile") == scope_profile:
+        expires_on = _expires_on(token_data)
+        if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
+            return token_data
     cached_token = (token_data.get("delegated_tokens") or {}).get(scope_profile) if scope_profile else None
-    if isinstance(cached_token, dict):
+    cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error(cached_token)
+    if cached_token_is_current:
         expires_on = _expires_on(cached_token)
         if cached_token.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
             return {**token_data, **cached_token}
 
-    refresh_token = cached_token.get("refresh_token") if isinstance(cached_token, dict) else None
+    refresh_token = cached_token.get("refresh_token") if cached_token_is_current else None
     refresh_token = refresh_token or token_data.get("refresh_token")
     if not refresh_token:
         profile_name = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
         return {**token_data, "refresh_error": f"Stored {profile_name} token has no refresh token. Reconnect Microsoft Admin."}
-    client_id = (
-        cached_token.get("client_id")
-        if isinstance(cached_token, dict) and cached_token.get("client_id")
-        else microsoft_admin_client_id_for_scope_profile(scope_profile)
-        if scope_profile
-        else token_data.get("client_id") or AZURE_CLI_CLIENT_ID
-    )
+    client_id = microsoft_admin_client_id_for_scope_profile(scope_profile) if scope_profile else MICROSOFT_ADMIN_CLIENT_ID
     scope_request = microsoft_admin_device_scope_string(scope_profile) if scope_profile else f"{scope} openid profile offline_access"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -982,6 +996,20 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
     except Exception as exc:
         logger.warning("Microsoft scoped token refresh failed for user %s scope=%s: %s", user_id.hex[:12], scope, exc)
         return {**token_data, "refresh_error": "token_refresh_failed"}
+
+
+async def warm_microsoft_admin_delegated_tokens(user_id: Optional[UUID]) -> dict[str, Any]:
+    """Best-effort silent token warmup for secondary Microsoft Admin resources."""
+    if not user_id:
+        return {}
+    results: dict[str, Any] = {}
+    for profile, scope in (("exchange", EXCHANGE_ONLINE_SCOPE), ("arm", AZURE_ARM_SCOPE)):
+        token = await _get_fresh_azure_token_for_scope(user_id, scope)
+        results[profile] = {
+            "status": "available" if token and token.get("access_token") and not token.get("refresh_error") else "missing",
+            "message": token.get("refresh_error") if token else "No token returned.",
+        }
+    return results
 
 
 def _scope_profile_for_scope(scope: str) -> str:
@@ -1079,7 +1107,7 @@ async def ensure_azure_cli_profile(
     token_data: dict[str, Any],
     subscriptions_result: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Persist an isolated Azure CLI profile/cache for the connected user."""
+    """Persist an isolated Azure Resource Manager CLI profile/cache for the connected user."""
     if not token_data.get("access_token"):
         return {"ready": False, "message": "Azure is not connected for this user."}
 
@@ -1168,7 +1196,7 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
     }
     response = {key: value for key, value in response.items() if value}
     event = {
-        "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+        "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
         "scope": (token_data.get("scope") or azure_device_scope_string()).split(),
         "token_endpoint": AZURE_TOKEN_ENDPOINT,
         "environment": "login.microsoftonline.com",
@@ -1238,8 +1266,7 @@ def _atomic_write(path: Path, content: str, mode: int) -> None:
 async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
     request_id = uuid.uuid4().hex[:16]
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
-    access_token = token_data.get("access_token") if token_data else None
-    if not access_token:
+    if not token_data or not token_data.get("access_token"):
         return {
             "status": "failed",
             "connector": "ms_admin",
@@ -1255,68 +1282,84 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         }
 
     try:
-        subscriptions_result = await _list_azure_subscriptions(access_token)
-        if not subscriptions_result.get("ok"):
+        graph_token = await _get_fresh_azure_token_for_scope(user_id, MICROSOFT_GRAPH_SCOPE)
+        if not graph_token or not graph_token.get("access_token") or graph_token.get("refresh_error"):
             return {
                 "status": "failed",
                 "connector": "ms_admin",
                 "request_id": request_id,
-                "message": subscriptions_result.get("message", "Microsoft Admin token check failed."),
-                "stderr": subscriptions_result.get("stderr", ""),
+                "message": (
+                    graph_token.get("refresh_error")
+                    if graph_token
+                    else "Microsoft Graph token is not available. Reconnect Microsoft Admin."
+                ),
+                "graph_status": "failed",
             }
-        subscriptions = subscriptions_result.get("subscriptions", [])
-        profile = await ensure_azure_cli_profile(user_id, token_data, subscriptions_result) if user_id else {"ready": False}
-        if not profile.get("ready"):
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{MICROSOFT_GRAPH_BASE_URL.rstrip('/')}/v1.0/me?$select=id,displayName,userPrincipalName,mail",
+                headers={"Authorization": f"Bearer {graph_token['access_token']}"},
+            )
+        graph_data = _graph_response_data(response)
+        error_type, graph_message = _graph_error_details(graph_data, response.status_code)
+        if response.status_code >= 400:
             return {
                 "status": "failed",
                 "connector": "ms_admin",
                 "request_id": request_id,
-                "message": profile.get("message", "Microsoft Admin Azure CLI profile could not be prepared for this user."),
-                "cli_profile_ready": False,
-                "subscriptions": [
-                    {
-                        "subscription_id": sub.get("subscriptionId"),
-                        "display_name": sub.get("displayName"),
-                        "state": sub.get("state"),
-                    }
-                    for sub in subscriptions[:10]
-                ],
+                "message": graph_message or "Microsoft Graph validation failed.",
+                "error_type": error_type or "graph_validation_failed",
+                "graph_status": "failed",
+                "status_code": response.status_code,
             }
-        cli_check = await validate_azure_cli_profile(user_id) if user_id else {"ready": False}
-        if not cli_check.get("ready"):
-            return {
-                "status": "failed",
-                "connector": "ms_admin",
-                "request_id": request_id,
-                "message": cli_check.get("message", "Microsoft Admin Azure CLI profile validation failed."),
-                "stderr": cli_check.get("stderr", ""),
-                "cli_profile_ready": False,
-                "subscriptions": [
-                    {
-                        "subscription_id": sub.get("subscriptionId"),
-                        "display_name": sub.get("displayName"),
-                        "state": sub.get("state"),
-                    }
-                    for sub in subscriptions[:10]
-                ],
+
+        secondary = await warm_microsoft_admin_delegated_tokens(user_id)
+        arm_details: dict[str, Any] = {}
+        arm_token = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE)
+        if arm_token and arm_token.get("access_token") and not arm_token.get("refresh_error"):
+            subscriptions_result = await _list_azure_subscriptions(arm_token["access_token"])
+            if subscriptions_result.get("ok"):
+                subscriptions = subscriptions_result.get("subscriptions", [])
+                arm_details = {
+                    "status": "available",
+                    "subscriptions_count": len(subscriptions),
+                    "subscriptions": [
+                        {
+                            "subscription_id": sub.get("subscriptionId"),
+                            "display_name": sub.get("displayName"),
+                            "state": sub.get("state"),
+                        }
+                        for sub in subscriptions[:10]
+                    ],
+                }
+            else:
+                arm_details = {
+                    "status": "limited",
+                    "message": subscriptions_result.get("message"),
+                    "stderr": subscriptions_result.get("stderr", ""),
+                }
+        else:
+            arm_details = {
+                "status": "missing",
+                "message": arm_token.get("refresh_error") if arm_token else "Azure Resource Manager token is not available.",
             }
+
         return {
             "status": "success",
             "connector": "ms_admin",
             "request_id": request_id,
-            "message": f"Microsoft Admin token is valid. Visible Azure subscriptions: {len(subscriptions)}.",
-            "cli_profile_ready": bool(profile.get("ready")),
-            "subscriptions": [
-                {
-                    "subscription_id": sub.get("subscriptionId"),
-                    "display_name": sub.get("displayName"),
-                    "state": sub.get("state"),
-                }
-                for sub in subscriptions[:10]
-            ],
+            "message": "Microsoft Admin is connected. Microsoft Graph validation succeeded.",
+            "graph_status": "available",
+            "graph_user": graph_data if isinstance(graph_data, dict) else {},
+            "authorization_profiles": {
+                "graph": {"status": "available", "label": microsoft_admin_scope_label("graph")},
+                "exchange": {"label": microsoft_admin_scope_label("exchange"), **secondary.get("exchange", {})},
+                "arm": {"label": microsoft_admin_scope_label("arm"), **arm_details},
+            },
         }
     except Exception as exc:
-        logger.warning("Azure diagnostics failed for request_id=%s: %s", request_id, exc)
+        logger.warning("Microsoft Admin diagnostics failed for request_id=%s: %s", request_id, exc)
         return {
             "status": "failed",
             "connector": "ms_admin",
@@ -1341,7 +1384,7 @@ async def validate_azure_cli_profile(user_id: UUID, timeout: int = 20) -> dict[s
     output = result.to_dict()
     return {
         "ready": False,
-        "message": output.get("error") or output.get("stderr") or "Azure CLI profile validation failed.",
+        "message": output.get("error") or output.get("stderr") or "Azure Resource Manager CLI profile validation failed.",
         "stderr": output.get("stderr", ""),
         "exit_code": output.get("exit_code"),
     }

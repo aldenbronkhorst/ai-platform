@@ -63,7 +63,7 @@ param searchSku string = 'free'
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
-@description('Microsoft Admin public client app ID for Graph/Exchange delegated device auth')
+@description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')
 param microsoftAdminClientId string = '8a178920-de9e-41cf-af4e-c3012fc3bbd2'
 
 @description('Microsoft Admin public client display name')

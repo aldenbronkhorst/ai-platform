@@ -384,7 +384,7 @@ KNOWN_CONNECTOR_TYPES = ["odoo", "github", "azure"]
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
     "github": "GitHub",
-    "azure": "Microsoft Admin / Azure",
+    "azure": "Microsoft Admin",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
@@ -1773,8 +1773,8 @@ def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, 
                 "If the evidence is enough, answer directly and concisely. "
                 "If the evidence is partial, truncated, or blocked by tool errors, say exactly what is known "
                 "and what is still missing. Do not invent data. "
-                "For Microsoft Admin / Azure, distinguish connector availability from operation failures: "
-                "a failed command or unsupported CLI subcommand does not mean Azure is disconnected unless the "
+                "For Microsoft Admin, distinguish connector availability from operation failures: "
+                "a failed command or unsupported CLI subcommand does not mean Microsoft Admin is disconnected unless the "
                 "tool result explicitly says not_connected."
             ),
         },
@@ -2139,9 +2139,9 @@ def _guard_connected_system_denial(
     if _ms_admin_tool_summary_has_connected_access_error(tool_error_summary):
         return content
 
-    logger.warning("Correcting assistant response that contradicted connected Microsoft Admin / Azure account")
+    logger.warning("Correcting assistant response that contradicted connected Microsoft Admin account")
     return (
-        "Microsoft Admin / Azure is connected for this user. I cannot verify Azure cost figures or a cost "
+        "Microsoft Admin is connected for this user. I cannot verify Azure cost figures or a cost "
         "breakdown unless they come from a successful Azure Cost Management tool result. For this request, "
         "I should query Cost Management through `ms_azure_cli` using `az rest`, or report the exact command, RBAC, "
         "billing, or permission error if that query fails."
@@ -2193,9 +2193,9 @@ async def _get_connector_context(
             lines.append(f"  {icon} {display_name}: {status}")
             if conn_type == "azure" and status == "connected":
                 lines.append(
-                    "    Microsoft Admin / Azure includes Azure CLI, Az PowerShell, Bicep, Microsoft Graph, "
-                    "Exchange, Teams, and Microsoft 365 admin access through the signed-in Microsoft session. "
-                    "Specific operations can still fail because of RBAC, billing, or Graph consent."
+                    "    Microsoft Admin includes Microsoft Graph, Exchange, Teams, SharePoint/PnP, Intune, "
+                    "Azure Resource Manager CLI, Az PowerShell, and Bicep through the signed-in Microsoft session. "
+                    "Specific operations can still fail because of admin role, Graph consent, Exchange role, RBAC, or billing permission."
                 )
         else:
             lines.append(f"  - {display_name}: not connected")
@@ -2363,9 +2363,9 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Microsoft Admin: use the broad native-interface tools only: `ms_azure_cli`, `ms_graph`, "
             "`ms_powershell`, and `ms_bicep`. Do not invent detailed Microsoft tools and do not use `ms_admin` "
             "unless handling a legacy call. "
-            "The Azure connected account is this Microsoft Admin connector; do not split Azure Cost Management into "
-            "a separate connector and do not claim Azure is disconnected while Microsoft Admin / Azure is connected. "
-            "Use `ms_azure_cli` for native Azure CLI commands, `ms_graph` for direct Microsoft Graph requests, "
+            "Azure Resource Manager is one capability inside Microsoft Admin; do not split Azure Cost Management into "
+            "a separate connector and do not claim Microsoft Admin is disconnected while this connector is connected. "
+            "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
             "`ms_powershell` for Microsoft Graph/Exchange/Teams/Az/PnP PowerShell cmdlets, and `ms_bicep` for "
             "Bicep CLI validation/build work. "
             "For Azure Cost Management or spend questions, do not use `az costmanagement query`; use `ms_azure_cli` with "

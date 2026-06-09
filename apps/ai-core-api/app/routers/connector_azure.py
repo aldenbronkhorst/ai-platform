@@ -20,7 +20,6 @@ from app.services.connector_commands import (
     TENANT_ID,
     AZURE_TOKEN_ENDPOINT,
     diagnose_azure_connection,
-    ensure_azure_cli_profile,
     extract_azure_username,
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_client_id_for_scope_profile,
@@ -28,8 +27,9 @@ from app.services.connector_commands import (
     microsoft_admin_scope_label,
     microsoft_admin_scope_profile,
     microsoft_admin_scope_summary,
+    microsoft_admin_token_client_error,
     run_ms_admin_tool,
-    validate_azure_cli_profile,
+    warm_microsoft_admin_delegated_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,31 +139,40 @@ async def device_code_callback(
         }
         token_payload["username"] = extract_azure_username(token_payload)
         existing_token = await retrieve_token("azure", user_id) or {}
-        token_payload["delegated_tokens"] = existing_token.get("delegated_tokens") or {}
+        existing_token_is_current = not microsoft_admin_token_client_error(existing_token)
+        delegated_tokens = dict(existing_token.get("delegated_tokens") or {}) if existing_token_is_current else {}
+        delegated_tokens[scope_profile] = {
+            "client_id": client_id,
+            "token_type": token_payload.get("token_type"),
+            "access_token": token_payload.get("access_token"),
+            "refresh_token": token_payload.get("refresh_token"),
+            "scope": token_payload.get("scope"),
+            "scope_profile": scope_profile,
+            "id_token": token_payload.get("id_token"),
+            "client_info": token_payload.get("client_info"),
+            "expires_in": token_payload.get("expires_in"),
+            "expires_on": token_payload.get("expires_on"),
+        }
+        token_payload["delegated_tokens"] = delegated_tokens
         token_payload["consented_scope_profiles"] = sorted({
-            *(existing_token.get("consented_scope_profiles") or []),
+            *((existing_token.get("consented_scope_profiles") or []) if existing_token_is_current else []),
             scope_profile,
         })
-        if scope_profile != "arm":
-            delegated_tokens = dict(existing_token.get("delegated_tokens") or {})
-            delegated_tokens[scope_profile] = {
-                "client_id": client_id,
-                "token_type": data.get("token_type"),
-                "access_token": data.get("access_token"),
-                "refresh_token": data.get("refresh_token"),
-                "scope": data.get("scope"),
-                "scope_profile": scope_profile,
-                "id_token": data.get("id_token"),
-                "client_info": data.get("client_info"),
-                "expires_in": data.get("expires_in"),
-                "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
-            }
+        if scope_profile != "graph":
+            if not existing_token_is_current:
+                return {
+                    "status": "error",
+                    "error": "microsoft_admin_reconnect_required",
+                    "message": "Reconnect Microsoft Admin with the primary Microsoft Graph profile before adding secondary profiles.",
+                    "request_id": request_id,
+                }
             merged_token = {
                 **existing_token,
-                "client_id": existing_token.get("client_id") or microsoft_admin_client_id_for_scope_profile("arm"),
+                "client_id": existing_token.get("client_id") or client_id,
                 "delegated_tokens": delegated_tokens,
                 "consented_scope_profiles": token_payload["consented_scope_profiles"],
                 "username": existing_token.get("username") or token_payload["username"],
+                "scope_profile": existing_token.get("scope_profile") or "graph",
             }
             stored = await store_token("azure", user_id, merged_token)
             if not stored:
@@ -187,49 +196,13 @@ async def device_code_callback(
                 "scope_profile": scope_profile,
                 "scope_label": microsoft_admin_scope_label(scope_profile),
                 "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
-                "cli_profile_ready": bool(existing_token.get("access_token")),
+                "authorization_profiles": merged_token.get("consented_scope_profiles", []),
             }
 
         stored = await store_token("azure", user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
-
-        profile = await ensure_azure_cli_profile(user_id, token_payload)
-        if not profile.get("ready"):
-            await upsert_delegated_account(
-                db,
-                "azure",
-                user_id,
-                token_data=token_payload,
-                status="error",
-                username=token_payload.get("username"),
-                permission_summary=profile.get("message", "Could not prepare Microsoft Admin profile."),
-                commit=True,
-            )
-            return {
-                "status": "error",
-                "error": "azure_cli_profile_failed",
-                "message": profile.get("message", "Could not prepare Microsoft Admin profile."),
-                "request_id": request_id,
-            }
-        cli_check = await validate_azure_cli_profile(user_id)
-        if not cli_check.get("ready"):
-            await upsert_delegated_account(
-                db,
-                "azure",
-                user_id,
-                token_data=token_payload,
-                status="error",
-                username=token_payload.get("username"),
-                permission_summary=cli_check.get("message", "Microsoft Admin profile validation failed."),
-                commit=True,
-            )
-            return {
-                "status": "error",
-                "error": "azure_cli_profile_failed",
-                "message": cli_check.get("message", "Microsoft Admin profile validation failed."),
-                "request_id": request_id,
-            }
+        warmed_profiles = await warm_microsoft_admin_delegated_tokens(user_id)
         await upsert_delegated_account(
             db,
             "azure",
@@ -249,7 +222,10 @@ async def device_code_callback(
             "scope_profile": scope_profile,
             "scope_label": microsoft_admin_scope_label(scope_profile),
             "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
-            "cli_profile_ready": True,
+            "authorization_profiles": {
+                "primary": scope_profile,
+                **warmed_profiles,
+            },
         }
     except Exception as exc:
         logger.warning("Microsoft Admin device-code callback failed request_id=%s: %s", request_id, exc)

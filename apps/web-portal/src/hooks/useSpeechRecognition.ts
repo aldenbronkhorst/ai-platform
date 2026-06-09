@@ -55,10 +55,8 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
   );
   const [interimTranscript, setInterimTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
   const shouldListenRef = useRef(false);
   const startInProgressRef = useRef(false);
-  const restartTimerRef = useRef<number | null>(null);
   const stopFlushTimerRef = useRef<number | null>(null);
   const interimTranscriptRef = useRef("");
   const spokenTranscriptRef = useRef("");
@@ -70,30 +68,11 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     onTranscriptRef.current = onTranscript;
   }, [onTranscript]);
 
-  const clearRestartTimer = useCallback(() => {
-    if (restartTimerRef.current) {
-      window.clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
-  }, []);
-
   const clearStopFlushTimer = useCallback(() => {
     if (stopFlushTimerRef.current) {
       window.clearTimeout(stopFlushTimerRef.current);
       stopFlushTimerRef.current = null;
     }
-  }, []);
-
-  const releaseMicStream = useCallback(() => {
-    micStreamRef.current?.getTracks().forEach(track => track.stop());
-    micStreamRef.current = null;
-  }, []);
-
-  const ensureMicStream = useCallback(async () => {
-    const existingStream = micStreamRef.current;
-    if (existingStream?.getTracks().some(track => track.readyState === "live")) return;
-    if (!window.navigator.mediaDevices?.getUserMedia) return;
-    micStreamRef.current = await window.navigator.mediaDevices.getUserMedia({ audio: true });
   }, []);
 
   const normalizeTranscript = useCallback((transcript: string) => {
@@ -191,53 +170,36 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         shouldListenRef.current = false;
         startInProgressRef.current = false;
-        clearRestartTimer();
         clearStopFlushTimer();
         resetTranscriptBuffer();
-        releaseMicStream();
         setVoiceState("denied");
         return;
       }
       if (event.error === "aborted") {
         flushTranscriptBuffer();
         startInProgressRef.current = false;
-        if (!shouldListenRef.current) {
-          releaseMicStream();
-          setVoiceState("idle");
-        }
+        shouldListenRef.current = false;
+        setVoiceState("idle");
         return;
       }
-      setVoiceState(shouldListenRef.current ? "listening" : "idle");
+      flushTranscriptBuffer();
+      shouldListenRef.current = false;
+      startInProgressRef.current = false;
+      setVoiceState("idle");
     };
     recognition.onend = () => {
       startInProgressRef.current = false;
       clearStopFlushTimer();
       flushTranscriptBuffer();
-      if (!shouldListenRef.current) {
-        releaseMicStream();
-        setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
-        return;
-      }
-      restartTimerRef.current = window.setTimeout(() => {
-        restartTimerRef.current = null;
-        try {
-          committedResultIndexesRef.current.clear();
-          recognition.start();
-        } catch {
-          shouldListenRef.current = false;
-          releaseMicStream();
-          setVoiceState("idle");
-        }
-      }, 300);
+      shouldListenRef.current = false;
+      setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
     };
     recognitionRef.current = recognition;
 
     return () => {
       shouldListenRef.current = false;
-      clearRestartTimer();
       clearStopFlushTimer();
       resetTranscriptBuffer();
-      releaseMicStream();
       recognition.onstart = null;
       recognition.onresult = null;
       recognition.onerror = null;
@@ -250,14 +212,12 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       recognitionRef.current = null;
     };
   }, [
-    clearRestartTimer,
     clearStopFlushTimer,
     emitTranscript,
     flushTranscriptBuffer,
     markTranscriptEmitted,
     normalizeTranscript,
     pendingTranscript,
-    releaseMicStream,
     resetTranscriptBuffer,
   ]);
 
@@ -266,7 +226,6 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     if (shouldListenRef.current || startInProgressRef.current || voiceState === "listening" || voiceState === "processing") {
       shouldListenRef.current = false;
       startInProgressRef.current = false;
-      clearRestartTimer();
       clearStopFlushTimer();
       try {
         recognitionRef.current?.stop();
@@ -276,7 +235,6 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       stopFlushTimerRef.current = window.setTimeout(() => {
         stopFlushTimerRef.current = null;
         flushTranscriptBuffer();
-        releaseMicStream();
         setVoiceState("idle");
       }, 800);
       setVoiceState("processing");
@@ -289,10 +247,8 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       resetTranscriptBuffer();
       setVoiceState("processing");
       try {
-        await ensureMicStream();
         if (!shouldListenRef.current) {
           startInProgressRef.current = false;
-          releaseMicStream();
           setVoiceState("idle");
           return;
         }
@@ -301,14 +257,12 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       } catch (err) {
         shouldListenRef.current = false;
         startInProgressRef.current = false;
-        clearRestartTimer();
         clearStopFlushTimer();
         resetTranscriptBuffer();
-        releaseMicStream();
         setVoiceState(isPermissionDeniedError(err) ? "denied" : "idle");
       }
     })();
-  }, [clearRestartTimer, clearStopFlushTimer, ensureMicStream, flushTranscriptBuffer, releaseMicStream, resetTranscriptBuffer, voiceState]);
+  }, [clearStopFlushTimer, flushTranscriptBuffer, resetTranscriptBuffer, voiceState]);
 
   return { voiceState, toggleVoice, interimTranscript };
 }

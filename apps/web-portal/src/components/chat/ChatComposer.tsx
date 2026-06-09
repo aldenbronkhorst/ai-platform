@@ -59,8 +59,9 @@ export function ChatComposer({
     const newHeight = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${newHeight}px`;
     const stackThreshold = window.innerWidth < 640 ? 44 : 96;
-    setIsComposerExpanded(chatInput.includes("\n") || chatInput.length > stackThreshold);
-  }, [chatInput, isComposerExpanded]);
+    const shouldExpand = chatInput.includes("\n") || chatInput.length > stackThreshold || ta.scrollHeight > 48;
+    setIsComposerExpanded(prev => prev === shouldExpand ? prev : shouldExpand);
+  }, [chatInput]);
 
   const isListening = voiceState === "listening";
   const isVoiceProcessing = voiceState === "processing";
@@ -74,7 +75,7 @@ export function ChatComposer({
       : placeholder;
   const controlButtonClass = "h-9 w-9 inline-flex items-center justify-center rounded-lg transition-all shrink-0 [&>svg]:block";
   const idleControlClass = "text-muted hover-text-default hover-bg-surface";
-  const textareaClass = "flex-1 min-w-0 min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-5";
+  const textareaClass = `${isComposerExpanded ? "w-full" : "flex-1"} min-w-0 min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-5`;
 
   const uploadButton = (
     <button
@@ -179,12 +180,31 @@ export function ChatComposer({
         <form
           ref={formRef}
           onSubmit={onSend}
-          className={`flex ${isComposerExpanded ? "items-end" : "items-center"} gap-1 p-1 sm:p-1.5`}
+          className={`${isComposerExpanded ? "flex flex-col gap-1.5" : "flex items-center gap-1"} p-1 sm:p-1.5`}
         >
-          {uploadButton}
-          {textarea}
-          {voiceButton}
-          {sendButton}
+          {isComposerExpanded ? (
+            <>
+              <div className="w-full px-1">
+                {textarea}
+              </div>
+              <div className="flex w-full items-center justify-between">
+                <div className="flex items-center gap-1">
+                  {uploadButton}
+                </div>
+                <div className="flex items-center gap-1">
+                  {voiceButton}
+                  {sendButton}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              {uploadButton}
+              {textarea}
+              {voiceButton}
+              {sendButton}
+            </>
+          )}
         </form>
       </div>
     </div>
