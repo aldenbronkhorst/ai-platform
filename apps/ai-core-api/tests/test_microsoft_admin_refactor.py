@@ -18,6 +18,44 @@ MICROSOFT_ADMIN_TOOLS = {
 }
 
 
+def test_connector_commands_module_is_removed_from_active_runtime():
+    repo_root = Path(__file__).resolve().parents[3]
+    assert not (repo_root / "apps/ai-core-api/app/services/connector_commands.py").exists()
+
+    active_roots = [
+        repo_root / "apps/ai-core-api/app",
+        repo_root / "apps/ai-core-api/scripts",
+    ]
+    violations: list[str] = []
+    for active_root in active_roots:
+        for path in active_root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "services.connector_commands" in text:
+                violations.append(str(path.relative_to(repo_root)))
+
+    assert violations == []
+
+
+def test_microsoft_admin_tool_runners_import_from_split_modules():
+    from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
+    from app.services.connectors.microsoft_admin.bicep import run_ms_bicep_tool
+    from app.services.connectors.microsoft_admin.graph import run_ms_graph_tool
+    from app.services.connectors.microsoft_admin.powershell_az import run_ms_az_powershell_tool
+    from app.services.connectors.microsoft_admin.powershell_exchange import run_ms_exchange_powershell_tool
+    from app.services.connectors.microsoft_admin.powershell_graph import run_ms_graph_powershell_tool
+    from app.services.connectors.microsoft_admin.powershell_pnp import run_ms_sharepoint_pnp_powershell_tool
+    from app.services.connectors.microsoft_admin.powershell_teams import run_ms_teams_powershell_tool
+
+    assert callable(run_ms_graph_tool)
+    assert callable(run_ms_azure_cli_tool)
+    assert callable(run_ms_bicep_tool)
+    assert callable(run_ms_graph_powershell_tool)
+    assert callable(run_ms_exchange_powershell_tool)
+    assert callable(run_ms_teams_powershell_tool)
+    assert callable(run_ms_sharepoint_pnp_powershell_tool)
+    assert callable(run_ms_az_powershell_tool)
+
+
 def test_tool_registry_uses_microsoft_admin_not_azure_connector():
     assert "microsoft_admin" in CONNECTOR_TOOLS_BY_SYSTEM
     assert "azure" not in CONNECTOR_TOOLS_BY_SYSTEM

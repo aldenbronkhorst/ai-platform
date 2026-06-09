@@ -21,7 +21,7 @@ from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.services.connected_account_state import effective_connected_accounts
-from app.services.connector_commands import (
+from app.services.connectors.microsoft_admin.constants import (
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_scope_label,
     microsoft_admin_scope_summary,

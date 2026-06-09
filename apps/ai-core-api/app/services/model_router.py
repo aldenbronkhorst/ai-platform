@@ -1235,17 +1235,15 @@ async def _execute_tool_call_impl(
         return result
 
     if tool_name in MICROSOFT_ADMIN_TOOL_NAMES or tool_name == "github_cli":
-        from app.services.connector_commands import (
-            run_github_cli_command,
-            run_ms_az_powershell_tool,
-            run_ms_azure_cli_tool,
-            run_ms_bicep_tool,
-            run_ms_exchange_powershell_tool,
-            run_ms_graph_powershell_tool,
-            run_ms_graph_tool,
-            run_ms_sharepoint_pnp_powershell_tool,
-            run_ms_teams_powershell_tool,
-        )
+        from app.services.connectors.github_cli import run_github_cli_command
+        from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
+        from app.services.connectors.microsoft_admin.bicep import run_ms_bicep_tool
+        from app.services.connectors.microsoft_admin.graph import run_ms_graph_tool
+        from app.services.connectors.microsoft_admin.powershell_az import run_ms_az_powershell_tool
+        from app.services.connectors.microsoft_admin.powershell_exchange import run_ms_exchange_powershell_tool
+        from app.services.connectors.microsoft_admin.powershell_graph import run_ms_graph_powershell_tool
+        from app.services.connectors.microsoft_admin.powershell_pnp import run_ms_sharepoint_pnp_powershell_tool
+        from app.services.connectors.microsoft_admin.powershell_teams import run_ms_teams_powershell_tool
 
         command = str(arguments.get("command", ""))
         timeout = int(arguments.get("timeout", 60))

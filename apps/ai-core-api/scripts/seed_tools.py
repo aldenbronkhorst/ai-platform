@@ -13,6 +13,8 @@ from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, CONNECTOR_SYSTEM
 
 settings = get_settings()
 
+STALE_CONNECTOR_TARGET_SYSTEMS = {"azure"}
+
 TOOLS = [
     # ── Primary Connector Surface ──
 
@@ -241,6 +243,14 @@ async def seed_tools():
                 )
                 session.add(tool)
 
+        await session.execute(
+            update(AITool)
+            .where(
+                AITool.status == "active",
+                AITool.target_system.in_(STALE_CONNECTOR_TARGET_SYSTEMS),
+            )
+            .values(status="archived", updated_at=datetime.now(timezone.utc))
+        )
         archived = await session.execute(
             update(AITool)
             .where(

@@ -2,11 +2,62 @@ import base64
 import json
 import time
 import uuid
+from types import SimpleNamespace
 
 import msal
 import pytest
 
-from app.services import connector_commands as microsoft_admin_commands
+from app.services.connectors.microsoft_admin import (
+    azure_cli,
+    bicep,
+    constants,
+    graph,
+    powershell_az,
+    powershell_common,
+    powershell_exchange,
+    powershell_graph,
+    powershell_pnp,
+    powershell_teams,
+    tokens,
+)
+
+microsoft_admin_commands = SimpleNamespace(
+    AZURE_ARM_SCOPE=constants.AZURE_ARM_SCOPE,
+    EXCHANGE_ONLINE_SCOPE=constants.EXCHANGE_ONLINE_SCOPE,
+    MICROSOFT_ADMIN_APP_DISPLAY_NAME=constants.MICROSOFT_ADMIN_APP_DISPLAY_NAME,
+    MICROSOFT_ADMIN_CLIENT_ID=constants.MICROSOFT_ADMIN_CLIENT_ID,
+    MICROSOFT_GRAPH_SCOPE=constants.MICROSOFT_GRAPH_SCOPE,
+    MICROSOFT_GRAPH_SCOPES=constants.MICROSOFT_GRAPH_SCOPES,
+    MS_AZURE_CLI_ALLOWED_BINARIES=constants.MS_AZURE_CLI_ALLOWED_BINARIES,
+    MS_BICEP_ALLOWED_BINARIES=constants.MS_BICEP_ALLOWED_BINARIES,
+    MS_POWERSHELL_ALLOWED_BINARIES=constants.MS_POWERSHELL_ALLOWED_BINARIES,
+    TENANT_ID=constants.TENANT_ID,
+    _get_fresh_microsoft_admin_token=tokens._get_fresh_microsoft_admin_token,
+    _get_fresh_microsoft_admin_token_for_scope=tokens._get_fresh_microsoft_admin_token_for_scope,
+    _microsoft_admin_scope_request=tokens._microsoft_admin_scope_request,
+    _scope_profile_for_scope=tokens._scope_profile_for_scope,
+    _sharepoint_scope_for_url=tokens._sharepoint_scope_for_url,
+    _write_azure_cli_files=azure_cli._write_azure_cli_files,
+    ensure_azure_cli_profile=azure_cli.ensure_azure_cli_profile,
+    extract_microsoft_admin_username=tokens.extract_microsoft_admin_username,
+    httpx=tokens.httpx,
+    microsoft_admin_app_name_for_scope_profile=constants.microsoft_admin_app_name_for_scope_profile,
+    microsoft_admin_arm_device_scope_string=constants.microsoft_admin_arm_device_scope_string,
+    microsoft_admin_arm_token_request_data=constants.microsoft_admin_arm_token_request_data,
+    microsoft_admin_client_id_for_scope_profile=constants.microsoft_admin_client_id_for_scope_profile,
+    microsoft_admin_device_scope_string=constants.microsoft_admin_device_scope_string,
+    microsoft_admin_scope_profile=constants.microsoft_admin_scope_profile,
+    microsoft_admin_scope_summary=constants.microsoft_admin_scope_summary,
+    run_ms_az_powershell_tool=powershell_az.run_ms_az_powershell_tool,
+    run_ms_azure_cli_tool=azure_cli.run_ms_azure_cli_tool,
+    run_ms_bicep_tool=bicep.run_ms_bicep_tool,
+    run_ms_exchange_powershell_tool=powershell_exchange.run_ms_exchange_powershell_tool,
+    run_ms_graph_powershell_tool=powershell_graph.run_ms_graph_powershell_tool,
+    run_ms_graph_tool=graph.run_ms_graph_tool,
+    run_ms_sharepoint_pnp_powershell_tool=powershell_pnp.run_ms_sharepoint_pnp_powershell_tool,
+    run_ms_teams_powershell_tool=powershell_teams.run_ms_teams_powershell_tool,
+    validate_azure_cli_profile=azure_cli.validate_azure_cli_profile,
+)
 
 
 def _base64url_json(payload: dict) -> str:
@@ -57,7 +108,7 @@ def test_sharepoint_profile_uses_target_site_scope():
 
 
 def test_microsoft_admin_client_id_is_profile_specific(monkeypatch):
-    monkeypatch.setattr(microsoft_admin_commands, "MICROSOFT_ADMIN_CLIENT_ID", "admin-client-id")
+    monkeypatch.setattr(constants, "MICROSOFT_ADMIN_CLIENT_ID", "admin-client-id")
 
     assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("arm") == "admin-client-id"
     assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("graph") == "admin-client-id"
@@ -206,7 +257,7 @@ async def test_validate_azure_cli_profile_forces_msal_token_lookup(monkeypatch, 
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(azure_cli, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.validate_azure_cli_profile(uuid.uuid4())
 
@@ -256,9 +307,9 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
-    monkeypatch.setattr(microsoft_admin_commands, "ensure_azure_cli_profile", fake_profile)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(azure_cli, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
+    monkeypatch.setattr(azure_cli, "ensure_azure_cli_profile", fake_profile)
+    monkeypatch.setattr(azure_cli, "run_command", fake_run_command)
     user_id = uuid.uuid4()
 
     result = await microsoft_admin_commands.run_ms_azure_cli_tool(
@@ -316,9 +367,9 @@ async def test_ms_azure_cli_costmanagement_query_uses_native_cli_path(monkeypatc
 
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
-    monkeypatch.setattr(microsoft_admin_commands, "ensure_azure_cli_profile", fake_profile)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(azure_cli, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
+    monkeypatch.setattr(azure_cli, "ensure_azure_cli_profile", fake_profile)
+    monkeypatch.setattr(azure_cli, "run_command", fake_run_command)
     user_id = uuid.uuid4()
 
     result = await microsoft_admin_commands.run_ms_azure_cli_tool(
@@ -366,9 +417,9 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
     async def fake_run_command(command, timeout, env, allowed_binaries=None):
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
-    monkeypatch.setattr(microsoft_admin_commands, "ensure_azure_cli_profile", fake_profile)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(azure_cli, "_get_fresh_microsoft_admin_token_for_scope", fake_token)
+    monkeypatch.setattr(azure_cli, "ensure_azure_cli_profile", fake_profile)
+    monkeypatch.setattr(azure_cli, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.run_ms_azure_cli_tool(
         {"command": "account show"},
@@ -385,7 +436,7 @@ async def test_ms_graph_powershell_rejects_github_commands(monkeypatch):
     async def unexpected_token_lookup(*_args, **_kwargs):
         raise AssertionError("token lookup should not run for rejected GitHub command")
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", unexpected_token_lookup)
+    monkeypatch.setattr(powershell_graph, "get_microsoft_admin_token", unexpected_token_lookup)
 
     result = await microsoft_admin_commands.run_ms_graph_powershell_tool(
         {"script": "gh run list --repo owner/repo"},
@@ -433,8 +484,8 @@ async def test_ms_graph_powershell_uses_only_graph_token(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", fake_get_token)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(powershell_graph, "get_microsoft_admin_token", fake_get_token)
+    monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.run_ms_graph_powershell_tool(
         {"script": "Connect-AIPlatformGraph\nGet-MgUser -Top 1", "timeout": 45},
@@ -490,8 +541,8 @@ async def test_ms_teams_powershell_requires_graph_and_teams_tokens(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", fake_get_token)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(powershell_teams, "get_microsoft_admin_token", fake_get_token)
+    monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.run_ms_teams_powershell_tool(
         {"script": "Connect-AIPlatformTeams\nGet-Team"},
@@ -514,7 +565,7 @@ async def test_ms_sharepoint_pnp_requires_site_url_before_token_lookup(monkeypat
     async def unexpected_token_lookup(*_args, **_kwargs):
         raise AssertionError("token lookup should not run without a SharePoint URL")
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", unexpected_token_lookup)
+    monkeypatch.setattr(powershell_pnp, "get_microsoft_admin_token", unexpected_token_lookup)
 
     result = await microsoft_admin_commands.run_ms_sharepoint_pnp_powershell_tool(
         {"script": "Connect-AIPlatformPnP\nGet-PnPList"},
@@ -560,8 +611,8 @@ async def test_ms_sharepoint_pnp_uses_target_sharepoint_token(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", fake_get_token)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(powershell_pnp, "get_microsoft_admin_token", fake_get_token)
+    monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.run_ms_sharepoint_pnp_powershell_tool(
         {"site_url": site_url, "script": "Connect-AIPlatformPnP\nGet-PnPList"},
@@ -623,8 +674,9 @@ async def test_module_specific_powershell_tools_inject_only_required_token(
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "get_microsoft_admin_token", fake_get_token)
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    module = powershell_exchange if runner_name == "run_ms_exchange_powershell_tool" else powershell_az
+    monkeypatch.setattr(module, "get_microsoft_admin_token", fake_get_token)
+    monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
 
     runner = getattr(microsoft_admin_commands, runner_name)
     result = await runner({"script": script}, uuid.uuid4())
@@ -669,7 +721,7 @@ async def test_ms_bicep_uses_only_bicep_binary(monkeypatch):
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(microsoft_admin_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(bicep, "run_command", fake_run_command)
 
     result = await microsoft_admin_commands.run_ms_bicep_tool(
         {"command": "version"},
@@ -740,9 +792,9 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
             captured["data"] = data
             return FakeResponse()
 
-    monkeypatch.setattr(microsoft_admin_commands, "retrieve_token", fake_retrieve)
-    monkeypatch.setattr(microsoft_admin_commands, "store_token", fake_store)
-    monkeypatch.setattr(microsoft_admin_commands.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(tokens, "store_token", fake_store)
+    monkeypatch.setattr(tokens.httpx, "AsyncClient", FakeClient)
 
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(user_id, microsoft_admin_commands.MICROSOFT_GRAPH_SCOPE)
 
@@ -818,9 +870,9 @@ async def test_scoped_arm_token_without_cli_account_metadata_refreshes_when_requ
             captured["data"] = data
             return FakeResponse()
 
-    monkeypatch.setattr(microsoft_admin_commands, "retrieve_token", fake_retrieve)
-    monkeypatch.setattr(microsoft_admin_commands, "store_token", fake_store)
-    monkeypatch.setattr(microsoft_admin_commands.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(tokens, "store_token", fake_store)
+    monkeypatch.setattr(tokens.httpx, "AsyncClient", FakeClient)
 
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(
         user_id,
@@ -876,8 +928,8 @@ async def test_scoped_token_consent_required_does_not_return_primary_access_toke
         async def post(self, url, data):
             return FakeResponse()
 
-    monkeypatch.setattr(microsoft_admin_commands, "retrieve_token", fake_retrieve)
-    monkeypatch.setattr(microsoft_admin_commands.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(tokens.httpx, "AsyncClient", FakeClient)
 
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(user_id, microsoft_admin_commands.AZURE_ARM_SCOPE)
 
@@ -902,7 +954,7 @@ async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
             "username": "alden@example.com",
         }
 
-    monkeypatch.setattr(microsoft_admin_commands, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
 
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token(user_id)
 
@@ -938,7 +990,7 @@ def _fake_graph_client(monkeypatch, responses: list[_FakeGraphResponse], calls: 
                 raise AssertionError("No fake Graph response queued")
             return responses.pop(0)
 
-    monkeypatch.setattr(microsoft_admin_commands.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(azure_cli.httpx, "AsyncClient", FakeClient)
 
 
 async def _fake_graph_token(_user_id, _scope):
@@ -960,7 +1012,7 @@ async def test_ms_graph_auto_follows_next_link(monkeypatch):
         _FakeGraphResponse(200, {"value": [{"id": "2"}]}),
     ]
     _fake_graph_client(monkeypatch, responses, calls)
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
+    monkeypatch.setattr(graph, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
 
     result = await microsoft_admin_commands.run_ms_graph_tool(
         {"path": "/users?$top=1&$select=id"},
@@ -988,7 +1040,7 @@ async def test_ms_graph_users_skip_is_applied_locally(monkeypatch):
         ),
     ]
     _fake_graph_client(monkeypatch, responses, calls)
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
+    monkeypatch.setattr(graph, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
 
     result = await microsoft_admin_commands.run_ms_graph_tool(
         {"path": "/users?$top=999&$skip=1&$select=id"},
@@ -1008,7 +1060,7 @@ async def test_ms_graph_skip_is_not_rewritten_for_user_child_collections(monkeyp
     calls: list[dict] = []
     responses = [_FakeGraphResponse(200, {"value": [{"id": "message-2"}]})]
     _fake_graph_client(monkeypatch, responses, calls)
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
+    monkeypatch.setattr(graph, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
 
     result = await microsoft_admin_commands.run_ms_graph_tool(
         {"path": "/users/user-1/messages?$top=1&$skip=1"},
@@ -1035,7 +1087,7 @@ async def test_ms_graph_users_local_skip_fetches_past_skipped_items(monkeypatch)
         _FakeGraphResponse(200, {"value": [{"id": "3"}, {"id": "4"}]}),
     ]
     _fake_graph_client(monkeypatch, responses, calls)
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
+    monkeypatch.setattr(graph, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
 
     result = await microsoft_admin_commands.run_ms_graph_tool(
         {"path": "/users?$skip=2&$select=id", "max_items": 2},
@@ -1059,7 +1111,7 @@ async def test_ms_graph_surfaces_graph_error_message(monkeypatch):
         ),
     ]
     _fake_graph_client(monkeypatch, responses, calls)
-    monkeypatch.setattr(microsoft_admin_commands, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
+    monkeypatch.setattr(graph, "_get_fresh_microsoft_admin_token_for_scope", _fake_graph_token)
 
     result = await microsoft_admin_commands.run_ms_graph_tool(
         {"path": "/groups?$skip=5"},
