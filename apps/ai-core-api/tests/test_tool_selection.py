@@ -170,3 +170,22 @@ async def test_tool_selection_selects_microsoft_admin_for_cross_system_user_crea
     assert {tool.name for tool in result.excluded} == {"github_cli"}
     assert result.intent == "azure,odoo"
     assert result.selection_reason == "message_intent_matched_connected_systems"
+
+
+@pytest.mark.asyncio
+async def test_tool_selection_keeps_odoo_active_users_scoped_to_odoo():
+    tools = [
+        _tool("odoo_ops_runner", "odoo"),
+        _tool("ms_admin", "azure"),
+    ]
+
+    result = await get_tool_selection(
+        FakeDb(tools),
+        uuid.uuid4(),
+        "show active users in odoo",
+        connected_systems={"odoo", "azure"},
+    )
+
+    assert [tool.name for tool in result.selected] == ["odoo_ops_runner"]
+    assert {tool.name for tool in result.excluded} == {"ms_admin"}
+    assert result.intent == "odoo"

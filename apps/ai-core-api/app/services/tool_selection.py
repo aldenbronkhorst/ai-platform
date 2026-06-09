@@ -43,7 +43,8 @@ SYSTEM_INTENT_KEYWORDS = {
         "teams admin", "sharepoint admin", "connect-mggraph", "connect-exchangeonline",
         "connect-microsoftteams", "connect-azaccount", "microsoft user",
         "microsoft users", "ms user", "ms users", "m365 user", "m365 users",
-        "active user", "active users", "user principal name", "userprincipalname",
+        "microsoft active user", "microsoft active users", "entra user", "entra users",
+        "user principal name", "userprincipalname",
     },
     "github": {
         "github", "gh", "git", "repo", "repos", "repository", "repositories",
