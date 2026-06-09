@@ -25,7 +25,6 @@ from app.services.connector_commands import (
     microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string,
     microsoft_admin_scope_label,
-    microsoft_admin_scope_profile,
     microsoft_admin_scope_summary,
     microsoft_admin_token_client_error,
     run_ms_admin_tool,
@@ -58,9 +57,11 @@ async def microsoft_admin(req: MicrosoftAdminRequest, auth: dict = Depends(requi
 
 @router.post("/device-code")
 async def start_device_code(req: dict | None = Body(default=None), auth: dict = Depends(api_key_auth)):
-    """Start Microsoft OAuth device code flow for user-delegated admin auth."""
+    """Start the single Microsoft Admin OAuth device-code flow."""
     request_id = uuid.uuid4().hex[:16]
-    scope_profile = microsoft_admin_scope_profile((req or {}).get("scope_profile"))
+    # Sign in once against the primary Graph profile. Secondary resource tokens
+    # are acquired silently from the refresh token after this flow completes.
+    scope_profile = "graph"
     client_id = microsoft_admin_client_id_for_scope_profile(scope_profile)
     try:
         import httpx
@@ -101,7 +102,7 @@ async def device_code_callback(
     """Poll device code and store the resulting Microsoft delegated token."""
     user_id = auth.get("user_id")
     device_code = req.get("device_code", "")
-    scope_profile = microsoft_admin_scope_profile(req.get("scope_profile"))
+    scope_profile = "graph"
     client_id = microsoft_admin_client_id_for_scope_profile(scope_profile)
     if not device_code or not user_id:
         raise HTTPException(status_code=400, detail="Missing device_code or auth")
@@ -158,51 +159,38 @@ async def device_code_callback(
             *((existing_token.get("consented_scope_profiles") or []) if existing_token_is_current else []),
             scope_profile,
         })
-        if scope_profile != "graph":
-            if not existing_token_is_current:
-                return {
-                    "status": "error",
-                    "error": "microsoft_admin_reconnect_required",
-                    "message": "Reconnect Microsoft Admin with the primary Microsoft Graph profile before adding secondary profiles.",
-                    "request_id": request_id,
-                }
-            merged_token = {
-                **existing_token,
-                "client_id": existing_token.get("client_id") or client_id,
-                "delegated_tokens": delegated_tokens,
-                "consented_scope_profiles": token_payload["consented_scope_profiles"],
-                "username": existing_token.get("username") or token_payload["username"],
-                "scope_profile": existing_token.get("scope_profile") or "graph",
-            }
-            stored = await store_token("azure", user_id, merged_token)
-            if not stored:
-                return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
-            await upsert_delegated_account(
-                db,
-                "azure",
-                user_id,
-                token_data=merged_token,
-                status="connected",
-                username=merged_token.get("username"),
-                permission_summary=(
-                    f"{microsoft_admin_scope_label(scope_profile)} consent completed "
-                    f"via {microsoft_admin_app_name_for_scope_profile(scope_profile)}."
-                ),
-                commit=True,
-            )
-            return {
-                "status": "connected",
-                "request_id": request_id,
-                "scope_profile": scope_profile,
-                "scope_label": microsoft_admin_scope_label(scope_profile),
-                "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
-                "authorization_profiles": merged_token.get("consented_scope_profiles", []),
-            }
 
         stored = await store_token("azure", user_id, token_payload)
         if not stored:
             return {"status": "error", "error": "key_vault_write_failed", "message": "Could not store credentials securely.", "request_id": request_id}
         warmed_profiles = await warm_microsoft_admin_delegated_tokens(user_id)
+        authorization_profiles = {
+            "graph": {
+                "status": "available",
+                "label": microsoft_admin_scope_label("graph"),
+            },
+            "arm": {
+                "label": microsoft_admin_scope_label("arm"),
+                **warmed_profiles.get("arm", {"status": "missing", "message": "Azure Resource Manager token was not returned."}),
+            },
+            "exchange": {
+                "label": microsoft_admin_scope_label("exchange"),
+                **warmed_profiles.get("exchange", {"status": "missing", "message": "Exchange Online token was not returned."}),
+            },
+        }
+        missing_profiles = [
+            profile["label"]
+            for profile in authorization_profiles.values()
+            if profile.get("status") != "available"
+        ]
+        message = (
+            "Microsoft Admin connected. Graph, Azure Resource Manager, and Exchange tokens were acquired."
+            if not missing_profiles
+            else (
+                "Microsoft Admin connected with one sign-in. "
+                f"Additional admin consent is still required for: {', '.join(missing_profiles)}."
+            )
+        )
         await upsert_delegated_account(
             db,
             "azure",
@@ -211,8 +199,8 @@ async def device_code_callback(
             status="connected",
             username=token_payload.get("username"),
             permission_summary=(
-                f"{microsoft_admin_scope_label(scope_profile)} consent completed "
-                f"via {microsoft_admin_app_name_for_scope_profile(scope_profile)}."
+                "Microsoft Admin primary sign-in completed. "
+                "Secondary Microsoft tokens are acquired silently when consent is available."
             ),
             commit=True,
         )
@@ -222,10 +210,8 @@ async def device_code_callback(
             "scope_profile": scope_profile,
             "scope_label": microsoft_admin_scope_label(scope_profile),
             "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
-            "authorization_profiles": {
-                "primary": scope_profile,
-                **warmed_profiles,
-            },
+            "authorization_profiles": authorization_profiles,
+            "message": message,
         }
     except Exception as exc:
         logger.warning("Microsoft Admin device-code callback failed request_id=%s: %s", request_id, exc)

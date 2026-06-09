@@ -420,7 +420,7 @@ async def test_scoped_token_consent_required_does_not_return_primary_access_toke
     assert result["error_type"] == "consent_required"
     assert "access_token" not in result
     assert result["scope_profile"] == "arm"
-    assert "Azure Resource Manager consent is required" in result["refresh_error"]
+    assert "Tenant admin consent is required for Azure Resource Manager" in result["refresh_error"]
 
 
 @pytest.mark.asyncio

@@ -117,16 +117,22 @@ interface AzureDeviceCode {
   interval?: number;
 }
 
-interface AzureConsentStep {
-  profile: string;
-  label: string;
+interface MicrosoftAuthorizationProfileResult {
+  status?: string;
+  label?: string;
+  message?: string;
 }
 
-const MICROSOFT_CONSENT_STEPS: AzureConsentStep[] = [
-  { profile: "graph", label: "Microsoft Graph Admin" },
-  { profile: "arm", label: "Azure Resource Manager" },
-  { profile: "exchange", label: "Exchange Online" },
-];
+interface MicrosoftAuthCallbackResult {
+  status: string;
+  error?: string;
+  message?: string;
+  interval?: number;
+  scope_profile?: string;
+  scope_label?: string;
+  auth_app_name?: string;
+  authorization_profiles?: Record<string, MicrosoftAuthorizationProfileResult>;
+}
 
 type ApiRecord = Record<string, unknown>;
 
@@ -148,6 +154,18 @@ function formatStatusLabel(status: string) {
 
 function formatOptionalStatus(status?: string | null) {
   return status ? formatStatusLabel(status) : "—";
+}
+
+function formatMicrosoftAdminConnectMessage(profiles?: Record<string, MicrosoftAuthorizationProfileResult>) {
+  if (!profiles) return "";
+  const missing = Object.values(profiles)
+    .filter(profile => profile.status !== "available")
+    .map(profile => profile.label)
+    .filter(Boolean);
+  if (missing.length) {
+    return `Microsoft Admin connected with one sign-in. Additional tenant consent is still required for: ${missing.join(", ")}.`;
+  }
+  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange tokens are available.";
 }
 
 function formatDateTime(value?: string | null) {
@@ -373,7 +391,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooApiKey, setOdooApiKey] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
-  const [azureConsentStep, setAzureConsentStep] = useState<{ current: number; total: number; label: string } | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
@@ -537,71 +554,51 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
-    const missingProfiles = connectorMeta?.azure?.metadata?.authorization_profiles
-      ?.filter(profile => profile.status === "missing")
-      .map(profile => profile.profile) || [];
-    const missingConsentSteps = MICROSOFT_CONSENT_STEPS.filter(step => missingProfiles.includes(step.profile));
-    const consentSteps = missingConsentSteps.length ? missingConsentSteps : MICROSOFT_CONSENT_STEPS;
-    const startConsentStep = async (stepIndex: number) => {
-      const step = consentSteps[stepIndex];
-      setAzureConsentStep({ current: stepIndex + 1, total: consentSteps.length, label: step.label });
+    try {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ scope_profile: step.profile }),
+        body: JSON.stringify({ scope_profile: "graph" }),
       });
       const data = await res.json() as AzureDeviceCode & { error?: string };
       if (data.status === "device_code_ready") {
         setAzureDeviceCode(data);
         setAzurePolling(true);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
-        setCliTestResult({ status: "pending", connector: "azure", message: `Authorize ${data.scope_label || step.label}${authApp} with the device code.` });
+        setCliTestResult({ status: "pending", connector: "azure", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager and Exchange tokens will be acquired silently when tenant consent is available.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
           try {
             const pr = await fetch(`${APIM_BASE_URL}/connector/azure/token-callback`, {
               method: "POST", headers: headers(),
-              body: JSON.stringify({ device_code: data.device_code, scope_profile: data.scope_profile || step.profile }),
+              body: JSON.stringify({ device_code: data.device_code, scope_profile: "graph" }),
             });
-            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number; scope_profile?: string; scope_label?: string; auth_app_name?: string };
+            const pd = await pr.json() as MicrosoftAuthCallbackResult;
             if (pd.status === "connected") {
-              if (stepIndex < consentSteps.length - 1) {
-                setCliTestResult({ status: "pending", connector: "azure", message: `${pd.scope_label || step.label} authorized. Continue with ${consentSteps[stepIndex + 1].label}.` });
-                void startConsentStep(stepIndex + 1).catch((err) => {
-                  setAzurePolling(false);
-                  setAzureDeviceCode(null);
-                  setAzureConsentStep(null);
-                  setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) });
-                  void fetchConnectors();
-                });
-              } else {
-                setAzurePolling(false);
-                setAzureDeviceCode(null);
-                setAzureConsentStep(null);
-                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected with Microsoft Graph, Azure Resource Manager, and Exchange profiles." });
-                void fetchConnectors();
-              }
+              setAzurePolling(false);
+              setAzureDeviceCode(null);
+              setCliTestResult({
+                status: "success",
+                connector: "azure",
+                message: pd.message || formatMicrosoftAdminConnectMessage(pd.authorization_profiles) || "Microsoft Admin connected.",
+              });
+              void fetchConnectors();
             } else if (pd.status === "pending") {
               setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
               setAzurePolling(false);
               setAzureDeviceCode(null);
-              setAzureConsentStep(null);
               setCliTestResult({ status: "failed", connector: "azure", message: pd.message || pd.error || "Auth failed" });
               void fetchConnectors();
             }
-          } catch { setAzurePolling(false); setAzureDeviceCode(null); setAzureConsentStep(null); }
+          } catch { setAzurePolling(false); setAzureDeviceCode(null); }
         };
         setTimeout(poll, (data.interval || 5) * 1000);
       } else {
         setAzureDeviceCode(null);
-        setAzureConsentStep(null);
         setCliTestResult({ status: "failed", connector: "azure", message: data.error || "Failed to start device code flow" });
       }
-    };
-    try {
-      await startConsentStep(0);
-    } catch (err) { setAzureDeviceCode(null); setAzureConsentStep(null); setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
+    } catch (err) { setAzureDeviceCode(null); setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
   };
 
   const handleAzureStatus = async () => {
@@ -624,7 +621,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
     setAzureDeviceCode(null);
-    setAzureConsentStep(null);
     setAzurePolling(false);
     setCliTestResult({ status: "success", connector: "azure", message: "Disconnected" });
   };
@@ -732,11 +728,12 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
     if (key === "azure") {
       const authorizationProfiles = connectorMeta?.azure?.metadata?.authorization_profiles;
-      const hasMissingProfiles = authorizationProfiles?.some(profile => profile.status === "missing");
       return (
         <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
           <DetailCard>
-            <p className="text-sm text-muted">Connect with Microsoft Admin delegated authentication.</p>
+            <p className="text-sm text-muted">
+              Connect with one Microsoft Admin sign-in. Microsoft Graph, Azure Resource Manager, and Exchange tokens are acquired silently when tenant consent is available.
+            </p>
           </DetailCard>
 
           <InfoGrid
@@ -755,7 +752,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
           <ActionGroup>
             <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
-              {azurePolling ? "Waiting for authentication..." : hasMissingProfiles ? "Authorize Missing Profiles" : "Connect Microsoft Admin"}
+              {azurePolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Reconnect Microsoft Admin" : "Connect Microsoft Admin"}
             </GlassButton>
             <GlassButton size="sm" onClick={handleAzureStatus}>
               <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
@@ -769,11 +766,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             <DetailCard>
               <div className="text-sm space-y-3">
                 <div className="space-y-1">
-                  {azureConsentStep && (
-                    <p className="text-xs font-semibold uppercase tracking-wider text-muted">
-                      Step {azureConsentStep.current} of {azureConsentStep.total}: {azureConsentStep.label}
-                    </p>
-                  )}
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted">One Microsoft Admin sign-in</p>
                   <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
                   <p className="text-muted text-xs">
                     {azureDeviceCode.scope_label || "Microsoft Admin"} via {azureDeviceCode.auth_app_name || "Microsoft"}.
@@ -920,7 +913,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
-          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzureConsentStep(null); setAzurePolling(false); }}
+          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
@@ -997,7 +990,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
-              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzureConsentStep(null); setAzurePolling(false); }}
+              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>

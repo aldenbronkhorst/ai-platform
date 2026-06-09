@@ -179,7 +179,10 @@ def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[s
     label = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
     error_type = _microsoft_admin_oauth_error_type(data)
     if error_type == "consent_required":
-        return f"{label} consent is required. Reconnect Microsoft Admin and authorize the {label} profile."
+        return (
+            f"Tenant admin consent is required for {label}. "
+            "Grant consent to the Microsoft Admin app once, then reconnect Microsoft Admin."
+        )
     return data.get("error_description") or data.get("error") or fallback
 
 
@@ -563,24 +566,24 @@ def _ms_admin_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformAz {
-    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Azure Resource Manager token is not available. Reconnect Microsoft Admin or check ARM consent.' }
+    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Azure Resource Manager token is not available. Check Microsoft Admin tenant consent and the signed-in user''s Azure RBAC access.' }
     Import-Module Az.Accounts -ErrorAction Stop
     $secureToken = ConvertTo-SecureString $env:AI_PLATFORM_ARM_ACCESS_TOKEN -AsPlainText -Force
     Connect-AzAccount -AccessToken $secureToken -AccountId $env:AI_PLATFORM_MS_USERNAME -Tenant $env:AZURE_TENANT_ID | Out-Null
 }
 function Connect-AIPlatformGraph {
-    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Reconnect Microsoft Admin with Graph consent.' }
+    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Check Microsoft Admin tenant consent and the signed-in user''s directory roles.' }
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     $secureToken = ConvertTo-SecureString $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN -AsPlainText -Force
     Connect-MgGraph -AccessToken $secureToken -NoWelcome
 }
 function Connect-AIPlatformExchange {
-    if (-not $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN) { throw 'Exchange Online token is not available. Reconnect Microsoft Admin with Exchange consent.' }
+    if (-not $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN) { throw 'Exchange Online token is not available. Check Microsoft Admin tenant consent and the signed-in user''s Exchange admin roles.' }
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
     Connect-ExchangeOnline -AccessToken $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN -UserPrincipalName $env:AI_PLATFORM_MS_USERNAME -ShowBanner:$false
 }
 function Connect-AIPlatformTeams {
-    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Reconnect Microsoft Admin with Graph consent.' }
+    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Check Microsoft Admin tenant consent and the signed-in user''s Teams/admin roles.' }
     Import-Module MicrosoftTeams -ErrorAction Stop
     Connect-MicrosoftTeams -AccessTokens @($env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) | Out-Null
 }
@@ -663,7 +666,7 @@ async def _run_ms_admin_graph_request(
             "mode": "graph_request",
             "request_id": request_id,
             "error_type": "not_connected",
-            "message": "Microsoft Graph token is not available. Reconnect Microsoft Admin with Graph consent.",
+            "message": "Microsoft Graph token is not available. Check Microsoft Admin tenant consent and reconnect Microsoft Admin if the user token is expired.",
             "refresh_error": token_data.get("refresh_error") if token_data else None,
         }
 
