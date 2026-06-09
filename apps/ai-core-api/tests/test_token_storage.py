@@ -7,6 +7,13 @@ import pytest
 from app.services import token_storage
 
 
+def test_token_secret_name_sanitizes_provider_for_key_vault():
+    user_id = UUID("e4807f22-97c8-4000-8000-000000000001")
+
+    assert token_storage.token_secret_name("microsoft_admin", user_id) == "connector-token-microsoft-admin-e4807f2297c8"
+    assert token_storage.token_secret_name("///", user_id) == "connector-token-connector-e4807f2297c8"
+
+
 def test_token_status_from_data_reports_refreshed_connected_token():
     status = token_storage.token_status_from_data("microsoft_admin", {
         "token_type": "Bearer",

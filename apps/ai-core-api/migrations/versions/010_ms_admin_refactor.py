@@ -154,11 +154,11 @@ def _copy_token_secrets(old_prefix: str, new_prefix: str, provider: str) -> None
 
 
 def upgrade():
-    _copy_token_secrets("connector-token-azure-", "connector-token-microsoft_admin-", "azure")
+    _copy_token_secrets("connector-token-azure-", "connector-token-microsoft-admin-", "azure")
     op.execute(sa.text("UPDATE ai_connected_accounts SET provider='microsoft_admin', updated_at=now() WHERE provider='azure'"))
     op.execute(sa.text(
         "UPDATE ai_connected_accounts "
-        "SET secret_reference=replace(secret_reference, 'connector-token-azure-', 'connector-token-microsoft_admin-'), updated_at=now() "
+        "SET secret_reference=replace(secret_reference, 'connector-token-azure-', 'connector-token-microsoft-admin-'), updated_at=now() "
         "WHERE secret_reference LIKE 'connector-token-azure-%'"
     ))
     op.execute(sa.text("UPDATE ai_tools SET target_system='microsoft_admin', updated_at=now() WHERE target_system='azure'"))
@@ -200,12 +200,12 @@ def upgrade():
 
 
 def downgrade():
-    _copy_token_secrets("connector-token-microsoft_admin-", "connector-token-azure-", "microsoft_admin")
+    _copy_token_secrets("connector-token-microsoft-admin-", "connector-token-azure-", "microsoft_admin")
     op.execute(sa.text("UPDATE ai_connected_accounts SET provider='azure', updated_at=now() WHERE provider='microsoft_admin'"))
     op.execute(sa.text(
         "UPDATE ai_connected_accounts "
-        "SET secret_reference=replace(secret_reference, 'connector-token-microsoft_admin-', 'connector-token-azure-'), updated_at=now() "
-        "WHERE secret_reference LIKE 'connector-token-microsoft_admin-%'"
+        "SET secret_reference=replace(secret_reference, 'connector-token-microsoft-admin-', 'connector-token-azure-'), updated_at=now() "
+        "WHERE secret_reference LIKE 'connector-token-microsoft-admin-%'"
     ))
     op.execute(sa.text("UPDATE ai_tools SET target_system='azure', updated_at=now() WHERE target_system='microsoft_admin'"))
     op.execute(sa.text("UPDATE ai_audit_events SET target_system='azure' WHERE target_system='microsoft_admin'"))
