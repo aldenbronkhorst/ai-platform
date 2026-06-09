@@ -487,6 +487,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return; setCliTestResult(null);
     const consentSteps = [
       { profile: "graph", label: "Microsoft Graph Admin" },
+      { profile: "arm", label: "Azure Resource Manager" },
+      { profile: "exchange", label: "Exchange Online" },
     ];
     const startConsentStep = async (stepIndex: number) => {
       const step = consentSteps[stepIndex];
@@ -520,7 +522,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               } else {
                 setAzurePolling(false);
                 setAzureDeviceCode(null);
-                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected. Secondary Microsoft admin profiles are prepared silently where consent permits." });
+                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected with Microsoft Graph, Azure Resource Manager, and Exchange profiles." });
                 void fetchConnectors();
               }
             } else if (pd.status === "pending") {

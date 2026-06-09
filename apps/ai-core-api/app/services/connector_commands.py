@@ -150,6 +150,39 @@ def _invalid_microsoft_admin_token(token_data: dict[str, Any], message: str) -> 
     }
 
 
+def _microsoft_admin_scope_unavailable(
+    token_data: dict[str, Any],
+    scope_profile: str | None,
+    message: str,
+    error_type: str,
+) -> dict[str, Any]:
+    return {
+        "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
+        "scope_profile": scope_profile,
+        "username": token_data.get("username"),
+        "refresh_error": message,
+        "error_type": error_type,
+    }
+
+
+def _microsoft_admin_oauth_error_type(data: dict[str, Any]) -> str:
+    error = str(data.get("error") or "").lower()
+    description = str(data.get("error_description") or "").lower()
+    if "aadsts65001" in description or "consent" in description:
+        return "consent_required"
+    if error == "invalid_grant":
+        return "authorization_failed"
+    return error or "token_refresh_failed"
+
+
+def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[str, Any], fallback: str) -> str:
+    label = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
+    error_type = _microsoft_admin_oauth_error_type(data)
+    if error_type == "consent_required":
+        return f"{label} consent is required. Reconnect Microsoft Admin and authorize the {label} profile."
+    return data.get("error_description") or data.get("error") or fallback
+
+
 def microsoft_admin_scope_label(profile: str | None = None) -> str:
     scope_profile = microsoft_admin_scope_profile(profile)
     return MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS[scope_profile]
@@ -192,15 +225,25 @@ async def _run_ms_admin_azure_cli(
 
     token_data = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
     if not token_data or not token_data.get("access_token"):
+        message = (
+            token_data.get("refresh_error")
+            if isinstance(token_data, dict) and token_data.get("refresh_error")
+            else "Azure Resource Manager access is not connected for this Microsoft Admin user."
+        )
+        error_type = (
+            token_data.get("error_type")
+            if isinstance(token_data, dict) and token_data.get("error_type")
+            else "not_connected"
+        )
         result = _failed_ms_admin_result(
             request_id=request_id,
             mode="azure_cli",
-            message="Azure Resource Manager access is not connected for this Microsoft Admin user.",
+            message=message,
             command=normalized,
-            error_type="not_connected",
+            error_type=error_type,
             connector=connector_name,
         )
-        result["auth_method"] = "not_connected"
+        result["auth_method"] = error_type
         return result
     if _token_expired(token_data):
         result = _failed_ms_admin_result(
@@ -936,7 +979,12 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
     refresh_token = refresh_token or token_data.get("refresh_token")
     if not refresh_token:
         profile_name = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
-        return {**token_data, "refresh_error": f"Stored {profile_name} token has no refresh token. Reconnect Microsoft Admin."}
+        return _microsoft_admin_scope_unavailable(
+            token_data,
+            scope_profile,
+            f"Stored {profile_name} token has no refresh token. Reconnect Microsoft Admin.",
+            "reconnect_required",
+        )
     client_id = microsoft_admin_client_id_for_scope_profile(scope_profile) if scope_profile else MICROSOFT_ADMIN_CLIENT_ID
     scope_request = microsoft_admin_device_scope_string(scope_profile) if scope_profile else f"{scope} openid profile offline_access"
     try:
@@ -953,7 +1001,13 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
             )
         data = response.json()
         if response.status_code >= 400 or "access_token" not in data:
-            return {**token_data, "refresh_error": data.get("error_description") or data.get("error") or response.text[:500]}
+            error_type = _microsoft_admin_oauth_error_type(data)
+            return _microsoft_admin_scope_unavailable(
+                token_data,
+                scope_profile,
+                _microsoft_admin_oauth_error_message(scope_profile, data, response.text[:500]),
+                error_type,
+            )
         scoped_token = {
             **token_data,
             "client_id": client_id,
@@ -995,7 +1049,12 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
         return scoped_token
     except Exception as exc:
         logger.warning("Microsoft scoped token refresh failed for user %s scope=%s: %s", user_id.hex[:12], scope, exc)
-        return {**token_data, "refresh_error": "token_refresh_failed"}
+        return _microsoft_admin_scope_unavailable(
+            token_data,
+            scope_profile,
+            "Microsoft Admin scoped token refresh failed. Check connector logs.",
+            "token_refresh_failed",
+        )
 
 
 async def warm_microsoft_admin_delegated_tokens(user_id: Optional[UUID]) -> dict[str, Any]:

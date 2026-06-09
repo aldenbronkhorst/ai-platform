@@ -373,6 +373,57 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
 
 
 @pytest.mark.asyncio
+async def test_scoped_token_consent_required_does_not_return_primary_access_token(monkeypatch):
+    user_id = uuid.uuid4()
+    stored_token = {
+        "client_id": azure_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "access_token": "primary-graph-access",
+        "refresh_token": "primary-refresh",
+        "expires_on": int(time.time()) + 3600,
+        "scope_profile": "graph",
+        "username": "alden@example.com",
+    }
+
+    async def fake_retrieve(provider, received_user_id):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        return stored_token
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error":"invalid_grant"}'
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "AADSTS65001: The user or administrator has not consented to use this application for this resource.",
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            return FakeResponse()
+
+    monkeypatch.setattr(azure_commands, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(azure_commands.httpx, "AsyncClient", FakeClient)
+
+    result = await azure_commands._get_fresh_azure_token_for_scope(user_id, azure_commands.AZURE_ARM_SCOPE)
+
+    assert result["error_type"] == "consent_required"
+    assert "access_token" not in result
+    assert result["scope_profile"] == "arm"
+    assert "Azure Resource Manager consent is required" in result["refresh_error"]
+
+
+@pytest.mark.asyncio
 async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
     user_id = uuid.uuid4()
 

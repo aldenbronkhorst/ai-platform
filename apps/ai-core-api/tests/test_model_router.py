@@ -72,6 +72,7 @@ def test_trace_redaction_keeps_token_counts_visible():
     assert redact_value("completion_tokens", 45) == 45
     redacted_secret = redact_value("access_token", "super-secret-token")
     assert redacted_secret["present"] is True
+    assert "fingerprint" not in redacted_secret
     assert "super-secret-token" not in str(redacted_secret)
     assert summarize_payload({"messages": [{"role": "user", "content": "hi"}]}) == {
         "messages": [1, {"role": "user", "content": "hi"}]
@@ -208,6 +209,8 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
     assert "az rest --method post" in prompt
     assert "Microsoft.CostManagement/query" in prompt
     assert "do not claim Microsoft Admin is disconnected" in prompt
+    assert "operations are limited by that user's platform roles/RBAC" in prompt
+    assert "does not by itself prove Azure Resource Manager" in prompt
     assert "Never invent Azure cost totals" in prompt
     assert "successful tool result only" in prompt
     assert "do not say there is no Microsoft user-management tool" in prompt
@@ -464,7 +467,8 @@ class TestConnectorContext:
 
         assert "Microsoft Admin: connected" in result
         assert "Azure Resource Manager CLI" in result
-        assert "Specific operations can still fail" in result
+        assert "Do not claim a specific Microsoft resource is accessible until that operation succeeds" in result
+        assert "Azure RBAC" in result
 
     @pytest.mark.asyncio
     async def test_connector_context_not_injected_without_user_id(self):
