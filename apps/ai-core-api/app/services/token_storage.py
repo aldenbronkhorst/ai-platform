@@ -18,12 +18,14 @@ logger = logging.getLogger(__name__)
 KEY_VAULT_SECRET_VALUE_SOFT_LIMIT = 25_000
 
 AZURE_TOKEN_TOP_LEVEL_KEYS = {
+    "provider",
     "client_id",
     "token_type",
     "access_token",
     "refresh_token",
     "scope",
     "scope_profile",
+    "client_info",
     "username",
     "provider_username",
     "login",
@@ -40,6 +42,7 @@ AZURE_DELEGATED_TOKEN_KEYS = {
     "access_token",
     "scope",
     "scope_profile",
+    "client_info",
     "expires_in",
     "expires_on",
     "refresh_error",
@@ -115,9 +118,10 @@ def _compact_azure_token_for_storage(
     """Drop nonessential Microsoft identity blobs before storing in Key Vault.
 
     The Microsoft Admin connector can hold Graph, ARM, and Exchange profile tokens
-    in one user secret. ID tokens, decoded claims, client_info values, and duplicate
-    primary delegated tokens push that secret over Key Vault's 25,600 character
-    value limit while not being needed after we have stored the username.
+    in one user secret. ID tokens, decoded claims, and duplicate primary delegated
+    tokens push that secret over Key Vault's 25,600 character value limit while not
+    being needed after we have stored the username. client_info is deliberately kept
+    because Azure CLI/MSAL needs it to create a user account entry in its token cache.
     """
     compact_token_data = {
         key: token_data.get(key)
@@ -135,15 +139,18 @@ def _compact_azure_token_for_storage(
 
 
 def _token_for_storage(provider: str, token_data: dict[str, Any]) -> dict[str, Any]:
-    if provider != "azure":
+    if provider != "microsoft_admin":
         return token_data
 
-    compact_token_data = _compact_azure_token_for_storage(token_data)
+    compact_token_data = _compact_azure_token_for_storage({**token_data, "provider": provider})
     secret_value = json.dumps(compact_token_data, separators=(",", ":"))
     if len(secret_value) <= KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
         return compact_token_data
 
-    compact_token_data = _compact_azure_token_for_storage(token_data, include_delegated_access_tokens=False)
+    compact_token_data = _compact_azure_token_for_storage(
+        {**token_data, "provider": provider},
+        include_delegated_access_tokens=False,
+    )
     secret_value = json.dumps(compact_token_data, separators=(",", ":"))
     if len(secret_value) > KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
         logger.warning(

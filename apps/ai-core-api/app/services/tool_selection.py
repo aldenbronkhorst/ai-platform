@@ -16,7 +16,18 @@ logger = logging.getLogger(__name__)
 TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
 DOCUMENT_READER_TOOL = "document_reader"
 PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
-MICROSOFT_ALL_TOOL_NAMES = frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"})
+MICROSOFT_ALL_TOOL_NAMES = frozenset(
+    {
+        "ms_graph",
+        "ms_graph_powershell",
+        "ms_exchange_powershell",
+        "ms_teams_powershell",
+        "ms_sharepoint_pnp_powershell",
+        "ms_az_powershell",
+        "ms_azure_cli",
+        "ms_bicep",
+    }
+)
 MS_ABBREVIATION_CONTEXT_KEYWORDS = {
     "admin", "admins", "account", "accounts", "entra", "m365", "365", "office",
     "user", "users", "group", "groups", "license", "licenses", "licence",
@@ -39,12 +50,27 @@ MICROSOFT_TOOL_INTENT_KEYWORDS = {
         "ms user", "ms users", "m365 user", "m365 users", "user principal name",
         "userprincipalname", "uerer", "usre",
     },
-    "ms_powershell": {
-        "powershell", "pwsh", "cmdlet", "cmdlets", "exchange", "exchange online",
-        "mailbox", "mailboxes", "mail flow", "transport rule", "message trace",
-        "teams", "teams admin", "sharepoint", "sharepoint admin", "pnp",
-        "connect-mggraph", "connect-exchangeonline", "connect-microsoftteams", "connect-azaccount",
-        "new-mguser", "update-mguser", "get-mailbox", "new-mailbox",
+    "ms_graph_powershell": {
+        "powershell", "pwsh", "cmdlet", "cmdlets", "graph powershell",
+        "microsoft graph powershell", "connect-mggraph", "new-mguser",
+        "update-mguser", "get-mguser", "mguser", "mggraph",
+    },
+    "ms_exchange_powershell": {
+        "exchange", "exchange online", "exchange powershell", "mailbox", "mailboxes",
+        "mail flow", "transport rule", "message trace", "connect-exchangeonline",
+        "get-mailbox", "new-mailbox", "exo",
+    },
+    "ms_teams_powershell": {
+        "teams", "teams admin", "teams powershell", "connect-microsoftteams",
+        "team policy", "teams policy",
+    },
+    "ms_sharepoint_pnp_powershell": {
+        "sharepoint", "sharepoint admin", "sharepoint powershell", "pnp",
+        "pnp powershell", "connect-pnponline", "sites", "site collection",
+    },
+    "ms_az_powershell": {
+        "az powershell", "azure powershell", "connect-azaccount", "get-az",
+        "new-az", "set-az", "azaccount", "azresource", "azsubscription",
     },
     "ms_bicep": {
         "bicep", "iac", "template", "templates", "build", "validate", "deployment",
@@ -62,7 +88,7 @@ SYSTEM_INTENT_KEYWORDS = {
         "expense", "expenses", "payment", "payments",
         "receipt", "receipts", "crm",
     },
-    "azure": {
+    "microsoft_admin": {
         "azure", "az", "resource group", "resource groups", "subscription",
         "subscriptions", "tenant", "container app", "container apps", "revision",
         "revisions", "key vault", "storage",
@@ -126,7 +152,7 @@ def _contains_keyword(message: str, tokens: set[str], keyword: str) -> bool:
     return keyword in message
 
 
-def _has_ms_admin_abbreviation_intent(message: str, tokens: set[str]) -> bool:
+def _has_microsoft_abbreviation_intent(message: str, tokens: set[str]) -> bool:
     """Treat bare "ms" as Microsoft only when admin context is present."""
     return "ms" in tokens and bool(tokens.intersection(MS_ABBREVIATION_CONTEXT_KEYWORDS))
 
@@ -141,10 +167,10 @@ def _requested_systems(user_message: str, task_type: str) -> set[str]:
     for system, keywords in SYSTEM_INTENT_KEYWORDS.items():
         if any(_contains_keyword(message, tokens, keyword) for keyword in keywords):
             requested.add(system)
-    if _has_ms_admin_abbreviation_intent(message, tokens):
-        requested.add("azure")
+    if _has_microsoft_abbreviation_intent(message, tokens):
+        requested.add("microsoft_admin")
 
-    if task_type in {"azure", "github", "odoo"}:
+    if task_type in {"microsoft_admin", "github", "odoo"}:
         requested.add(task_type)
     return requested
 
@@ -168,7 +194,7 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
 
     if "microsoft admin" in message or "all microsoft" in message or any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
         selected.update(MICROSOFT_ALL_TOOL_NAMES)
-    if _has_ms_admin_abbreviation_intent(message, tokens) and not selected:
+    if _has_microsoft_abbreviation_intent(message, tokens) and not selected:
         selected.add("ms_graph")
     if not selected:
         selected.add("ms_azure_cli")
@@ -176,7 +202,7 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
 
 
 def _requested_connector_tools_for_system(system: str, user_message: str) -> set[str]:
-    if system == "azure":
+    if system == "microsoft_admin":
         return _requested_microsoft_tools(user_message)
     tool_name = TOOL_BY_SYSTEM.get(system)
     return {tool_name} if tool_name else set()

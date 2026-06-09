@@ -6,24 +6,34 @@ from typing import Mapping
 
 CONNECTOR_TOOLS_BY_SYSTEM: Mapping[str, frozenset[str]] = {
     "odoo": frozenset({"odoo_ops_runner"}),
-    "azure": frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"}),
+    "microsoft_admin": frozenset(
+        {
+            "ms_graph",
+            "ms_graph_powershell",
+            "ms_exchange_powershell",
+            "ms_teams_powershell",
+            "ms_sharepoint_pnp_powershell",
+            "ms_az_powershell",
+            "ms_azure_cli",
+            "ms_bicep",
+        }
+    ),
     "github": frozenset({"github_cli"}),
 }
 
 CONNECTOR_TOOL_BY_SYSTEM: Mapping[str, str] = {
     "odoo": "odoo_ops_runner",
-    "azure": "ms_azure_cli",
+    "microsoft_admin": "ms_graph",
     "github": "github_cli",
 }
 
-LEGACY_CONNECTOR_TOOL_NAMES = frozenset({"ms_admin", "azure_cli"})
 CONNECTOR_SYSTEMS = frozenset(CONNECTOR_TOOLS_BY_SYSTEM)
 CONSOLIDATED_TOOL_NAMES = frozenset(
     tool_name
     for tool_names in CONNECTOR_TOOLS_BY_SYSTEM.values()
     for tool_name in tool_names
 )
-MICROSOFT_ADMIN_TOOL_NAMES = CONNECTOR_TOOLS_BY_SYSTEM["azure"] | frozenset({"ms_admin"})
+MICROSOFT_ADMIN_TOOL_NAMES = CONNECTOR_TOOLS_BY_SYSTEM["microsoft_admin"]
 
 
 def is_model_facing_tool(name: str, target_system: str) -> bool:

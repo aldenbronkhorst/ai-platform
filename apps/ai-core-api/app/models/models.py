@@ -32,7 +32,7 @@ class AIConnectedAccount(Base, AuditMixin):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
-    provider = Column(String(50), nullable=False)  # microsoft, odoo, github, azure
+    provider = Column(String(50), nullable=False)  # microsoft_admin, odoo, github
     provider_user_id = Column(String(255), nullable=True)
     provider_username = Column(String(255), nullable=True)
     provider_display_name = Column(String(255), nullable=True)
@@ -97,7 +97,7 @@ class AITask(Base, AuditMixin):
     priority = Column(String(20), default="medium", nullable=False)  # low, medium, high, critical
     owner_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
     department = Column(String(100), nullable=True)
-    linked_system = Column(String(50), nullable=True)  # odoo, github, azure, etc.
+    linked_system = Column(String(50), nullable=True)  # odoo, github, microsoft_admin, etc.
     linked_model = Column(String(100), nullable=True)
     linked_record_id = Column(String(100), nullable=True)
     created_from_conversation_id = Column(String(255), nullable=True)
@@ -155,7 +155,7 @@ class AITool(Base, AuditMixin):
     name = Column(String(100), unique=True, nullable=False, index=True)
     display_name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    target_system = Column(String(50), nullable=False)  # odoo, github, azure, runner, ai-platform
+    target_system = Column(String(50), nullable=False)  # odoo, github, microsoft_admin, runner, ai-platform
     input_schema = Column(JSON, nullable=True)
     output_schema = Column(JSON, nullable=True)
     version = Column(String(20), default="1.0.0", nullable=False)

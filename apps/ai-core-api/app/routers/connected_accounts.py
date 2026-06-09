@@ -309,7 +309,7 @@ def _diagnostics_status(account: Optional[AIConnectedAccount]) -> str:
 
 
 def _cli_status(account: Optional[AIConnectedAccount], provider: str) -> str:
-    if provider not in {"azure", "github"}:
+    if provider not in {"microsoft_admin", "github"}:
         return "not_applicable"
     status_value = _account_status(account)
     if status_value in {"error", "expired"}:
@@ -326,14 +326,14 @@ def _connector_state(account: Optional[AIConnectedAccount], provider: str, inclu
     return {
         "configured": _is_configured(account),
         "account_status": _account_status(account),
-        "token_status": token_status or ("not_checked" if provider in {"azure", "github"} else "not_applicable"),
+        "token_status": token_status or ("not_checked" if provider in {"microsoft_admin", "github"} else "not_applicable"),
         "diagnostics_status": _diagnostics_status(account),
         "cli_status": _cli_status(account, provider),
-        "source": "token_store" if include_token_state and provider in {"azure", "github"} else "database",
+        "source": "token_store" if include_token_state and provider in {"microsoft_admin", "github"} else "database",
     }
 
 
-MICROSOFT_ADMIN_PROFILE_ORDER = ("graph", "arm", "exchange")
+MICROSOFT_ADMIN_PROFILE_ORDER = ("graph", "arm", "exchange", "teams", "sharepoint")
 
 
 def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]:
@@ -356,6 +356,9 @@ def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]
             ):
                 authorized.add(microsoft_admin_scope_profile(profile))
 
+    if "graph" in authorized:
+        authorized.update({"teams", "sharepoint"})
+
     return {profile for profile in authorized if profile in MICROSOFT_ADMIN_PROFILE_ORDER}
 
 
@@ -366,7 +369,7 @@ async def _microsoft_admin_authorization_metadata(
 ) -> dict:
     token_data = None
     if include_token_state and _is_configured(account):
-        token_data = await retrieve_token("azure", user_id)
+        token_data = await retrieve_token("microsoft_admin", user_id)
 
     authorized_profiles = _authorized_microsoft_admin_profiles(token_data)
     profile_rows = []
@@ -1103,11 +1106,11 @@ async def get_connected_accounts(
     user_id = auth.get("user_id")
     db_accounts = await effective_connected_accounts(db, user_id, include_token_state=include_token_state)
     odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
-    azure = next((a for a in db_accounts if a.provider == "azure"), None)
+    microsoft_admin = next((a for a in db_accounts if a.provider == "microsoft_admin"), None)
     github = next((a for a in db_accounts if a.provider == "github"), None)
     microsoft_auth_metadata = await _microsoft_admin_authorization_metadata(
         user_id,
-        azure,
+        microsoft_admin,
         include_token_state,
     )
 
@@ -1127,28 +1130,28 @@ async def get_connected_accounts(
             } if odoo else {},
         },
         {
-            "connector_key": "azure",
+            "connector_key": "microsoft_admin",
             "display_name": "Microsoft Admin",
-            "status": _account_status(azure),
+            "status": _account_status(microsoft_admin),
             "auth_method": "delegated_microsoft",
-            "last_verified_at": _account_last_verified(azure),
+            "last_verified_at": _account_last_verified(microsoft_admin),
             "actions_available": ["connect", "test", "disconnect"],
-            "state": _connector_state(azure, "azure", include_token_state),
+            "state": _connector_state(microsoft_admin, "microsoft_admin", include_token_state),
             "metadata": {
-                "provider_username": azure.provider_username if azure else None,
-                "permission_summary": azure.permission_summary if azure else None,
+                "provider_username": microsoft_admin.provider_username if microsoft_admin else None,
+                "permission_summary": microsoft_admin.permission_summary if microsoft_admin else None,
                 "tooling": [
-                    "Microsoft Graph",
+                    "Direct Microsoft Graph",
                     "Microsoft Graph PowerShell",
                     "Exchange Online PowerShell",
                     "Microsoft Teams PowerShell",
                     "SharePoint / PnP PowerShell",
+                    "Azure PowerShell",
                     "Azure Resource Manager CLI",
-                    "Az PowerShell",
                     "Bicep CLI",
                 ],
                 **microsoft_auth_metadata,
-            } if azure else {},
+            } if microsoft_admin else {},
         },
         {
             "connector_key": "github",

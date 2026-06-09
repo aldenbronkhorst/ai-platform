@@ -20,6 +20,7 @@ from app.services.token_storage import retrieve_token, store_token
 
 
 logger = logging.getLogger(__name__)
+MICROSOFT_ADMIN_PROVIDER = "microsoft_admin"
 
 
 def _scope_values_from_env(env_name: str, default_values: tuple[str, ...]) -> tuple[str, ...]:
@@ -77,11 +78,15 @@ MICROSOFT_ADMIN_SCOPE_PROFILES = {
     "arm": (AZURE_ARM_SCOPE,),
     "graph": MICROSOFT_GRAPH_SCOPES,
     "exchange": EXCHANGE_ONLINE_SCOPES,
+    "teams": MICROSOFT_GRAPH_SCOPES,
+    "sharepoint": MICROSOFT_GRAPH_SCOPES,
 }
 MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
     "arm": "Azure Resource Manager",
     "graph": "Microsoft Graph Admin",
     "exchange": "Exchange Online",
+    "teams": "Teams Admin",
+    "sharepoint": "SharePoint / PnP",
 }
 GRAPH_AUTO_PAGE_MAX_PAGES = 20
 GRAPH_AUTO_PAGE_MAX_ITEMS = 1000
@@ -211,22 +216,26 @@ def azure_token_request_data() -> dict[str, str]:
     return {"scope": azure_device_scope_string(), "client_info": "1"}
 
 
-async def _run_ms_admin_azure_cli(
+async def _run_microsoft_admin_azure_cli(
     command: str,
     user_id: Optional[UUID],
     timeout: int,
     request_id: str,
     *,
-    connector_name: str = "ms_admin",
+    connector_name: str = "microsoft_admin",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
     normalized = _normalize_azure_command(command)
-    unsupported = _unsupported_ms_admin_azure_cli_command(normalized, request_id, connector_name=connector_name)
+    unsupported = _unsupported_microsoft_admin_azure_cli_command(normalized, request_id, connector_name=connector_name)
     if unsupported:
         unsupported["auth_method"] = "not_required"
         return unsupported
 
-    token_data = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
+    token_data = await _get_fresh_azure_token_for_scope(
+        user_id,
+        AZURE_ARM_SCOPE,
+        require_account_metadata=True,
+    ) if user_id else None
     if not token_data or not token_data.get("access_token"):
         message = (
             token_data.get("refresh_error")
@@ -238,9 +247,9 @@ async def _run_ms_admin_azure_cli(
             if isinstance(token_data, dict) and token_data.get("error_type")
             else "not_connected"
         )
-        result = _failed_ms_admin_result(
+        result = _failed_microsoft_admin_result(
             request_id=request_id,
-            mode="azure_cli",
+            mode="ms_azure_cli",
             message=message,
             command=normalized,
             error_type=error_type,
@@ -249,9 +258,9 @@ async def _run_ms_admin_azure_cli(
         result["auth_method"] = error_type
         return result
     if _token_expired(token_data):
-        result = _failed_ms_admin_result(
+        result = _failed_microsoft_admin_result(
             request_id=request_id,
-            mode="azure_cli",
+            mode="ms_azure_cli",
             message="Azure Resource Manager token is expired. Reconnect Microsoft Admin for this user.",
             command=normalized,
             error_type="expired_user_token",
@@ -262,9 +271,9 @@ async def _run_ms_admin_azure_cli(
 
     profile = await ensure_azure_cli_profile(user_id, token_data)
     if not profile.get("ready"):
-        result = _failed_ms_admin_result(
+        result = _failed_microsoft_admin_result(
             request_id=request_id,
-            mode="azure_cli",
+            mode="ms_azure_cli",
             message=profile.get("message", "Azure Resource Manager CLI profile could not be prepared for this Microsoft Admin user."),
             command=normalized,
             error_type="profile_not_ready",
@@ -288,8 +297,8 @@ async def _run_ms_admin_azure_cli(
     output.update({
         "command": normalized,
         "connector": connector_name,
-        "mode": "azure_cli",
-        "subtool": "azure_cli",
+        "mode": "ms_azure_cli",
+        "subtool": "ms_azure_cli",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
         "auth_method": "user_scoped_microsoft_admin_shell",
@@ -300,14 +309,14 @@ async def _run_ms_admin_azure_cli(
     return output
 
 
-def _failed_ms_admin_result(
+def _failed_microsoft_admin_result(
     *,
     request_id: str,
     mode: str,
     message: str,
     command: str = "",
     error_type: str = "invalid_tool_arguments",
-    connector: str = "ms_admin",
+    connector: str = "microsoft_admin",
 ) -> dict[str, Any]:
     return {
         "stdout": "",
@@ -328,20 +337,20 @@ def _failed_ms_admin_result(
     }
 
 
-def _unsupported_ms_admin_azure_cli_command(
+def _unsupported_microsoft_admin_azure_cli_command(
     normalized_command: str,
     request_id: str,
     *,
-    connector_name: str = "ms_admin",
+    connector_name: str = "microsoft_admin",
 ) -> dict[str, Any] | None:
     try:
         parts = [part.lower() for part in shlex.split(normalized_command)]
     except ValueError:
         parts = normalized_command.strip().lower().split()
     if parts[:3] == ["az", "costmanagement", "query"]:
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
-            mode="azure_cli",
+            mode="ms_azure_cli",
             message=AZURE_COST_QUERY_REST_GUIDANCE,
             command=normalized_command,
             error_type="unsupported_costmanagement_query_cli",
@@ -365,13 +374,13 @@ async def run_ms_azure_cli_tool(arguments: dict[str, Any], user_id: Optional[UUI
     timeout = _tool_timeout(arguments, timeout)
     command = str(arguments.get("command") or "").strip()
     if not command:
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
-            mode="azure_cli",
+            mode="ms_azure_cli",
             message="Provide command for ms_azure_cli.",
             connector="ms_azure_cli",
         )
-    return await _run_ms_admin_azure_cli(
+    return await _run_microsoft_admin_azure_cli(
         command,
         user_id,
         timeout=timeout,
@@ -384,37 +393,92 @@ async def run_ms_azure_cli_tool(arguments: dict[str, Any], user_id: Optional[UUI
 async def run_ms_graph_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
     """Execute a direct Microsoft Graph request through the Microsoft Admin connector."""
     request_id = uuid.uuid4().hex[:16]
-    return await _run_ms_admin_graph_request(arguments, user_id, request_id=request_id, connector_name="ms_graph")
+    return await _run_microsoft_admin_graph_request(arguments, user_id, request_id=request_id, connector_name="ms_graph")
 
 
-async def run_ms_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute native Microsoft admin PowerShell through the Microsoft Admin connector."""
+async def _run_microsoft_admin_powershell_tool(
+    arguments: dict[str, Any],
+    user_id: Optional[UUID],
+    timeout: int,
+    *,
+    connector_name: str,
+) -> dict[str, Any]:
     request_id = uuid.uuid4().hex[:16]
     timeout = _tool_timeout(arguments, timeout)
     script = str(arguments.get("script") or arguments.get("command") or "").strip()
     if not script:
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="powershell",
-            message="Provide script for ms_powershell.",
-            connector="ms_powershell",
+            message=f"Provide script for {connector_name}.",
+            connector=connector_name,
         )
-    if _ms_admin_forbidden_command(script):
-        return _failed_ms_admin_result(
+    if _microsoft_admin_forbidden_command(script):
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="powershell",
             message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
             command=script,
             error_type="unsupported_command",
-            connector="ms_powershell",
+            connector=connector_name,
         )
-    return await _run_ms_admin_powershell(
+    return await _run_microsoft_admin_powershell(
         script,
         user_id,
         timeout=timeout,
         request_id=request_id,
-        connector_name="ms_powershell",
+        connector_name=connector_name,
         allowed_binaries=MS_POWERSHELL_ALLOWED_BINARIES,
+    )
+
+
+async def run_ms_graph_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute Microsoft Graph PowerShell through the Microsoft Admin connector."""
+    return await _run_microsoft_admin_powershell_tool(
+        arguments,
+        user_id,
+        timeout,
+        connector_name="ms_graph_powershell",
+    )
+
+
+async def run_ms_exchange_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute Exchange Online PowerShell through the Microsoft Admin connector."""
+    return await _run_microsoft_admin_powershell_tool(
+        arguments,
+        user_id,
+        timeout,
+        connector_name="ms_exchange_powershell",
+    )
+
+
+async def run_ms_teams_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute Microsoft Teams PowerShell through the Microsoft Admin connector."""
+    return await _run_microsoft_admin_powershell_tool(
+        arguments,
+        user_id,
+        timeout,
+        connector_name="ms_teams_powershell",
+    )
+
+
+async def run_ms_sharepoint_pnp_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute SharePoint/PnP PowerShell through the Microsoft Admin connector."""
+    return await _run_microsoft_admin_powershell_tool(
+        arguments,
+        user_id,
+        timeout,
+        connector_name="ms_sharepoint_pnp_powershell",
+    )
+
+
+async def run_ms_az_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute Az PowerShell through the Microsoft Admin connector."""
+    return await _run_microsoft_admin_powershell_tool(
+        arguments,
+        user_id,
+        timeout,
+        connector_name="ms_az_powershell",
     )
 
 
@@ -424,13 +488,13 @@ async def run_ms_bicep_tool(arguments: dict[str, Any], user_id: Optional[UUID], 
     timeout = _tool_timeout(arguments, timeout)
     command = str(arguments.get("command") or "").strip()
     if not command:
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="bicep",
             message="Provide command for ms_bicep.",
             connector="ms_bicep",
         )
-    return await _run_ms_admin_bicep(
+    return await _run_microsoft_admin_bicep(
         command,
         user_id,
         timeout=timeout,
@@ -440,87 +504,37 @@ async def run_ms_bicep_tool(arguments: dict[str, Any], user_id: Optional[UUID], 
     )
 
 
-async def run_ms_admin_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute the consolidated Microsoft Admin connector tool.
-
-    The connector intentionally excludes GitHub tooling. GitHub remains a
-    separate connector because it has a separate OAuth/token model and audit
-    surface.
-    """
-    request_id = uuid.uuid4().hex[:16]
-    mode = str(arguments.get("mode") or "").strip().lower() or "status"
-    timeout = _tool_timeout(arguments, timeout)
-
-    if mode in {"status", "health"}:
-        return await _ms_admin_status(user_id, request_id)
-
-    if mode == "azure_cli":
-        command = str(arguments.get("command") or "").strip()
-        if not command:
-            return _failed_ms_admin_result(request_id=request_id, mode=mode, message="Provide command for azure_cli mode.")
-        return await _run_ms_admin_azure_cli(command, user_id, timeout=timeout, request_id=request_id)
-
-    if mode in {"powershell", "pwsh"}:
-        script = str(arguments.get("script") or arguments.get("command") or "").strip()
-        if not script:
-            return _failed_ms_admin_result(request_id=request_id, mode=mode, message="Provide script or command for powershell mode.")
-        if _ms_admin_forbidden_command(script):
-            return _failed_ms_admin_result(
-                request_id=request_id,
-                mode=mode,
-                message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
-                command=script,
-                error_type="unsupported_command",
-            )
-        return await _run_ms_admin_powershell(script, user_id, timeout=timeout, request_id=request_id)
-
-    if mode == "bicep":
-        command = str(arguments.get("command") or "").strip()
-        if not command:
-            return _failed_ms_admin_result(request_id=request_id, mode=mode, message="Provide command for bicep mode.")
-        return await _run_ms_admin_bicep(command, user_id, timeout=timeout, request_id=request_id)
-
-    if mode == "graph_request":
-        return await _run_ms_admin_graph_request(arguments, user_id, request_id=request_id)
-
-    return _failed_ms_admin_result(
-        request_id=request_id,
-        mode=mode,
-        message="mode must be one of: status, azure_cli, powershell, bicep, graph_request.",
-    )
-
-
-def _ms_admin_forbidden_command(script: str) -> bool:
+def _microsoft_admin_forbidden_command(script: str) -> bool:
     return bool(MS_ADMIN_FORBIDDEN_COMMAND_RE.search(script))
 
 
-def _ms_admin_home_dir(user_id: UUID) -> str:
+def _microsoft_admin_home_dir(user_id: UUID) -> str:
     base = os.environ.get("MS_ADMIN_USER_HOME_ROOT", "/tmp/ai-platform-ms-admin")
     path = os.path.join(base, user_id.hex)
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
 
-def _ms_admin_env(user_id: UUID) -> dict[str, str]:
+def _microsoft_admin_env(user_id: UUID) -> dict[str, str]:
     return {
         "AZURE_TENANT_ID": TENANT_ID,
         "AZURE_CONFIG_DIR": _azure_config_dir(user_id),
-        "HOME": _ms_admin_home_dir(user_id),
+        "HOME": _microsoft_admin_home_dir(user_id),
     }
 
 
-async def _run_ms_admin_powershell(
+async def _run_microsoft_admin_powershell(
     script: str,
     user_id: Optional[UUID],
     timeout: int,
     request_id: str,
     *,
-    connector_name: str = "ms_admin",
+    connector_name: str = "microsoft_admin",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
     if not token_data or not token_data.get("access_token"):
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="powershell",
             message="Microsoft Admin is not connected for this user.",
@@ -528,7 +542,7 @@ async def _run_ms_admin_powershell(
             error_type="not_connected",
             connector=connector_name,
         )
-    env = _ms_admin_env(user_id)
+    env = _microsoft_admin_env(user_id)
     env["AI_PLATFORM_MS_USERNAME"] = extract_azure_username(token_data)
     arm_token = await _get_fresh_azure_token_for_scope(user_id, AZURE_ARM_SCOPE) if user_id else None
     if arm_token and arm_token.get("access_token") and not arm_token.get("refresh_error"):
@@ -540,7 +554,7 @@ async def _run_ms_admin_powershell(
     if exchange_token and exchange_token.get("access_token") and not exchange_token.get("refresh_error"):
         env["AI_PLATFORM_EXCHANGE_ACCESS_TOKEN"] = exchange_token["access_token"]
 
-    full_script = f"{_ms_admin_powershell_preamble()}\n{script}"
+    full_script = f"{_microsoft_admin_powershell_preamble()}\n{script}"
     result = await run_command(
         f"pwsh -NoLogo -NoProfile -NonInteractive -Command {shlex.quote(full_script)}",
         timeout=timeout,
@@ -562,7 +576,7 @@ async def _run_ms_admin_powershell(
     return output
 
 
-def _ms_admin_powershell_preamble() -> str:
+def _microsoft_admin_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformAz {
@@ -590,17 +604,17 @@ function Connect-AIPlatformTeams {
 """
 
 
-async def _run_ms_admin_bicep(
+async def _run_microsoft_admin_bicep(
     command: str,
     user_id: Optional[UUID],
     timeout: int,
     request_id: str,
     *,
-    connector_name: str = "ms_admin",
+    connector_name: str = "microsoft_admin",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
-    if _ms_admin_forbidden_command(command):
-        return _failed_ms_admin_result(
+    if _microsoft_admin_forbidden_command(command):
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="bicep",
             message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
@@ -609,7 +623,7 @@ async def _run_ms_admin_bicep(
             connector=connector_name,
         )
     normalized = command if command.startswith("bicep ") else f"bicep {command}"
-    env = _ms_admin_env(user_id) if user_id else {}
+    env = _microsoft_admin_env(user_id) if user_id else {}
     result = await run_command(
         normalized,
         timeout=timeout,
@@ -631,12 +645,12 @@ async def _run_ms_admin_bicep(
     return output
 
 
-async def _run_ms_admin_graph_request(
+async def _run_microsoft_admin_graph_request(
     arguments: dict[str, Any],
     user_id: Optional[UUID],
     request_id: str,
     *,
-    connector_name: str = "ms_admin",
+    connector_name: str = "microsoft_admin",
 ) -> dict[str, Any]:
     method = str(arguments.get("method") or "GET").strip().upper()
     path = str(arguments.get("path") or "").strip()
@@ -644,14 +658,14 @@ async def _run_ms_admin_graph_request(
     max_pages = _bounded_int(arguments.get("max_pages"), GRAPH_AUTO_PAGE_MAX_PAGES, 1, 100)
     max_items = _bounded_int(arguments.get("max_items"), GRAPH_AUTO_PAGE_MAX_ITEMS, 1, 5000)
     if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="graph_request",
             message="Unsupported Graph method.",
             connector=connector_name,
         )
     if not path.startswith("/"):
-        return _failed_ms_admin_result(
+        return _failed_microsoft_admin_result(
             request_id=request_id,
             mode="graph_request",
             message="Graph path must start with '/'.",
@@ -848,16 +862,16 @@ def _graph_error_details(data: Any, status_code: int) -> tuple[str | None, str |
     return "graph_http_error", f"Microsoft Graph returned HTTP {status_code}."
 
 
-async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str, Any]:
-    diagnosis = await diagnose_azure_connection(user_id)
-    token_data = await retrieve_token("azure", user_id) if user_id else None
+async def _microsoft_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str, Any]:
+    diagnosis = await diagnose_microsoft_admin_connection(user_id)
+    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id) if user_id else None
     consented_profiles = set((token_data or {}).get("consented_scope_profiles") or [])
     primary_profile = (token_data or {}).get("scope_profile")
     if primary_profile:
         consented_profiles.add(microsoft_admin_scope_profile(primary_profile))
     return {
         **diagnosis,
-        "connector": "ms_admin",
+        "connector": "microsoft_admin",
         "mode": "status",
         "request_id": request_id,
         "auth_profiles": {
@@ -904,7 +918,7 @@ def _azure_config_dir(user_id: UUID) -> str:
 async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, Any]]:
     if not user_id:
         return None
-    token_data = await retrieve_token("azure", user_id)
+    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id)
     if not token_data:
         return None
     client_error = microsoft_admin_token_client_error(token_data)
@@ -947,7 +961,7 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
             "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
         }
         updated["username"] = extract_azure_username(updated)
-        await store_token("azure", user_id, updated)
+        await store_token(MICROSOFT_ADMIN_PROVIDER, user_id, updated)
         if scope_profile == "arm":
             await ensure_azure_cli_profile(user_id, updated)
         return updated
@@ -956,11 +970,16 @@ async def _get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, 
         return {**token_data, "refresh_error": "token_refresh_failed"}
 
 
-async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) -> Optional[dict[str, Any]]:
+async def _get_fresh_azure_token_for_scope(
+    user_id: Optional[UUID],
+    scope: str,
+    *,
+    require_account_metadata: bool = False,
+) -> Optional[dict[str, Any]]:
     """Return a fresh Microsoft token for a requested Microsoft Admin resource."""
     if not user_id:
         return None
-    token_data = await retrieve_token("azure", user_id)
+    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id)
     if not token_data:
         return None
     client_error = microsoft_admin_token_client_error(token_data)
@@ -970,13 +989,16 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
     if scope_profile and token_data.get("scope_profile") == scope_profile:
         expires_on = _expires_on(token_data)
         if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            return token_data
+            if not require_account_metadata or _has_azure_cli_account_metadata(token_data):
+                return token_data
     cached_token = (token_data.get("delegated_tokens") or {}).get(scope_profile) if scope_profile else None
     cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error(cached_token)
     if cached_token_is_current:
         expires_on = _expires_on(cached_token)
         if cached_token.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            return {**token_data, **cached_token}
+            merged_token = {**token_data, **cached_token}
+            if not require_account_metadata or _has_azure_cli_account_metadata(merged_token):
+                return merged_token
 
     refresh_token = cached_token.get("refresh_token") if cached_token_is_current else None
     refresh_token = refresh_token or token_data.get("refresh_token")
@@ -1041,7 +1063,7 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
             consented = set(token_data.get("consented_scope_profiles") or [])
             consented.add(scope_profile)
             await store_token(
-                "azure",
+                MICROSOFT_ADMIN_PROVIDER,
                 user_id,
                 {
                     **token_data,
@@ -1082,9 +1104,24 @@ def _scope_profile_for_scope(scope: str) -> str:
     return ""
 
 
-async def get_fresh_azure_token(user_id: Optional[UUID]) -> Optional[dict[str, Any]]:
-    """Return a stored Azure token, refreshing it first when possible."""
-    return await _get_fresh_azure_token(user_id)
+async def get_microsoft_admin_token(
+    user_id: Optional[UUID],
+    profile: str,
+    **context: Any,
+) -> Optional[dict[str, Any]]:
+    """Return a fresh delegated Microsoft Admin token for one authorization profile."""
+    scope_profile = microsoft_admin_scope_profile(profile)
+    if scope_profile == "arm":
+        scope = AZURE_ARM_SCOPE
+    elif scope_profile == "exchange":
+        scope = EXCHANGE_ONLINE_SCOPE
+    else:
+        scope = MICROSOFT_GRAPH_SCOPE
+    return await _get_fresh_azure_token_for_scope(
+        user_id,
+        scope,
+        require_account_metadata=bool(context.get("require_account_metadata")),
+    )
 
 
 def _expires_on(token_data: dict[str, Any]) -> int:
@@ -1246,13 +1283,14 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
         except Exception:
             cache = msal.SerializableTokenCache()
 
+    client_info = _azure_client_info(token_data)
     response = {
         "token_type": token_data.get("token_type") or "Bearer",
         "access_token": token_data.get("access_token"),
         "refresh_token": token_data.get("refresh_token"),
         "id_token": token_data.get("id_token"),
         "id_token_claims": _azure_identity_claims(token_data),
-        "client_info": token_data.get("client_info"),
+        "client_info": client_info,
         "scope": token_data.get("scope") or azure_device_scope_string(),
         "expires_in": int(token_data.get("expires_in") or max(_expires_on(token_data) - int(time.time()), 0) or 3600),
     }
@@ -1268,6 +1306,25 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
     }
     cache.add(event)
     _atomic_write(cache_path, cache.serialize(), mode=0o600)
+
+
+def _has_azure_cli_account_metadata(token_data: dict[str, Any]) -> bool:
+    return bool(_azure_client_info(token_data))
+
+
+def _azure_client_info(token_data: dict[str, Any]) -> str:
+    existing = str(token_data.get("client_info") or "").strip()
+    if existing:
+        return existing
+
+    claims = _azure_identity_claims(token_data) or _decode_jwt_claims(str(token_data.get("access_token") or ""))
+    uid = claims.get("oid") or claims.get("sub")
+    utid = claims.get("tid") or claims.get("tenant_id") or TENANT_ID
+    if not uid or not utid:
+        return ""
+
+    payload = json.dumps({"uid": uid, "utid": utid}, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
 def _write_azure_profile(config_dir: Path, username: str, subscriptions: list[dict[str, Any]]) -> str:
@@ -1325,20 +1382,20 @@ def _atomic_write(path: Path, content: str, mode: int) -> None:
     tmp_path.replace(path)
 
 
-async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
+async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[str, Any]:
     request_id = uuid.uuid4().hex[:16]
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
     if not token_data or not token_data.get("access_token"):
         return {
             "status": "failed",
-            "connector": "ms_admin",
+            "connector": "microsoft_admin",
             "request_id": request_id,
             "message": "Microsoft Admin is not connected for this user.",
         }
     if _token_expired(token_data):
         return {
             "status": "failed",
-            "connector": "ms_admin",
+            "connector": "microsoft_admin",
             "request_id": request_id,
             "message": "Microsoft Admin token is expired. Reconnect Microsoft Admin for this user.",
         }
@@ -1348,7 +1405,7 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         if not graph_token or not graph_token.get("access_token") or graph_token.get("refresh_error"):
             return {
                 "status": "failed",
-                "connector": "ms_admin",
+                "connector": "microsoft_admin",
                 "request_id": request_id,
                 "message": (
                     graph_token.get("refresh_error")
@@ -1368,7 +1425,7 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         if response.status_code >= 400:
             return {
                 "status": "failed",
-                "connector": "ms_admin",
+                "connector": "microsoft_admin",
                 "request_id": request_id,
                 "message": graph_message or "Microsoft Graph validation failed.",
                 "error_type": error_type or "graph_validation_failed",
@@ -1409,7 +1466,7 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
 
         return {
             "status": "success",
-            "connector": "ms_admin",
+            "connector": "microsoft_admin",
             "request_id": request_id,
             "message": "Microsoft Admin is connected. Microsoft Graph validation succeeded.",
             "graph_status": "available",
@@ -1424,7 +1481,7 @@ async def diagnose_azure_connection(user_id: Optional[UUID]) -> dict[str, Any]:
         logger.warning("Microsoft Admin diagnostics failed for request_id=%s: %s", request_id, exc)
         return {
             "status": "failed",
-            "connector": "ms_admin",
+            "connector": "microsoft_admin",
             "request_id": request_id,
             "message": "Microsoft Admin diagnostics failed. Check connector logs with this request_id.",
         }

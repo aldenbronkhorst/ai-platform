@@ -111,9 +111,9 @@ class TestConnectedAccountsFlow:
         assert "connectors" in data
         assert isinstance(data["connectors"], list)
         connector_keys = {item["connector_key"] for item in data["connectors"]}
-        assert connector_keys == {"odoo", "azure", "github"}
+        assert connector_keys == {"odoo", "microsoft_admin", "github"}
         connectors = {item["connector_key"]: item for item in data["connectors"]}
-        assert connectors["azure"]["display_name"] == "Microsoft Admin"
+        assert connectors["microsoft_admin"]["display_name"] == "Microsoft Admin"
 
     def test_get_connected_accounts_uses_stored_delegated_state_without_token_lookup(self):
         async def fake_token_status(provider, _user_id):
@@ -127,24 +127,26 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        assert connectors["azure"]["status"] == "not_connected"
+        assert connectors["microsoft_admin"]["status"] == "not_connected"
         assert connectors["github"]["status"] == "not_connected"
 
     def test_get_connected_accounts_can_include_verified_token_state(self):
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}
 
-        async def fake_fresh_azure_token(_user_id):
+        async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
+            assert profile == "graph"
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
                 "username": "alden@example.com",
                 "scope": "https://management.core.windows.net//.default",
+                "scope_profile": "graph",
             }
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_fresh_azure_token", new=AsyncMock(side_effect=fake_fresh_azure_token)),
+            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
         ):
             response = client.get(
                 "/connected-accounts?include_token_state=true",
@@ -153,16 +155,17 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        assert connectors["azure"]["status"] == "connected"
-        assert connectors["azure"]["state"]["configured"] is True
-        assert connectors["azure"]["state"]["token_status"] == "connected"
-        assert connectors["azure"]["state"]["source"] == "token_store"
+        assert connectors["microsoft_admin"]["status"] == "connected"
+        assert connectors["microsoft_admin"]["state"]["configured"] is True
+        assert connectors["microsoft_admin"]["state"]["token_status"] == "connected"
+        assert connectors["microsoft_admin"]["state"]["source"] == "token_store"
 
     def test_get_connected_accounts_reports_microsoft_admin_profile_authorization_state(self):
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}
 
-        async def fake_fresh_azure_token(_user_id):
+        async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
+            assert profile == "graph"
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
@@ -186,7 +189,7 @@ class TestConnectedAccountsFlow:
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_fresh_azure_token", new=AsyncMock(side_effect=fake_fresh_azure_token)),
+            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
             patch("app.routers.connected_accounts.retrieve_token", new=AsyncMock(side_effect=fake_retrieve_token)),
         ):
             response = client.get(
@@ -198,24 +201,26 @@ class TestConnectedAccountsFlow:
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
         profiles = {
             profile["profile"]: profile["status"]
-            for profile in connectors["azure"]["metadata"]["authorization_profiles"]
+            for profile in connectors["microsoft_admin"]["metadata"]["authorization_profiles"]
         }
         assert profiles == {
             "graph": "authorized",
             "arm": "missing",
             "exchange": "authorized",
+            "teams": "authorized",
+            "sharepoint": "authorized",
         }
-        assert "Missing: Azure Resource Manager" in connectors["azure"]["metadata"]["authorization_summary"]
+        assert "Missing: Azure Resource Manager" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
 
     @pytest.mark.asyncio
-    async def test_azure_token_state_refreshes_before_reporting_expired(self):
+    async def test_microsoft_admin_token_state_refreshes_before_reporting_expired(self):
         from app.services.connected_account_state import effective_connected_accounts
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
         account = AIConnectedAccount(
             id=UUID("e4807f22-97c8-4778-87a2-160f56d25248"),
             user_id=user_id,
-            provider="azure",
+            provider="microsoft_admin",
             provider_username="alden@example.com",
             status="expired",
         )
@@ -233,7 +238,8 @@ class TestConnectedAccountsFlow:
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}
 
-        async def fake_fresh_azure_token(_user_id):
+        async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
+            assert profile == "graph"
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
@@ -243,13 +249,13 @@ class TestConnectedAccountsFlow:
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_fresh_azure_token", new=AsyncMock(side_effect=fake_fresh_azure_token)),
+            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
         ):
             accounts = await effective_connected_accounts(db, user_id, include_token_state=True)
 
-        azure = next(item for item in accounts if item.provider == "azure")
-        assert azure.status == "connected"
-        assert azure.token_status == "connected"
+        microsoft_admin = next(item for item in accounts if item.provider == "microsoft_admin")
+        assert microsoft_admin.status == "connected"
+        assert microsoft_admin.token_status == "connected"
 
     def test_get_odoo_status_not_connected(self):
         response = client.get(
