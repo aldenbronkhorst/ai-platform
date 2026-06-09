@@ -3,11 +3,11 @@ import uuid
 import pytest
 
 from app.routers import connector_github
-from app.services import connector_commands
+from app.services.connectors import github_cli
 
 
 def test_write_github_cli_files_creates_hosts_yml(tmp_path):
-    connector_commands._write_github_cli_files(str(tmp_path), "gho_test_token", "alden")
+    github_cli._write_github_cli_files(str(tmp_path), "gho_test_token", "alden")
 
     hosts = (tmp_path / "hosts.yml").read_text(encoding="utf-8")
 
@@ -56,17 +56,17 @@ async def test_run_github_cli_uses_user_scoped_profile(monkeypatch, tmp_path):
         captured["allowed_binaries"] = allowed_binaries
         return Result()
 
-    monkeypatch.setattr(connector_commands, "retrieve_token", fake_retrieve_token)
-    monkeypatch.setattr(connector_commands, "ensure_github_cli_profile", fake_ensure_profile)
-    monkeypatch.setattr(connector_commands, "_github_config_dir", lambda _user_id: str(tmp_path))
-    monkeypatch.setattr(connector_commands, "run_command", fake_run_command)
+    monkeypatch.setattr(github_cli, "retrieve_token", fake_retrieve_token)
+    monkeypatch.setattr(github_cli, "ensure_github_cli_profile", fake_ensure_profile)
+    monkeypatch.setattr(github_cli, "_github_config_dir", lambda _user_id: str(tmp_path))
+    monkeypatch.setattr(github_cli, "run_command", fake_run_command)
 
-    result = await connector_commands.run_github_cli_command("gh repo list", user_id)
+    result = await github_cli.run_github_cli_command("gh repo list", user_id)
 
     assert result["status"] == "success"
     assert result["auth_method"] == "user_scoped_gh_cli"
     assert captured["env"] == {"GH_CONFIG_DIR": str(tmp_path)}
-    assert captured["allowed_binaries"] == connector_commands.GITHUB_ALLOWED_BINARIES
+    assert captured["allowed_binaries"] == github_cli.GITHUB_ALLOWED_BINARIES
 
 
 def test_github_oauth_state_round_trip_for_user():

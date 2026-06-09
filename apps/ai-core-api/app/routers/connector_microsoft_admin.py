@@ -13,18 +13,20 @@ from app.services.connected_account_state import (
     sync_delegated_account_from_token,
     upsert_delegated_account,
 )
-from app.services.connector_commands import (
+from app.services.connectors.microsoft_admin.constants import (
     AZURE_AUTHORITY_HOST,
-    TENANT_ID,
     AZURE_TOKEN_ENDPOINT,
     MICROSOFT_ADMIN_PROVIDER,
-    diagnose_microsoft_admin_connection,
-    extract_microsoft_admin_username,
+    TENANT_ID,
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string,
     microsoft_admin_scope_label,
     microsoft_admin_scope_summary,
+)
+from app.services.connectors.microsoft_admin.diagnostics import diagnose_microsoft_admin_connection
+from app.services.connectors.microsoft_admin.tokens import (
+    extract_microsoft_admin_username,
     microsoft_admin_token_client_error,
     warm_microsoft_admin_delegated_tokens,
 )

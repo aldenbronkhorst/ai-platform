@@ -146,7 +146,7 @@ class TestConnectedAccountsFlow:
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
+            patch("app.services.connectors.microsoft_admin.tokens.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
         ):
             response = client.get(
                 "/connected-accounts?include_token_state=true",
@@ -189,7 +189,7 @@ class TestConnectedAccountsFlow:
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
+            patch("app.services.connectors.microsoft_admin.tokens.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
             patch("app.routers.connected_accounts.retrieve_token", new=AsyncMock(side_effect=fake_retrieve_token)),
         ):
             response = client.get(
@@ -249,7 +249,7 @@ class TestConnectedAccountsFlow:
 
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
-            patch("app.services.connector_commands.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
+            patch("app.services.connectors.microsoft_admin.tokens.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
         ):
             accounts = await effective_connected_accounts(db, user_id, include_token_state=True)
 

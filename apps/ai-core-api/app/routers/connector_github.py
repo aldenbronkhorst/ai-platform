@@ -18,7 +18,7 @@ from app.services.connected_account_state import (
     sync_delegated_account_from_token,
     upsert_delegated_account,
 )
-from app.services.connector_commands import diagnose_github_connection, run_github_cli_command
+from app.services.connectors.github_cli import diagnose_github_connection, run_github_cli_command
 
 router = APIRouter(prefix="/connector/github", tags=["Connector"])
 logger = logging.getLogger(__name__)

@@ -368,9 +368,23 @@ const CONNECTORS: ConnectorDef[] = [
 
 interface ConnectionsPageProps { accessToken: string; }
 
+const CONNECTOR_SYSTEM_KEYS = new Set(["odoo", "microsoft_admin", "github", "azure"]);
+const CONNECTOR_TOOL_NAMES = new Set([
+  "odoo_ops_runner",
+  "github_cli",
+  "ms_graph",
+  "ms_graph_powershell",
+  "ms_exchange_powershell",
+  "ms_teams_powershell",
+  "ms_sharepoint_pnp_powershell",
+  "ms_az_powershell",
+  "ms_azure_cli",
+  "ms_bicep",
+]);
+
 function canonicalPlatformTools(tools: PlatformTool[]) {
   const seen = new Set<string>();
-  return tools.filter(tool => !["odoo", "microsoft_admin", "github"].includes(tool.target_system)).filter((tool) => {
+  return tools.filter(tool => !CONNECTOR_SYSTEM_KEYS.has(tool.target_system) && !CONNECTOR_TOOL_NAMES.has(tool.name)).filter((tool) => {
     const key = `${(tool.display_name || tool.name).trim().toLowerCase()}::${tool.target_system}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -818,9 +832,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     return null;
   };
 
-  const availableConnectors = connectorMeta
-    ? CONNECTORS.filter((connector) => connectorMeta[connector.key])
-    : [];
+  const availableConnectors = CONNECTORS;
   const normalizedConnectorSearch = connectorSearch.trim().toLowerCase();
   const filteredConnectors = normalizedConnectorSearch
     ? availableConnectors.filter((connector) => {
@@ -840,7 +852,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       return searchable.includes(normalizedConnectorSearch);
     })
     : availableConnectors;
-  const activeConnector = selectedConnector && (!connectorMeta || connectorMeta[selectedConnector])
+  const activeConnector = selectedConnector && CONNECTORS.some((connector) => connector.key === selectedConnector)
     ? selectedConnector
     : null;
   const filteredPlatformTools = (platformTools || []).filter((tool) => {

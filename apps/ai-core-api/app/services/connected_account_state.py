@@ -88,7 +88,7 @@ async def _delegated_token_status(provider: str, user_id: UUID) -> dict[str, Any
     """Return delegated token status, refreshing providers that support it."""
     if provider == "microsoft_admin":
         try:
-            from app.services.connector_commands import get_microsoft_admin_token
+            from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
             token_data = await get_microsoft_admin_token(user_id, "graph")
             return token_status_from_data(provider, token_data)
