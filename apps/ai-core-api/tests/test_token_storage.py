@@ -74,6 +74,84 @@ async def test_store_token_recovers_soft_deleted_secret(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_store_token_compacts_large_microsoft_admin_payload(monkeypatch):
+    monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
+    user_id = UUID("e4807f22-97c8-4000-8000-000000000001")
+    captured: dict[str, str] = {}
+
+    async def fake_set_secret_value(name: str, value: str) -> None:
+        captured["name"] = name
+        captured["value"] = value
+
+    monkeypatch.setattr(token_storage, "set_secret_value", fake_set_secret_value)
+
+    stored = await token_storage.store_token(
+        "azure",
+        user_id,
+        {
+            "client_id": "microsoft-admin-client-id",
+            "token_type": "Bearer",
+            "access_token": "graph-access-token",
+            "refresh_token": "shared-refresh-token",
+            "scope": "https://graph.microsoft.com/User.Read offline_access",
+            "scope_profile": "graph",
+            "username": "alden@example.com",
+            "id_token": "x" * 8_000,
+            "id_token_claims": {"name": "Alden", "blob": "y" * 8_000},
+            "client_info": "z" * 2_000,
+            "consented_scope_profiles": ["graph", "arm", "exchange"],
+            "delegated_tokens": {
+                "graph": {
+                    "access_token": "graph-access-token",
+                    "refresh_token": "graph-refresh-token",
+                    "scope_profile": "graph",
+                    "id_token": "x" * 8_000,
+                    "client_info": "z" * 2_000,
+                },
+                "arm": {
+                    "client_id": "microsoft-admin-client-id",
+                    "token_type": "Bearer",
+                    "access_token": "arm-access-token",
+                    "refresh_token": "arm-refresh-token",
+                    "scope": "https://management.azure.com/.default",
+                    "scope_profile": "arm",
+                    "id_token": "x" * 8_000,
+                    "id_token_claims": {"blob": "y" * 8_000},
+                    "client_info": "z" * 2_000,
+                    "expires_on": 4_102_444_800,
+                },
+                "exchange": {
+                    "client_id": "microsoft-admin-client-id",
+                    "token_type": "Bearer",
+                    "access_token": "exchange-access-token",
+                    "refresh_token": "exchange-refresh-token",
+                    "scope": "https://outlook.office365.com/.default",
+                    "scope_profile": "exchange",
+                    "id_token": "x" * 8_000,
+                    "id_token_claims": {"blob": "y" * 8_000},
+                    "client_info": "z" * 2_000,
+                    "expires_on": 4_102_444_800,
+                },
+            },
+        },
+    )
+
+    assert stored is True
+    payload = json.loads(captured["value"])
+    assert len(captured["value"]) < 25_600
+    assert payload["refresh_token"] == "shared-refresh-token"
+    assert payload["consented_scope_profiles"] == ["graph", "arm", "exchange"]
+    assert "id_token" not in payload
+    assert "id_token_claims" not in payload
+    assert "client_info" not in payload
+    assert "graph" not in payload["delegated_tokens"]
+    assert payload["delegated_tokens"]["arm"]["access_token"] == "arm-access-token"
+    assert payload["delegated_tokens"]["exchange"]["access_token"] == "exchange-access-token"
+    assert "refresh_token" not in payload["delegated_tokens"]["arm"]
+    assert "id_token" not in payload["delegated_tokens"]["exchange"]
+
+
+@pytest.mark.asyncio
 async def test_store_token_does_not_recover_unrelated_write_failures(monkeypatch):
     monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
 

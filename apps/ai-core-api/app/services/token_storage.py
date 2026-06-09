@@ -15,6 +15,37 @@ from app.services.key_vault import (
 
 logger = logging.getLogger(__name__)
 
+KEY_VAULT_SECRET_VALUE_SOFT_LIMIT = 25_000
+
+AZURE_TOKEN_TOP_LEVEL_KEYS = {
+    "client_id",
+    "token_type",
+    "access_token",
+    "refresh_token",
+    "scope",
+    "scope_profile",
+    "username",
+    "provider_username",
+    "login",
+    "expires_in",
+    "expires_on",
+    "consented_scope_profiles",
+    "refresh_error",
+    "error_type",
+}
+
+AZURE_DELEGATED_TOKEN_KEYS = {
+    "client_id",
+    "token_type",
+    "access_token",
+    "scope",
+    "scope_profile",
+    "expires_in",
+    "expires_on",
+    "refresh_error",
+    "error_type",
+}
+
 
 def _secret_name(provider: str, user_id: UUID) -> str:
     return f"connector-token-{provider}-{user_id.hex[:12]}"
@@ -36,13 +67,99 @@ def _is_recoverable_deleted_secret_error(exc: Exception) -> bool:
     )
 
 
+def _has_value(value: Any) -> bool:
+    return value is not None and value != "" and value != {}
+
+
+def _azure_delegated_tokens_for_storage(
+    token_data: dict[str, Any],
+    compact_token_data: dict[str, Any],
+    *,
+    include_delegated_access_tokens: bool,
+) -> dict[str, dict[str, Any]]:
+    delegated_tokens = token_data.get("delegated_tokens") or {}
+    if not isinstance(delegated_tokens, dict):
+        return {}
+
+    primary_profile = compact_token_data.get("scope_profile")
+    compact_delegated_tokens: dict[str, dict[str, Any]] = {}
+    for profile, profile_token in delegated_tokens.items():
+        if not isinstance(profile_token, dict):
+            continue
+        if profile == primary_profile:
+            continue
+
+        compact_profile = {
+            key: profile_token.get(key)
+            for key in AZURE_DELEGATED_TOKEN_KEYS
+            if _has_value(profile_token.get(key))
+        }
+        compact_profile.setdefault("scope_profile", profile)
+        if not include_delegated_access_tokens:
+            compact_profile.pop("access_token", None)
+
+        if compact_token_data.get("refresh_token") is None and _has_value(profile_token.get("refresh_token")):
+            compact_profile["refresh_token"] = profile_token["refresh_token"]
+
+        if compact_profile.get("access_token") or compact_profile.get("refresh_token") or compact_profile.get("scope_profile"):
+            compact_delegated_tokens[str(profile)] = compact_profile
+
+    return compact_delegated_tokens
+
+
+def _compact_azure_token_for_storage(
+    token_data: dict[str, Any],
+    *,
+    include_delegated_access_tokens: bool = True,
+) -> dict[str, Any]:
+    """Drop nonessential Microsoft identity blobs before storing in Key Vault.
+
+    The Microsoft Admin connector can hold Graph, ARM, and Exchange profile tokens
+    in one user secret. ID tokens, decoded claims, client_info values, and duplicate
+    primary delegated tokens push that secret over Key Vault's 25,600 character
+    value limit while not being needed after we have stored the username.
+    """
+    compact_token_data = {
+        key: token_data.get(key)
+        for key in AZURE_TOKEN_TOP_LEVEL_KEYS
+        if _has_value(token_data.get(key))
+    }
+    delegated_tokens = _azure_delegated_tokens_for_storage(
+        token_data,
+        compact_token_data,
+        include_delegated_access_tokens=include_delegated_access_tokens,
+    )
+    if delegated_tokens:
+        compact_token_data["delegated_tokens"] = delegated_tokens
+    return compact_token_data
+
+
+def _token_for_storage(provider: str, token_data: dict[str, Any]) -> dict[str, Any]:
+    if provider != "azure":
+        return token_data
+
+    compact_token_data = _compact_azure_token_for_storage(token_data)
+    secret_value = json.dumps(compact_token_data, separators=(",", ":"))
+    if len(secret_value) <= KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
+        return compact_token_data
+
+    compact_token_data = _compact_azure_token_for_storage(token_data, include_delegated_access_tokens=False)
+    secret_value = json.dumps(compact_token_data, separators=(",", ":"))
+    if len(secret_value) > KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
+        logger.warning(
+            "Compacted Microsoft Admin token payload is still large (%s characters)",
+            len(secret_value),
+        )
+    return compact_token_data
+
+
 async def store_token(provider: str, user_id: UUID, token_data: dict[str, Any]) -> bool:
     """Store OAuth token data in Key Vault for a specific user and provider."""
     if not key_vault_uri():
         logger.warning("KEY_VAULT_URI not set, cannot store token")
         return False
     secret_name = _secret_name(provider, user_id)
-    secret_value = json.dumps(token_data)
+    secret_value = json.dumps(_token_for_storage(provider, token_data), separators=(",", ":"))
     try:
         await set_secret_value(secret_name, secret_value)
         logger.info("Stored %s token for user %s", provider, user_id.hex[:12])
