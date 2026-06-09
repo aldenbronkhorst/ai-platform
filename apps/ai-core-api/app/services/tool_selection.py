@@ -17,6 +17,12 @@ TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
 DOCUMENT_READER_TOOL = "document_reader"
 PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
 MICROSOFT_ALL_TOOL_NAMES = frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"})
+MS_ABBREVIATION_CONTEXT_KEYWORDS = {
+    "admin", "admins", "account", "accounts", "entra", "m365", "365", "office",
+    "user", "users", "group", "groups", "license", "licenses", "licence",
+    "licences", "mailbox", "mailboxes", "exchange", "intune", "teams",
+    "sharepoint", "graph",
+}
 MICROSOFT_TOOL_INTENT_KEYWORDS = {
     "ms_azure_cli": {
         "azure", "az", "resource group", "resource groups", "subscription", "subscriptions",
@@ -120,6 +126,11 @@ def _contains_keyword(message: str, tokens: set[str], keyword: str) -> bool:
     return keyword in message
 
 
+def _has_ms_admin_abbreviation_intent(message: str, tokens: set[str]) -> bool:
+    """Treat bare "ms" as Microsoft only when admin context is present."""
+    return "ms" in tokens and bool(tokens.intersection(MS_ABBREVIATION_CONTEXT_KEYWORDS))
+
+
 def _requested_systems(user_message: str, task_type: str) -> set[str]:
     message = (user_message or "").lower()
     tokens = _message_tokens(message)
@@ -130,6 +141,8 @@ def _requested_systems(user_message: str, task_type: str) -> set[str]:
     for system, keywords in SYSTEM_INTENT_KEYWORDS.items():
         if any(_contains_keyword(message, tokens, keyword) for keyword in keywords):
             requested.add(system)
+    if _has_ms_admin_abbreviation_intent(message, tokens):
+        requested.add("azure")
 
     if task_type in {"azure", "github", "odoo"}:
         requested.add(task_type)
@@ -155,6 +168,8 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
 
     if "microsoft admin" in message or "all microsoft" in message or any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
         selected.update(MICROSOFT_ALL_TOOL_NAMES)
+    if _has_ms_admin_abbreviation_intent(message, tokens) and not selected:
+        selected.add("ms_graph")
     if not selected:
         selected.add("ms_azure_cli")
     return selected

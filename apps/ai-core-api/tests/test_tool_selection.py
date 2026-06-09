@@ -194,6 +194,41 @@ async def test_tool_selection_selects_microsoft_admin_for_cross_system_user_crea
 
 
 @pytest.mark.asyncio
+async def test_tool_selection_treats_ms_admin_abbreviation_as_microsoft_with_admin_context():
+    tools = [
+        _tool("odoo_ops_runner", "odoo"),
+        *_microsoft_tools(),
+        _tool("github_cli", "github"),
+    ]
+
+    result = await get_tool_selection(
+        FakeDb(tools),
+        uuid.uuid4(),
+        "add gerhard from odoo as a user in ms as gw.c@",
+        connected_systems={"odoo", "azure", "github"},
+    )
+
+    assert {tool.name for tool in result.selected} == {"odoo_ops_runner", "ms_graph"}
+    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_azure_cli", "ms_bicep", "ms_powershell"}
+    assert result.intent == "azure,odoo"
+
+
+@pytest.mark.asyncio
+async def test_tool_selection_does_not_treat_plain_ms_units_as_microsoft_admin():
+    tools = [*_microsoft_tools()]
+
+    result = await get_tool_selection(
+        FakeDb(tools),
+        uuid.uuid4(),
+        "the request took 5 ms",
+        connected_systems={"azure"},
+    )
+
+    assert result.selected == []
+    assert result.intent == "no_connector_intent"
+
+
+@pytest.mark.asyncio
 async def test_tool_selection_keeps_odoo_active_users_scoped_to_odoo():
     tools = [
         _tool("odoo_ops_runner", "odoo"),

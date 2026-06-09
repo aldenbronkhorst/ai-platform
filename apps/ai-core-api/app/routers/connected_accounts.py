@@ -21,6 +21,13 @@ from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.services.connected_account_state import effective_connected_accounts
+from app.services.connector_commands import (
+    microsoft_admin_app_name_for_scope_profile,
+    microsoft_admin_scope_label,
+    microsoft_admin_scope_summary,
+    microsoft_admin_scope_profile,
+)
+from app.services.token_storage import retrieve_token
 from app.schemas.schemas import AIAuditEventCreate
 
 router = APIRouter(prefix="/connected-accounts", tags=["connected-accounts"])
@@ -323,6 +330,74 @@ def _connector_state(account: Optional[AIConnectedAccount], provider: str, inclu
         "diagnostics_status": _diagnostics_status(account),
         "cli_status": _cli_status(account, provider),
         "source": "token_store" if include_token_state and provider in {"azure", "github"} else "database",
+    }
+
+
+MICROSOFT_ADMIN_PROFILE_ORDER = ("graph", "arm", "exchange")
+
+
+def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]:
+    if not token_data:
+        return set()
+
+    authorized: set[str] = set()
+    primary_profile = token_data.get("scope_profile")
+    if primary_profile:
+        authorized.add(microsoft_admin_scope_profile(primary_profile))
+
+    for profile in token_data.get("consented_scope_profiles") or []:
+        authorized.add(microsoft_admin_scope_profile(profile))
+
+    delegated_tokens = token_data.get("delegated_tokens") or {}
+    if isinstance(delegated_tokens, dict):
+        for profile, profile_token in delegated_tokens.items():
+            if isinstance(profile_token, dict) and (
+                profile_token.get("access_token") or profile_token.get("refresh_token")
+            ):
+                authorized.add(microsoft_admin_scope_profile(profile))
+
+    return {profile for profile in authorized if profile in MICROSOFT_ADMIN_PROFILE_ORDER}
+
+
+async def _microsoft_admin_authorization_metadata(
+    user_id: UUID,
+    account: Optional[AIConnectedAccount],
+    include_token_state: bool,
+) -> dict:
+    token_data = None
+    if include_token_state and _is_configured(account):
+        token_data = await retrieve_token("azure", user_id)
+
+    authorized_profiles = _authorized_microsoft_admin_profiles(token_data)
+    profile_rows = []
+    for profile in MICROSOFT_ADMIN_PROFILE_ORDER:
+        if not _is_configured(account):
+            profile_status = "not_connected"
+        elif not include_token_state:
+            profile_status = "not_checked"
+        else:
+            profile_status = "authorized" if profile in authorized_profiles else "missing"
+        profile_rows.append({
+            "profile": profile,
+            "label": microsoft_admin_scope_label(profile),
+            "status": profile_status,
+            "scope_summary": microsoft_admin_scope_summary(profile),
+            "auth_app_name": microsoft_admin_app_name_for_scope_profile(profile),
+        })
+
+    authorized_labels = [row["label"] for row in profile_rows if row["status"] == "authorized"]
+    missing_labels = [row["label"] for row in profile_rows if row["status"] == "missing"]
+    summary_parts = []
+    if authorized_labels:
+        summary_parts.append(f"Authorized: {', '.join(authorized_labels)}")
+    if missing_labels:
+        summary_parts.append(f"Missing: {', '.join(missing_labels)}")
+    if not summary_parts and _is_configured(account):
+        summary_parts.append("Authorization profiles not checked")
+
+    return {
+        "authorization_profiles": profile_rows,
+        "authorization_summary": "; ".join(summary_parts) if summary_parts else None,
     }
 
 
@@ -1030,6 +1105,11 @@ async def get_connected_accounts(
     odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
     azure = next((a for a in db_accounts if a.provider == "azure"), None)
     github = next((a for a in db_accounts if a.provider == "github"), None)
+    microsoft_auth_metadata = await _microsoft_admin_authorization_metadata(
+        user_id,
+        azure,
+        include_token_state,
+    )
 
     connectors = [
         {
@@ -1067,11 +1147,7 @@ async def get_connected_accounts(
                     "Az PowerShell",
                     "Bicep CLI",
                 ],
-                "authorization_profiles": [
-                    "Microsoft Graph Admin",
-                    "Exchange Online",
-                    "Azure Resource Manager",
-                ],
+                **microsoft_auth_metadata,
             } if azure else {},
         },
         {

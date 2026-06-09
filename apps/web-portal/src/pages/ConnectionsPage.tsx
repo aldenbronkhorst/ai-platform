@@ -37,9 +37,19 @@ interface ConnectorMeta {
   metadata?: {
     provider_username?: string | null;
     permission_summary?: string | null;
+    authorization_summary?: string | null;
+    authorization_profiles?: AuthorizationProfile[];
     odoo_url?: string | null;
     odoo_db?: string | null;
   };
+}
+
+interface AuthorizationProfile {
+  profile: string;
+  label: string;
+  status: string;
+  scope_summary?: string | null;
+  auth_app_name?: string | null;
 }
 
 interface PlatformTool {
@@ -107,6 +117,17 @@ interface AzureDeviceCode {
   interval?: number;
 }
 
+interface AzureConsentStep {
+  profile: string;
+  label: string;
+}
+
+const MICROSOFT_CONSENT_STEPS: AzureConsentStep[] = [
+  { profile: "graph", label: "Microsoft Graph Admin" },
+  { profile: "arm", label: "Azure Resource Manager" },
+  { profile: "exchange", label: "Exchange Online" },
+];
+
 type ApiRecord = Record<string, unknown>;
 
 function errorMessage(err: unknown) {
@@ -137,9 +158,16 @@ type StatusTone = "success" | "danger" | "warning" | "neutral";
 
 function getStatusTone(status?: string, hasError = false): StatusTone {
   if (hasError) return "danger";
-  if (status === "connected" || status === "active") return "success";
-  if (status === "error") return "danger";
-  if (status === "needs_token" || status === "needs_setup" || status === "not_connected" || status === "expired") return "warning";
+  if (status === "connected" || status === "active" || status === "authorized" || status === "available") return "success";
+  if (status === "error" || status === "failed") return "danger";
+  if (
+    status === "needs_token"
+    || status === "needs_setup"
+    || status === "not_connected"
+    || status === "expired"
+    || status === "missing"
+    || status === "not_checked"
+  ) return "warning";
   return "neutral";
 }
 
@@ -291,6 +319,29 @@ function ConnectorDetailShell({
   );
 }
 
+function AuthorizationProfileList({ profiles }: { profiles?: AuthorizationProfile[] }) {
+  if (!profiles?.length) return null;
+
+  return (
+    <DetailCard>
+      <div className="space-y-3">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted">Authorization Profiles</p>
+        <div className="space-y-2">
+          {profiles.map((profile) => (
+            <div key={profile.profile} className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-default truncate">{profile.label}</p>
+                <p className="text-xs text-muted truncate">{profile.auth_app_name || "Microsoft Admin"}</p>
+              </div>
+              <StatusBadge status={profile.status} fallback="Not Checked" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </DetailCard>
+  );
+}
+
 const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
   { key: "azure", name: "Microsoft Admin", subtitle: "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager" },
@@ -322,6 +373,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooApiKey, setOdooApiKey] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [azureDeviceCode, setAzureDeviceCode] = useState<AzureDeviceCode | null>(null);
+  const [azureConsentStep, setAzureConsentStep] = useState<{ current: number; total: number; label: string } | null>(null);
   const [azurePolling, setAzurePolling] = useState(false);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
@@ -485,13 +537,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
-    const consentSteps = [
-      { profile: "graph", label: "Microsoft Graph Admin" },
-      { profile: "arm", label: "Azure Resource Manager" },
-      { profile: "exchange", label: "Exchange Online" },
-    ];
+    const missingProfiles = connectorMeta?.azure?.metadata?.authorization_profiles
+      ?.filter(profile => profile.status === "missing")
+      .map(profile => profile.profile) || [];
+    const missingConsentSteps = MICROSOFT_CONSENT_STEPS.filter(step => missingProfiles.includes(step.profile));
+    const consentSteps = missingConsentSteps.length ? missingConsentSteps : MICROSOFT_CONSENT_STEPS;
     const startConsentStep = async (stepIndex: number) => {
       const step = consentSteps[stepIndex];
+      setAzureConsentStep({ current: stepIndex + 1, total: consentSteps.length, label: step.label });
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, {
         method: "POST",
         headers: headers(),
@@ -516,12 +569,15 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                 setCliTestResult({ status: "pending", connector: "azure", message: `${pd.scope_label || step.label} authorized. Continue with ${consentSteps[stepIndex + 1].label}.` });
                 void startConsentStep(stepIndex + 1).catch((err) => {
                   setAzurePolling(false);
+                  setAzureDeviceCode(null);
+                  setAzureConsentStep(null);
                   setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) });
                   void fetchConnectors();
                 });
               } else {
                 setAzurePolling(false);
                 setAzureDeviceCode(null);
+                setAzureConsentStep(null);
                 setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected with Microsoft Graph, Azure Resource Manager, and Exchange profiles." });
                 void fetchConnectors();
               }
@@ -529,19 +585,23 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
               setAzurePolling(false);
+              setAzureDeviceCode(null);
+              setAzureConsentStep(null);
               setCliTestResult({ status: "failed", connector: "azure", message: pd.message || pd.error || "Auth failed" });
               void fetchConnectors();
             }
-          } catch { setAzurePolling(false); }
+          } catch { setAzurePolling(false); setAzureDeviceCode(null); setAzureConsentStep(null); }
         };
         setTimeout(poll, (data.interval || 5) * 1000);
       } else {
+        setAzureDeviceCode(null);
+        setAzureConsentStep(null);
         setCliTestResult({ status: "failed", connector: "azure", message: data.error || "Failed to start device code flow" });
       }
     };
     try {
       await startConsentStep(0);
-    } catch (err) { setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
+    } catch (err) { setAzureDeviceCode(null); setAzureConsentStep(null); setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
   };
 
   const handleAzureStatus = async () => {
@@ -563,6 +623,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return;
     await fetch(`${APIM_BASE_URL}/connector/azure/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
+    setAzureDeviceCode(null);
+    setAzureConsentStep(null);
+    setAzurePolling(false);
     setCliTestResult({ status: "success", connector: "azure", message: "Disconnected" });
   };
 
@@ -667,50 +730,69 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       );
     }
 
-    if (key === "azure") return (
-      <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
-        <DetailCard>
-          <p className="text-sm text-muted">Connect with Microsoft Admin delegated authentication.</p>
-        </DetailCard>
-
-        <InfoGrid
-          rows={[
-            { label: "Account", value: formatOptionalStatus(connectorMeta?.azure?.state?.account_status || metaStatus) },
-            { label: "Token", value: formatOptionalStatus(connectorMeta?.azure?.state?.token_status) },
-            { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.azure?.state?.diagnostics_status) },
-            { label: "Admin Shell", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
-            { label: "User", value: connectorMeta?.azure?.metadata?.provider_username || "—" },
-            { label: "Last Verified", value: formatDateTime(connectorMeta?.azure?.last_verified_at) },
-          ]}
-        />
-
-        <ActionGroup>
-          <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
-            {azurePolling ? "Waiting for authentication..." : "Connect Microsoft Admin"}
-          </GlassButton>
-          <GlassButton size="sm" onClick={handleAzureStatus}>
-            <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
-          </GlassButton>
-          <GlassButton size="sm" variant="danger" onClick={handleAzureDisconnect}>
-            <Trash2 className="w-3.5 h-3.5" /> Disconnect
-          </GlassButton>
-        </ActionGroup>
-
-        {azureDeviceCode && (
+    if (key === "azure") {
+      const authorizationProfiles = connectorMeta?.azure?.metadata?.authorization_profiles;
+      const hasMissingProfiles = authorizationProfiles?.some(profile => profile.status === "missing");
+      return (
+        <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
           <DetailCard>
-            <div className="text-sm space-y-2">
-              <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
-              <p className="text-muted text-xs">
-                {azureDeviceCode.scope_label || "Microsoft Admin"} via {azureDeviceCode.auth_app_name || "Microsoft"}.
-              </p>
-              <p className="text-muted text-xs">
-                Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.
-              </p>
-            </div>
+            <p className="text-sm text-muted">Connect with Microsoft Admin delegated authentication.</p>
           </DetailCard>
-        )}
-      </ConnectorDetailShell>
-    );
+
+          <InfoGrid
+            rows={[
+              { label: "Account", value: formatOptionalStatus(connectorMeta?.azure?.state?.account_status || metaStatus) },
+              { label: "Token", value: formatOptionalStatus(connectorMeta?.azure?.state?.token_status) },
+              { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.azure?.state?.diagnostics_status) },
+              { label: "Admin Shell", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
+              { label: "User", value: connectorMeta?.azure?.metadata?.provider_username || "—" },
+              { label: "Profiles", value: connectorMeta?.azure?.metadata?.authorization_summary || "—" },
+              { label: "Last Verified", value: formatDateTime(connectorMeta?.azure?.last_verified_at) },
+            ]}
+          />
+
+          <AuthorizationProfileList profiles={authorizationProfiles} />
+
+          <ActionGroup>
+            <GlassButton size="sm" onClick={handleConnectAzure} disabled={azurePolling}>
+              {azurePolling ? "Waiting for authentication..." : hasMissingProfiles ? "Authorize Missing Profiles" : "Connect Microsoft Admin"}
+            </GlassButton>
+            <GlassButton size="sm" onClick={handleAzureStatus}>
+              <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
+            </GlassButton>
+            <GlassButton size="sm" variant="danger" onClick={handleAzureDisconnect}>
+              <Trash2 className="w-3.5 h-3.5" /> Disconnect
+            </GlassButton>
+          </ActionGroup>
+
+          {azureDeviceCode && (
+            <DetailCard>
+              <div className="text-sm space-y-3">
+                <div className="space-y-1">
+                  {azureConsentStep && (
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted">
+                      Step {azureConsentStep.current} of {azureConsentStep.total}: {azureConsentStep.label}
+                    </p>
+                  )}
+                  <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{azureDeviceCode.user_code}</span></p>
+                  <p className="text-muted text-xs">
+                    {azureDeviceCode.scope_label || "Microsoft Admin"} via {azureDeviceCode.auth_app_name || "Microsoft"}.
+                  </p>
+                  <p className="text-muted text-xs">
+                    Open <a href={azureDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{azureDeviceCode.verification_url}</a> and enter the code above.
+                  </p>
+                </div>
+                <ActionGroup>
+                  <GlassButton size="sm" onClick={() => window.open(azureDeviceCode.verification_url, "_blank", "noopener,noreferrer")}>
+                    Open Microsoft Sign-In
+                  </GlassButton>
+                </ActionGroup>
+              </div>
+            </DetailCard>
+          )}
+        </ConnectorDetailShell>
+      );
+    }
 
     if (key === "github") return (
       <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
@@ -838,7 +920,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
-          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
+          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzureConsentStep(null); setAzurePolling(false); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
@@ -915,7 +997,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
-              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzurePolling(false); }}
+              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setAzureDeviceCode(null); setAzureConsentStep(null); setAzurePolling(false); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>
