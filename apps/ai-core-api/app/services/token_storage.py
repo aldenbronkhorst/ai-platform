@@ -1,6 +1,7 @@
 """Per-user token storage in Key Vault for delegated auth flows."""
 import json
 import logging
+import re
 import time
 from typing import Any, Optional
 from uuid import UUID
@@ -51,7 +52,10 @@ MICROSOFT_ADMIN_DELEGATED_TOKEN_KEYS = {
 
 
 def _secret_name(provider: str, user_id: UUID) -> str:
-    return f"connector-token-{provider}-{user_id.hex[:12]}"
+    provider_segment = re.sub(r"[^0-9A-Za-z-]+", "-", provider).strip("-").lower()
+    if not provider_segment:
+        provider_segment = "connector"
+    return f"connector-token-{provider_segment}-{user_id.hex[:12]}"
 
 
 def token_secret_name(provider: str, user_id: UUID) -> str:

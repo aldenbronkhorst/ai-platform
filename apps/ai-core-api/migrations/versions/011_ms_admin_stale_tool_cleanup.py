@@ -39,8 +39,13 @@ def upgrade():
     op.execute(sa.text("UPDATE ai_connected_accounts SET provider='microsoft_admin', updated_at=now() WHERE provider='azure'"))
     op.execute(sa.text(
         "UPDATE ai_connected_accounts "
-        "SET secret_reference=replace(secret_reference, 'connector-token-azure-', 'connector-token-microsoft_admin-'), updated_at=now() "
+        "SET secret_reference=replace(secret_reference, 'connector-token-azure-', 'connector-token-microsoft-admin-'), updated_at=now() "
         "WHERE secret_reference LIKE 'connector-token-azure-%'"
+    ))
+    op.execute(sa.text(
+        "UPDATE ai_connected_accounts "
+        "SET secret_reference=replace(secret_reference, 'connector-token-microsoft_admin-', 'connector-token-microsoft-admin-'), updated_at=now() "
+        "WHERE secret_reference LIKE 'connector-token-microsoft_admin-%'"
     ))
     op.execute(sa.text("UPDATE ai_audit_events SET target_system='microsoft_admin' WHERE target_system='azure'"))
     op.execute(sa.text("UPDATE ai_tasks SET linked_system='microsoft_admin', updated_at=now() WHERE linked_system='azure'"))

@@ -112,7 +112,7 @@ def test_ms_admin_migration_copies_legacy_key_vault_token_secret(monkeypatch):
 
     user_id = uuid.UUID("e4807f22-97c8-4000-8000-000000000001")
     old_name = f"connector-token-azure-{user_id.hex[:12]}"
-    new_name = f"connector-token-microsoft_admin-{user_id.hex[:12]}"
+    new_name = f"connector-token-microsoft-admin-{user_id.hex[:12]}"
 
     class FakeMissing(Exception):
         pass
@@ -153,6 +153,6 @@ def test_ms_admin_migration_copies_legacy_key_vault_token_secret(monkeypatch):
     monkeypatch.setattr(migration, "SecretClient", FakeSecretClient)
     monkeypatch.setattr(migration.op, "get_bind", lambda: FakeBind())
 
-    migration._copy_token_secrets("connector-token-azure-", "connector-token-microsoft_admin-", "azure")
+    migration._copy_token_secrets("connector-token-azure-", "connector-token-microsoft-admin-", "azure")
 
     assert FakeSecretClient.secrets[new_name] == "stored-token"
