@@ -7,8 +7,13 @@ Create Date: 2026-06-09
 from __future__ import annotations
 
 import json
+import os
+import uuid as uuidlib
 
 from alembic import op
+from azure.core.exceptions import ResourceNotFoundError
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 import sqlalchemy as sa
 
 
@@ -83,7 +88,73 @@ MICROSOFT_ADMIN_TOOLS = [
 ]
 
 
+def _is_recoverable_deleted_secret_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    error_code = str(getattr(exc, "error_code", "") or "").lower()
+    return (
+        "deleted but recoverable" in text
+        or "objectisdeletedbutrecoverable" in text
+        or "deletedsecretrecoverable" in text
+        or "deletedsecretrecoverable" in error_code
+    )
+
+
+def _computed_secret_name(prefix: str, user_id) -> str:
+    return f"{prefix}{uuidlib.UUID(str(user_id)).hex[:12]}"
+
+
+def _set_secret_value(client: SecretClient, name: str, value: str) -> None:
+    try:
+        client.set_secret(name, value)
+    except Exception as exc:
+        if not _is_recoverable_deleted_secret_error(exc):
+            raise
+        poller = client.begin_recover_deleted_secret(name)
+        poller.wait()
+        client.set_secret(name, value)
+
+
+def _copy_token_secrets(old_prefix: str, new_prefix: str, provider: str) -> None:
+    """Copy Key Vault token secrets once so the provider rename does not disconnect users."""
+    vault_url = os.environ.get("KEY_VAULT_URI", "")
+    if not vault_url:
+        return
+
+    bind = op.get_bind()
+    rows = bind.execute(
+        sa.text(
+            "SELECT user_id, secret_reference "
+            "FROM ai_connected_accounts "
+            "WHERE provider=:provider"
+        ),
+        {"provider": provider},
+    ).mappings().all()
+    if not rows:
+        return
+
+    client = SecretClient(vault_url=vault_url, credential=DefaultAzureCredential())
+    for row in rows:
+        old_name = row.get("secret_reference") or _computed_secret_name(old_prefix, row["user_id"])
+        if not str(old_name).startswith(old_prefix):
+            old_name = _computed_secret_name(old_prefix, row["user_id"])
+        new_name = str(old_name).replace(old_prefix, new_prefix, 1)
+
+        try:
+            client.get_secret(new_name)
+            continue
+        except ResourceNotFoundError:
+            pass
+
+        try:
+            old_secret = client.get_secret(old_name)
+        except ResourceNotFoundError:
+            continue
+
+        _set_secret_value(client, new_name, old_secret.value or "")
+
+
 def upgrade():
+    _copy_token_secrets("connector-token-azure-", "connector-token-microsoft_admin-", "azure")
     op.execute(sa.text("UPDATE ai_connected_accounts SET provider='microsoft_admin', updated_at=now() WHERE provider='azure'"))
     op.execute(sa.text(
         "UPDATE ai_connected_accounts "
@@ -129,6 +200,7 @@ def upgrade():
 
 
 def downgrade():
+    _copy_token_secrets("connector-token-microsoft_admin-", "connector-token-azure-", "microsoft_admin")
     op.execute(sa.text("UPDATE ai_connected_accounts SET provider='azure', updated_at=now() WHERE provider='microsoft_admin'"))
     op.execute(sa.text(
         "UPDATE ai_connected_accounts "
