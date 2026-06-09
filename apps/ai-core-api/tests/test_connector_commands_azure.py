@@ -146,11 +146,11 @@ async def test_validate_azure_cli_profile_forces_msal_token_lookup(monkeypatch, 
     assert result["ready"] is True
     assert "account get-access-token" in str(called["command"])
     assert "account show" not in str(called["command"])
-    assert called["allowed_binaries"] == azure_commands.MS_ADMIN_ALLOWED_BINARIES
+    assert called["allowed_binaries"] == azure_commands.MS_AZURE_CLI_ALLOWED_BINARIES
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_azure_cli_mode_uses_single_ms_admin_execution_path(monkeypatch):
+async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
     called: dict[str, object] = {}
 
     class Result:
@@ -193,33 +193,97 @@ async def test_ms_admin_azure_cli_mode_uses_single_ms_admin_execution_path(monke
     monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
     user_id = uuid.uuid4()
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "azure_cli", "command": "account show", "timeout": 30},
+    result = await azure_commands.run_ms_azure_cli_tool(
+        {"command": "account show", "timeout": 30},
         user_id,
     )
 
     assert called["command"] == "az account show"
     assert called["profile_user_id"] == user_id
     assert called["timeout"] == 30
-    assert called["allowed_binaries"] == azure_commands.MS_ADMIN_ALLOWED_BINARIES
+    assert called["allowed_binaries"] == azure_commands.MS_AZURE_CLI_ALLOWED_BINARIES
     assert result["status"] == "success"
-    assert result["connector"] == "ms_admin"
+    assert result["connector"] == "ms_azure_cli"
     assert result["mode"] == "azure_cli"
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_rejects_github_commands_from_powershell_mode(monkeypatch):
+async def test_ms_azure_cli_costmanagement_query_cli_returns_rest_guidance(monkeypatch):
+    async def unexpected_token_lookup(*_args, **_kwargs):
+        raise AssertionError("token lookup should not run for unsupported costmanagement query")
+
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", unexpected_token_lookup)
+
+    result = await azure_commands.run_ms_azure_cli_tool(
+        {"command": "costmanagement query --type Usage"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "failed"
+    assert result["connector"] == "ms_azure_cli"
+    assert result["error_type"] == "unsupported_costmanagement_query_cli"
+    assert "az rest" in result["message"]
+    assert "Microsoft.CostManagement/query" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
+    class Result:
+        success = False
+
+        def to_dict(self):
+            return {
+                "stdout": "",
+                "stderr": "ERROR: 'query' is misspelled or not recognized by the system.\n",
+                "exit_code": 2,
+                "timed_out": False,
+                "output_truncated": False,
+                "stdout_chars": 0,
+                "stderr_chars": 61,
+                "error": None,
+            }
+
+    async def fake_token(_user_id):
+        return {
+            "access_token": "access-token",
+            "expires_on": int(time.time()) + 3600,
+            "username": "alden@example.com",
+        }
+
+    async def fake_profile(user_id, token_data, subscriptions_result=None):
+        return {"ready": True}
+
+    async def fake_run_command(command, timeout, env, allowed_binaries=None):
+        return Result()
+
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", fake_token)
+    monkeypatch.setattr(azure_commands, "ensure_azure_cli_profile", fake_profile)
+    monkeypatch.setattr(azure_commands, "run_command", fake_run_command)
+
+    result = await azure_commands.run_ms_azure_cli_tool(
+        {"command": "account show"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_type"] == "command_failed"
+    assert result["message"] == "ERROR: 'query' is misspelled or not recognized by the system."
+
+
+@pytest.mark.asyncio
+async def test_ms_powershell_rejects_github_commands(monkeypatch):
     async def unexpected_token_lookup(*_args, **_kwargs):
         raise AssertionError("token lookup should not run for rejected GitHub command")
 
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token", unexpected_token_lookup)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "powershell", "script": "gh run list --repo owner/repo"},
+    result = await azure_commands.run_ms_powershell_tool(
+        {"script": "gh run list --repo owner/repo"},
         uuid.uuid4(),
     )
 
     assert result["status"] == "failed"
+    assert result["connector"] == "ms_powershell"
     assert result["error_type"] == "unsupported_command"
     assert "GitHub connector" in result["error"]
 
@@ -259,7 +323,7 @@ async def _fake_graph_token(_user_id, _scope):
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_graph_request_auto_follows_next_link(monkeypatch):
+async def test_ms_graph_auto_follows_next_link(monkeypatch):
     calls: list[dict] = []
     responses = [
         _FakeGraphResponse(
@@ -275,12 +339,13 @@ async def test_ms_admin_graph_request_auto_follows_next_link(monkeypatch):
     _fake_graph_client(monkeypatch, responses, calls)
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "graph_request", "path": "/users?$top=1&$select=id"},
+    result = await azure_commands.run_ms_graph_tool(
+        {"path": "/users?$top=1&$select=id"},
         uuid.uuid4(),
     )
 
     assert result["status"] == "success"
+    assert result["connector"] == "ms_graph"
     assert result["result"]["value"] == [{"id": "1"}, {"id": "2"}]
     assert result["result"]["pagination"]["auto_paged"] is True
     assert result["result"]["pagination"]["pages_fetched"] == 2
@@ -288,7 +353,7 @@ async def test_ms_admin_graph_request_auto_follows_next_link(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_graph_users_skip_is_applied_locally(monkeypatch):
+async def test_ms_graph_users_skip_is_applied_locally(monkeypatch):
     calls: list[dict] = []
     responses = [
         _FakeGraphResponse(
@@ -302,8 +367,8 @@ async def test_ms_admin_graph_users_skip_is_applied_locally(monkeypatch):
     _fake_graph_client(monkeypatch, responses, calls)
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "graph_request", "path": "/users?$top=999&$skip=1&$select=id"},
+    result = await azure_commands.run_ms_graph_tool(
+        {"path": "/users?$top=999&$skip=1&$select=id"},
         uuid.uuid4(),
     )
 
@@ -316,14 +381,14 @@ async def test_ms_admin_graph_users_skip_is_applied_locally(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_graph_skip_is_not_rewritten_for_user_child_collections(monkeypatch):
+async def test_ms_graph_skip_is_not_rewritten_for_user_child_collections(monkeypatch):
     calls: list[dict] = []
     responses = [_FakeGraphResponse(200, {"value": [{"id": "message-2"}]})]
     _fake_graph_client(monkeypatch, responses, calls)
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "graph_request", "path": "/users/user-1/messages?$top=1&$skip=1"},
+    result = await azure_commands.run_ms_graph_tool(
+        {"path": "/users/user-1/messages?$top=1&$skip=1"},
         uuid.uuid4(),
     )
 
@@ -333,7 +398,7 @@ async def test_ms_admin_graph_skip_is_not_rewritten_for_user_child_collections(m
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_graph_users_local_skip_fetches_past_skipped_items(monkeypatch):
+async def test_ms_graph_users_local_skip_fetches_past_skipped_items(monkeypatch):
     calls: list[dict] = []
     responses = [
         _FakeGraphResponse(
@@ -349,8 +414,8 @@ async def test_ms_admin_graph_users_local_skip_fetches_past_skipped_items(monkey
     _fake_graph_client(monkeypatch, responses, calls)
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "graph_request", "path": "/users?$skip=2&$select=id", "max_items": 2},
+    result = await azure_commands.run_ms_graph_tool(
+        {"path": "/users?$skip=2&$select=id", "max_items": 2},
         uuid.uuid4(),
     )
 
@@ -362,7 +427,7 @@ async def test_ms_admin_graph_users_local_skip_fetches_past_skipped_items(monkey
 
 
 @pytest.mark.asyncio
-async def test_ms_admin_graph_request_surfaces_graph_error_message(monkeypatch):
+async def test_ms_graph_surfaces_graph_error_message(monkeypatch):
     calls: list[dict] = []
     responses = [
         _FakeGraphResponse(
@@ -373,8 +438,8 @@ async def test_ms_admin_graph_request_surfaces_graph_error_message(monkeypatch):
     _fake_graph_client(monkeypatch, responses, calls)
     monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
 
-    result = await azure_commands.run_ms_admin_tool(
-        {"mode": "graph_request", "path": "/groups?$skip=5"},
+    result = await azure_commands.run_ms_graph_tool(
+        {"path": "/groups?$skip=5"},
         uuid.uuid4(),
     )
 

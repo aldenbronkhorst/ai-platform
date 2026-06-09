@@ -23,6 +23,9 @@ from app.services.model_router import (
     _sanitize_chat_title,
     _tool_selection_message,
     _compact_tool_result_for_model,
+    _append_tool_guidance,
+    _build_tool_finalizer_messages,
+    _guard_connected_system_denial,
 )
 
 
@@ -56,6 +59,12 @@ def test_canonical_prompt_is_tool_agnostic():
     assert "never claim live access" in CANONICAL_SYSTEM_PROMPT.lower()
 
 
+def test_canonical_prompt_requires_grounded_connected_system_numbers():
+    lower = CANONICAL_SYSTEM_PROMPT.lower()
+    assert "never invent quantitative connected-system facts" in lower
+    assert "successful current tool results" in lower
+
+
 def test_trace_redaction_keeps_token_counts_visible():
     from app.services.trace_service import redact_value, summarize_payload
 
@@ -82,7 +91,7 @@ def test_fallback_chat_title_uses_first_user_request():
         {"role": "assistant", "content": "I will check Azure."},
     ])
 
-    assert title == "Check Azure Active Resources"
+    assert title == "Azure Resource Inventory"
 
 
 def test_fallback_chat_title_preserves_business_terms():
@@ -98,7 +107,42 @@ def test_fallback_chat_title_drops_question_scaffolding_and_standalone_counts():
         {"role": "user", "content": "there are 2 gerhard employees in my odoo?"},
     ])
 
-    assert title == "Gerhard Employees Odoo"
+    assert title == "Gerhard Employee Duplicates"
+
+
+def test_fallback_chat_title_corrects_typos_and_uses_subject():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "create a microsoft uerer for employe gerhard in odoo"},
+    ])
+
+    assert title == "Create Microsoft User for Gerhard"
+
+
+def test_fallback_chat_title_uses_context_for_followup_subject():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "whats costing so much"},
+        {"role": "assistant", "content": "Azure Cost Management returned a daily cost table."},
+    ])
+
+    assert title == "Azure Cost Breakdown"
+
+
+def test_fallback_chat_title_normalizes_error_typos():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "halllucinations and now claims it cannot acess azure"},
+    ])
+
+    assert title == "Azure Access Hallucination"
+
+
+def test_fallback_chat_title_does_not_preserve_raw_misspellings():
+    title = _fallback_chat_title([
+        {"role": "user", "content": "faliours during thinking in the connecotrs"},
+    ])
+
+    assert title == "Thinking Error Investigation"
+    assert "Faliours" not in title
+    assert "Connecotrs" not in title
 
 
 def test_tool_selection_message_inherits_context_for_date_correction():
@@ -114,17 +158,115 @@ def test_tool_selection_message_inherits_context_for_date_correction():
     assert "i meant 4 june" in selection_text
 
 
-def test_legacy_azure_cli_tool_call_canonicalizes_to_ms_admin():
+def test_legacy_azure_cli_tool_call_canonicalizes_to_ms_azure_cli():
     tool_name, args = _canonical_tool_invocation("azure_cli", {"command": "account show"})
 
-    assert tool_name == "ms_admin"
-    assert args == {"command": "account show", "mode": "azure_cli"}
+    assert tool_name == "ms_azure_cli"
+    assert args == {"command": "account show"}
+
+
+def test_legacy_ms_admin_modes_canonicalize_to_native_microsoft_tools():
+    assert _canonical_tool_invocation("ms_admin", {"mode": "azure_cli", "command": "account show"}) == (
+        "ms_azure_cli",
+        {"command": "account show"},
+    )
+    assert _canonical_tool_invocation("ms_admin", {"mode": "graph_request", "path": "/users"}) == (
+        "ms_graph",
+        {"path": "/users"},
+    )
+    assert _canonical_tool_invocation("ms_admin", {"mode": "powershell", "script": "Get-MgUser"}) == (
+        "ms_powershell",
+        {"script": "Get-MgUser"},
+    )
+    assert _canonical_tool_invocation("ms_admin", {"mode": "bicep", "command": "version"}) == (
+        "ms_bicep",
+        {"command": "version"},
+    )
+
+
+def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
+    tools = [
+        AITool(
+            name=name,
+            display_name=name,
+            description="Run Microsoft admin tooling",
+            target_system="azure",
+            input_schema={"type": "object", "properties": {}, "required": []},
+        )
+        for name in ("ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep")
+    ]
+    prompt = _append_tool_guidance(
+        "base\n",
+        tools,
+        [{"type": "function", "function": {"name": tool.name, "parameters": {"type": "object"}}} for tool in tools],
+    )
+
+    assert "use the broad native-interface tools only" in prompt
+    assert "`ms_azure_cli`, `ms_graph`, `ms_powershell`, and `ms_bicep`" in prompt
+    assert "do not use `ms_admin`" in prompt
+    assert "do not use `az costmanagement query`" in prompt
+    assert "az rest --method post" in prompt
+    assert "Microsoft.CostManagement/query" in prompt
+    assert "do not claim Azure is disconnected" in prompt
+    assert "Never invent Azure cost totals" in prompt
+    assert "successful tool result only" in prompt
+    assert "do not say there is no Microsoft user-management tool" in prompt
+
+
+def test_tool_finalizer_keeps_ms_admin_connection_distinct_from_command_errors():
+    messages = [{"role": "user", "content": "what is costing so much in Azure?"}]
+    tool_results = [
+        {
+            "tool_name": "ms_azure_cli",
+            "arguments": {"command": "costmanagement query --type Usage"},
+            "result": {
+                "status": "failed",
+                "error_type": "unsupported_costmanagement_query_cli",
+                "message": "Use az rest instead.",
+            },
+        }
+    ]
+
+    finalizer_messages = _build_tool_finalizer_messages(messages, tool_results)
+    system_text = finalizer_messages[0]["content"]
+
+    assert "failed command or unsupported CLI subcommand does not mean Azure is disconnected" in system_text
+
+
+def test_guard_replaces_false_azure_not_connected_denial_when_connected():
+    bad_content = (
+        "I do not have access to your Azure cost data.\n\n"
+        "Azure Cost Management — Not connected.\n"
+        "Go to Connected Accounts and add/authorize an Azure connector."
+    )
+
+    guarded = _guard_connected_system_denial(
+        bad_content,
+        {"azure"},
+        [{"tool_name": "ms_azure_cli", "error_type": "unsupported_costmanagement_query_cli", "message": "Use az rest."}],
+    )
+
+    assert "Microsoft Admin / Azure is connected" in guarded
+    assert "successful Azure Cost Management tool result" in guarded
+    assert "Connected Accounts" not in guarded
+
+
+def test_guard_allows_real_ms_admin_not_connected_tool_error():
+    content = "Azure is not connected. Go to Connected Accounts."
+
+    guarded = _guard_connected_system_denial(
+        content,
+        {"azure"},
+        [{"tool_name": "ms_admin", "error_type": "not_connected", "message": "Microsoft Admin is not connected."}],
+    )
+
+    assert guarded == content
 
 
 def test_compact_tool_result_preserves_small_graph_collections():
     result = {
         "status": "success",
-        "connector": "ms_admin",
+        "connector": "ms_graph",
         "mode": "graph_request",
         "result": {
             "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
@@ -240,7 +382,7 @@ async def test_generate_chat_title_falls_back_when_title_model_unavailable():
         [{"role": "user", "content": "what are all my azure resources and month to date costs"}],
     )
 
-    assert title == "Azure Resources Month Date Costs"
+    assert title == "Azure Resources and Costs"
 
 
 @pytest.mark.asyncio
@@ -256,7 +398,7 @@ async def test_generate_chat_title_does_not_call_model():
             request_id="req-title",
         )
 
-    assert title == "Gerhard Employees Odoo"
+    assert title == "Gerhard Employee Duplicates"
     assert call_model.await_count == 0
 
 
@@ -292,6 +434,21 @@ class TestConnectorContext:
         assert "✓" in result
         assert "Odoo: connected" in result
         assert "GitHub: not connected" in result
+
+    @pytest.mark.asyncio
+    async def test_get_connector_context_azure_connected_names_azure_capability(self):
+        from app.services.model_router import _get_connector_context
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="azure", status="connected",
+        )
+        db = MockSession(has_config=False, connected_accounts=[account])
+
+        result = await _get_connector_context(db, user_id=uuid.uuid4())
+
+        assert "Microsoft Admin / Azure: connected" in result
+        assert "Azure CLI" in result
+        assert "Specific operations can still fail" in result
 
     @pytest.mark.asyncio
     async def test_connector_context_not_injected_without_user_id(self):
@@ -385,12 +542,13 @@ class TestConnectorContext:
                     def all(self):
                         return [
                             AITool(
-                                name="ms_admin",
-                                display_name="Microsoft Admin Connector",
+                                name=name,
+                                display_name=name,
                                 description="Run Microsoft admin tooling",
                                 target_system="azure",
-                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
-                            ),
+                                input_schema={"type": "object", "properties": {}, "required": []},
+                            )
+                            for name in ("ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep")
                         ]
                 return Scalars()
 
@@ -434,8 +592,10 @@ class TestConnectorContext:
         called_kwargs = mock_chat_completion.call_args[1]
         system_prompt_content = called_kwargs["messages"][0]["content"]
         tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
-        assert "Microsoft Admin: connected" in system_prompt_content
-        assert "ms_admin" in tool_names
+        assert "Microsoft Admin / Azure: connected" in system_prompt_content
+        assert "do not claim Azure is disconnected" in system_prompt_content
+        assert "ms_azure_cli" in tool_names
+        assert "ms_admin" not in tool_names
         assert result["content"] == "Azure is connected."
 
     @pytest.mark.asyncio

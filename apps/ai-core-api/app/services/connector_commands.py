@@ -31,7 +31,10 @@ MICROSOFT_GRAPH_SCOPE = os.environ.get("MICROSOFT_GRAPH_SCOPE", "https://graph.m
 MICROSOFT_GRAPH_BASE_URL = os.environ.get("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com")
 EXCHANGE_ONLINE_SCOPE = os.environ.get("EXCHANGE_ONLINE_SCOPE", "https://outlook.office365.com/.default")
 GITHUB_HOST = os.environ.get("GITHUB_HOST", "github.com")
-MS_ADMIN_ALLOWED_BINARIES = {"az", "pwsh", "bicep"}
+MS_AZURE_CLI_ALLOWED_BINARIES = {"az"}
+MS_POWERSHELL_ALLOWED_BINARIES = {"pwsh"}
+MS_BICEP_ALLOWED_BINARIES = {"bicep"}
+MS_ADMIN_ALLOWED_BINARIES = MS_AZURE_CLI_ALLOWED_BINARIES | MS_POWERSHELL_ALLOWED_BINARIES | MS_BICEP_ALLOWED_BINARIES
 MS_ADMIN_FORBIDDEN_COMMAND_RE = re.compile(r"(?i)(^|[\s;&|`])(gh|git)(\.exe)?($|[\s;&|])")
 GITHUB_ALLOWED_BINARIES = {"gh", "git", "jq", "rg", "which"}
 MICROSOFT_ADMIN_SCOPE_PROFILES = {
@@ -41,11 +44,26 @@ MICROSOFT_ADMIN_SCOPE_PROFILES = {
 }
 GRAPH_AUTO_PAGE_MAX_PAGES = 20
 GRAPH_AUTO_PAGE_MAX_ITEMS = 1000
+AZURE_COST_QUERY_REST_GUIDANCE = (
+    "az costmanagement query is not available in this Microsoft Admin shell. "
+    "Use ms_azure_cli with az rest: POST "
+    "https://management.azure.com/subscriptions/{subscriptionId}/providers/Microsoft.CostManagement/query?api-version=2023-03-01 "
+    "with a JSON body containing type=Usage, timeframe=Custom, timePeriod.from/to, "
+    "dataset.granularity=Daily, and dataset.aggregation.totalCost={name: PreTaxCost, function: Sum}."
+)
 
 
 def _normalize_azure_command(command: str) -> str:
     command = command.strip()
     return command if command.startswith("az ") else f"az {command}"
+
+
+def _tool_timeout(arguments: dict[str, Any], default: int = 60) -> int:
+    try:
+        timeout_value = int(arguments.get("timeout") or default or 60)
+    except (TypeError, ValueError):
+        timeout_value = 60
+    return max(1, min(timeout_value, 300))
 
 
 def azure_device_scope_string() -> str:
@@ -68,8 +86,21 @@ def azure_token_request_data() -> dict[str, str]:
     return {"scope": azure_device_scope_string(), "client_info": "1"}
 
 
-async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout: int, request_id: str) -> dict[str, Any]:
+async def _run_ms_admin_azure_cli(
+    command: str,
+    user_id: Optional[UUID],
+    timeout: int,
+    request_id: str,
+    *,
+    connector_name: str = "ms_admin",
+    allowed_binaries: set[str] | None = None,
+) -> dict[str, Any]:
     normalized = _normalize_azure_command(command)
+    unsupported = _unsupported_ms_admin_azure_cli_command(normalized, request_id, connector_name=connector_name)
+    if unsupported:
+        unsupported["auth_method"] = "not_required"
+        return unsupported
+
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
     if not token_data or not token_data.get("access_token"):
         result = _failed_ms_admin_result(
@@ -78,6 +109,7 @@ async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout
             message="Microsoft Admin is not connected for this user.",
             command=normalized,
             error_type="not_connected",
+            connector=connector_name,
         )
         result["auth_method"] = "not_connected"
         return result
@@ -88,6 +120,7 @@ async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout
             message="Microsoft Admin token is expired. Reconnect Microsoft Admin for this user.",
             command=normalized,
             error_type="expired_user_token",
+            connector=connector_name,
         )
         result["auth_method"] = "expired_user_token"
         return result
@@ -100,6 +133,7 @@ async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout
             message=profile.get("message", "Microsoft Admin Azure CLI profile could not be prepared for this user."),
             command=normalized,
             error_type="profile_not_ready",
+            connector=connector_name,
         )
         result["auth_method"] = "user_scoped_microsoft_admin_shell"
         return result
@@ -113,18 +147,21 @@ async def _run_ms_admin_azure_cli(command: str, user_id: Optional[UUID], timeout
         normalized,
         timeout=timeout,
         env=env,
-        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
+        allowed_binaries=allowed_binaries or MS_ADMIN_ALLOWED_BINARIES,
     )
     output = result.to_dict()
     output.update({
         "command": normalized,
-        "connector": "ms_admin",
+        "connector": connector_name,
         "mode": "azure_cli",
         "subtool": "azure_cli",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
         "auth_method": "user_scoped_microsoft_admin_shell",
     })
+    if not result.success:
+        output.setdefault("error_type", "command_failed")
+        output.setdefault("message", _command_failure_message(output, "Microsoft Admin Azure CLI command failed."))
     return output
 
 
@@ -135,6 +172,7 @@ def _failed_ms_admin_result(
     message: str,
     command: str = "",
     error_type: str = "invalid_tool_arguments",
+    connector: str = "ms_admin",
 ) -> dict[str, Any]:
     return {
         "stdout": "",
@@ -145,13 +183,126 @@ def _failed_ms_admin_result(
         "stdout_chars": 0,
         "stderr_chars": 0,
         "error": message,
+        "message": message,
         "error_type": error_type,
         "command": command,
-        "connector": "ms_admin",
+        "connector": connector,
         "mode": mode,
         "request_id": request_id,
         "status": "failed",
     }
+
+
+def _unsupported_ms_admin_azure_cli_command(
+    normalized_command: str,
+    request_id: str,
+    *,
+    connector_name: str = "ms_admin",
+) -> dict[str, Any] | None:
+    try:
+        parts = [part.lower() for part in shlex.split(normalized_command)]
+    except ValueError:
+        parts = normalized_command.strip().lower().split()
+    if parts[:3] == ["az", "costmanagement", "query"]:
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="azure_cli",
+            message=AZURE_COST_QUERY_REST_GUIDANCE,
+            command=normalized_command,
+            error_type="unsupported_costmanagement_query_cli",
+            connector=connector_name,
+        )
+    return None
+
+
+def _command_failure_message(output: dict[str, Any], default: str) -> str:
+    for key in ("error", "stderr", "stdout"):
+        value = str(output.get(key) or "").strip()
+        if value:
+            first_line = next((line.strip() for line in value.splitlines() if line.strip()), value)
+            return first_line[:500]
+    return default
+
+
+async def run_ms_azure_cli_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute the native Azure CLI interface for the Microsoft Admin connector."""
+    request_id = uuid.uuid4().hex[:16]
+    timeout = _tool_timeout(arguments, timeout)
+    command = str(arguments.get("command") or "").strip()
+    if not command:
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="azure_cli",
+            message="Provide command for ms_azure_cli.",
+            connector="ms_azure_cli",
+        )
+    return await _run_ms_admin_azure_cli(
+        command,
+        user_id,
+        timeout=timeout,
+        request_id=request_id,
+        connector_name="ms_azure_cli",
+        allowed_binaries=MS_AZURE_CLI_ALLOWED_BINARIES,
+    )
+
+
+async def run_ms_graph_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute a direct Microsoft Graph request through the Microsoft Admin connector."""
+    request_id = uuid.uuid4().hex[:16]
+    return await _run_ms_admin_graph_request(arguments, user_id, request_id=request_id, connector_name="ms_graph")
+
+
+async def run_ms_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute native Microsoft admin PowerShell through the Microsoft Admin connector."""
+    request_id = uuid.uuid4().hex[:16]
+    timeout = _tool_timeout(arguments, timeout)
+    script = str(arguments.get("script") or arguments.get("command") or "").strip()
+    if not script:
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="powershell",
+            message="Provide script for ms_powershell.",
+            connector="ms_powershell",
+        )
+    if _ms_admin_forbidden_command(script):
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="powershell",
+            message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
+            command=script,
+            error_type="unsupported_command",
+            connector="ms_powershell",
+        )
+    return await _run_ms_admin_powershell(
+        script,
+        user_id,
+        timeout=timeout,
+        request_id=request_id,
+        connector_name="ms_powershell",
+        allowed_binaries=MS_POWERSHELL_ALLOWED_BINARIES,
+    )
+
+
+async def run_ms_bicep_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
+    """Execute the native Bicep CLI interface for the Microsoft Admin connector."""
+    request_id = uuid.uuid4().hex[:16]
+    timeout = _tool_timeout(arguments, timeout)
+    command = str(arguments.get("command") or "").strip()
+    if not command:
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="bicep",
+            message="Provide command for ms_bicep.",
+            connector="ms_bicep",
+        )
+    return await _run_ms_admin_bicep(
+        command,
+        user_id,
+        timeout=timeout,
+        request_id=request_id,
+        connector_name="ms_bicep",
+        allowed_binaries=MS_BICEP_ALLOWED_BINARIES,
+    )
 
 
 async def run_ms_admin_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
@@ -163,11 +314,7 @@ async def run_ms_admin_tool(arguments: dict[str, Any], user_id: Optional[UUID], 
     """
     request_id = uuid.uuid4().hex[:16]
     mode = str(arguments.get("mode") or "").strip().lower() or "status"
-    try:
-        timeout_value = int(arguments.get("timeout") or timeout or 60)
-    except (TypeError, ValueError):
-        timeout_value = 60
-    timeout = max(1, min(timeout_value, 300))
+    timeout = _tool_timeout(arguments, timeout)
 
     if mode in {"status", "health"}:
         return await _ms_admin_status(user_id, request_id)
@@ -227,7 +374,15 @@ def _ms_admin_env(user_id: UUID) -> dict[str, str]:
     }
 
 
-async def _run_ms_admin_powershell(script: str, user_id: Optional[UUID], timeout: int, request_id: str) -> dict[str, Any]:
+async def _run_ms_admin_powershell(
+    script: str,
+    user_id: Optional[UUID],
+    timeout: int,
+    request_id: str,
+    *,
+    connector_name: str = "ms_admin",
+    allowed_binaries: set[str] | None = None,
+) -> dict[str, Any]:
     token_data = await _get_fresh_azure_token(user_id) if user_id else None
     if not token_data or not token_data.get("access_token"):
         return _failed_ms_admin_result(
@@ -236,6 +391,7 @@ async def _run_ms_admin_powershell(script: str, user_id: Optional[UUID], timeout
             message="Microsoft Admin is not connected for this user.",
             command=script,
             error_type="not_connected",
+            connector=connector_name,
         )
     profile = await ensure_azure_cli_profile(user_id, token_data) if user_id else {"ready": False}
     if not profile.get("ready"):
@@ -245,6 +401,7 @@ async def _run_ms_admin_powershell(script: str, user_id: Optional[UUID], timeout
             message=profile.get("message", "Microsoft Admin shell profile could not be prepared for this user."),
             command=script,
             error_type="profile_not_ready",
+            connector=connector_name,
         )
 
     env = _ms_admin_env(user_id)
@@ -262,17 +419,20 @@ async def _run_ms_admin_powershell(script: str, user_id: Optional[UUID], timeout
         f"pwsh -NoLogo -NoProfile -NonInteractive -Command {shlex.quote(full_script)}",
         timeout=timeout,
         env=env,
-        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
+        allowed_binaries=allowed_binaries or MS_ADMIN_ALLOWED_BINARIES,
     )
     output = result.to_dict()
     output.update({
         "command": script,
-        "connector": "ms_admin",
+        "connector": connector_name,
         "mode": "powershell",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
         "auth_method": "user_scoped_microsoft_admin_shell",
     })
+    if not result.success:
+        output.setdefault("error_type", "command_failed")
+        output.setdefault("message", _command_failure_message(output, "Microsoft Admin PowerShell command failed."))
     return output
 
 
@@ -304,7 +464,15 @@ function Connect-AIPlatformTeams {
 """
 
 
-async def _run_ms_admin_bicep(command: str, user_id: Optional[UUID], timeout: int, request_id: str) -> dict[str, Any]:
+async def _run_ms_admin_bicep(
+    command: str,
+    user_id: Optional[UUID],
+    timeout: int,
+    request_id: str,
+    *,
+    connector_name: str = "ms_admin",
+    allowed_binaries: set[str] | None = None,
+) -> dict[str, Any]:
     if _ms_admin_forbidden_command(command):
         return _failed_ms_admin_result(
             request_id=request_id,
@@ -312,6 +480,7 @@ async def _run_ms_admin_bicep(command: str, user_id: Optional[UUID], timeout: in
             message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
             command=command,
             error_type="unsupported_command",
+            connector=connector_name,
         )
     normalized = command if command.startswith("bicep ") else f"bicep {command}"
     env = _ms_admin_env(user_id) if user_id else {}
@@ -319,36 +488,55 @@ async def _run_ms_admin_bicep(command: str, user_id: Optional[UUID], timeout: in
         normalized,
         timeout=timeout,
         env=env,
-        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
+        allowed_binaries=allowed_binaries or MS_ADMIN_ALLOWED_BINARIES,
     )
     output = result.to_dict()
     output.update({
         "command": normalized,
-        "connector": "ms_admin",
+        "connector": connector_name,
         "mode": "bicep",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
         "auth_method": "local_bicep_cli",
     })
+    if not result.success:
+        output.setdefault("error_type", "command_failed")
+        output.setdefault("message", _command_failure_message(output, "Microsoft Admin Bicep command failed."))
     return output
 
 
-async def _run_ms_admin_graph_request(arguments: dict[str, Any], user_id: Optional[UUID], request_id: str) -> dict[str, Any]:
+async def _run_ms_admin_graph_request(
+    arguments: dict[str, Any],
+    user_id: Optional[UUID],
+    request_id: str,
+    *,
+    connector_name: str = "ms_admin",
+) -> dict[str, Any]:
     method = str(arguments.get("method") or "GET").strip().upper()
     path = str(arguments.get("path") or "").strip()
     api_version = str(arguments.get("api_version") or "v1.0").strip().strip("/")
     max_pages = _bounded_int(arguments.get("max_pages"), GRAPH_AUTO_PAGE_MAX_PAGES, 1, 100)
     max_items = _bounded_int(arguments.get("max_items"), GRAPH_AUTO_PAGE_MAX_ITEMS, 1, 5000)
     if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
-        return _failed_ms_admin_result(request_id=request_id, mode="graph_request", message="Unsupported Graph method.")
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="graph_request",
+            message="Unsupported Graph method.",
+            connector=connector_name,
+        )
     if not path.startswith("/"):
-        return _failed_ms_admin_result(request_id=request_id, mode="graph_request", message="Graph path must start with '/'.")
+        return _failed_ms_admin_result(
+            request_id=request_id,
+            mode="graph_request",
+            message="Graph path must start with '/'.",
+            connector=connector_name,
+        )
 
     token_data = await _get_fresh_azure_token_for_scope(user_id, MICROSOFT_GRAPH_SCOPE) if user_id else None
     if not token_data or not token_data.get("access_token"):
         return {
             "status": "failed",
-            "connector": "ms_admin",
+            "connector": connector_name,
             "mode": "graph_request",
             "request_id": request_id,
             "error_type": "not_connected",
@@ -384,7 +572,7 @@ async def _run_ms_admin_graph_request(arguments: dict[str, Any], user_id: Option
         error_type, message = _graph_error_details(data, response.status_code)
         return {
             "status": "success" if response.status_code < 400 else "failed",
-            "connector": "ms_admin",
+            "connector": connector_name,
             "mode": "graph_request",
             "request_id": request_id,
             "method": method,
@@ -399,7 +587,7 @@ async def _run_ms_admin_graph_request(arguments: dict[str, Any], user_id: Option
         logger.warning("Microsoft Graph request failed for request_id=%s: %s", request_id, exc)
         return {
             "status": "failed",
-            "connector": "ms_admin",
+            "connector": connector_name,
             "mode": "graph_request",
             "request_id": request_id,
             "error_type": "graph_request_failed",
@@ -1041,7 +1229,7 @@ async def validate_azure_cli_profile(user_id: UUID, timeout: int = 20) -> dict[s
         "az account get-access-token --resource https://management.core.windows.net/ --only-show-errors -o json",
         timeout=timeout,
         env=env,
-        allowed_binaries=MS_ADMIN_ALLOWED_BINARIES,
+        allowed_binaries=MS_AZURE_CLI_ALLOWED_BINARIES,
     )
     if result.success:
         return {"ready": True, "stdout": result.stdout}

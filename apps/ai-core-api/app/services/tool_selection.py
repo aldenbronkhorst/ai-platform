@@ -16,6 +16,35 @@ logger = logging.getLogger(__name__)
 TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
 DOCUMENT_READER_TOOL = "document_reader"
 PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
+MICROSOFT_ALL_TOOL_NAMES = frozenset({"ms_azure_cli", "ms_graph", "ms_powershell", "ms_bicep"})
+MICROSOFT_TOOL_INTENT_KEYWORDS = {
+    "ms_azure_cli": {
+        "azure", "az", "resource group", "resource groups", "subscription", "subscriptions",
+        "container app", "container apps", "revision", "revisions", "key vault", "storage",
+        "blob", "service bus", "queue", "queues", "azure search", "foundry", "apim",
+        "api management", "managed identity", "rbac", "role assignment", "vnet", "network",
+        "dns", "keda", "cost", "costs", "billing", "spend", "resources",
+    },
+    "ms_graph": {
+        "graph", "microsoft graph", "user", "users", "group", "groups", "license",
+        "licenses", "licence", "licences", "intune", "device management", "managed device",
+        "managed devices", "compliance policy", "conditional access", "entra", "entra id",
+        "azure ad", "azure active directory", "aad", "microsoft user", "microsoft users",
+        "ms user", "ms users", "m365 user", "m365 users", "user principal name",
+        "userprincipalname", "uerer", "usre",
+    },
+    "ms_powershell": {
+        "powershell", "pwsh", "cmdlet", "cmdlets", "exchange", "exchange online",
+        "mailbox", "mailboxes", "mail flow", "transport rule", "message trace",
+        "teams", "teams admin", "sharepoint", "sharepoint admin", "pnp",
+        "connect-mggraph", "connect-exchangeonline", "connect-microsoftteams", "connect-azaccount",
+        "new-mguser", "update-mguser", "get-mailbox", "new-mailbox",
+    },
+    "ms_bicep": {
+        "bicep", "iac", "template", "templates", "build", "validate", "deployment",
+        "deployments",
+    },
+}
 SYSTEM_INTENT_KEYWORDS = {
     "odoo": {
         "odoo", "invoice", "invoices", "bill", "bills", "credit note", "refund",
@@ -116,6 +145,28 @@ def _requested_platform_tools(user_message: str, task_type: str) -> set[str]:
     return set()
 
 
+def _requested_microsoft_tools(user_message: str) -> set[str]:
+    message = (user_message or "").lower()
+    tokens = _message_tokens(message)
+    selected: set[str] = set()
+    for tool_name, keywords in MICROSOFT_TOOL_INTENT_KEYWORDS.items():
+        if any(_contains_keyword(message, tokens, keyword) for keyword in keywords):
+            selected.add(tool_name)
+
+    if "microsoft admin" in message or "all microsoft" in message or any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
+        selected.update(MICROSOFT_ALL_TOOL_NAMES)
+    if not selected:
+        selected.add("ms_azure_cli")
+    return selected
+
+
+def _requested_connector_tools_for_system(system: str, user_message: str) -> set[str]:
+    if system == "azure":
+        return _requested_microsoft_tools(user_message)
+    tool_name = TOOL_BY_SYSTEM.get(system)
+    return {tool_name} if tool_name else set()
+
+
 async def get_tool_selection(
     db: AsyncSession,
     user_id: UUID,
@@ -172,7 +223,9 @@ async def get_tool_selection(
 
     result.schema_size_before = _schema_size(all_tools)
 
-    selected_tool_names = {TOOL_BY_SYSTEM[system] for system in eligible_systems if system in TOOL_BY_SYSTEM}
+    selected_tool_names: set[str] = set()
+    for system in eligible_systems:
+        selected_tool_names.update(_requested_connector_tools_for_system(system, _user_message))
     selected_tool_names.update(requested_platform_tools)
     selected = [t for t in all_tools if t.name in selected_tool_names]
 
