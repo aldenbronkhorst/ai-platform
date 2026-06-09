@@ -1048,7 +1048,7 @@ async def get_connected_accounts(
         },
         {
             "connector_key": "azure",
-            "display_name": "Azure CLI",
+            "display_name": "Microsoft Admin",
             "status": _account_status(azure),
             "auth_method": "delegated_microsoft",
             "last_verified_at": _account_last_verified(azure),
@@ -1057,6 +1057,16 @@ async def get_connected_accounts(
             "metadata": {
                 "provider_username": azure.provider_username if azure else None,
                 "permission_summary": azure.permission_summary if azure else None,
+                "tooling": [
+                    "PowerShell 7",
+                    "Microsoft Graph PowerShell",
+                    "Exchange Online PowerShell",
+                    "Microsoft Teams PowerShell",
+                    "Az PowerShell",
+                    "Azure CLI",
+                    "Bicep CLI",
+                    "Direct Microsoft Graph",
+                ],
             } if azure else {},
         },
         {

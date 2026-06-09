@@ -99,6 +99,7 @@ interface AzureDeviceCode {
   device_code: string;
   user_code: string;
   verification_url: string;
+  scope_profile?: string;
   interval?: number;
 }
 
@@ -287,7 +288,7 @@ function ConnectorDetailShell({
 
 const CONNECTORS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
-  { key: "azure", name: "Azure", subtitle: "Native Azure CLI connector" },
+  { key: "azure", name: "Microsoft Admin", subtitle: "Native Microsoft admin shell connector" },
   { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
 ];
 
@@ -469,26 +470,45 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectAzure = async () => {
     if (!accessToken) return; setCliTestResult(null);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, { method: "POST", headers: headers() });
+    const consentSteps = [
+      { profile: "arm", label: "Azure" },
+      { profile: "graph", label: "Microsoft Graph" },
+      { profile: "exchange", label: "Exchange Online" },
+    ];
+    const startConsentStep = async (stepIndex: number) => {
+      const step = consentSteps[stepIndex];
+      const res = await fetch(`${APIM_BASE_URL}/connector/azure/device-code`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ scope_profile: step.profile }),
+      });
       const data = await res.json() as AzureDeviceCode & { error?: string };
       if (data.status === "device_code_ready") {
         setAzureDeviceCode(data);
         setAzurePolling(true);
+        setCliTestResult({ status: "pending", connector: "azure", message: `Authorize ${step.label} access with the device code.` });
         window.open(data.verification_url, "_blank");
-        // Start polling
         const poll = async () => {
           try {
             const pr = await fetch(`${APIM_BASE_URL}/connector/azure/token-callback`, {
               method: "POST", headers: headers(),
-              body: JSON.stringify({ device_code: data.device_code }),
+              body: JSON.stringify({ device_code: data.device_code, scope_profile: data.scope_profile || step.profile }),
             });
-            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number };
+            const pd = await pr.json() as { status: string; error?: string; message?: string; interval?: number; scope_profile?: string };
             if (pd.status === "connected") {
-              setAzurePolling(false);
-              setAzureDeviceCode(null);
-              setCliTestResult({ status: "success", connector: "azure", message: "Azure connected!" });
-              void fetchConnectors();
+              if (stepIndex < consentSteps.length - 1) {
+                setCliTestResult({ status: "pending", connector: "azure", message: `${step.label} authorized. Continue with ${consentSteps[stepIndex + 1].label}.` });
+                void startConsentStep(stepIndex + 1).catch((err) => {
+                  setAzurePolling(false);
+                  setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) });
+                  void fetchConnectors();
+                });
+              } else {
+                setAzurePolling(false);
+                setAzureDeviceCode(null);
+                setCliTestResult({ status: "success", connector: "azure", message: "Microsoft Admin connected!" });
+                void fetchConnectors();
+              }
             } else if (pd.status === "pending") {
               setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
@@ -502,6 +522,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       } else {
         setCliTestResult({ status: "failed", connector: "azure", message: data.error || "Failed to start device code flow" });
       }
+    };
+    try {
+      await startConsentStep(0);
     } catch (err) { setCliTestResult({ status: "failed", connector: "azure", message: errorMessage(err) }); }
   };
 
@@ -511,10 +534,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connector/azure/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
       if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: "azure", message: data.message || "Azure connected", request_id: data.request_id });
+        setCliTestResult({ status: "success", connector: "azure", message: data.message || "Microsoft Admin connected", request_id: data.request_id });
         await fetchConnectors();
       } else {
-        setCliTestResult({ status: "failed", connector: "azure", message: data.message || `Azure status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
+        setCliTestResult({ status: "failed", connector: "azure", message: data.message || `Microsoft Admin status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
     } catch { /* ignore transient Azure status errors */ }
@@ -639,7 +662,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             { label: "Account", value: formatOptionalStatus(connectorMeta?.azure?.state?.account_status || metaStatus) },
             { label: "Token", value: formatOptionalStatus(connectorMeta?.azure?.state?.token_status) },
             { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.azure?.state?.diagnostics_status) },
-            { label: "CLI", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
+            { label: "Shell", value: formatOptionalStatus(connectorMeta?.azure?.state?.cli_status) },
             { label: "User", value: connectorMeta?.azure?.metadata?.provider_username || "—" },
             { label: "Last Verified", value: formatDateTime(connectorMeta?.azure?.last_verified_at) },
           ]}
@@ -907,7 +930,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               {cliTestResult && (
                 <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${cliTestResult.status === 'success' ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
                   <p className={`font-semibold ${cliTestResult.status === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                    {cliTestResult.connector === "azure" ? "Azure CLI" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
+                    {cliTestResult.connector === "azure" ? "Microsoft Admin" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
                   </p>
                   {cliTestResult.request_id && (
                     <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>

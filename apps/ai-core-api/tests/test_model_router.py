@@ -359,11 +359,11 @@ class TestConnectorContext:
                     def all(self):
                         return [
                             AITool(
-                                name="azure_cli",
-                                display_name="Azure CLI",
-                                description="Run Azure CLI",
+                                name="ms_admin",
+                                display_name="Microsoft Admin Connector",
+                                description="Run Microsoft admin tooling",
                                 target_system="azure",
-                                input_schema={"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
                             ),
                         ]
                 return Scalars()
@@ -408,8 +408,8 @@ class TestConnectorContext:
         called_kwargs = mock_chat_completion.call_args[1]
         system_prompt_content = called_kwargs["messages"][0]["content"]
         tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
-        assert "Azure: connected" in system_prompt_content
-        assert "azure_cli" in tool_names
+        assert "Microsoft Admin: connected" in system_prompt_content
+        assert "ms_admin" in tool_names
         assert result["content"] == "Azure is connected."
 
     @pytest.mark.asyncio
