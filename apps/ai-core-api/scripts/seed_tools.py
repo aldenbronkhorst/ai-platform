@@ -60,7 +60,7 @@ TOOLS = [
     {
         "name": "ms_admin",
         "display_name": "Microsoft Admin Connector",
-        "description": "Consolidated Microsoft Admin workstation connector. Provides user-scoped Microsoft admin tooling through modes: status, azure_cli, powershell, bicep, graph_request. Includes PowerShell 7, Microsoft Graph PowerShell, Exchange Online PowerShell, Microsoft Teams PowerShell, PnP PowerShell, Az PowerShell, Azure CLI, Bicep CLI, and direct Microsoft Graph calls. PowerShell mode exposes Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, and Connect-AIPlatformTeams helpers for the signed-in Microsoft session when consented tokens are available. It intentionally excludes GitHub tooling; use the GitHub connector for gh/git work. Microsoft permissions, RBAC, and Graph/Exchange/Teams consent decide access.",
+        "description": "Consolidated Microsoft Admin workstation connector. Provides user-scoped Microsoft admin tooling through modes: status, azure_cli, powershell, bicep, graph_request. Includes PowerShell 7, Microsoft Graph PowerShell, Exchange Online PowerShell, Microsoft Teams PowerShell, PnP PowerShell, Az PowerShell, Azure CLI, Bicep CLI, and direct Microsoft Graph calls. Graph GET collection requests auto-follow @odata.nextLink. PowerShell mode exposes Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, and Connect-AIPlatformTeams helpers for the signed-in Microsoft session when consented tokens are available. It intentionally excludes GitHub tooling; use the GitHub connector for gh/git work. Microsoft permissions, RBAC, and Graph/Exchange/Teams consent decide access.",
         "target_system": "azure",
         "input_schema": {
             "type": "object",
@@ -73,6 +73,8 @@ TOOLS = [
                 "api_version": {"type": "string", "enum": ["v1.0", "beta"], "description": "Microsoft Graph API version", "default": "v1.0"},
                 "body": {"type": "object", "description": "JSON body for graph_request POST/PATCH/PUT"},
                 "headers": {"type": "object", "description": "Optional additional Graph request headers"},
+                "max_pages": {"type": "integer", "description": "Maximum Graph collection pages to auto-follow for GET requests (default 20)", "default": 20},
+                "max_items": {"type": "integer", "description": "Maximum Graph collection items to return after auto-paging (default 1000)", "default": 1000},
                 "purpose": {"type": "string", "description": "Short reason why this command is needed"},
                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)", "default": 60},
             },

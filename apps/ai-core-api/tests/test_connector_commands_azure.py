@@ -222,3 +222,162 @@ async def test_ms_admin_rejects_github_commands_from_powershell_mode(monkeypatch
     assert result["status"] == "failed"
     assert result["error_type"] == "unsupported_command"
     assert "GitHub connector" in result["error"]
+
+
+class _FakeGraphResponse:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def _fake_graph_client(monkeypatch, responses: list[_FakeGraphResponse], calls: list[dict]):
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, headers=None, json=None):
+            calls.append({"method": method, "url": url, "headers": headers, "json": json})
+            if not responses:
+                raise AssertionError("No fake Graph response queued")
+            return responses.pop(0)
+
+    monkeypatch.setattr(azure_commands.httpx, "AsyncClient", FakeClient)
+
+
+async def _fake_graph_token(_user_id, _scope):
+    return {"access_token": "graph-token", "expires_on": int(time.time()) + 3600}
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_request_auto_follows_next_link(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        _FakeGraphResponse(
+            200,
+            {
+                "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+                "value": [{"id": "1"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/users?$skiptoken=abc",
+            },
+        ),
+        _FakeGraphResponse(200, {"value": [{"id": "2"}]}),
+    ]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users?$top=1&$select=id"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert result["result"]["value"] == [{"id": "1"}, {"id": "2"}]
+    assert result["result"]["pagination"]["auto_paged"] is True
+    assert result["result"]["pagination"]["pages_fetched"] == 2
+    assert calls[1]["url"] == "https://graph.microsoft.com/v1.0/users?$skiptoken=abc"
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_users_skip_is_applied_locally(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        _FakeGraphResponse(
+            200,
+            {
+                "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+                "value": [{"id": "1"}, {"id": "2"}, {"id": "3"}],
+            },
+        ),
+    ]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users?$top=999&$skip=1&$select=id"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert "%24skip" not in calls[0]["url"]
+    assert "$skip" not in calls[0]["url"]
+    assert result["result"]["value"] == [{"id": "2"}, {"id": "3"}]
+    assert result["result"]["pagination"]["local_skip_applied"] == 1
+    assert "does not support manual $skip" in result["result"]["warning"]
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_skip_is_not_rewritten_for_user_child_collections(monkeypatch):
+    calls: list[dict] = []
+    responses = [_FakeGraphResponse(200, {"value": [{"id": "message-2"}]})]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users/user-1/messages?$top=1&$skip=1"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert "$skip=1" in calls[0]["url"]
+    assert "warning" not in result["result"]
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_users_local_skip_fetches_past_skipped_items(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        _FakeGraphResponse(
+            200,
+            {
+                "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+                "value": [{"id": "1"}, {"id": "2"}],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/users?$skiptoken=abc",
+            },
+        ),
+        _FakeGraphResponse(200, {"value": [{"id": "3"}, {"id": "4"}]}),
+    ]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/users?$skip=2&$select=id", "max_items": 2},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "success"
+    assert len(calls) == 2
+    assert result["result"]["value"] == [{"id": "3"}, {"id": "4"}]
+    assert result["result"]["pagination"]["pre_skip_count"] == 4
+    assert result["result"]["pagination"]["returned_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ms_admin_graph_request_surfaces_graph_error_message(monkeypatch):
+    calls: list[dict] = []
+    responses = [
+        _FakeGraphResponse(
+            400,
+            {"error": {"code": "Request_BadRequest", "message": "'$skip' is not supported by the service."}},
+        ),
+    ]
+    _fake_graph_client(monkeypatch, responses, calls)
+    monkeypatch.setattr(azure_commands, "_get_fresh_azure_token_for_scope", _fake_graph_token)
+
+    result = await azure_commands.run_ms_admin_tool(
+        {"mode": "graph_request", "path": "/groups?$skip=5"},
+        uuid.uuid4(),
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_type"] == "Request_BadRequest"
+    assert result["message"] == "'$skip' is not supported by the service."

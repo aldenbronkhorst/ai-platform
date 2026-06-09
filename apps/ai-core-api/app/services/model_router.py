@@ -1333,7 +1333,11 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
         return _truncate_tool_text(value)
 
     if isinstance(value, list):
-        item_limit = MAX_TOOL_RESULT_RECORD_ITEMS if key_lower in {"records", "result", "lines", "groups"} else MAX_TOOL_RESULT_LIST_ITEMS
+        item_limit = (
+            MAX_TOOL_RESULT_RECORD_ITEMS
+            if key_lower in {"records", "result", "lines", "groups", "value"}
+            else MAX_TOOL_RESULT_LIST_ITEMS
+        )
         compact_items = [_compact_tool_value(item, key, depth + 1) for item in value[:item_limit]]
         if len(value) <= item_limit:
             return compact_items
@@ -2010,6 +2014,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Microsoft Admin: use `ms_admin` only. Modes: status, azure_cli, powershell, bicep, graph_request. "
             "Use azure_cli mode for Azure CLI, powershell mode for Microsoft Graph/Exchange/Teams/Az PowerShell cmdlets, "
             "bicep mode for Bicep CLI validation/build work, and graph_request for direct Microsoft Graph calls. "
+            "Graph GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
             "In powershell mode, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
             "or Connect-AIPlatformTeams before using authenticated Microsoft admin cmdlets. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
