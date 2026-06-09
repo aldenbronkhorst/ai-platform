@@ -3,7 +3,6 @@
 Every operation in AI Platform gets a trace with spans for each step.
 Traces are persisted to the database and include redacted payload summaries.
 """
-import hashlib
 import json
 import logging
 import uuid
@@ -144,8 +143,7 @@ def redact_value(key: str, value: Any, depth: int = 0) -> Any:
         is_sensitive = False
     if is_sensitive:
         if isinstance(value, str) and value:
-            h = hashlib.sha256(value.encode()).hexdigest()
-            return {"present": True, "fingerprint": f"sha256:{h[:8]}...{h[-4:]}", "type": type(value).__name__}
+            return {"present": True, "type": type(value).__name__}
         return {"present": bool(value), "type": type(value).__name__}
     if isinstance(value, dict):
         return {k: redact_value(k, v, depth + 1) for k, v in value.items()}

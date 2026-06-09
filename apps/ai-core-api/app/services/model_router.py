@@ -2193,9 +2193,11 @@ async def _get_connector_context(
             lines.append(f"  {icon} {display_name}: {status}")
             if conn_type == "azure" and status == "connected":
                 lines.append(
-                    "    Microsoft Admin includes Microsoft Graph, Exchange, Teams, SharePoint/PnP, Intune, "
+                    "    Microsoft Admin exposes Microsoft Graph, Exchange, Teams, SharePoint/PnP, Intune, "
                     "Azure Resource Manager CLI, Az PowerShell, and Bicep through the signed-in Microsoft session. "
-                    "Specific operations can still fail because of admin role, Graph consent, Exchange role, RBAC, or billing permission."
+                    "Do not claim a specific Microsoft resource is accessible until that operation succeeds. "
+                    "Specific operations can fail because the required profile was not consented or because the signed-in "
+                    "user lacks the needed admin role, Azure RBAC, Exchange role, Intune role, SharePoint permission, or billing permission."
                 )
         else:
             lines.append(f"  - {display_name}: not connected")
@@ -2365,6 +2367,11 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "unless handling a legacy call. "
             "Azure Resource Manager is one capability inside Microsoft Admin; do not split Azure Cost Management into "
             "a separate connector and do not claim Microsoft Admin is disconnected while this connector is connected. "
+            "Microsoft Admin is delegated per signed-in user: Azure, Exchange, Intune, Teams, SharePoint, and Entra "
+            "operations are limited by that user's platform roles/RBAC plus the consented Microsoft Admin profile for "
+            "that resource. A connected Microsoft Admin account does not by itself prove Azure Resource Manager, "
+            "Exchange, or Intune access; verify the specific operation with the relevant tool result before saying it "
+            "is accessible. "
             "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
             "`ms_powershell` for Microsoft Graph/Exchange/Teams/Az/PnP PowerShell cmdlets, and `ms_bicep` for "
             "Bicep CLI validation/build work. "
