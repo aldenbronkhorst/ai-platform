@@ -63,6 +63,12 @@ param searchSku string = 'free'
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
+@description('Microsoft Admin public client app ID for Graph/Exchange delegated device auth')
+param microsoftAdminClientId string = '8a178920-de9e-41cf-af4e-c3012fc3bbd2'
+
+@description('Microsoft Admin public client display name')
+param microsoftAdminAppDisplayName string = 'AI Platform Microsoft Admin'
+
 // Naming helper variables
 var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
 
@@ -219,6 +225,8 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresAdminUsername: postgresAdminUsername
     deploySearch: deploySearch
     documentIntelligenceEndpoint: documentIntelligenceEndpoint
+    microsoftAdminClientId: microsoftAdminClientId
+    microsoftAdminAppDisplayName: microsoftAdminAppDisplayName
   }
 }
 

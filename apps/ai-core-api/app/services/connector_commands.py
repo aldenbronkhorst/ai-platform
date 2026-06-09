@@ -20,16 +20,54 @@ from app.services.token_storage import retrieve_token, store_token
 
 
 logger = logging.getLogger(__name__)
+
+
+def _scope_values_from_env(env_name: str, default_values: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default_values
+    values = tuple(part for part in re.split(r"[\s,;]+", raw) if part)
+    return values or default_values
+
+
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
 AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
+AZURE_CLI_APP_DISPLAY_NAME = os.environ.get("AZURE_CLI_APP_DISPLAY_NAME", "Azure CLI")
+MICROSOFT_ADMIN_CLIENT_ID = (
+    os.environ.get("MICROSOFT_ADMIN_CLIENT_ID")
+    or os.environ.get("MS_ADMIN_CLIENT_ID")
+    or AZURE_CLI_CLIENT_ID
+)
+MICROSOFT_ADMIN_APP_DISPLAY_NAME = os.environ.get("MICROSOFT_ADMIN_APP_DISPLAY_NAME", "AI Platform Microsoft Admin")
 AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com")
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
 AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.core.windows.net//.default")
 AZURE_DEVICE_SCOPES = [AZURE_ARM_SCOPE, "openid", "profile", "offline_access"]
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
-MICROSOFT_GRAPH_SCOPE = os.environ.get("MICROSOFT_GRAPH_SCOPE", "https://graph.microsoft.com/.default")
+DEFAULT_MICROSOFT_GRAPH_SCOPES = (
+    "https://graph.microsoft.com/User.Read",
+    "https://graph.microsoft.com/User.ReadWrite.All",
+    "https://graph.microsoft.com/Directory.ReadWrite.All",
+    "https://graph.microsoft.com/Group.ReadWrite.All",
+    "https://graph.microsoft.com/Organization.Read.All",
+    "https://graph.microsoft.com/RoleManagement.ReadWrite.Directory",
+    "https://graph.microsoft.com/Application.ReadWrite.All",
+    "https://graph.microsoft.com/DeviceManagementManagedDevices.ReadWrite.All",
+    "https://graph.microsoft.com/DeviceManagementConfiguration.ReadWrite.All",
+    "https://graph.microsoft.com/DeviceManagementApps.ReadWrite.All",
+    "https://graph.microsoft.com/Policy.ReadWrite.ConditionalAccess",
+    "https://graph.microsoft.com/Sites.FullControl.All",
+    "https://graph.microsoft.com/Reports.Read.All",
+    "https://graph.microsoft.com/AuditLog.Read.All",
+)
+MICROSOFT_GRAPH_SCOPES = _scope_values_from_env(
+    "MICROSOFT_GRAPH_SCOPES",
+    _scope_values_from_env("MICROSOFT_GRAPH_SCOPE", DEFAULT_MICROSOFT_GRAPH_SCOPES),
+)
+MICROSOFT_GRAPH_SCOPE = " ".join(MICROSOFT_GRAPH_SCOPES)
 MICROSOFT_GRAPH_BASE_URL = os.environ.get("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com")
 EXCHANGE_ONLINE_SCOPE = os.environ.get("EXCHANGE_ONLINE_SCOPE", "https://outlook.office365.com/.default")
+EXCHANGE_ONLINE_SCOPES = _scope_values_from_env("EXCHANGE_ONLINE_SCOPES", (EXCHANGE_ONLINE_SCOPE,))
 GITHUB_HOST = os.environ.get("GITHUB_HOST", "github.com")
 MS_AZURE_CLI_ALLOWED_BINARIES = {"az"}
 MS_POWERSHELL_ALLOWED_BINARIES = {"pwsh"}
@@ -38,9 +76,14 @@ MS_ADMIN_ALLOWED_BINARIES = MS_AZURE_CLI_ALLOWED_BINARIES | MS_POWERSHELL_ALLOWE
 MS_ADMIN_FORBIDDEN_COMMAND_RE = re.compile(r"(?i)(^|[\s;&|`])(gh|git)(\.exe)?($|[\s;&|])")
 GITHUB_ALLOWED_BINARIES = {"gh", "git", "jq", "rg", "which"}
 MICROSOFT_ADMIN_SCOPE_PROFILES = {
-    "arm": AZURE_ARM_SCOPE,
-    "graph": MICROSOFT_GRAPH_SCOPE,
-    "exchange": EXCHANGE_ONLINE_SCOPE,
+    "arm": (AZURE_ARM_SCOPE,),
+    "graph": MICROSOFT_GRAPH_SCOPES,
+    "exchange": EXCHANGE_ONLINE_SCOPES,
+}
+MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
+    "arm": "Azure CLI / Azure Resource Manager",
+    "graph": "Microsoft Graph Admin",
+    "exchange": "Exchange Online",
 }
 GRAPH_AUTO_PAGE_MAX_PAGES = 20
 GRAPH_AUTO_PAGE_MAX_ITEMS = 1000
@@ -75,10 +118,45 @@ def microsoft_admin_scope_profile(profile: str | None) -> str:
     return normalized if normalized in MICROSOFT_ADMIN_SCOPE_PROFILES else "arm"
 
 
+def microsoft_admin_scope_values(profile: str | None = None) -> list[str]:
+    scope_profile = microsoft_admin_scope_profile(profile)
+    return list(MICROSOFT_ADMIN_SCOPE_PROFILES[scope_profile])
+
+
+def microsoft_admin_client_id_for_scope_profile(profile: str | None = None) -> str:
+    scope_profile = microsoft_admin_scope_profile(profile)
+    if scope_profile == "arm":
+        return AZURE_CLI_CLIENT_ID
+    return MICROSOFT_ADMIN_CLIENT_ID
+
+
+def microsoft_admin_app_name_for_scope_profile(profile: str | None = None) -> str:
+    scope_profile = microsoft_admin_scope_profile(profile)
+    if scope_profile == "arm":
+        return AZURE_CLI_APP_DISPLAY_NAME
+    if MICROSOFT_ADMIN_CLIENT_ID == AZURE_CLI_CLIENT_ID:
+        return AZURE_CLI_APP_DISPLAY_NAME
+    return MICROSOFT_ADMIN_APP_DISPLAY_NAME
+
+
+def microsoft_admin_scope_label(profile: str | None = None) -> str:
+    scope_profile = microsoft_admin_scope_profile(profile)
+    return MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS[scope_profile]
+
+
+def microsoft_admin_scope_summary(profile: str | None = None) -> str:
+    scope_profile = microsoft_admin_scope_profile(profile)
+    scope_names = [
+        value.rsplit("/", 1)[-1]
+        for value in microsoft_admin_scope_values(scope_profile)
+    ]
+    return f"{microsoft_admin_scope_label(scope_profile)}: {', '.join(scope_names)}"
+
+
 def microsoft_admin_device_scope_string(profile: str | None = None) -> str:
     """Return a single-resource device-code scope string for a Microsoft Admin consent profile."""
     scope_profile = microsoft_admin_scope_profile(profile)
-    return f"{MICROSOFT_ADMIN_SCOPE_PROFILES[scope_profile]} openid profile offline_access"
+    return " ".join([*microsoft_admin_scope_values(scope_profile), "openid", "profile", "offline_access"])
 
 
 def azure_token_request_data() -> dict[str, str]:
@@ -724,11 +802,23 @@ def _graph_error_details(data: Any, status_code: int) -> tuple[str | None, str |
 
 async def _ms_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str, Any]:
     diagnosis = await diagnose_azure_connection(user_id)
+    token_data = await retrieve_token("azure", user_id) if user_id else None
+    consented_profiles = set((token_data or {}).get("consented_scope_profiles") or [])
     return {
         **diagnosis,
         "connector": "ms_admin",
         "mode": "status",
         "request_id": request_id,
+        "auth_profiles": {
+            profile: {
+                "label": microsoft_admin_scope_label(profile),
+                "auth_app_name": microsoft_admin_app_name_for_scope_profile(profile),
+                "client_id": microsoft_admin_client_id_for_scope_profile(profile),
+                "scope_summary": microsoft_admin_scope_summary(profile),
+                "consented": profile in consented_profiles,
+            }
+            for profile in MICROSOFT_ADMIN_SCOPE_PROFILES
+        },
         "tooling": {
             "powershell_7": "pwsh",
             "graph_powershell": "Microsoft.Graph",
@@ -822,18 +912,28 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
         if cached_token.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
             return {**token_data, **cached_token}
 
-    refresh_token = token_data.get("refresh_token")
+    refresh_token = cached_token.get("refresh_token") if isinstance(cached_token, dict) else None
+    refresh_token = refresh_token or token_data.get("refresh_token")
     if not refresh_token:
-        return {**token_data, "refresh_error": "Stored Microsoft Admin token has no refresh token."}
+        profile_name = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
+        return {**token_data, "refresh_error": f"Stored {profile_name} token has no refresh token. Reconnect Microsoft Admin."}
+    client_id = (
+        cached_token.get("client_id")
+        if isinstance(cached_token, dict) and cached_token.get("client_id")
+        else microsoft_admin_client_id_for_scope_profile(scope_profile)
+        if scope_profile
+        else token_data.get("client_id") or AZURE_CLI_CLIENT_ID
+    )
+    scope_request = microsoft_admin_device_scope_string(scope_profile) if scope_profile else f"{scope} openid profile offline_access"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 AZURE_TOKEN_ENDPOINT,
                 data={
                     "grant_type": "refresh_token",
-                    "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+                    "client_id": client_id,
                     "refresh_token": refresh_token,
-                    "scope": f"{scope} openid profile offline_access",
+                    "scope": scope_request,
                     "client_info": "1",
                 },
             )
@@ -842,7 +942,7 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
             return {**token_data, "refresh_error": data.get("error_description") or data.get("error") or response.text[:500]}
         scoped_token = {
             **token_data,
-            "client_id": token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+            "client_id": client_id,
             "token_type": data.get("token_type", token_data.get("token_type")),
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token", refresh_token),
@@ -856,9 +956,14 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
         if scope_profile:
             delegated_tokens = dict(token_data.get("delegated_tokens") or {})
             delegated_tokens[scope_profile] = {
+                "client_id": client_id,
                 "token_type": scoped_token.get("token_type"),
                 "access_token": scoped_token.get("access_token"),
+                "refresh_token": scoped_token.get("refresh_token", refresh_token),
                 "scope": scoped_token.get("scope"),
+                "id_token": scoped_token.get("id_token"),
+                "id_token_claims": scoped_token.get("id_token_claims"),
+                "client_info": scoped_token.get("client_info"),
                 "expires_in": scoped_token.get("expires_in"),
                 "expires_on": scoped_token.get("expires_on"),
             }
@@ -869,7 +974,6 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
                 user_id,
                 {
                     **token_data,
-                    "refresh_token": scoped_token.get("refresh_token", refresh_token),
                     "delegated_tokens": delegated_tokens,
                     "consented_scope_profiles": sorted(consented),
                 },
@@ -882,7 +986,8 @@ async def _get_fresh_azure_token_for_scope(user_id: Optional[UUID], scope: str) 
 
 def _scope_profile_for_scope(scope: str) -> str:
     for profile, configured_scope in MICROSOFT_ADMIN_SCOPE_PROFILES.items():
-        if scope == configured_scope:
+        configured_values = list(configured_scope)
+        if scope in configured_values or " ".join(scope.split()) == " ".join(configured_values):
             return profile
     return ""
 

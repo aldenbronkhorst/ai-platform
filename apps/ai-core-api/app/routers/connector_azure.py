@@ -17,14 +17,17 @@ from app.services.connected_account_state import (
 )
 from app.services.connector_commands import (
     AZURE_AUTHORITY_HOST,
-    AZURE_CLI_CLIENT_ID,
     TENANT_ID,
     AZURE_TOKEN_ENDPOINT,
     diagnose_azure_connection,
     ensure_azure_cli_profile,
     extract_azure_username,
+    microsoft_admin_app_name_for_scope_profile,
+    microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string,
+    microsoft_admin_scope_label,
     microsoft_admin_scope_profile,
+    microsoft_admin_scope_summary,
     run_ms_admin_tool,
     validate_azure_cli_profile,
 )
@@ -58,12 +61,13 @@ async def start_device_code(req: dict | None = Body(default=None), auth: dict = 
     """Start Microsoft OAuth device code flow for user-delegated admin auth."""
     request_id = uuid.uuid4().hex[:16]
     scope_profile = microsoft_admin_scope_profile((req or {}).get("scope_profile"))
+    client_id = microsoft_admin_client_id_for_scope_profile(scope_profile)
     try:
         import httpx
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/devicecode",
-                data={"client_id": AZURE_CLI_CLIENT_ID, "scope": microsoft_admin_device_scope_string(scope_profile)},
+                data={"client_id": client_id, "scope": microsoft_admin_device_scope_string(scope_profile)},
             )
         data = resp.json()
         if "error" in data:
@@ -73,6 +77,10 @@ async def start_device_code(req: dict | None = Body(default=None), auth: dict = 
                 "verification_url": data.get("verification_uri", "https://microsoft.com/devicelogin"),
                 "interval": data.get("interval", 5), "expires_in": data.get("expires_in", 900),
                 "scope_profile": scope_profile,
+                "scope_label": microsoft_admin_scope_label(scope_profile),
+                "scope_summary": microsoft_admin_scope_summary(scope_profile),
+                "client_id": client_id,
+                "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
                 "request_id": request_id}
     except Exception as exc:
         logger.warning("Microsoft Admin device-code start failed request_id=%s: %s", request_id, exc)
@@ -94,6 +102,7 @@ async def device_code_callback(
     user_id = auth.get("user_id")
     device_code = req.get("device_code", "")
     scope_profile = microsoft_admin_scope_profile(req.get("scope_profile"))
+    client_id = microsoft_admin_client_id_for_scope_profile(scope_profile)
     if not device_code or not user_id:
         raise HTTPException(status_code=400, detail="Missing device_code or auth")
     request_id = uuid.uuid4().hex[:16]
@@ -103,7 +112,7 @@ async def device_code_callback(
             resp = await client.post(
                 AZURE_TOKEN_ENDPOINT,
                 data={"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                      "client_id": AZURE_CLI_CLIENT_ID, "device_code": device_code,
+                      "client_id": client_id, "device_code": device_code,
                       "scope": microsoft_admin_device_scope_string(scope_profile),
                       "client_info": "1"},
             )
@@ -117,11 +126,12 @@ async def device_code_callback(
                 "request_id": request_id,
             }
         token_payload = {
-            "client_id": AZURE_CLI_CLIENT_ID,
+            "client_id": client_id,
             "token_type": data.get("token_type"),
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token"),
             "scope": data.get("scope"),
+            "scope_profile": scope_profile,
             "id_token": data.get("id_token"),
             "client_info": data.get("client_info"),
             "expires_in": data.get("expires_in"),
@@ -137,16 +147,20 @@ async def device_code_callback(
         if scope_profile != "arm":
             delegated_tokens = dict(existing_token.get("delegated_tokens") or {})
             delegated_tokens[scope_profile] = {
+                "client_id": client_id,
                 "token_type": data.get("token_type"),
                 "access_token": data.get("access_token"),
+                "refresh_token": data.get("refresh_token"),
                 "scope": data.get("scope"),
+                "scope_profile": scope_profile,
+                "id_token": data.get("id_token"),
+                "client_info": data.get("client_info"),
                 "expires_in": data.get("expires_in"),
                 "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
             }
             merged_token = {
                 **existing_token,
-                "client_id": existing_token.get("client_id") or AZURE_CLI_CLIENT_ID,
-                "refresh_token": data.get("refresh_token") or existing_token.get("refresh_token"),
+                "client_id": existing_token.get("client_id") or microsoft_admin_client_id_for_scope_profile("arm"),
                 "delegated_tokens": delegated_tokens,
                 "consented_scope_profiles": token_payload["consented_scope_profiles"],
                 "username": existing_token.get("username") or token_payload["username"],
@@ -161,10 +175,20 @@ async def device_code_callback(
                 token_data=merged_token,
                 status="connected",
                 username=merged_token.get("username"),
-                permission_summary=f"Microsoft {scope_profile} consent completed.",
+                permission_summary=(
+                    f"{microsoft_admin_scope_label(scope_profile)} consent completed "
+                    f"via {microsoft_admin_app_name_for_scope_profile(scope_profile)}."
+                ),
                 commit=True,
             )
-            return {"status": "connected", "request_id": request_id, "scope_profile": scope_profile, "cli_profile_ready": bool(existing_token.get("access_token"))}
+            return {
+                "status": "connected",
+                "request_id": request_id,
+                "scope_profile": scope_profile,
+                "scope_label": microsoft_admin_scope_label(scope_profile),
+                "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
+                "cli_profile_ready": bool(existing_token.get("access_token")),
+            }
 
         stored = await store_token("azure", user_id, token_payload)
         if not stored:
@@ -213,10 +237,20 @@ async def device_code_callback(
             token_data=token_payload,
             status="connected",
             username=token_payload.get("username"),
-            permission_summary="Microsoft device authentication completed.",
+            permission_summary=(
+                f"{microsoft_admin_scope_label(scope_profile)} consent completed "
+                f"via {microsoft_admin_app_name_for_scope_profile(scope_profile)}."
+            ),
             commit=True,
         )
-        return {"status": "connected", "request_id": request_id, "cli_profile_ready": True}
+        return {
+            "status": "connected",
+            "request_id": request_id,
+            "scope_profile": scope_profile,
+            "scope_label": microsoft_admin_scope_label(scope_profile),
+            "auth_app_name": microsoft_admin_app_name_for_scope_profile(scope_profile),
+            "cli_profile_ready": True,
+        }
     except Exception as exc:
         logger.warning("Microsoft Admin device-code callback failed request_id=%s: %s", request_id, exc)
         return {

@@ -1058,8 +1058,8 @@ async def get_connected_accounts(
                 "provider_username": azure.provider_username if azure else None,
                 "permission_summary": azure.permission_summary if azure else None,
                 "tooling": [
-                    "Azure CLI",
-                    "Microsoft Graph",
+                    "Azure CLI / Azure Resource Manager",
+                    "Microsoft Graph Admin",
                     "PowerShell 7",
                     "Microsoft Graph PowerShell",
                     "Exchange Online PowerShell",
@@ -1067,6 +1067,11 @@ async def get_connected_accounts(
                     "PnP PowerShell",
                     "Az PowerShell",
                     "Bicep CLI",
+                ],
+                "authorization_profiles": [
+                    "Azure CLI / Azure Resource Manager",
+                    "Microsoft Graph Admin",
+                    "Exchange Online",
                 ],
             } if azure else {},
         },

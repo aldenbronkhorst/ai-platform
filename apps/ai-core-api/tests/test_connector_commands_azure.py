@@ -37,11 +37,21 @@ def test_microsoft_admin_device_scopes_are_single_resource_profiles():
     exchange_scope = azure_commands.microsoft_admin_device_scope_string("exchange").split()
 
     assert azure_commands.AZURE_ARM_SCOPE in arm_scope
-    assert azure_commands.MICROSOFT_GRAPH_SCOPE in graph_scope
+    assert "https://graph.microsoft.com/User.ReadWrite.All" in graph_scope
+    assert "https://graph.microsoft.com/Directory.ReadWrite.All" in graph_scope
     assert azure_commands.EXCHANGE_ONLINE_SCOPE in exchange_scope
-    assert azure_commands.MICROSOFT_GRAPH_SCOPE not in arm_scope
+    assert not set(azure_commands.MICROSOFT_GRAPH_SCOPES).intersection(arm_scope)
     assert azure_commands.EXCHANGE_ONLINE_SCOPE not in graph_scope
     assert "offline_access" in graph_scope
+
+
+def test_microsoft_admin_client_id_is_profile_specific(monkeypatch):
+    monkeypatch.setattr(azure_commands, "MICROSOFT_ADMIN_CLIENT_ID", "admin-client-id")
+
+    assert azure_commands.microsoft_admin_client_id_for_scope_profile("arm") == azure_commands.AZURE_CLI_CLIENT_ID
+    assert azure_commands.microsoft_admin_client_id_for_scope_profile("graph") == "admin-client-id"
+    assert azure_commands.microsoft_admin_client_id_for_scope_profile("exchange") == "admin-client-id"
+    assert azure_commands.microsoft_admin_app_name_for_scope_profile("graph") == azure_commands.MICROSOFT_ADMIN_APP_DISPLAY_NAME
 
 
 def test_extract_azure_username_does_not_use_old_fake_fallback():
@@ -286,6 +296,79 @@ async def test_ms_powershell_rejects_github_commands(monkeypatch):
     assert result["connector"] == "ms_powershell"
     assert result["error_type"] == "unsupported_command"
     assert "GitHub connector" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_token_refresh_uses_delegated_client_and_preserves_arm_refresh(monkeypatch):
+    user_id = uuid.uuid4()
+    stored_token = {
+        "client_id": azure_commands.AZURE_CLI_CLIENT_ID,
+        "access_token": "arm-access",
+        "refresh_token": "arm-refresh",
+        "expires_on": int(time.time()) + 3600,
+        "delegated_tokens": {
+            "graph": {
+                "client_id": "graph-client-id",
+                "access_token": "old-graph-access",
+                "refresh_token": "graph-refresh",
+                "expires_on": int(time.time()) - 10,
+            }
+        },
+    }
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve(provider, received_user_id):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        return stored_token
+
+    async def fake_store(provider, received_user_id, token_data):
+        assert provider == "azure"
+        assert received_user_id == user_id
+        captured["stored"] = token_data
+        return True
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "token_type": "Bearer",
+                "access_token": "new-graph-access",
+                "refresh_token": "new-graph-refresh",
+                "scope": " ".join(azure_commands.MICROSOFT_GRAPH_SCOPES),
+                "expires_in": 3600,
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            captured["url"] = url
+            captured["data"] = data
+            return FakeResponse()
+
+    monkeypatch.setattr(azure_commands, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(azure_commands, "store_token", fake_store)
+    monkeypatch.setattr(azure_commands.httpx, "AsyncClient", FakeClient)
+
+    result = await azure_commands._get_fresh_azure_token_for_scope(user_id, azure_commands.MICROSOFT_GRAPH_SCOPE)
+
+    assert result["access_token"] == "new-graph-access"
+    assert captured["data"]["client_id"] == "graph-client-id"
+    assert captured["data"]["refresh_token"] == "graph-refresh"
+    assert "https://graph.microsoft.com/User.ReadWrite.All" in captured["data"]["scope"]
+    stored = captured["stored"]
+    assert stored["refresh_token"] == "arm-refresh"
+    assert stored["delegated_tokens"]["graph"]["refresh_token"] == "new-graph-refresh"
 
 
 class _FakeGraphResponse:

@@ -2380,6 +2380,8 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users or `ms_powershell` "
             "with Connect-AIPlatformGraph plus Microsoft.Graph cmdlets such as New-MgUser/Update-MgUser; "
             "do not say there is no Microsoft user-management tool while `ms_graph` or `ms_powershell` is available. "
+            "If a Microsoft user/group/license write fails, report the exact Graph/PowerShell permission or admin-role "
+            "error and ask for the missing consent/role; do not downgrade that to 'no write-capable connector'. "
             "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
             "In `ms_powershell`, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
             "or Connect-AIPlatformTeams before using authenticated Microsoft admin cmdlets. "
