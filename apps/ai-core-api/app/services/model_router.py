@@ -518,7 +518,11 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
             )
             else cleaned
         )
-    if mapped in {"ms_admin", "azure_cli", "github_cli", "odoo_ops_runner"}:
+    if mapped == "azure_cli":
+        converted = dict(arguments)
+        converted.setdefault("mode", "azure_cli")
+        return "ms_admin", converted
+    if mapped in {"ms_admin", "github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
         return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
@@ -1130,15 +1134,13 @@ async def _execute_tool_call_impl(
             return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
-    if tool_name in ("ms_admin", "azure_cli", "github_cli"):
-        from app.services.connector_commands import run_azure_cli_command, run_github_cli_command, run_ms_admin_tool
+    if tool_name in ("ms_admin", "github_cli"):
+        from app.services.connector_commands import run_github_cli_command, run_ms_admin_tool
 
         command = str(arguments.get("command", ""))
         timeout = int(arguments.get("timeout", 60))
         if tool_name == "ms_admin":
             return await run_ms_admin_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "azure_cli":
-            return await run_azure_cli_command(command, user_id, timeout=timeout)
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {"error": f"Unknown tool: {tool_name}"}
@@ -1194,7 +1196,7 @@ async def _record_delegated_tool_auth_failure(
     tool_name: str,
     result: dict[str, Any],
 ) -> None:
-    if not user_id or tool_name not in {"ms_admin", "azure_cli"} or result.get("status") != "failed":
+    if not user_id or tool_name != "ms_admin" or result.get("status") != "failed":
         return
 
     message = " ".join(
@@ -2008,13 +2010,9 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Microsoft Admin: use `ms_admin` only. Modes: status, azure_cli, powershell, bicep, graph_request. "
             "Use azure_cli mode for Azure CLI, powershell mode for Microsoft Graph/Exchange/Teams/Az PowerShell cmdlets, "
             "bicep mode for Bicep CLI validation/build work, and graph_request for direct Microsoft Graph calls. "
-            "In powershell mode, call Connect-AIPlatformAz, Connect-AIPlatformGraph, or Connect-AIPlatformExchange "
-            "before using authenticated Az, Microsoft.Graph, or ExchangeOnlineManagement cmdlets. "
+            "In powershell mode, call Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, "
+            "or Connect-AIPlatformTeams before using authenticated Microsoft admin cmdlets. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
-        )
-    elif "azure_cli" in available_names:
-        guidance_parts.append(
-            "Azure: use `azure_cli` only. Use native az commands; Azure RBAC decides what the connected user can do."
         )
     if "github_cli" in available_names:
         guidance_parts.append(

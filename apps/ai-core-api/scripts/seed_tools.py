@@ -60,7 +60,7 @@ TOOLS = [
     {
         "name": "ms_admin",
         "display_name": "Microsoft Admin Connector",
-        "description": "Consolidated Microsoft Admin workstation connector. Provides user-scoped Microsoft admin tooling through modes: status, azure_cli, powershell, bicep, graph_request. Includes PowerShell 7, Microsoft Graph PowerShell, Exchange Online PowerShell, Microsoft Teams PowerShell, Az PowerShell, Azure CLI, Bicep CLI, and direct Microsoft Graph calls. PowerShell mode exposes Connect-AIPlatformAz, Connect-AIPlatformGraph, and Connect-AIPlatformExchange helpers for the signed-in Microsoft session when consented tokens are available. It intentionally excludes GitHub tooling; use the GitHub connector for gh/git work. Microsoft permissions, RBAC, and Graph/Exchange/Teams consent decide access.",
+        "description": "Consolidated Microsoft Admin workstation connector. Provides user-scoped Microsoft admin tooling through modes: status, azure_cli, powershell, bicep, graph_request. Includes PowerShell 7, Microsoft Graph PowerShell, Exchange Online PowerShell, Microsoft Teams PowerShell, PnP PowerShell, Az PowerShell, Azure CLI, Bicep CLI, and direct Microsoft Graph calls. PowerShell mode exposes Connect-AIPlatformAz, Connect-AIPlatformGraph, Connect-AIPlatformExchange, and Connect-AIPlatformTeams helpers for the signed-in Microsoft session when consented tokens are available. It intentionally excludes GitHub tooling; use the GitHub connector for gh/git work. Microsoft permissions, RBAC, and Graph/Exchange/Teams consent decide access.",
         "target_system": "azure",
         "input_schema": {
             "type": "object",

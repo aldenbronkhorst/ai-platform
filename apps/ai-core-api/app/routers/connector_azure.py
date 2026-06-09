@@ -1,4 +1,5 @@
 """Microsoft Admin connector — delegated Microsoft device auth + native admin tooling."""
+import logging
 import uuid
 import time
 from typing import Any
@@ -25,17 +26,11 @@ from app.services.connector_commands import (
     microsoft_admin_device_scope_string,
     microsoft_admin_scope_profile,
     run_ms_admin_tool,
-    run_azure_cli_command,
     validate_azure_cli_profile,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/connector/azure", tags=["Connector"])
-
-
-class AzureCliRequest(BaseModel):
-    command: str = Field(..., description="Azure CLI command")
-    purpose: str = Field("", description="Purpose")
-    timeout: int = Field(60, description="Timeout", le=300)
 
 
 class MicrosoftAdminRequest(BaseModel):
@@ -51,13 +46,6 @@ class MicrosoftAdminRequest(BaseModel):
     timeout: int = Field(60, description="Timeout", le=300)
 
 
-@router.post("/cli")
-async def azure_cli(req: AzureCliRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
-    """Execute an Azure CLI command as the connected user."""
-    user_id = auth.get("user_id")
-    return await run_azure_cli_command(req.command, user_id, timeout=req.timeout)
-
-
 @router.post("/admin")
 async def microsoft_admin(req: MicrosoftAdminRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
     """Execute a Microsoft Admin connector operation as the connected user."""
@@ -67,7 +55,7 @@ async def microsoft_admin(req: MicrosoftAdminRequest, auth: dict = Depends(requi
 
 @router.post("/device-code")
 async def start_device_code(req: dict | None = Body(default=None), auth: dict = Depends(api_key_auth)):
-    """Start Azure OAuth device code flow for user-delegated auth."""
+    """Start Microsoft OAuth device code flow for user-delegated admin auth."""
     request_id = uuid.uuid4().hex[:16]
     scope_profile = microsoft_admin_scope_profile((req or {}).get("scope_profile"))
     try:
@@ -86,8 +74,14 @@ async def start_device_code(req: dict | None = Body(default=None), auth: dict = 
                 "interval": data.get("interval", 5), "expires_in": data.get("expires_in", 900),
                 "scope_profile": scope_profile,
                 "request_id": request_id}
-    except Exception as e:
-        return {"status": "error", "error": str(e), "request_id": request_id}
+    except Exception as exc:
+        logger.warning("Microsoft Admin device-code start failed request_id=%s: %s", request_id, exc)
+        return {
+            "status": "error",
+            "error": "device_code_start_failed",
+            "message": "Could not start Microsoft Admin device authentication. Check connector logs with this request_id.",
+            "request_id": request_id,
+        }
 
 
 @router.post("/token-callback")
@@ -96,7 +90,7 @@ async def device_code_callback(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Poll device code and store resulting token."""
+    """Poll device code and store the resulting Microsoft delegated token."""
     user_id = auth.get("user_id")
     device_code = req.get("device_code", "")
     scope_profile = microsoft_admin_scope_profile(req.get("scope_profile"))
@@ -223,8 +217,14 @@ async def device_code_callback(
             commit=True,
         )
         return {"status": "connected", "request_id": request_id, "cli_profile_ready": True}
-    except Exception as e:
-        return {"status": "error", "error": str(e), "request_id": request_id}
+    except Exception as exc:
+        logger.warning("Microsoft Admin device-code callback failed request_id=%s: %s", request_id, exc)
+        return {
+            "status": "error",
+            "error": "device_code_callback_failed",
+            "message": "Could not complete Microsoft Admin device authentication. Check connector logs with this request_id.",
+            "request_id": request_id,
+        }
 
 
 @router.get("/status")
@@ -232,7 +232,7 @@ async def azure_status(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Check Azure connection status for the current user."""
+    """Check Microsoft Admin connection status for the current user."""
     user_id = auth.get("user_id")
     return await sync_delegated_account_from_token(db, "azure", user_id, commit=True) if user_id else {"status": "not_connected"}
 
@@ -242,7 +242,7 @@ async def azure_diagnose(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validate the stored Azure delegated token without shelling out to az."""
+    """Validate the stored Microsoft delegated token and shell profile."""
     user_id = auth.get("user_id")
     result = await diagnose_azure_connection(user_id)
     if user_id:
@@ -255,7 +255,7 @@ async def azure_disconnect(
     auth: dict = Depends(api_key_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disconnect Azure for the current user."""
+    """Disconnect Microsoft Admin for the current user."""
     user_id = auth.get("user_id")
     if user_id:
         await delete_token("azure", user_id)

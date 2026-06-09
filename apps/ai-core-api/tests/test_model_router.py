@@ -19,6 +19,7 @@ from app.services.model_router import (
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
     _fallback_chat_title,
+    _canonical_tool_invocation,
     _sanitize_chat_title,
     _tool_selection_message,
 )
@@ -110,6 +111,13 @@ def test_tool_selection_message_inherits_context_for_date_correction():
 
     assert "Odoo" in selection_text
     assert "i meant 4 june" in selection_text
+
+
+def test_legacy_azure_cli_tool_call_canonicalizes_to_ms_admin():
+    tool_name, args = _canonical_tool_invocation("azure_cli", {"command": "account show"})
+
+    assert tool_name == "ms_admin"
+    assert args == {"command": "account show", "mode": "azure_cli"}
 
 
 # ── Mock DB that can simulate empty / configured / connector states ──
