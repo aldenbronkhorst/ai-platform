@@ -231,8 +231,8 @@ def test_tool_finalizer_keeps_ms_admin_connection_distinct_from_command_errors()
             "arguments": {"command": "costmanagement query --type Usage"},
             "result": {
                 "status": "failed",
-                "error_type": "unsupported_costmanagement_query_cli",
-                "message": "Use az rest instead.",
+                "error_type": "command_failed",
+                "message": "ERROR: 'query' is misspelled or not recognized by the system.",
             },
         }
     ]
@@ -253,7 +253,11 @@ def test_guard_replaces_false_azure_not_connected_denial_when_connected():
     guarded = _guard_connected_system_denial(
         bad_content,
         {"microsoft_admin"},
-        [{"tool_name": "ms_azure_cli", "error_type": "unsupported_costmanagement_query_cli", "message": "Use az rest."}],
+        [{
+            "tool_name": "ms_azure_cli",
+            "error_type": "command_failed",
+            "message": "ERROR: 'query' is misspelled or not recognized by the system.",
+        }],
     )
 
     assert "Microsoft Admin is connected" in guarded

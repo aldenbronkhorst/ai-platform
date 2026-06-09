@@ -9,11 +9,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITool
 from app.services.connected_account_state import effective_connected_accounts
-from app.services.tool_registry import CONNECTOR_TOOL_BY_SYSTEM, CONSOLIDATED_TOOL_NAMES, is_model_facing_tool
+from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM, CONSOLIDATED_TOOL_NAMES, is_model_facing_tool
 
 logger = logging.getLogger(__name__)
 
-TOOL_BY_SYSTEM = dict(CONNECTOR_TOOL_BY_SYSTEM)
 DOCUMENT_READER_TOOL = "document_reader"
 PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
 MICROSOFT_ALL_TOOL_NAMES = frozenset(
@@ -161,7 +160,7 @@ def _requested_systems(user_message: str, task_type: str) -> set[str]:
     message = (user_message or "").lower()
     tokens = _message_tokens(message)
     if any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
-        return set(TOOL_BY_SYSTEM)
+        return set(CONNECTOR_TOOLS_BY_SYSTEM)
 
     requested: set[str] = set()
     for system, keywords in SYSTEM_INTENT_KEYWORDS.items():
@@ -204,8 +203,10 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
 def _requested_connector_tools_for_system(system: str, user_message: str) -> set[str]:
     if system == "microsoft_admin":
         return _requested_microsoft_tools(user_message)
-    tool_name = TOOL_BY_SYSTEM.get(system)
-    return {tool_name} if tool_name else set()
+    tool_names = CONNECTOR_TOOLS_BY_SYSTEM.get(system, frozenset())
+    if len(tool_names) == 1:
+        return set(tool_names)
+    return set()
 
 
 async def get_tool_selection(
