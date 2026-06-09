@@ -160,6 +160,55 @@ class TestConnectedAccountsFlow:
         assert connectors["microsoft_admin"]["state"]["token_status"] == "connected"
         assert connectors["microsoft_admin"]["state"]["source"] == "token_store"
 
+    @pytest.mark.asyncio
+    async def test_record_partial_microsoft_admin_diagnosis_keeps_tools_connected(self, monkeypatch):
+        from app.services.connected_account_state import record_delegated_diagnosis
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        account = AIConnectedAccount(
+            id=UUID("e4807f22-97c8-4778-87a2-160f56d25248"),
+            user_id=user_id,
+            provider="microsoft_admin",
+            provider_username="alden@example.com",
+            status="connected",
+        )
+
+        class Result:
+            def scalar_one_or_none(self):
+                return account
+
+        db = AsyncMock()
+        db.execute = AsyncMock(return_value=Result())
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+
+        async def fake_token_status(_provider, _user_id):
+            return {
+                "status": "connected",
+                "provider": "microsoft_admin",
+                "username": "alden@example.com",
+                "scope": "https://graph.microsoft.com/User.Read",
+            }
+
+        monkeypatch.setattr(
+            "app.services.connected_account_state._delegated_token_status",
+            fake_token_status,
+        )
+
+        message = "Microsoft Admin core connection is valid, but these authorization profiles need attention: Teams Admin."
+        await record_delegated_diagnosis(
+            db,
+            "microsoft_admin",
+            user_id,
+            {"status": "partial", "message": message},
+            commit=True,
+        )
+
+        assert account.status == "connected"
+        assert account.permission_summary == message
+        assert account.last_verified_at is not None
+        db.commit.assert_awaited_once()
+
     def test_get_connected_accounts_reports_microsoft_admin_profile_authorization_state(self):
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}

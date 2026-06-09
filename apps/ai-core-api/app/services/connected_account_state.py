@@ -14,6 +14,7 @@ from app.services.token_storage import token_secret_name, token_status, token_st
 
 
 DELEGATED_TOKEN_PROVIDERS = {"microsoft_admin", "github"}
+CONNECTED_DIAGNOSIS_STATUSES = {"success", "partial", "limited", "warning"}
 logger = logging.getLogger(__name__)
 
 
@@ -202,7 +203,7 @@ async def record_delegated_diagnosis(
 ) -> None:
     token_state = await _delegated_token_status(provider, user_id)
     message = diagnosis.get("message") or diagnosis.get("error") or ""
-    if diagnosis.get("status") == "success":
+    if diagnosis.get("status") in CONNECTED_DIAGNOSIS_STATUSES and token_state.get("status") == "connected":
         await upsert_delegated_account(
             db,
             provider,

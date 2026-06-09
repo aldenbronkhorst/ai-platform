@@ -11,6 +11,7 @@ from app.services.connectors.microsoft_admin import (
     azure_cli,
     bicep,
     constants,
+    diagnostics,
     graph,
     powershell_az,
     powershell_common,
@@ -22,6 +23,8 @@ from app.services.connectors.microsoft_admin import (
 )
 
 microsoft_admin_commands = SimpleNamespace(
+    AZURE_CLI_ARM_TARGET=constants.AZURE_CLI_ARM_TARGET,
+    AZURE_CLI_CLIENT_ID=constants.AZURE_CLI_CLIENT_ID,
     AZURE_ARM_SCOPE=constants.AZURE_ARM_SCOPE,
     EXCHANGE_ONLINE_SCOPE=constants.EXCHANGE_ONLINE_SCOPE,
     MICROSOFT_ADMIN_APP_DISPLAY_NAME=constants.MICROSOFT_ADMIN_APP_DISPLAY_NAME,
@@ -180,6 +183,38 @@ def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_pat
     assert accounts[0]["username"] == user_name
 
 
+def test_write_azure_cli_files_adds_native_azure_cli_cache_entry(tmp_path):
+    user_name = "alden@example.com"
+    claims = {
+        "aud": "https://management.azure.com",
+        "exp": int(time.time()) + 3600,
+        "iat": int(time.time()),
+        "oid": "00000000-0000-0000-0000-000000000001",
+        "preferred_username": user_name,
+        "tid": microsoft_admin_commands.TENANT_ID,
+    }
+    token_data = {
+        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "token_type": "Bearer",
+        "access_token": _jwt(claims),
+        "refresh_token": "refresh-token",
+        "scope": microsoft_admin_commands.microsoft_admin_arm_device_scope_string(),
+        "expires_in": 3600,
+        "expires_on": int(time.time()) + 3600,
+        "username": user_name,
+    }
+
+    microsoft_admin_commands._write_azure_cli_files(str(tmp_path), token_data, user_name, [])
+
+    cache_data = json.loads((tmp_path / "msal_token_cache.json").read_text(encoding="utf-8"))
+    access_tokens = list((cache_data.get("AccessToken") or {}).values())
+    assert any(
+        item.get("client_id") == microsoft_admin_commands.AZURE_CLI_CLIENT_ID
+        and item.get("target") == microsoft_admin_commands.AZURE_CLI_ARM_TARGET
+        for item in access_tokens
+    )
+
+
 def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tmp_path):
     user_name = "alden@example.com"
     oid = "00000000-0000-0000-0000-000000000001"
@@ -223,6 +258,20 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
     assert len(accounts) == 1
     assert accounts[0]["home_account_id"] == f"{oid}.{microsoft_admin_commands.TENANT_ID}"
     assert accounts[0]["username"] == user_name
+
+
+def test_microsoft_admin_diagnostics_reports_partial_for_profile_gaps():
+    status, message = diagnostics._microsoft_admin_diagnostic_summary({
+        "graph": {"status": "available", "label": "Microsoft Graph Admin"},
+        "arm": {"status": "available", "label": "Azure Resource Manager"},
+        "exchange": {"status": "available", "label": "Exchange Online"},
+        "teams": {"status": "missing", "label": "Teams Admin"},
+        "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
+    })
+
+    assert status == "partial"
+    assert "Teams Admin" in message
+    assert "SharePoint" not in message
 
 
 @pytest.mark.asyncio

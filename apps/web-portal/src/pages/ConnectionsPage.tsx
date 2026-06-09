@@ -179,7 +179,10 @@ function getStatusTone(status?: string, hasError = false): StatusTone {
   if (status === "connected" || status === "active" || status === "authorized" || status === "available") return "success";
   if (status === "error" || status === "failed") return "danger";
   if (
-    status === "needs_token"
+    status === "partial"
+    || status === "limited"
+    || status === "warning"
+    || status === "needs_token"
     || status === "needs_setup"
     || status === "not_connected"
     || status === "expired"
@@ -187,6 +190,39 @@ function getStatusTone(status?: string, hasError = false): StatusTone {
     || status === "not_checked"
   ) return "warning";
   return "neutral";
+}
+
+function panelToneClass(tone: StatusTone) {
+  switch (tone) {
+    case "success":
+      return "border-[var(--color-success)]/25 bg-[var(--color-success)]/5";
+    case "danger":
+      return "border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5";
+    case "warning":
+      return "border-[var(--color-warning)]/25 bg-[var(--color-warning)]/5";
+    default:
+      return "border-default bg-surface/50";
+  }
+}
+
+function panelTitleClass(tone: StatusTone) {
+  switch (tone) {
+    case "success":
+      return "text-[var(--color-success)]";
+    case "danger":
+      return "text-[var(--color-danger)]";
+    case "warning":
+      return "text-[var(--color-warning)]";
+    default:
+      return "text-default";
+  }
+}
+
+function cliResultHeading(result: CliTestResult) {
+  const tone = getStatusTone(result.status, result.success === false);
+  if (tone === "success") return "Ready";
+  if (tone === "warning") return "Attention needed";
+  return "Issues found";
 }
 
 function statusBadgeClass(tone: StatusTone) {
@@ -623,6 +659,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       if (data.status === "success") {
         setCliTestResult({ status: "success", connector: "microsoft_admin", message: data.message || "Microsoft Admin connected", request_id: data.request_id });
         await fetchConnectors();
+      } else if (data.status === "partial" || data.status === "limited" || data.status === "warning") {
+        setCliTestResult({ status: "warning", connector: "microsoft_admin", message: data.message || `Microsoft Admin status: ${formatStatusLabel(data.status || "partial")}`, stderr: data.stderr, request_id: data.request_id });
+        await fetchConnectors();
       } else {
         setCliTestResult({ status: "failed", connector: "microsoft_admin", message: data.message || `Microsoft Admin status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
@@ -1034,9 +1073,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               )}
 
               {cliTestResult && (
-                <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${cliTestResult.status === 'success' ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
-                  <p className={`font-semibold ${cliTestResult.status === 'success' ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                    {cliTestResult.connector === "microsoft_admin" ? "Microsoft Admin" : "GitHub CLI"} — {cliTestResult.status === "success" ? "All checks passed" : "Issues found"}
+                <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${panelToneClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
+                  <p className={`font-semibold ${panelTitleClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
+                    {cliTestResult.connector === "microsoft_admin" ? "Microsoft Admin" : "GitHub CLI"} — {cliResultHeading(cliTestResult)}
                   </p>
                   {cliTestResult.request_id && (
                     <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>

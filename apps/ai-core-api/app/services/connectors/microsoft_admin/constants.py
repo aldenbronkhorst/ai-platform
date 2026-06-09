@@ -25,6 +25,12 @@ AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.mic
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
 AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.azure.com/user_impersonation")
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
+AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
+AZURE_CLI_ARM_RESOURCE = os.environ.get("AZURE_CLI_ARM_RESOURCE", "https://management.core.windows.net/")
+AZURE_CLI_ARM_TARGET = os.environ.get(
+    "AZURE_CLI_ARM_TARGET",
+    "https://management.core.windows.net//.default https://management.core.windows.net//user_impersonation",
+)
 MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE = "graph"
 DEFAULT_MICROSOFT_GRAPH_SCOPES = (
     "https://graph.microsoft.com/User.Read",
