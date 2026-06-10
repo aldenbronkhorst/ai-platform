@@ -303,11 +303,17 @@ class TestReportFallbackAnswer:
 class TestReportDiscovery:
     """Tests for consolidated report routing."""
 
-    def test_only_odoo_ops_runner_is_mapped(self):
-        from app.services.model_router import _map_odoo_tool_to_path
-        assert _map_odoo_tool_to_path("odoo_ops_runner") == "/odoo/ops/run"
-        assert _map_odoo_tool_to_path("odoo_list_reports") == ""
-        assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
+    def test_only_odoo_ops_runner_is_canonical(self):
+        from app.services.model_router import _canonical_tool_invocation
+
+        assert _canonical_tool_invocation("odoo_ops_runner", {"mode": "report"}) == (
+            "odoo_ops_runner",
+            {"mode": "report"},
+        )
+        assert _canonical_tool_invocation("odoo_get_profit_and_loss", {}) == (
+            "odoo_get_profit_and_loss",
+            {},
+        )
 
 
 class TestCleanFallback:
@@ -424,9 +430,13 @@ class TestExecuteChatReportFallback:
 
     def test_pnl_uses_generic_report_tool(self):
         """P&L question must route through odoo_ops_runner, not a dedicated tool."""
-        from app.services.model_router import _map_odoo_tool_to_path
-        path = _map_odoo_tool_to_path("odoo_ops_runner")
-        assert path == "/odoo/ops/run"
-        # No dedicated P&L tool should exist
-        assert _map_odoo_tool_to_path("odoo_get_profit_and_loss") == ""
-        assert _map_odoo_tool_to_path("get_revenue_this_month") == ""
+        from app.services.model_router import _canonical_tool_invocation
+
+        tool_name, arguments = _canonical_tool_invocation(
+            "odoo_ops_runner",
+            {"mode": "report", "report_name": "profit_and_loss"},
+        )
+        assert tool_name == "odoo_ops_runner"
+        assert arguments == {"mode": "report", "report_name": "profit_and_loss"}
+        assert _canonical_tool_invocation("odoo_get_profit_and_loss", {})[0] == "odoo_get_profit_and_loss"
+        assert _canonical_tool_invocation("get_revenue_this_month", {})[0] == "get_revenue_this_month"

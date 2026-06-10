@@ -179,7 +179,7 @@ async def device_code_callback(
         )
         overall_status = "ready" if required_ready else "partial"
         message = (
-            "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange Online tokens were acquired."
+            "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens were acquired."
             if required_ready
             else (
                 "Microsoft Admin connected with one sign-in. "

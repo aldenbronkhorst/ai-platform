@@ -181,6 +181,37 @@ def test_removed_ms_admin_and_ms_powershell_tool_names_are_not_canonicalized():
     )
 
 
+def test_microsoft_graph_textual_alias_is_canonicalized_to_ms_graph():
+    tool_name, args = _canonical_tool_invocation(
+        "functions.microsoft_graph:0",
+        {
+            "method": "GET",
+            "url": "https://graph.microsoft.com/v1.0/users?$filter=accountEnabled eq true&$select=displayName,userPrincipalName",
+        },
+    )
+
+    assert tool_name == "ms_graph"
+    assert args == {
+        "method": "GET",
+        "api_version": "v1.0",
+        "path": "/users?$filter=accountEnabled eq true&$select=displayName,userPrincipalName",
+    }
+
+
+def test_microsoft_graph_alias_normalizes_relative_version_endpoint():
+    tool_name, args = _canonical_tool_invocation(
+        "graph_api",
+        {"method": "GET", "endpoint": "beta/groups?$select=id,displayName"},
+    )
+
+    assert tool_name == "ms_graph"
+    assert args == {
+        "method": "GET",
+        "api_version": "beta",
+        "path": "/groups?$select=id,displayName",
+    }
+
+
 @pytest.mark.asyncio
 async def test_model_router_rejects_removed_microsoft_tool_names():
     for old_tool_name in ("azure_cli", "ms_admin", "ms_powershell"):
@@ -1118,20 +1149,17 @@ class TestGreetingIdentity:
 
 class TestToolDefinitions:
     def test_build_tool_definitions_empty(self):
-        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
+        from app.services.model_router import _build_tool_definitions
         assert _build_tool_definitions([]) == []
 
     def test_build_tool_definitions_skips_missing_schema(self):
-        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
+        from app.services.model_router import _build_tool_definitions
         tool = AITool(name="odoo_ops_runner", display_name="Odoo Ops Runner",
                        description="Search Odoo", target_system="odoo", input_schema=None)
         assert _build_tool_definitions([tool]) == []
 
     def test_build_tool_definitions_valid(self):
-        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
+        from app.services.model_router import _build_tool_definitions
         tool = AITool(
             name="odoo_ops_runner", display_name="Odoo Ops Runner",
             description="Run Odoo operations",
@@ -1145,8 +1173,7 @@ class TestToolDefinitions:
         assert "parameters" in defs[0]["function"]
 
     def test_odoo_tool_guidance_forbids_invented_links(self):
-        from app.services.model_router import _append_tool_guidance, _build_tool_definitions, TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
+        from app.services.model_router import _append_tool_guidance, _build_tool_definitions
         tool = AITool(
             name="odoo_ops_runner",
             display_name="Odoo Ops Runner",
@@ -1164,8 +1191,7 @@ class TestToolDefinitions:
         assert "not a private Discuss direct message" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
-        from app.services.model_router import _build_tool_definitions, TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
+        from app.services.model_router import _build_tool_definitions
         tool = AITool(
             name="odoo.ops_runner", display_name="Odoo Ops Runner",
             description="Run Odoo operations",
@@ -1176,7 +1202,6 @@ class TestToolDefinitions:
         assert len(defs) == 1
         assert defs[0]["function"]["name"] == "odoo_ops_runner"
         assert "." not in defs[0]["function"]["name"]
-        assert TOOL_NAME_MAP.get("odoo_ops_runner") == "odoo.ops_runner"
 
     def test_normalize_tool_name(self):
         from app.services.model_router import _normalize_tool_name
@@ -1188,8 +1213,6 @@ class TestToolDefinitions:
 
     def test_build_tool_definitions_strips_invalid_chars(self):
         from app.services.model_router import _build_tool_definitions
-        from app.services.model_router import TOOL_NAME_MAP
-        TOOL_NAME_MAP.clear()
         tool = AITool(
             name="odoo#attach@artifact!", display_name="Odoo Attach",
             description="Attach artifact",
@@ -1462,28 +1485,22 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_report_intent")
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
-    def test_odoo_alias_execute_preserves_record_ids(self):
+    def test_odoo_alias_execute_is_not_canonicalized(self):
         from app.services.model_router import _canonical_tool_invocation
 
-        tool_name, arguments = _canonical_tool_invocation(
-            "odoo",
-            {
-                "model": "mail.activity",
-                "method": "action_feedback",
-                "ids": [2180],
-                "kwargs": {"feedback": "Receipt corrected"},
-            },
-        )
-
-        assert tool_name == "odoo_ops_runner"
-        assert arguments == {
-            "mode": "execute",
+        original_arguments = {
             "model": "mail.activity",
             "method": "action_feedback",
-            "args": [],
-            "kwargs": {"feedback": "Receipt corrected"},
             "ids": [2180],
+            "kwargs": {"feedback": "Receipt corrected"},
         }
+        tool_name, arguments = _canonical_tool_invocation(
+            "odoo",
+            original_arguments,
+        )
+
+        assert tool_name == "odoo"
+        assert arguments == original_arguments
 
     @pytest.mark.asyncio
     async def test_odoo_ops_runner_missing_mode_is_handled_before_connector(self):
@@ -1506,42 +1523,15 @@ class TestToolExecution:
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_odoo_ops_runner_query_shaped_missing_mode_defaults_to_query(self):
+    async def test_odoo_ops_runner_query_shaped_missing_mode_is_rejected(self):
         from app.services.model_router import _execute_tool_call_impl
 
         db = MockSession(has_config=True)
-        posted_payload = {}
-
-        class FakeResponse:
-            status_code = 200
-
-            def json(self):
-                return {"status": "success", "records": [{"id": 5266}], "count": 1}
-
-        class FakeAsyncClient:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            async def post(self, *args, **kwargs):
-                posted_payload.update(kwargs["json"])
-                return FakeResponse()
+        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
 
         with patch(
             "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=AsyncMock(return_value={
-                "url": "https://odoo.example.com",
-                "db": "prod",
-                "username": "u",
-                "api_key": "k",
-            }),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.httpx.AsyncClient", FakeAsyncClient
+            new=mock_credentials,
         ):
             result = await _execute_tool_call_impl(
                 db,
@@ -1555,12 +1545,12 @@ class TestToolExecution:
                 },
             )
 
-        assert result == {"status": "success", "records": [{"id": 5266}], "count": 1}
-        assert posted_payload["mode"] == "query"
-        assert posted_payload["model"] == "stock.picking"
-        assert posted_payload["domain"] == [["id", "=", 5266]]
-        assert posted_payload["fields"] == ["name", "state", "move_ids", "date_done"]
-        assert posted_payload["limit"] == 10
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert result["missing"] == ["mode"]
+        mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_odoo_attachment_without_attachment_id_is_handled_before_connector(self):
@@ -2656,9 +2646,9 @@ class TestToolExecution:
         raw_tool_markup = (
             "I'll look that up."
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0"
+            "<|tool_call_begin|>functions.odoo_ops_runner:0"
             "<|tool_call_argument_begin|>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]],["id","name","login"]],"kwargs":{"limit":1}}'
+            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name","login"],"limit":1}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -2757,9 +2747,9 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0"
+            "<|tool_call_begin|>functions.odoo_ops_runner:0"
             "<|tool_call_argument_begin|>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]],["id","name","login"]],"kwargs":{"limit":1}}'
+            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name","login"],"limit":1}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -2845,9 +2835,9 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<tool_calls_section_begin>"
-            "<tool_call_begin>functions.odoo:0"
+            "<tool_call_begin>functions.odoo_ops_runner:0"
             "<tool_call_argument_begin>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]],["id","name"]]}'
+            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name"]}'
             "<tool_call_end>"
             "<tool_calls_section_end>"
         )
@@ -2938,8 +2928,8 @@ class TestToolExecution:
         raw_tool_markup = (
             "I'll merge the duplicate employee into the older record."
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_write:0 "
-            '{"model":"hr.employee","ids":[42],"values":{"parent_id":7,"notes":"move data before delete"}}'
+            "<|tool_call_begin|>functions.odoo_ops_runner:0 "
+            '{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"parent_id":7,"notes":"move data before delete"}}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -2993,7 +2983,7 @@ class TestToolExecution:
         called_args = execute_tool.call_args.args
         assert called_args[2] == "odoo_ops_runner"
         assert called_args[3] == {
-            "mode": "write",
+            "mode": "mutation",
             "operation": "write",
             "model": "hr.employee",
             "ids": [42],
@@ -3035,8 +3025,8 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_write:0 "
-            '{"model":"hr.employee","ids":[42],"values":{"notes":"contains } brace","metadata":{"old_id":7}}}'
+            "<|tool_call_begin|>functions.odoo_ops_runner:0 "
+            '{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"notes":"contains } brace","metadata":{"old_id":7}}}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -3097,7 +3087,7 @@ class TestToolExecution:
                 "content": (
                     "<|tool_calls_section_begin|>"
                     "<|tool_call_begin|>"
-                    '{"name":"functions.odoo_write","arguments":{"model":"hr.employee","ids":[42],"values":{"parent_id":7}}}'
+                    '{"name":"functions.odoo_ops_runner","arguments":{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"parent_id":7}}}'
                     "<|tool_call_end|>"
                     "<|tool_calls_section_end|>"
                 ),
@@ -3113,15 +3103,15 @@ class TestToolExecution:
         assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
         assert args == {
-            "mode": "write",
+            "mode": "mutation",
             "operation": "write",
             "model": "hr.employee",
             "ids": [42],
             "values": {"parent_id": 7},
         }
 
-    def test_coerce_text_tool_call_from_cased_odoo_query_alias_without_mode(self):
-        """Production Kimi payloads may use functions.Odoo:0 with query args but no mode."""
+    def test_coerce_text_tool_call_ignores_cased_odoo_alias_without_mode(self):
+        """Legacy Odoo aliases are ignored instead of being guessed into canonical calls."""
         from app.services.model_router import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
@@ -3142,16 +3132,40 @@ class TestToolExecution:
             [],
         )
 
+        assert result["finish_reason"] == "stop"
+        assert result["tool_calls"] is None
+
+    def test_coerce_text_tool_call_converts_microsoft_graph_alias_with_full_url(self):
+        """Production textual Microsoft Graph aliases must execute instead of becoming 502s."""
+        from app.services.model_router import _coerce_text_tool_calls
+
+        result = _coerce_text_tool_calls(
+            {
+                "content": (
+                    "Let me query Microsoft Graph."
+                    "<|tool_calls_section_begin|>"
+                    "<|tool_call_begin|>functions.microsoft_graph:0"
+                    "<|tool_call_argument_begin|>"
+                    '{"method":"GET","url":"https://graph.microsoft.com/v1.0/users?$filter=accountEnabled eq true&$count=true&$select=displayName,userPrincipalName&$top=999"}'
+                    "<|tool_call_end|>"
+                    "<|tool_calls_section_end|>"
+                ),
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "error": False,
+            },
+            [],
+        )
+
         assert result["finish_reason"] == "tool_calls"
-        assert result["content"] is None
-        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        assert result["content"] == "Let me query Microsoft Graph."
+        assert "<|tool_call" not in result["content"]
+        assert result["tool_calls"][0]["function"]["name"] == "ms_graph"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
         assert args == {
-            "mode": "query",
-            "model": "stock.picking",
-            "domain": [["id", "=", 5266]],
-            "fields": ["name", "state", "move_ids", "date_done"],
-            "limit": 10,
+            "method": "GET",
+            "api_version": "v1.0",
+            "path": "/users?$filter=accountEnabled eq true&$count=true&$select=displayName,userPrincipalName&$top=999",
         }
 
     def test_coerce_text_tool_call_from_xml_json_envelope_with_parameters(self):
@@ -3193,8 +3207,8 @@ class TestToolExecution:
             {
                 "content": (
                     "<|tool_call_begin|>"
-                    '{"type":"function","function":{"name":"functions.odoo_write",'
-                    '"arguments":"{\\"model\\":\\"hr.employee\\",\\"ids\\":[42],\\"values\\":{\\"parent_id\\":7}}"}}'
+                    '{"type":"function","function":{"name":"functions.odoo_ops_runner",'
+                    '"arguments":"{\\"mode\\":\\"mutation\\",\\"operation\\":\\"write\\",\\"model\\":\\"hr.employee\\",\\"ids\\":[42],\\"values\\":{\\"parent_id\\":7}}"}}'
                     "<|tool_call_end|>"
                 ),
                 "finish_reason": "stop",
@@ -3206,7 +3220,8 @@ class TestToolExecution:
 
         assert result["finish_reason"] == "tool_calls"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args["mode"] == "write"
+        assert args["mode"] == "mutation"
+        assert args["operation"] == "write"
         assert args["model"] == "hr.employee"
         assert args["ids"] == [42]
         assert args["values"] == {"parent_id": 7}

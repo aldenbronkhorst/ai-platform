@@ -66,12 +66,12 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
         mode = str(args.get("mode") or args.get("operation") or "operation")
         model = str(args.get("model") or "").strip()
         report = str(args.get("report_name") or args.get("report") or "").strip()
-        if mode in {"query", "records", "count", "aggregate", "schema"} and model:
+        if mode in {"query", "count", "aggregate", "schema"} and model:
             return f"{mode.title()} {model}"
-        if mode in {"report", "account_report"} and report:
+        if mode == "report" and report:
             return f"Run Odoo report: {report}"
-        if mode in {"create", "write", "delete", "mutation"} and model:
-            operation = str(args.get("operation") or mode).title()
+        if mode == "mutation" and model:
+            operation = str(args.get("operation") or "mutation").title()
             return f"{operation} {model}"
         if model:
             return f"Odoo {mode}: {model}"

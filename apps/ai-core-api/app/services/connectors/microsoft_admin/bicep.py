@@ -10,8 +10,6 @@ from app.services.connectors.microsoft_admin.constants import MS_BICEP_ALLOWED_B
 from app.services.connectors.microsoft_admin.powershell_common import (
     _command_failure_message,
     _failed_microsoft_admin_result,
-    _microsoft_admin_env,
-    _microsoft_admin_forbidden_command,
     _tool_timeout,
 )
 
@@ -45,21 +43,11 @@ async def _run_microsoft_admin_bicep(
     connector_name: str = "microsoft_admin",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
-    if _microsoft_admin_forbidden_command(command):
-        return _failed_microsoft_admin_result(
-            request_id=request_id,
-            mode="bicep",
-            message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
-            command=command,
-            error_type="unsupported_command",
-            connector=connector_name,
-        )
+    _ = user_id
     normalized = command if command.startswith("bicep ") else f"bicep {command}"
-    env = _microsoft_admin_env(user_id) if user_id else {}
     result = await run_command(
         normalized,
         timeout=timeout,
-        env=env,
         allowed_binaries=allowed_binaries or MS_BICEP_ALLOWED_BINARIES,
     )
     output = result.to_dict()

@@ -258,7 +258,7 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
     assert accounts[0]["username"] == user_name
 
 
-def test_microsoft_admin_diagnostics_ignores_optional_profile_gaps():
+def test_microsoft_admin_diagnostics_reports_required_profile_gaps():
     status, message = diagnostics._microsoft_admin_diagnostic_summary({
         "graph": {"status": "available", "label": "Microsoft Graph Admin"},
         "arm": {"status": "available", "label": "Azure Resource Manager"},
@@ -267,23 +267,22 @@ def test_microsoft_admin_diagnostics_ignores_optional_profile_gaps():
         "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
     })
 
-    assert status == "success"
-    assert "Teams Admin" not in message
-    assert "SharePoint" not in message
+    assert status == "partial"
+    assert "Teams Admin" in message
 
 
-def test_microsoft_admin_diagnostics_ignores_optional_missing_consent():
+def test_microsoft_admin_diagnostics_reports_optional_not_checked_after_required_pass():
     status, message = diagnostics._microsoft_admin_diagnostic_summary({
         "graph": {"status": "available", "label": "Microsoft Graph Admin"},
         "arm": {"status": "available", "label": "Azure Resource Manager"},
         "exchange": {"status": "available", "label": "Exchange Online"},
-        "teams": {"status": "missing_consent", "label": "Teams Admin"},
+        "teams": {"status": "available", "label": "Teams Admin"},
         "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
     })
 
-    assert status == "success"
-    assert "Teams Admin" not in message
-    assert "SharePoint" not in message
+    assert status == "partial"
+    assert "required profiles are connected" in message
+    assert "SharePoint / PnP" in message
 
 
 def test_microsoft_admin_default_graph_scopes_include_teams_prerequisites():
@@ -310,6 +309,19 @@ async def test_ensure_azure_cli_profile_rejects_tokens_without_identity(monkeypa
 
     assert result["ready"] is False
     assert "no usable user identity" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_azure_cli_profile_rejects_tokens_without_cli_account_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZURE_CLI_USER_CONFIG_ROOT", str(tmp_path))
+    result = await microsoft_admin_commands.ensure_azure_cli_profile(
+        uuid.uuid4(),
+        {"access_token": "access-token", "username": "alden@example.com"},
+        subscriptions_result={"ok": True, "subscriptions": []},
+    )
+
+    assert result["ready"] is False
+    assert "missing account metadata" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -362,7 +374,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
             }
 
     async def fake_token(_user_id, _scope, **_kwargs):
-        called["require_account_metadata"] = _kwargs.get("require_account_metadata")
+        called["token_kwargs"] = _kwargs
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -395,7 +407,7 @@ async def test_ms_azure_cli_uses_native_azure_cli_execution_path(monkeypatch):
     assert called["profile_user_id"] == user_id
     assert called["timeout"] == 30
     assert called["allowed_binaries"] == microsoft_admin_commands.MS_AZURE_CLI_ALLOWED_BINARIES
-    assert called["require_account_metadata"] is True
+    assert called["token_kwargs"] == {}
     assert result["status"] == "success"
     assert result["connector"] == "ms_azure_cli"
     assert result["mode"] == "ms_azure_cli"
@@ -406,7 +418,7 @@ async def test_ms_azure_cli_costmanagement_query_uses_native_cli_path(monkeypatc
     called = {}
 
     async def fake_token(_user_id, _scope, **kwargs):
-        called["require_account_metadata"] = kwargs.get("require_account_metadata")
+        called["token_kwargs"] = kwargs
         return {
             "access_token": "access-token",
             "expires_on": int(time.time()) + 3600,
@@ -456,7 +468,7 @@ async def test_ms_azure_cli_costmanagement_query_uses_native_cli_path(monkeypatc
     assert called["timeout"] == 30
     assert called["env"]["AZURE_CONFIG_DIR"] == "/tmp/ms-admin-cli"
     assert called["allowed_binaries"] == microsoft_admin_commands.MS_AZURE_CLI_ALLOWED_BINARIES
-    assert called["require_account_metadata"] is True
+    assert called["token_kwargs"] == {}
     assert result["status"] == "success"
     assert result["connector"] == "ms_azure_cli"
 
@@ -609,7 +621,7 @@ async def test_ms_teams_powershell_requires_graph_and_teams_tokens(monkeypatch):
                 "error": None,
             }
 
-    async def fake_run_command(command, timeout, env, allowed_binaries=None):
+    async def fake_run_command(command, timeout, env=None, allowed_binaries=None):
         called["command"] = command
         called["env"] = env
         called["allowed_binaries"] = allowed_binaries
@@ -789,7 +801,7 @@ async def test_ms_bicep_uses_only_bicep_binary(monkeypatch):
                 "error": None,
             }
 
-    async def fake_run_command(command, timeout, env, allowed_binaries=None):
+    async def fake_run_command(command, timeout, env=None, allowed_binaries=None):
         called["command"] = command
         called["env"] = env
         called["allowed_binaries"] = allowed_binaries
@@ -803,6 +815,7 @@ async def test_ms_bicep_uses_only_bicep_binary(monkeypatch):
     )
 
     assert called["command"] == "bicep version"
+    assert called["env"] is None
     assert called["allowed_binaries"] == microsoft_admin_commands.MS_BICEP_ALLOWED_BINARIES
     assert result["status"] == "success"
     assert result["connector"] == "ms_bicep"
@@ -882,7 +895,7 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
 
 
 @pytest.mark.asyncio
-async def test_scoped_arm_token_without_cli_account_metadata_refreshes_when_required(monkeypatch):
+async def test_scoped_arm_token_retrieval_does_not_require_cli_account_metadata(monkeypatch):
     user_id = uuid.uuid4()
     stored_token = {
         "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
@@ -902,64 +915,26 @@ async def test_scoped_arm_token_without_cli_account_metadata_refreshes_when_requ
         },
     }
     captured: dict[str, object] = {}
-    client_info = _base64url_json({"uid": "uid-value", "utid": microsoft_admin_commands.TENANT_ID})
 
     async def fake_retrieve(provider, received_user_id):
         assert provider == "microsoft_admin"
         assert received_user_id == user_id
         return stored_token
 
-    async def fake_store(provider, received_user_id, token_data):
-        assert provider == "microsoft_admin"
-        assert received_user_id == user_id
-        captured["stored"] = token_data
+    async def fake_store(*_args, **_kwargs):
+        captured["stored"] = True
         return True
-
-    class FakeResponse:
-        status_code = 200
-        text = "{}"
-
-        def json(self):
-            return {
-                "token_type": "Bearer",
-                "access_token": "new-arm-access",
-                "refresh_token": "new-arm-refresh",
-                "scope": microsoft_admin_commands.AZURE_ARM_SCOPE,
-                "client_info": client_info,
-                "expires_in": 3600,
-            }
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def post(self, url, data):
-            captured["url"] = url
-            captured["data"] = data
-            return FakeResponse()
 
     monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
     monkeypatch.setattr(tokens, "store_token", fake_store)
-    monkeypatch.setattr(tokens.httpx, "AsyncClient", FakeClient)
 
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(
         user_id,
         microsoft_admin_commands.AZURE_ARM_SCOPE,
-        require_account_metadata=True,
     )
 
-    assert result["access_token"] == "new-arm-access"
-    assert result["client_info"] == client_info
-    assert captured["data"]["refresh_token"] == "primary-refresh"
-    stored = captured["stored"]
-    assert stored["delegated_tokens"]["arm"]["access_token"] == "new-arm-access"
-    assert stored["delegated_tokens"]["arm"]["client_info"] == client_info
+    assert result["access_token"] == "old-arm-access"
+    assert "stored" not in captured
 
 
 @pytest.mark.asyncio
