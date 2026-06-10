@@ -5,7 +5,6 @@ from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
 from app.services.tool import ToolService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIToolCreate, AIToolResponse, AIAuditEventCreate
-from uuid import UUID
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 

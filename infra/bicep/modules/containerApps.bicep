@@ -58,9 +58,6 @@ param postgresDatabaseName string
 @description('PostgreSQL admin username')
 param postgresAdminUsername string
 
-@description('Whether to deploy Azure AI Search')
-param deploySearch bool = false
-
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
@@ -164,11 +161,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
-            { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
-            { name: 'AZURE_SEARCH_INDEX_NAME', value: deploySearch ? 'company-knowledge' : '' }
-            { name: 'AZURE_SEARCH_ENABLE', value: deploySearch ? 'true' : 'false' }
-            { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
-            { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
             { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
             { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
@@ -378,11 +370,6 @@ resource containerAppWorker 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
-            { name: 'AZURE_SEARCH_ENDPOINT', value: deploySearch ? 'https://srch-${workload}-${environment}-${regionCode}-${instance}.search.windows.net' : '' }
-            { name: 'AZURE_SEARCH_INDEX_NAME', value: deploySearch ? 'company-knowledge' : '' }
-            { name: 'AZURE_SEARCH_ENABLE', value: deploySearch ? 'true' : 'false' }
-            { name: 'AZURE_SEARCH_MAX_RESULTS', value: '5' }
-            { name: 'AZURE_SEARCH_MAX_INJECTED_CHUNKS', value: '5' }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
             { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
             { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }

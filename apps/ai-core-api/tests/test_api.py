@@ -1,4 +1,3 @@
-import os
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,29 +36,6 @@ class TestHealth:
         assert payload["dependencies"]["key_vault"] == "configured"
         assert payload["dependencies"]["blob_storage"] == "configured"
         assert payload["dependencies"]["service_bus"] == "configured"
-
-
-class TestJobs:
-    def test_create_job(self, client):
-        response = client.post("/jobs", json={
-            "title": "Test Job",
-            "workflow_type": "test"
-        })
-        assert response.status_code == 201
-        data = response.json()
-        assert data["title"] == "Test Job"
-        assert data["status"] == "pending"
-        self.job_id = data["id"]
-
-    def test_get_job(self, client):
-        # First create a job
-        create_resp = client.post("/jobs", json={"title": "Get Test Job"})
-        job_id = create_resp.json()["id"]
-
-        response = client.get(f"/jobs/{job_id}")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["id"] == job_id
 
 
 class TestTasks:

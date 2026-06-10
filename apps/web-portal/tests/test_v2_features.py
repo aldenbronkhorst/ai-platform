@@ -103,12 +103,16 @@ def test_chat_upload_snapshots_file_list_before_reset():
 
 def test_chat_session_refresh_preserves_active_local_session():
     app_path = os.path.join(SRC_DIR, "App.tsx")
+    runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
     with open(app_path, "r", encoding="utf-8") as f:
-        content = f.read()
+        app_content = f.read()
+    with open(runtime_path, "r", encoding="utf-8") as f:
+        runtime_content = f.read()
 
-    assert "function mergeFetchedChatSessions" in content
-    assert "if (activeSessionId && !byId.has(activeSessionId))" in content
-    assert "return prev;" in content
+    assert "mergeFetchedChatSessions" in app_content
+    assert "export function mergeFetchedChatSessions" in runtime_content
+    assert "if (activeSessionId && !byId.has(activeSessionId))" in runtime_content
+    assert "return prev;" in app_content
 
 
 def test_voice_uses_browser_recognition_without_shadow_microphone_stream():
@@ -119,7 +123,7 @@ def test_voice_uses_browser_recognition_without_shadow_microphone_stream():
     assert "SpeechRecognition" in content
     assert "micStreamRef" not in content
     assert "getUserMedia" not in content
-    assert "recognitionRef.current?.start()" in content
+    assert "recognition.start()" in content
     assert "recognitionRef.current?.stop()" in content
 
 
@@ -134,6 +138,9 @@ def test_voice_commits_final_results_and_tracks_interim_text():
     assert "emittedTranscriptRef" in content
     assert "const pending = pendingTranscript();" in content
     assert "markTranscriptEmitted(pending)" in content
+    assert "restartTimerRef" in content
+    assert "if (shouldListenRef.current)" in content
+    assert "startRecognition();" in content
     assert "return { voiceState, toggleVoice, interimTranscript }" in content
 
 
@@ -214,10 +221,12 @@ def test_microsoft_admin_connect_uses_one_interactive_sign_in():
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert 'body: JSON.stringify({ scope_profile: "graph" })' in content
+    assert 'body: JSON.stringify({ scope_profile: "graph" })' not in content
     assert "MICROSOFT_CONSENT_STEPS" not in content
     assert "Authorize Missing Profiles" not in content
     assert "One Microsoft Admin sign-in" in content
+    assert "Refresh User Sign-In" in content
+    assert "readiness_status" in content
     assert "AuthorizationProfileList" in content
     assert "authorization_profiles" in content
 

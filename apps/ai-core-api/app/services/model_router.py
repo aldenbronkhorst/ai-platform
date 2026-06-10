@@ -1,4 +1,3 @@
-import asyncio
 import os
 import re
 import json
@@ -13,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
 from app.models.models import (
-    AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AICompanyFact,
-    AIMemory, AIArtifact,
+    AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool,
+    AIMemory, AIArtifact, AICompanyFact,
 )
 from app.services.foundry_client import FoundryClient
 from app.services.context import ContextService
@@ -43,18 +42,6 @@ TOOL_FINALIZER_PAYLOAD_CHARS = 70000
 TOOL_FINALIZER_CHAT_MESSAGES = 8
 TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
 TOOL_ERROR_SUMMARY_LIMIT = 8
-MICROSOFT_NATIVE_TOOL_NAMES = frozenset(
-    {
-        "ms_graph",
-        "ms_graph_powershell",
-        "ms_exchange_powershell",
-        "ms_teams_powershell",
-        "ms_sharepoint_pnp_powershell",
-        "ms_az_powershell",
-        "ms_azure_cli",
-        "ms_bicep",
-    }
-)
 DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
 DIRECT_BLANK_RETRY_MESSAGE = {
     "role": "system",
@@ -64,10 +51,15 @@ DIRECT_BLANK_RETRY_MESSAGE = {
         "If the available conversation does not contain enough evidence, say exactly what is missing."
     ),
 }
+AZURE_INVENTORY_FALLBACK_LIMIT = 30
+AZURE_RESOURCE_INVENTORY_TERMS = {
+    "resource", "resources", "resource group", "resource groups", "inventory",
+    "subscription", "subscriptions",
+}
+AZURE_RESOURCE_READ_TERMS = {"access", "active", "list", "show", "see", "inventory"}
 CHAT_TITLE_MAX_CHARS = 70
 CHAT_TITLE_SOURCE_MESSAGES = 6
 CHAT_TITLE_SOURCE_CHARS = 900
-CHAT_TITLE_MAX_TOKENS = 24
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -77,11 +69,6 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
         "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
     ),
 }
-CHAT_TITLE_SYSTEM_PROMPT = (
-    "Generate a short title for this chat. "
-    "Use 3 to 6 words. "
-    "Return only the title, with no quotes, no markdown, no trailing punctuation, and no generic words like chat or conversation."
-)
 CHAT_TITLE_FILLER_WORDS = {
     "a", "all", "an", "and", "are", "as", "at", "be", "been", "being", "can", "could",
     "check", "current", "did", "do", "does", "double", "for", "from", "get", "give", "go", "how", "i", "if",
@@ -240,7 +227,6 @@ class InjectedContext:
     rules: list[Any] = field(default_factory=list)
     facts: list[Any] = field(default_factory=list)
     memories: list[Any] = field(default_factory=list)
-    search_results: list[dict[str, Any]] = field(default_factory=list)
     subtasks: list[dict[str, Any]] = field(default_factory=list)
     currency_source: str = "none"
     currency_text: str | None = None
@@ -622,7 +608,7 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
             )
             else cleaned
         )
-    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner"}:
+    if mapped in MICROSOFT_ADMIN_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner"}:
         return mapped, arguments
     if mapped == "odoo" or mapped.startswith("odoo_"):
         return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
@@ -952,7 +938,7 @@ def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, 
         return _handled_tool_argument_error(
             "The Odoo tool call was missing the required mode, so it was skipped before reaching the connector.",
             missing=["mode"],
-            suggestion="Retry with mode set to schema, query, records, count, report, attachment, content, message, mutation, or execute.",
+            suggestion="Retry with mode set to health, schema, query, count, aggregate, report, attachment, content, message, mutation, or execute.",
         )
     if mode not in ODOO_OPS_RUNNER_MODES:
         return _handled_tool_argument_error(
@@ -1061,20 +1047,15 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
     if not api_key:
         raise RuntimeError("Odoo connected account has no valid credentials")
 
-    # Use the saved Odoo URL/DB from the connected account record.
-    # Fall back to company facts or env vars for backwards compatibility.
-    odoo_url = account.odoo_url or ""
-    odoo_db = account.odoo_db or ""
+    odoo_url = (account.odoo_url or "").strip()
+    odoo_db = (account.odoo_db or "").strip()
     if not odoo_url or not odoo_db:
-        url_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-        db_result = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-        url_fact = url_result.scalar_one_or_none()
-        db_fact = db_result.scalar_one_or_none()
-        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
-
+        result = await db.execute(select(AICompanyFact).where(AICompanyFact.key.in_(("odoo_url", "odoo_db"))))
+        facts = {fact.key: fact.value for fact in result.scalars().all()}
+        odoo_url = odoo_url or (facts.get("odoo_url") or os.environ.get("ODOO_URL", "")).strip()
+        odoo_db = odoo_db or (facts.get("odoo_db") or os.environ.get("ODOO_DB", "")).strip()
     if not odoo_url or not odoo_db:
-        raise RuntimeError("Odoo URL or database not configured")
+        raise RuntimeError("Odoo connected account is missing its saved URL or database")
 
     logger.info("Resolved Odoo credentials for tool execution: user=%s host=%s db=%s",
                 account.provider_username, odoo_url, odoo_db)
@@ -1347,6 +1328,168 @@ async def _record_delegated_tool_auth_failure(
     )
 
 
+def _is_azure_resource_inventory_request(user_message: str) -> bool:
+    text = (user_message or "").lower()
+    if "azure" not in text and "az " not in f"{text} ":
+        return False
+    return any(term in text for term in AZURE_RESOURCE_INVENTORY_TERMS) and any(
+        term in text for term in AZURE_RESOURCE_READ_TERMS
+    )
+
+
+def _json_from_cli_stdout(result: dict[str, Any]) -> Any:
+    stdout = result.get("stdout")
+    if not isinstance(stdout, str) or not stdout.strip():
+        return None
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _cli_failure_message(result: dict[str, Any]) -> str:
+    for key in ("message", "error", "stderr"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return _truncate_tool_text(value.strip(), 300)
+    return "The command failed without a detailed error message."
+
+
+def _azure_resource_inventory_answer(
+    account_result: dict[str, Any],
+    resources_result: dict[str, Any],
+) -> str:
+    account_ok = account_result.get("status") == "success" and not account_result.get("error")
+    resources_ok = resources_result.get("status") == "success" and not resources_result.get("error")
+
+    if not account_ok:
+        return (
+            "I could not verify Azure Resource Manager access through the Microsoft Admin connector.\n\n"
+            "`az account show --output json` failed: "
+            f"{_cli_failure_message(account_result)}"
+        )
+
+    account = _json_from_cli_stdout(account_result)
+    if not isinstance(account, dict):
+        account = {}
+    sub_name = str(account.get("name") or "Unknown subscription")
+    sub_id = str(account.get("id") or "Unknown subscription ID")
+    user_info = account.get("user") if isinstance(account.get("user"), dict) else {}
+    user_name = str(user_info.get("name") or account.get("user") or "").strip()
+
+    if not resources_ok:
+        return (
+            "Azure Resource Manager is accessible for this Microsoft Admin connection, "
+            "but listing resources failed.\n\n"
+            f"- Subscription: {sub_name}\n"
+            f"- ID: {sub_id}\n"
+            + (f"- User: {user_name}\n" if user_name else "")
+            + "\n"
+            "`az resource list --output json` failed: "
+            f"{_cli_failure_message(resources_result)}"
+        )
+
+    resources = _json_from_cli_stdout(resources_result)
+    if not isinstance(resources, list):
+        return (
+            "Azure Resource Manager is accessible for this Microsoft Admin connection, "
+            "but the resource list output was not valid JSON.\n\n"
+            f"- Subscription: {sub_name}\n"
+            f"- ID: {sub_id}"
+        )
+
+    lines = [
+        "Azure Resource Manager is accessible for this Microsoft Admin connection.",
+        "",
+        f"- Subscription: {sub_name}",
+        f"- ID: {sub_id}",
+    ]
+    if user_name:
+        lines.append(f"- User: {user_name}")
+
+    total = len(resources)
+    if total == 0:
+        lines.extend(["", "No Azure resources were returned by `az resource list`."])
+        return "\n".join(lines)
+
+    lines.extend([
+        "",
+        f"Active Azure resources returned by `az resource list`: {total}",
+        "",
+        "| Name | Type | Resource group | Location |",
+        "|---|---|---|---|",
+    ])
+    for item in resources[:AZURE_INVENTORY_FALLBACK_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "-")
+        resource_type = str(item.get("type") or "-")
+        resource_group = str(item.get("resourceGroup") or "-")
+        location = str(item.get("location") or "-")
+        lines.append(f"| {name} | {resource_type} | {resource_group} | {location} |")
+    hidden = total - AZURE_INVENTORY_FALLBACK_LIMIT
+    if hidden > 0:
+        lines.append(f"\nShowing first {AZURE_INVENTORY_FALLBACK_LIMIT} of {total}; ask for a specific resource group or type for more detail.")
+    return "\n".join(lines)
+
+
+async def _try_rate_limit_connector_fallback(
+    db: AsyncSession,
+    user_id: Optional[UUID],
+    state: ModelCallState,
+    messages: list,
+    tools: list[AITool],
+    trace_svc: Any = None,
+) -> tuple[ModelCallState, list[dict[str, Any]]]:
+    """Recover simple read-only connector requests when the model is rate-limited before tool use."""
+    if not _is_rate_limit_error(state.result):
+        return state, []
+
+    tool_names = {tool.name for tool in tools}
+    latest_user_message = _last_user_message(messages)
+    if "ms_azure_cli" not in tool_names or not _is_azure_resource_inventory_request(latest_user_message):
+        return state, []
+
+    tool_results: list[dict[str, Any]] = []
+
+    async def run_recovery_call(arguments: dict[str, Any]) -> dict[str, Any]:
+        tool_name = "ms_azure_cli"
+        result = await _execute_tool_call(db, user_id, tool_name, arguments, trace_svc=trace_svc)
+        if isinstance(result, dict):
+            await _record_delegated_tool_auth_failure(db, user_id, tool_name, result)
+            raw_result = result
+            compact_result = _compact_tool_result_for_model(result)
+        else:
+            raw_result = {"status": "failed", "error": "Tool returned an invalid result."}
+            compact_result = raw_result
+        tool_results.append({
+            "tool_call_id": f"deterministic_{len(tool_results) + 1}",
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "result": compact_result,
+        })
+        return raw_result
+
+    account_result = await run_recovery_call({"command": "account show --output json", "timeout": 30})
+    if account_result.get("status") == "success" and not account_result.get("error"):
+        resources_result = await run_recovery_call({"command": "resource list --output json", "timeout": 60})
+    else:
+        resources_result = {"status": "skipped", "message": "Skipped because account discovery failed."}
+
+    state.stats.tool_calls += len(tool_results)
+    state.result = {
+        "error": False,
+        "content": _azure_resource_inventory_answer(account_result, resources_result),
+        "finish_reason": "deterministic_connector_fallback",
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "latency_ms": 0,
+    }
+    state.fallback_reason = "rate_limited_deterministic_ms_azure_cli"
+    return state, tool_results
+
+
 def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -> str:
     if len(value) <= limit:
         return value
@@ -1575,23 +1718,6 @@ def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
     if title:
         return title
     return None
-
-
-def _chat_title_source_text(messages: list[dict[str, Any]]) -> str:
-    excerpts: list[str] = []
-    for message in messages[:CHAT_TITLE_SOURCE_MESSAGES]:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        if role not in {"user", "assistant"}:
-            continue
-        content = str(message.get("content") or "").strip()
-        if not content:
-            continue
-        content = re.sub(r"\s+", " ", content)
-        excerpts.append(f"{role}: {_truncate_tool_text(content, CHAT_TITLE_SOURCE_CHARS)}")
-    return "\n".join(excerpts)
-
 
 def _compact_stdio_text(value: str) -> str | dict[str, Any]:
     if len(value) <= MAX_TOOL_STDIO_STRING_CHARS:
@@ -2372,7 +2498,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
+    if MICROSOFT_ADMIN_TOOL_NAMES.intersection(available_names):
         guidance_parts.append(
             "Microsoft Admin: use only these native-interface tools: `ms_graph`, `ms_graph_powershell`, "
             "`ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, "
@@ -2556,37 +2682,6 @@ async def _memory_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[st
     return "## Learned from Past Interactions\n" + "\n".join(blocks), memories
 
 
-async def _search_context(messages: list, user_id: Optional[UUID]) -> tuple[str, list[dict[str, Any]]]:
-    if not messages:
-        return "", []
-    from app.services.search_service import SearchService
-    from app.core.config import get_settings
-
-    search_svc = SearchService()
-    if not search_svc.enabled:
-        return "", []
-
-    hits = await search_svc.search_memories(
-        query=_last_user_message(messages),
-        user_id=user_id,
-        status="active",
-    )
-    chunks = hits[:get_settings().azure_search_max_injected_chunks]
-    if not chunks:
-        return "", []
-
-    blocks = []
-    for hit in chunks:
-        source_type = hit.get("type") or hit.get("source_type") or "reference"
-        title = hit.get("title") or "Untitled Document"
-        chunk_text = hit.get("chunk_text") or hit.get("summary") or ""
-        block = f"- [{source_type}] {title}"
-        if chunk_text:
-            block += f"\n  Details: {chunk_text[:350]}"
-        blocks.append(block)
-    return "## Relevant Reference Materials\n" + "\n".join(blocks), chunks
-
-
 async def _subtask_context(messages: list, db: AsyncSession) -> tuple[str, list[dict[str, Any]]]:
     user_query = _last_user_message(messages)
     if not user_query:
@@ -2635,23 +2730,16 @@ async def _inject_context_sections(
         logger.warning("Failed to inject memories: %s", exc)
 
     try:
-        section, injected.search_results = await _search_context(messages, user_id)
-        injected.system_prompt = _append_context_section(injected.system_prompt, section)
-    except Exception as exc:
-        logger.warning("Failed to retrieve or inject search results: %s", exc)
-
-    try:
         section, injected.subtasks = await _subtask_context(messages, db)
         injected.system_prompt = _append_context_section(injected.system_prompt, section)
     except Exception as exc:
         logger.warning("Failed to execute Task Graph nodes: %s", exc)
 
     logger.info(
-        "Context injected | rules=%d facts=%d memories=%d search_results=%d subtasks=%d user_id=%s currency=%s",
+        "Context injected | rules=%d facts=%d memories=%d subtasks=%d user_id=%s currency=%s",
         len(injected.rules),
         len(injected.facts),
         len(injected.memories),
-        len(injected.search_results),
         len(injected.subtasks),
         user_id,
         injected.currency_text or "none",
@@ -3228,15 +3316,6 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
         "rules_injected": [{"id": str(rule.id), "title": rule.title, "priority": rule.priority} for rule in injected.rules],
         "facts_injected": [{"key": fact.key, "value": fact.value} for fact in injected.facts],
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
-        "search_results_injected": [
-            {
-                "id": hit.get("id"),
-                "title": hit.get("title"),
-                "type": hit.get("type"),
-                "score": hit.get("score"),
-            }
-            for hit in injected.search_results
-        ],
         "currency_source": injected.currency_source,
         "subtasks": injected.subtasks,
         "current_date": _platform_now().date().isoformat(),
@@ -3308,21 +3387,13 @@ async def _apply_blank_content_fallback(
     return response
 
 
-async def generate_chat_title(
-    db: AsyncSession,
-    messages: list[dict[str, Any]],
-    chat_session_id: Optional[UUID] = None,
-    user_id: Optional[UUID] = None,
-    request_id: Optional[str] = None,
-    trace_svc: Any = None,
-) -> str | None:
+async def generate_chat_title(messages: list[dict[str, Any]]) -> str | None:
     """Generate a compact local chat title without making a model call.
 
     Title creation is a cosmetic side effect of a chat turn. It must never delay
     user-visible answers or appear as a long-running model step in the activity
     stream.
     """
-    _ = (db, chat_session_id, user_id, request_id, trace_svc)
     return _fallback_chat_title(messages)
 
 
@@ -3389,7 +3460,6 @@ async def execute_chat(
                     "rules_injected": len(injected.rules),
                     "facts_injected": len(injected.facts),
                     "memories_injected": len(injected.memories),
-                    "search_results_injected": len(injected.search_results),
                     "subtasks_injected": len(injected.subtasks),
                     "system_prompt_chars": len(injected.system_prompt or ""),
                     "full_message_count": len(full_messages),
@@ -3407,6 +3477,15 @@ async def execute_chat(
         trace_svc=trace_svc,
     )
     tool_results: list[dict[str, Any]] = []
+    state, deterministic_tool_results = await _try_rate_limit_connector_fallback(
+        db,
+        user_id,
+        state,
+        messages,
+        tools,
+        trace_svc=trace_svc,
+    )
+    tool_results.extend(deterministic_tool_results)
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,

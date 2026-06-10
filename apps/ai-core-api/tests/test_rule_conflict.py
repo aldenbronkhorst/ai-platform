@@ -1,6 +1,6 @@
 import pytest
-from uuid import uuid4, UUID
-from unittest.mock import patch, MagicMock, AsyncMock
+from uuid import uuid4
+from unittest.mock import MagicMock, AsyncMock
 
 from app.models.models import AIRule, AITask
 from app.services.rule_conflict import RuleConflictService

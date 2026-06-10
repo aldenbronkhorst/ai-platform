@@ -46,7 +46,6 @@ microsoft_admin_commands = SimpleNamespace(
     httpx=tokens.httpx,
     microsoft_admin_app_name_for_scope_profile=constants.microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_arm_device_scope_string=constants.microsoft_admin_arm_device_scope_string,
-    microsoft_admin_arm_token_request_data=constants.microsoft_admin_arm_token_request_data,
     microsoft_admin_client_id_for_scope_profile=constants.microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string=constants.microsoft_admin_device_scope_string,
     microsoft_admin_scope_profile=constants.microsoft_admin_scope_profile,
@@ -79,7 +78,6 @@ def test_microsoft_admin_arm_device_scope_matches_msal_device_auth_shape():
     assert "openid" in scopes
     assert "profile" in scopes
     assert "offline_access" in scopes
-    assert microsoft_admin_commands.microsoft_admin_arm_token_request_data()["client_info"] == "1"
 
 
 def test_microsoft_admin_device_scopes_are_single_resource_profiles():
@@ -260,7 +258,7 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
     assert accounts[0]["username"] == user_name
 
 
-def test_microsoft_admin_diagnostics_reports_partial_for_profile_gaps():
+def test_microsoft_admin_diagnostics_ignores_optional_profile_gaps():
     status, message = diagnostics._microsoft_admin_diagnostic_summary({
         "graph": {"status": "available", "label": "Microsoft Graph Admin"},
         "arm": {"status": "available", "label": "Azure Resource Manager"},
@@ -269,9 +267,36 @@ def test_microsoft_admin_diagnostics_reports_partial_for_profile_gaps():
         "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
     })
 
-    assert status == "partial"
-    assert "Teams Admin" in message
+    assert status == "success"
+    assert "Teams Admin" not in message
     assert "SharePoint" not in message
+
+
+def test_microsoft_admin_diagnostics_ignores_optional_missing_consent():
+    status, message = diagnostics._microsoft_admin_diagnostic_summary({
+        "graph": {"status": "available", "label": "Microsoft Graph Admin"},
+        "arm": {"status": "available", "label": "Azure Resource Manager"},
+        "exchange": {"status": "available", "label": "Exchange Online"},
+        "teams": {"status": "missing_consent", "label": "Teams Admin"},
+        "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
+    })
+
+    assert status == "success"
+    assert "Teams Admin" not in message
+    assert "SharePoint" not in message
+
+
+def test_microsoft_admin_default_graph_scopes_include_teams_prerequisites():
+    expected = {
+        "https://graph.microsoft.com/User.Read.All",
+        "https://graph.microsoft.com/AppCatalog.ReadWrite.All",
+        "https://graph.microsoft.com/TeamSettings.ReadWrite.All",
+        "https://graph.microsoft.com/Channel.Delete.All",
+        "https://graph.microsoft.com/ChannelSettings.ReadWrite.All",
+        "https://graph.microsoft.com/ChannelMember.ReadWrite.All",
+    }
+
+    assert expected.issubset(set(microsoft_admin_commands.MICROSOFT_GRAPH_SCOPES))
 
 
 @pytest.mark.asyncio

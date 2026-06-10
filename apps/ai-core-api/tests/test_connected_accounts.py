@@ -256,10 +256,12 @@ class TestConnectedAccountsFlow:
             "graph": "authorized",
             "arm": "missing",
             "exchange": "authorized",
-            "teams": "missing",
-            "sharepoint": "not_checked",
         }
-        assert "Missing: Azure Resource Manager, Teams Admin" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert connectors["microsoft_admin"]["metadata"]["overall_status"] == "partial"
+        assert connectors["microsoft_admin"]["state"]["readiness_status"] == "partial"
+        assert "Needs attention: Azure Resource Manager" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert "Teams Admin" not in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert "SharePoint / PnP" not in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
 
     @pytest.mark.asyncio
     async def test_microsoft_admin_token_state_refreshes_before_reporting_expired(self):
@@ -357,7 +359,6 @@ class TestKeyVaultConflict:
     @patch("app.routers.connected_accounts._store_key_vault_secret")
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
     def test_reconnect_uses_new_secret_name(self, mock_verify, mock_store):
-        from uuid import UUID
 
         mock_verify.return_value = None
 
@@ -490,7 +491,6 @@ class TestOdooUrlPersistence:
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
     def test_url_replaced_on_reconnect(self, mock_verify, mock_store):
         """Reconnecting with a different URL must persist the new URL."""
-        from uuid import UUID
 
         mock_verify.return_value = None
 
@@ -540,7 +540,6 @@ class TestOdooUrlPersistence:
         This test patches the connected_accounts endpoint to simulate an existing
         account with saved URL/DB, and verifies the Odoo status endpoint returns
         the saved values, not the env var defaults."""
-        from fastapi import HTTPException
 
         mock_verify.return_value = None
 
@@ -575,7 +574,7 @@ class TestOdooUrlPersistence:
         mock_store.return_value = None
 
         user_db = "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
-        response = client.post(
+        client.post(
             "/connected-accounts/odoo/connect",
             json={
                 "odoo_url": "https://lotslotsmore.odoo.com",
@@ -1095,7 +1094,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_secret_reference(self, _mock_delete):
         """Disconnect must clear secret_reference on the DB model."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1121,7 +1119,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_provider_username(self, _mock_delete):
         """Disconnect must clear provider_username."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1146,7 +1143,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_odoo_url(self, _mock_delete):
         """Disconnect must clear odoo_url."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1170,7 +1166,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_odoo_db(self, _mock_delete):
         """Disconnect must clear odoo_db."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1194,7 +1189,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_company_currency_metadata(self, _mock_delete):
         """Disconnect must clear company_id, company_name, currency_code, currency_symbol."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1224,7 +1218,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_provider_user_id_and_display_name(self, _mock_delete):
         """Disconnect must clear provider_user_id, provider_display_name, permission_summary."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1250,7 +1243,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_clears_last_verified_at(self, _mock_delete):
         """Disconnect must clear last_verified_at."""
-        from unittest.mock import AsyncMock
         from datetime import datetime
         account = self._make_account()
         account.last_verified_at = datetime(2025, 6, 1, 12, 0, 0)
@@ -1276,7 +1268,6 @@ class TestDisconnectCleanup:
     @patch("app.routers.connected_accounts._delete_key_vault_secret")
     def test_disconnect_creates_audit_event(self, _mock_delete):
         """Disconnect must still create an audit event."""
-        from unittest.mock import AsyncMock
         account = self._make_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1342,7 +1333,6 @@ class TestDisconnectedAccountStatus:
 
     def test_status_returns_not_connected_with_null_details(self):
         """Disconnected account must return status=not_connected with all null details."""
-        from unittest.mock import AsyncMock, MagicMock
         account = self._make_disconnected_account()
         mock_session = self._setup_mock_db(account)
 
@@ -1386,7 +1376,6 @@ class TestDisconnectedAccountStatus:
 
     def test_status_does_not_leak_stale_fields_when_disconnected(self):
         """Stale odoo_url/odoo_db in DB must NOT appear in status response when disconnected."""
-        from unittest.mock import AsyncMock, MagicMock
         account = self._make_disconnected_account()
         account.odoo_url = "https://stale-instance.odoo.com"
         account.odoo_db = "stale_db"
@@ -1460,7 +1449,6 @@ class TestConnectorDnsFailure:
     def test_dns_failure_detected_from_connect_error(self):
         """The _verify_odoo_credentials_via_connector must detect DNS errors from httpx.ConnectError."""
         from app.routers.connected_accounts import _verify_odoo_credentials_via_connector
-        import httpx
 
         with patch.dict(os.environ, {"ODOO_CONNECTOR_URL": "https://this-domain-definitely-does-not-exist-12345.com"}):
             import app.routers.connected_accounts as mod

@@ -34,12 +34,14 @@ AZURE_CLI_ARM_TARGET = os.environ.get(
 MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE = "graph"
 DEFAULT_MICROSOFT_GRAPH_SCOPES = (
     "https://graph.microsoft.com/User.Read",
+    "https://graph.microsoft.com/User.Read.All",
     "https://graph.microsoft.com/User.ReadWrite.All",
     "https://graph.microsoft.com/Directory.ReadWrite.All",
     "https://graph.microsoft.com/Group.ReadWrite.All",
     "https://graph.microsoft.com/Organization.Read.All",
     "https://graph.microsoft.com/RoleManagement.ReadWrite.Directory",
     "https://graph.microsoft.com/Application.ReadWrite.All",
+    "https://graph.microsoft.com/AppCatalog.ReadWrite.All",
     "https://graph.microsoft.com/DeviceManagementManagedDevices.ReadWrite.All",
     "https://graph.microsoft.com/DeviceManagementConfiguration.ReadWrite.All",
     "https://graph.microsoft.com/DeviceManagementApps.ReadWrite.All",
@@ -47,6 +49,10 @@ DEFAULT_MICROSOFT_GRAPH_SCOPES = (
     "https://graph.microsoft.com/Sites.FullControl.All",
     "https://graph.microsoft.com/Reports.Read.All",
     "https://graph.microsoft.com/AuditLog.Read.All",
+    "https://graph.microsoft.com/TeamSettings.ReadWrite.All",
+    "https://graph.microsoft.com/Channel.Delete.All",
+    "https://graph.microsoft.com/ChannelSettings.ReadWrite.All",
+    "https://graph.microsoft.com/ChannelMember.ReadWrite.All",
 )
 MICROSOFT_GRAPH_SCOPES = _scope_values_from_env(
     "MICROSOFT_GRAPH_SCOPES",
@@ -71,6 +77,7 @@ MICROSOFT_ADMIN_SCOPE_PROFILES = {
     "teams": (TEAMS_TENANT_ADMIN_SCOPE,),
     "sharepoint": (),
 }
+MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES = ("graph", "arm", "exchange")
 MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
     "arm": "Azure Resource Manager",
     "graph": "Microsoft Graph Admin",
@@ -123,8 +130,3 @@ def microsoft_admin_device_scope_string(profile: str | None = None) -> str:
     """Return a single-resource device-code scope string for a Microsoft Admin consent profile."""
     scope_profile = microsoft_admin_scope_profile(profile)
     return " ".join([*microsoft_admin_scope_values(scope_profile), "openid", "profile", "offline_access"])
-
-
-def microsoft_admin_arm_token_request_data() -> dict[str, str]:
-    """Return token request fields for the Microsoft Admin ARM profile."""
-    return {"scope": microsoft_admin_arm_device_scope_string(), "client_info": "1"}

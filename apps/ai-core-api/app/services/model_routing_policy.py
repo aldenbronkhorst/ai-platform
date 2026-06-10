@@ -1,10 +1,9 @@
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from uuid import UUID
-from sqlalchemy import select, or_, and_
+from typing import Dict, Any
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import AIModel, AIRoute, AIProvider
+from app.models.models import AIModel, AIRoute
 
 logger = logging.getLogger(__name__)
 

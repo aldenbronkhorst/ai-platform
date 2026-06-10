@@ -23,6 +23,8 @@ interface ConnectorDef {
 
 interface ConnectorMeta {
   connector_key?: string;
+  display_name?: string;
+  subtitle?: string;
   status?: string;
   auth_method?: string;
   last_verified_at?: string | null;
@@ -32,11 +34,13 @@ interface ConnectorMeta {
     token_status?: string;
     diagnostics_status?: string;
     cli_status?: string;
+    readiness_status?: string;
     source?: string;
   };
   metadata?: {
     provider_username?: string | null;
     permission_summary?: string | null;
+    overall_status?: string | null;
     authorization_summary?: string | null;
     authorization_profiles?: AuthorizationProfile[];
     odoo_url?: string | null;
@@ -50,6 +54,7 @@ interface AuthorizationProfile {
   status: string;
   scope_summary?: string | null;
   auth_app_name?: string | null;
+  message?: string | null;
 }
 
 interface PlatformTool {
@@ -109,7 +114,6 @@ interface MicrosoftAdminDeviceCode {
   device_code: string;
   user_code: string;
   verification_url: string;
-  scope_profile?: string;
   scope_label?: string;
   scope_summary?: string;
   auth_app_name?: string;
@@ -125,12 +129,10 @@ interface MicrosoftAuthorizationProfileResult {
 
 interface MicrosoftAuthCallbackResult {
   status: string;
+  overall_status?: string;
   error?: string;
   message?: string;
   interval?: number;
-  scope_profile?: string;
-  scope_label?: string;
-  auth_app_name?: string;
   authorization_profiles?: Record<string, MicrosoftAuthorizationProfileResult>;
 }
 
@@ -158,14 +160,15 @@ function formatOptionalStatus(status?: string | null) {
 
 function formatMicrosoftAdminConnectMessage(profiles?: Record<string, MicrosoftAuthorizationProfileResult>) {
   if (!profiles) return "";
+  const attentionStatuses = new Set(["missing", "missing_consent", "missing_permission", "limited", "failed", "error"]);
   const missing = Object.values(profiles)
-    .filter(profile => profile.status === "missing")
+    .filter(profile => attentionStatuses.has(profile.status || ""))
     .map(profile => profile.label)
     .filter(Boolean);
   if (missing.length) {
-    return `Microsoft Admin connected with one sign-in. Additional tenant consent is still required for: ${missing.join(", ")}.`;
+    return `Microsoft Admin connected with one sign-in. These required authorization profiles still need attention: ${missing.join(", ")}.`;
   }
-  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens are available.";
+  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange Online tokens are available.";
 }
 
 function formatDateTime(value?: string | null) {
@@ -176,17 +179,21 @@ type StatusTone = "success" | "danger" | "warning" | "neutral";
 
 function getStatusTone(status?: string, hasError = false): StatusTone {
   if (hasError) return "danger";
-  if (status === "connected" || status === "active" || status === "authorized" || status === "available") return "success";
+  if (status === "connected" || status === "active" || status === "authorized" || status === "available" || status === "ready") return "success";
   if (status === "error" || status === "failed") return "danger";
   if (
     status === "partial"
     || status === "limited"
     || status === "warning"
+    || status === "read_only"
     || status === "needs_token"
     || status === "needs_setup"
+    || status === "setup_required"
     || status === "not_connected"
     || status === "expired"
     || status === "missing"
+    || status === "missing_consent"
+    || status === "missing_permission"
     || status === "not_checked"
   ) return "warning";
   return "neutral";
@@ -385,7 +392,7 @@ function AuthorizationProfileList({ profiles }: { profiles?: AuthorizationProfil
             <div key={profile.profile} className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-default truncate">{profile.label}</p>
-                <p className="text-xs text-muted truncate">{profile.auth_app_name || "Microsoft Admin"}</p>
+                <p className="text-xs text-muted truncate">{profile.message || profile.auth_app_name || "Microsoft Admin"}</p>
               </div>
               <StatusBadge status={profile.status} fallback="Not Checked" />
             </div>
@@ -396,31 +403,36 @@ function AuthorizationProfileList({ profiles }: { profiles?: AuthorizationProfil
   );
 }
 
-const CONNECTORS: ConnectorDef[] = [
+const CONNECTOR_FALLBACKS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
   { key: "microsoft_admin", name: "Microsoft Admin", subtitle: "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager" },
   { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
 ];
+const CONNECTOR_FALLBACK_BY_KEY = new Map(CONNECTOR_FALLBACKS.map((connector) => [connector.key, connector]));
+
+function connectorDefinitions(meta: Record<string, ConnectorMeta> | null): ConnectorDef[] {
+  if (!meta) return CONNECTOR_FALLBACKS;
+  const preferredOrder = CONNECTOR_FALLBACKS.map((connector) => connector.key);
+  const keys = [
+    ...preferredOrder.filter((key) => meta[key]),
+    ...Object.keys(meta).filter((key) => !preferredOrder.includes(key)).sort(),
+  ];
+  return keys.map((key) => {
+    const fallback = CONNECTOR_FALLBACK_BY_KEY.get(key);
+    const connector = meta[key];
+    return {
+      key,
+      name: connector.display_name || fallback?.name || formatStatusLabel(key),
+      subtitle: connector.subtitle || fallback?.subtitle || connector.auth_method || "Connector",
+    };
+  });
+}
 
 interface ConnectionsPageProps { accessToken: string; }
 
-const CONNECTOR_SYSTEM_KEYS = new Set(["odoo", "microsoft_admin", "github", "azure"]);
-const CONNECTOR_TOOL_NAMES = new Set([
-  "odoo_ops_runner",
-  "github_cli",
-  "ms_graph",
-  "ms_graph_powershell",
-  "ms_exchange_powershell",
-  "ms_teams_powershell",
-  "ms_sharepoint_pnp_powershell",
-  "ms_az_powershell",
-  "ms_azure_cli",
-  "ms_bicep",
-]);
-
 function canonicalPlatformTools(tools: PlatformTool[]) {
   const seen = new Set<string>();
-  return tools.filter(tool => !CONNECTOR_SYSTEM_KEYS.has(tool.target_system) && !CONNECTOR_TOOL_NAMES.has(tool.name)).filter((tool) => {
+  return tools.filter((tool) => {
     const key = `${(tool.display_name || tool.name).trim().toLowerCase()}::${tool.target_system}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -608,27 +620,27 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/device-code`, {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ scope_profile: "graph" }),
       });
       const data = await res.json() as MicrosoftAdminDeviceCode & { error?: string };
       if (data.status === "device_code_ready") {
         setMicrosoftAdminDeviceCode(data);
         setMicrosoftAdminPolling(true);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
-        setCliTestResult({ status: "pending", connector: "microsoft_admin", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager, Exchange Online, and Teams tokens will be acquired silently when tenant consent is available.` });
+        setCliTestResult({ status: "pending", connector: "microsoft_admin", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager and Exchange Online tokens will be acquired silently when tenant consent is available.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
           try {
             const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/token-callback`, {
               method: "POST", headers: headers(),
-              body: JSON.stringify({ device_code: data.device_code, scope_profile: "graph" }),
+              body: JSON.stringify({ device_code: data.device_code }),
             });
             const pd = await pr.json() as MicrosoftAuthCallbackResult;
             if (pd.status === "connected") {
               setMicrosoftAdminPolling(false);
               setMicrosoftAdminDeviceCode(null);
+              const ready = (pd.overall_status || "").toLowerCase() === "ready";
               setCliTestResult({
-                status: "success",
+                status: ready ? "success" : "warning",
                 connector: "microsoft_admin",
                 message: pd.message || formatMicrosoftAdminConnectMessage(pd.authorization_profiles) || "Microsoft Admin connected.",
               });
@@ -655,7 +667,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken) return;
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
+      const data = await res.json() as { status?: string; overall_status?: string; message?: string; stderr?: string; request_id?: string };
       if (data.status === "success") {
         setCliTestResult({ status: "success", connector: "microsoft_admin", message: data.message || "Microsoft Admin connected", request_id: data.request_id });
         await fetchConnectors();
@@ -704,7 +716,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   };
 
   const connectorDetail = (key: string) => {
-    const c = CONNECTORS.find(x => x.key === key);
+    const c = availableConnectors.find(x => x.key === key);
     if (!c) return null;
     const metaStatus = connectorMeta?.[key]?.status;
     const statusFallback = connectorStatusError ? "Status Unavailable" : "Checking...";
@@ -781,17 +793,21 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
     if (key === "microsoft_admin") {
       const authorizationProfiles = connectorMeta?.microsoft_admin?.metadata?.authorization_profiles;
+      const readinessStatus = connectorMeta?.microsoft_admin?.state?.readiness_status
+        || connectorMeta?.microsoft_admin?.metadata?.overall_status
+        || metaStatus;
       return (
-        <ConnectorDetailShell connector={c} status={metaStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+        <ConnectorDetailShell connector={c} status={readinessStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
           <DetailCard>
             <p className="text-sm text-muted">
-              Connect with one Microsoft Admin sign-in. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens are acquired silently when tenant consent is available.
+              Connect with one Microsoft Admin sign-in. Required profiles are Microsoft Graph, Azure Resource Manager, and Exchange Online. Teams and SharePoint/PnP are optional advanced surfaces and are checked only when used.
             </p>
           </DetailCard>
 
           <InfoGrid
             rows={[
               { label: "Account", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.account_status || metaStatus) },
+              { label: "Readiness", value: formatOptionalStatus(readinessStatus) },
               { label: "Token", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.token_status) },
               { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.diagnostics_status) },
               { label: "Admin Shell", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.cli_status) },
@@ -805,7 +821,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
           <ActionGroup>
             <GlassButton size="sm" onClick={handleConnectMicrosoftAdmin} disabled={microsoftAdminPolling}>
-              {microsoftAdminPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Reconnect Microsoft Admin" : "Connect Microsoft Admin"}
+              {microsoftAdminPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Refresh User Sign-In" : "Connect Microsoft Admin"}
             </GlassButton>
             <GlassButton size="sm" onClick={handleMicrosoftAdminStatus}>
               <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
@@ -871,7 +887,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     return null;
   };
 
-  const availableConnectors = CONNECTORS;
+  const availableConnectors = connectorDefinitions(connectorMeta);
   const normalizedConnectorSearch = connectorSearch.trim().toLowerCase();
   const filteredConnectors = normalizedConnectorSearch
     ? availableConnectors.filter((connector) => {
@@ -891,7 +907,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       return searchable.includes(normalizedConnectorSearch);
     })
     : availableConnectors;
-  const activeConnector = selectedConnector && CONNECTORS.some((connector) => connector.key === selectedConnector)
+  const activeConnector = selectedConnector && availableConnectors.some((connector) => connector.key === selectedConnector)
     ? selectedConnector
     : null;
   const filteredPlatformTools = (platformTools || []).filter((tool) => {
@@ -1038,7 +1054,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   <ConnectorLogo connectorKey={activeConnector} />
                 </div>
                 <h2 className="font-bold text-lg text-default truncate">
-                  {CONNECTORS.find(c => c.key === activeConnector)?.name || activeConnector}
+                  {availableConnectors.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
               <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setMicrosoftAdminDeviceCode(null); setMicrosoftAdminPolling(false); }}

@@ -4,21 +4,17 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from app.services.tool_definitions import CANONICAL_TOOL_DEFINITIONS
+
+_CONNECTOR_SYSTEMS = ("odoo", "microsoft_admin", "github")
+
 CONNECTOR_TOOLS_BY_SYSTEM: Mapping[str, frozenset[str]] = {
-    "odoo": frozenset({"odoo_ops_runner"}),
-    "microsoft_admin": frozenset(
-        {
-            "ms_graph",
-            "ms_graph_powershell",
-            "ms_exchange_powershell",
-            "ms_teams_powershell",
-            "ms_sharepoint_pnp_powershell",
-            "ms_az_powershell",
-            "ms_azure_cli",
-            "ms_bicep",
-        }
-    ),
-    "github": frozenset({"github_cli"}),
+    system: frozenset(
+        str(tool["name"])
+        for tool in CANONICAL_TOOL_DEFINITIONS
+        if tool["target_system"] == system
+    )
+    for system in _CONNECTOR_SYSTEMS
 }
 
 CONNECTOR_SYSTEMS = frozenset(CONNECTOR_TOOLS_BY_SYSTEM)

@@ -7,39 +7,42 @@ interface TasksPageProps {
   accessToken: string;
 }
 
-interface Job {
+interface Task {
   id: string;
   title: string;
   status: string;
+  priority: string;
+  description: string | null;
   created_at: string;
+  due_at: string | null;
 }
 
 export function TasksPage({ accessToken }: TasksPageProps) {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  const fetchJobs = useCallback(async () => {
+  const fetchTasks = useCallback(async () => {
     if (!accessToken) return;
     await Promise.resolve();
     setIsLoading(true);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/jobs`, {
+      const res = await fetch(`${APIM_BASE_URL}/tasks`, {
         headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       });
       if (res.ok) {
         const data = await res.json();
-        setJobs(Array.isArray(data) ? data : []);
+        setTasks(Array.isArray(data) ? data : []);
       }
     } catch (err) {
-      console.error("Failed to fetch jobs:", err);
+      console.error("Failed to fetch tasks:", err);
     } finally {
       setIsLoading(false);
     }
   }, [accessToken]);
 
   useEffect(() => {
-    if (accessToken) void Promise.resolve().then(fetchJobs);
-  }, [accessToken, fetchJobs]);
+    if (accessToken) void Promise.resolve().then(fetchTasks);
+  }, [accessToken, fetchTasks]);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 animate-fade-in">
@@ -51,7 +54,7 @@ export function TasksPage({ accessToken }: TasksPageProps) {
           </p>
         </div>
         <button
-          onClick={fetchJobs}
+          onClick={fetchTasks}
           disabled={isLoading}
           className="p-2 bg-surface border border-default hover-bg-surface rounded-xl transition-all"
         >
@@ -61,7 +64,7 @@ export function TasksPage({ accessToken }: TasksPageProps) {
 
       {isLoading ? (
         <div className="text-center py-20 text-muted">Loading tasks...</div>
-      ) : jobs.length === 0 ? (
+      ) : tasks.length === 0 ? (
         <div className="border border-dashed border-default rounded-2xl text-center py-16 text-muted animate-fade-in">
           <ClipboardList className="w-10 h-10 text-soft mb-3 mx-auto" />
           <p className="font-semibold text-default">No active tasks found</p>
@@ -71,29 +74,40 @@ export function TasksPage({ accessToken }: TasksPageProps) {
         </div>
       ) : (
         <div className="grid gap-4 select-text animate-fade-in">
-          {jobs.map((job) => (
-            <GlassPanel key={job.id} className="p-5 rounded-2xl flex items-center justify-between">
+          {tasks.map((task) => (
+            <GlassPanel key={task.id} className="p-5 rounded-2xl flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-surface border border-default flex items-center justify-center text-muted">
                   <ClipboardList className="w-5 h-5" />
                 </div>
                 <div>
-                  <h4 className="font-semibold text-default text-sm">{job.title}</h4>
+                  <h4 className="font-semibold text-default text-sm">{task.title}</h4>
+                  {task.description && (
+                    <p className="text-xs text-muted mt-1 max-w-2xl line-clamp-2">{task.description}</p>
+                  )}
                   <div className="flex gap-2 items-center mt-1.5 text-[11px] font-mono text-muted">
-                    <span>ID: {job.id.slice(0, 8)}...</span>
+                    <span>ID: {task.id.slice(0, 8)}...</span>
                     <span>•</span>
-                    <span>Created: {new Date(job.created_at).toLocaleDateString()}</span>
+                    <span>Created: {new Date(task.created_at).toLocaleDateString()}</span>
+                    {task.due_at && (
+                      <>
+                        <span>•</span>
+                        <span>Due: {new Date(task.due_at).toLocaleDateString()}</span>
+                      </>
+                    )}
+                    <span>•</span>
+                    <span>Priority: {task.priority}</span>
                   </div>
                 </div>
               </div>
               <span
                 className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase ${
-                  job.status === "completed"
+                  task.status === "done"
                     ? "bg-[var(--color-success)]/10 text-[var(--color-success)] border border-[var(--color-success)]/20"
                     : "bg-[var(--color-warning)]/10 text-[var(--color-warning)] border border-[var(--color-warning)]/20"
                 }`}
               >
-                {job.status}
+                {task.status}
               </span>
             </GlassPanel>
           ))}

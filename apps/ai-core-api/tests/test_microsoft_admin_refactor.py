@@ -92,7 +92,7 @@ def test_removed_microsoft_admin_names_are_not_in_active_source_paths():
     violations: list[str] = []
     for active_root in active_roots:
         for path in active_root.rglob("*"):
-            if not path.suffix in {".py", ".ts", ".tsx"}:
+            if path.suffix not in {".py", ".ts", ".tsx"}:
                 continue
             text = path.read_text(encoding="utf-8")
             for label, pattern in banned_patterns.items():

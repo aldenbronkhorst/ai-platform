@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AIMemory, AITask
 from app.schemas.schemas import AIAuditEventCreate
 from app.services.audit import AuditService
-from app.services.search_service import SearchService
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,6 @@ logger = logging.getLogger(__name__)
 class MemoryReviewService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.search_svc = SearchService()
 
     @staticmethod
     def _initial_summary() -> dict[str, int]:
@@ -74,7 +72,6 @@ class MemoryReviewService:
     async def _flag_for_review(self, memory: AIMemory, now: datetime | None = None) -> None:
         memory.status = "needs_review"
         memory.updated_at = now or datetime.now(timezone.utc)
-        await self.search_svc.delete_memory_record(memory.id)
 
     @staticmethod
     def _same_title(mem1: AIMemory, mem2: AIMemory) -> bool:

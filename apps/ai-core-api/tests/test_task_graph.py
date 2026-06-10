@@ -1,9 +1,8 @@
 import pytest
-import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 from uuid import uuid4
 
-from app.services.task_graph import TaskGraphExecutor, TaskNode
+from app.services.task_graph import TaskGraphExecutor
 from app.services.model_router import execute_chat
 from app.models.models import AIRoute, AIModel, AIProvider
 from tests.test_model_router import MockSession
@@ -113,7 +112,7 @@ class TestTaskGraphExecutor:
         mock_select_route = AsyncMock(return_value=mock_policy)
 
         with patch("app.services.model_routing_policy.ModelRoutingPolicyService.select_route", new=mock_select_route), \
-             patch("app.services.model_router.get_enabled_route") as mock_get_enabled:
+             patch("app.services.model_router.get_enabled_route"):
             
             result = await execute_chat(
                 db, 

@@ -401,13 +401,9 @@ def _can_auto_title_session(session: AIChatSession) -> bool:
 
 
 async def _maybe_generate_session_title(
-    db: AsyncSession,
     session: AIChatSession,
     messages: list[dict[str, str]],
     assistant_content: str,
-    user_id: UUID,
-    request_id: str,
-    trace_svc: Any,
 ) -> None:
     if not _can_auto_title_session(session):
         return
@@ -415,12 +411,7 @@ async def _maybe_generate_session_title(
     from app.services.model_router import generate_chat_title
 
     title = await generate_chat_title(
-        db,
         [*messages, {"role": "assistant", "content": assistant_content}],
-        chat_session_id=session.id,
-        user_id=user_id,
-        request_id=request_id,
-        trace_svc=trace_svc,
     )
     if not title:
         return
@@ -1000,13 +991,9 @@ async def _process_chat_turn(
         activity_events,
     )
     await _maybe_generate_session_title(
-        db,
         session,
         messages,
         assistant_msg.content,
-        user_id,
-        request_id,
-        trace_svc,
     )
     await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data, tool_error_summary)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)

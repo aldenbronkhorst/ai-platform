@@ -11,7 +11,6 @@ Lifecycle:
   5. Checks for duplicates
   6. Auto-saves low-risk candidates, flags medium/high for review
 """
-import json
 import logging
 from typing import Any
 from uuid import UUID
@@ -19,7 +18,7 @@ from uuid import UUID
 from sqlalchemy import select, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import AIChatMessage, AIMemory
+from app.models.models import AIChatMessage
 from app.services.memory import MemoryCandidateService
 
 logger = logging.getLogger(__name__)
@@ -109,12 +108,6 @@ async def process_memory_extraction_message(
             if memory:
                 saved_count += 1
                 logger.info("Auto-saved memory: %s (id=%s)", memory.title, memory.id)
-                try:
-                    from app.services.search_service import SearchService
-                    search_svc = SearchService()
-                    await search_svc.index_memory_record(memory)
-                except Exception as e:
-                    logger.warning("Failed to index auto-saved memory in search index: %s", e)
         else:
             # Flag for admin review (store as draft with pending review)
             memory = await svc.save_candidate(candidate, conversation_id=conversation_id, user_id=user_id)

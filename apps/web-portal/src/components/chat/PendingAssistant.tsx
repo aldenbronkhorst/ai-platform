@@ -249,11 +249,9 @@ function detailFor(event: ActivityEvent) {
     const model = textValue(output.selected_model);
     const memories = numberValue(output.memories_injected);
     const rules = numberValue(output.rules_injected);
-    const references = numberValue(output.search_results_injected);
     const contextCounts = [
       memories ? plural(memories, "memory", "memories") : "",
       rules ? plural(rules, "rule") : "",
-      references ? plural(references, "reference") : "",
     ].filter(Boolean);
     const parts = [
       systems.length > 0 ? `Connected: ${systems.map(displaySystemName).join(", ")}` : "No connected account context",

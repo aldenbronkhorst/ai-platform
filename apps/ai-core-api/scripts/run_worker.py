@@ -6,13 +6,10 @@ Designed to be deployed as an Azure Container App (single replica).
 """
 import asyncio
 import logging
-import os
 import signal
-import sys
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
 from app.services.service_bus import receive_messages_async, QUEUE_MEMORY_EXTRACTION
