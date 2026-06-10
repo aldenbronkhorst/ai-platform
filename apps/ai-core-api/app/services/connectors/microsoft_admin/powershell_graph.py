@@ -5,7 +5,6 @@ from typing import Any, Optional
 from uuid import UUID
 
 from app.services.connectors.microsoft_admin.powershell_common import (
-    _failed_microsoft_admin_result,
     _microsoft_admin_token_env,
     _prepare_microsoft_admin_powershell_script,
     _run_microsoft_admin_powershell_tool,

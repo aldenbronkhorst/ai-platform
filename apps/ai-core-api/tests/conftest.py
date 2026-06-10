@@ -1,6 +1,5 @@
 import os
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
 
@@ -10,9 +9,9 @@ def visit_uuid(self, _type_, **kw):
 
 SQLiteTypeCompiler.visit_UUID = visit_uuid
 
-from app.main import app
-from app.core.config import get_settings
-from app.core.database import Base, get_db
+from app.main import app  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
+from app.core.database import Base, get_db  # noqa: E402
 
 # Force debug/test override at test runtime to allow anonymous localhost/test bypass
 os.environ["DEBUG"] = "true"

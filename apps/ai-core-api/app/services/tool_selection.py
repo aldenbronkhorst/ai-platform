@@ -9,24 +9,16 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITool
 from app.services.connected_account_state import effective_connected_accounts
-from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM, CONSOLIDATED_TOOL_NAMES, is_model_facing_tool
+from app.services.tool_registry import (
+    CONNECTOR_TOOLS_BY_SYSTEM,
+    CONSOLIDATED_TOOL_NAMES,
+    MICROSOFT_ADMIN_TOOL_NAMES,
+    is_model_facing_tool,
+)
 
 logger = logging.getLogger(__name__)
 
 DOCUMENT_READER_TOOL = "document_reader"
-PLATFORM_TOOL_NAMES = frozenset({DOCUMENT_READER_TOOL})
-MICROSOFT_ALL_TOOL_NAMES = frozenset(
-    {
-        "ms_graph",
-        "ms_graph_powershell",
-        "ms_exchange_powershell",
-        "ms_teams_powershell",
-        "ms_sharepoint_pnp_powershell",
-        "ms_az_powershell",
-        "ms_azure_cli",
-        "ms_bicep",
-    }
-)
 MS_ABBREVIATION_CONTEXT_KEYWORDS = {
     "admin", "admins", "account", "accounts", "entra", "m365", "365", "office",
     "user", "users", "group", "groups", "license", "licenses", "licence",
@@ -192,7 +184,7 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
             selected.add(tool_name)
 
     if "microsoft admin" in message or "all microsoft" in message or any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
-        selected.update(MICROSOFT_ALL_TOOL_NAMES)
+        selected.update(MICROSOFT_ADMIN_TOOL_NAMES)
     if _has_microsoft_abbreviation_intent(message, tokens) and not selected:
         selected.add("ms_graph")
     if not selected:

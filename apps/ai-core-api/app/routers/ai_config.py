@@ -1,7 +1,7 @@
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from app.core.security import api_key_auth, require_role
 from app.core.database import get_db
 from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog
-from app.services.model_router import get_enabled_route, build_foundry_client, ROUTE_NOT_CONFIGURED_MESSAGE
+from app.services.model_router import get_enabled_route, build_foundry_client
 
 router = APIRouter(prefix="/ai-config", tags=["AI Configuration"])
 

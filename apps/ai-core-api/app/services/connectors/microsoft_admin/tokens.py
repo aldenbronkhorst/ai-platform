@@ -18,11 +18,10 @@ from app.services.connectors.microsoft_admin.constants import (
     EXCHANGE_ONLINE_SCOPE,
     MICROSOFT_ADMIN_CLIENT_ID,
     MICROSOFT_ADMIN_PROVIDER,
+    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_ADMIN_SCOPE_PROFILES,
     MICROSOFT_GRAPH_SCOPE,
-    TENANT_ID,
     TEAMS_TENANT_ADMIN_SCOPE,
-    microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_device_scope_string,
     microsoft_admin_scope_label,
@@ -70,8 +69,14 @@ def _microsoft_admin_scope_unavailable(
 def _microsoft_admin_oauth_error_type(data: dict[str, Any]) -> str:
     error = str(data.get("error") or "").lower()
     description = str(data.get("error_description") or "").lower()
-    if "aadsts65001" in description or "consent" in description:
+    if (
+        "aadsts65001" in description
+        or "consent" in description
+        or "not been consented" in description
+    ):
         return "consent_required"
+    if error == "invalid_scope" or "aadsts70011" in description:
+        return "invalid_scope"
     if error == "invalid_grant":
         return "authorization_failed"
     return error or "token_refresh_failed"
@@ -80,10 +85,15 @@ def _microsoft_admin_oauth_error_type(data: dict[str, Any]) -> str:
 def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[str, Any], fallback: str) -> str:
     label = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
     error_type = _microsoft_admin_oauth_error_type(data)
+    if scope_profile == "teams" and error_type in {"consent_required", "invalid_scope"}:
+        return (
+            "Skype and Teams Tenant Admin API delegated user_impersonation is missing or not consented. "
+            "Add that API permission to the AI Platform Microsoft Admin app registration and grant tenant admin consent."
+        )
     if error_type == "consent_required":
         return (
             f"Tenant admin consent is required for {label}. "
-            "Grant consent to the Microsoft Admin app once, then reconnect Microsoft Admin."
+            "Grant consent to the Microsoft Admin app once, then refresh the Microsoft Admin user sign-in."
         )
     return data.get("error_description") or data.get("error") or fallback
 
@@ -262,21 +272,53 @@ async def _get_fresh_microsoft_admin_token_for_scope(
 
 
 async def warm_microsoft_admin_delegated_tokens(user_id: Optional[UUID]) -> dict[str, Any]:
-    """Best-effort silent token warmup for secondary Microsoft Admin resources."""
+    """Best-effort silent token warmup for required Microsoft Admin resources."""
     if not user_id:
         return {}
     results: dict[str, Any] = {}
-    for profile, scope in (
-        ("exchange", EXCHANGE_ONLINE_SCOPE),
-        ("arm", AZURE_ARM_SCOPE),
-        ("teams", TEAMS_TENANT_ADMIN_SCOPE),
-    ):
+    scopes_by_profile = {
+        "graph": MICROSOFT_GRAPH_SCOPE,
+        "arm": AZURE_ARM_SCOPE,
+        "exchange": EXCHANGE_ONLINE_SCOPE,
+        "teams": TEAMS_TENANT_ADMIN_SCOPE,
+    }
+    for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES:
+        scope = scopes_by_profile[profile]
         token = await _get_fresh_microsoft_admin_token_for_scope(user_id, scope)
-        results[profile] = {
-            "status": "available" if token and token.get("access_token") and not token.get("refresh_error") else "missing",
-            "message": token.get("refresh_error") if token else "No token returned.",
-        }
+        results[profile] = _microsoft_admin_profile_token_status(profile, token)
     return results
+
+
+def _microsoft_admin_profile_token_status(profile: str, token: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if token and token.get("access_token") and not token.get("refresh_error"):
+        return {
+            "status": "available",
+            "token_status": "available",
+            "message": f"{microsoft_admin_scope_label(profile)} token is available.",
+        }
+
+    error_type = token.get("error_type") if isinstance(token, dict) else ""
+    message = token.get("refresh_error") if isinstance(token, dict) else ""
+    if error_type == "consent_required":
+        return {
+            "status": "missing_consent",
+            "token_status": "missing",
+            "error_type": error_type,
+            "message": message or f"Tenant admin consent is required for {microsoft_admin_scope_label(profile)}.",
+        }
+    if error_type == "invalid_scope":
+        return {
+            "status": "missing_permission",
+            "token_status": "missing",
+            "error_type": error_type,
+            "message": message or f"The Microsoft Admin app registration is missing {microsoft_admin_scope_label(profile)} permissions.",
+        }
+    return {
+        "status": "missing",
+        "token_status": "missing",
+        "error_type": error_type or "token_unavailable",
+        "message": message or "No token returned.",
+    }
 
 
 def _scope_profile_for_scope(scope: str) -> str:

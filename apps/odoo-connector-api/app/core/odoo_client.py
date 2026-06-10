@@ -9,7 +9,6 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +44,6 @@ class OdooError(Exception):
 
 
 class OdooAuthError(OdooError):
-    pass
-
-
-class OdooPermissionError(OdooError):
     pass
 
 
@@ -264,10 +259,6 @@ class OdooClient:
 
     def execute_kw(self, model: str, method: str, args: list[Any] | None = None, kwargs: dict[str, Any] | None = None) -> Any:
         return self.call_with_transport(model, method, args=args, kwargs=kwargs)
-
-    def ping(self) -> dict[str, Any]:
-        uid = self.authenticate()
-        return {"ok": True, "uid": uid, "db": self.credentials.db, "url": self.credentials.url}
 
     def search_read(self, model: str, domain: list[Any] | None = None, fields: list[str] | None = None, limit: int = 10, offset: int = 0, order: str | None = None, include_ids: bool = False) -> list[dict[str, Any]]:
         call_kwargs: dict[str, Any] = {}

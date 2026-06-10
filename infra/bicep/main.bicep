@@ -53,13 +53,6 @@ param apiImageTag string = 'latest'
 @description('Odoo Connector container image tag')
 param odooConnectorImageTag string = 'latest'
 
-@description('Whether to deploy Azure AI Search')
-param deploySearch bool = false
-
-@description('Azure AI Search SKU name')
-@allowed(['free', 'basic', 'standard'])
-param searchSku string = 'free'
-
 @description('Azure Document Intelligence endpoint for OCR fallback')
 param documentIntelligenceEndpoint string = ''
 
@@ -223,26 +216,9 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresHost: postgres.outputs.fqdn
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
-    deploySearch: deploySearch
     documentIntelligenceEndpoint: documentIntelligenceEndpoint
     microsoftAdminClientId: microsoftAdminClientId
     microsoftAdminAppDisplayName: microsoftAdminAppDisplayName
-  }
-}
-
-// Module: AI Search
-module aiSearch 'modules/searchService.bicep' = if (deploySearch) {
-  name: 'aiSearchDeploy'
-  scope: rg
-  params: {
-    workload: workload
-    environment: environment
-    regionCode: regionCode
-    instance: instance
-    location: location
-    tags: tags
-    apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
-    skuName: searchSku
   }
 }
 
@@ -277,10 +253,7 @@ module privateEndpoints 'modules/privateEndpoints.bicep' = {
     keyVaultId: keyVault.outputs.id
     storageAccountId: storage.outputs.id
     serviceBusNamespaceId: serviceBus.outputs.id
-#disable-next-line BCP318
-    aiSearchId: deploySearch ? aiSearch.outputs.id : ''
     postgresServerId: postgres.outputs.id
-    deploySearch: deploySearch
   }
 }
 
@@ -327,8 +300,6 @@ output serviceBusNamespace string = serviceBus.outputs.namespaceName
 output containerAppName string = containerApps.outputs.containerAppName
 output containerAppsEnvironmentName string = containerApps.outputs.environmentName
 output vnetName string = network.outputs.vnetName
-#disable-next-line BCP318
-output aiSearchName string = deploySearch ? aiSearch.outputs.name : ''
 output apiManagementName string = apiManagement.outputs.name
 output apiManagementGatewayUrl string = apiManagement.outputs.gatewayUrl
 output apiManagedIdentityClientId string = identity.outputs.apiManagedIdentityClientId

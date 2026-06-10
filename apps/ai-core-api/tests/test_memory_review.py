@@ -1,7 +1,7 @@
-import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 from uuid import uuid4
+import pytest
 
 from app.models.models import AIMemory, AITask
 from app.services.memory_review import MemoryReviewService
@@ -10,12 +10,7 @@ from tests.test_model_router import MockSession
 
 class TestMemoryReviewService:
     @pytest.mark.asyncio
-    @patch("app.services.memory_review.SearchService")
-    async def test_review_detects_duplicates(self, mock_search_svc_cls):
-        mock_search = MagicMock()
-        mock_search.delete_memory_record = AsyncMock(return_value=True)
-        mock_search_svc_cls.return_value = mock_search
-
+    async def test_review_detects_duplicates(self):
         db = MockSession(has_config=False)
 
         # Create two identical active memories
@@ -57,15 +52,9 @@ class TestMemoryReviewService:
         added_task = [args[0] for args, kwargs in db.add.call_args_list if isinstance(args[0], AITask)][0]
         assert isinstance(added_task, AITask)
         assert "WiFi" in added_task.title or "Wifi" in added_task.title
-        mock_search.delete_memory_record.assert_called_once_with(mem2.id)
 
     @pytest.mark.asyncio
-    @patch("app.services.memory_review.SearchService")
-    async def test_review_detects_conflicts(self, mock_search_svc_cls):
-        mock_search = MagicMock()
-        mock_search.delete_memory_record = AsyncMock(return_value=True)
-        mock_search_svc_cls.return_value = mock_search
-
+    async def test_review_detects_conflicts(self):
         db = MockSession(has_config=False)
 
         # Create contradictory active memories
@@ -103,12 +92,7 @@ class TestMemoryReviewService:
         assert mem2.status == "needs_review"  # Newer conflicting memory flagged
 
     @pytest.mark.asyncio
-    @patch("app.services.memory_review.SearchService")
-    async def test_review_detects_stale_by_date(self, mock_search_svc_cls):
-        mock_search = MagicMock()
-        mock_search.delete_memory_record = AsyncMock(return_value=True)
-        mock_search_svc_cls.return_value = mock_search
-
+    async def test_review_detects_stale_by_date(self):
         db = MockSession(has_config=False)
 
         # Memory expired
@@ -137,12 +121,7 @@ class TestMemoryReviewService:
         assert mem.status == "needs_review"
 
     @pytest.mark.asyncio
-    @patch("app.services.memory_review.SearchService")
-    async def test_review_detects_low_confidence_failures(self, mock_search_svc_cls):
-        mock_search = MagicMock()
-        mock_search.delete_memory_record = AsyncMock(return_value=True)
-        mock_search_svc_cls.return_value = mock_search
-
+    async def test_review_detects_low_confidence_failures(self):
         db = MockSession(has_config=False)
 
         # High failure count

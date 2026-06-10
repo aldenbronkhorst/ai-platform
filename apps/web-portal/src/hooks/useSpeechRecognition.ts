@@ -58,6 +58,7 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
   const shouldListenRef = useRef(false);
   const startInProgressRef = useRef(false);
   const stopFlushTimerRef = useRef<number | null>(null);
+  const restartTimerRef = useRef<number | null>(null);
   const interimTranscriptRef = useRef("");
   const spokenTranscriptRef = useRef("");
   const emittedTranscriptRef = useRef("");
@@ -72,6 +73,13 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     if (stopFlushTimerRef.current) {
       window.clearTimeout(stopFlushTimerRef.current);
       stopFlushTimerRef.current = null;
+    }
+  }, []);
+
+  const clearRestartTimer = useCallback(() => {
+    if (restartTimerRef.current) {
+      window.clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
     }
   }, []);
 
@@ -123,6 +131,29 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     clearInterimTranscript();
   }, [clearInterimTranscript, emitTranscript, markTranscriptEmitted, pendingTranscript]);
 
+  const startRecognition = useCallback(() => {
+    if (!shouldListenRef.current || startInProgressRef.current) return;
+    const recognition = recognitionRef.current;
+    if (!recognition) {
+      shouldListenRef.current = false;
+      setVoiceState("unsupported");
+      return;
+    }
+    clearRestartTimer();
+    startInProgressRef.current = true;
+    setVoiceState("processing");
+    try {
+      recognition.start();
+      setVoiceState("listening");
+    } catch (err) {
+      startInProgressRef.current = false;
+      shouldListenRef.current = false;
+      clearRestartTimer();
+      resetTranscriptBuffer();
+      setVoiceState(isPermissionDeniedError(err) ? "denied" : "idle");
+    }
+  }, [clearRestartTimer, resetTranscriptBuffer]);
+
   useEffect(() => {
     const SpeechRecognition = getSpeechRecognitionConstructor();
     if (!SpeechRecognition) return;
@@ -134,6 +165,7 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     recognition.onstart = () => {
       startInProgressRef.current = false;
       clearStopFlushTimer();
+      clearRestartTimer();
       committedResultIndexesRef.current.clear();
       setVoiceState("listening");
     };
@@ -171,6 +203,7 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
         shouldListenRef.current = false;
         startInProgressRef.current = false;
         clearStopFlushTimer();
+        clearRestartTimer();
         resetTranscriptBuffer();
         setVoiceState("denied");
         return;
@@ -178,20 +211,34 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       if (event.error === "aborted") {
         flushTranscriptBuffer();
         startInProgressRef.current = false;
-        shouldListenRef.current = false;
-        setVoiceState("idle");
+        clearRestartTimer();
+        if (!shouldListenRef.current) setVoiceState("idle");
+        return;
+      }
+      if (event.error === "no-speech") {
+        flushTranscriptBuffer();
+        startInProgressRef.current = false;
+        if (shouldListenRef.current) setVoiceState("listening");
         return;
       }
       flushTranscriptBuffer();
       shouldListenRef.current = false;
       startInProgressRef.current = false;
+      clearRestartTimer();
       setVoiceState("idle");
     };
     recognition.onend = () => {
       startInProgressRef.current = false;
       clearStopFlushTimer();
       flushTranscriptBuffer();
-      shouldListenRef.current = false;
+      if (shouldListenRef.current) {
+        setVoiceState("listening");
+        restartTimerRef.current = window.setTimeout(() => {
+          restartTimerRef.current = null;
+          startRecognition();
+        }, 250);
+        return;
+      }
       setVoiceState(prev => prev === "listening" || prev === "processing" ? "idle" : prev);
     };
     recognitionRef.current = recognition;
@@ -199,6 +246,7 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     return () => {
       shouldListenRef.current = false;
       clearStopFlushTimer();
+      clearRestartTimer();
       resetTranscriptBuffer();
       recognition.onstart = null;
       recognition.onresult = null;
@@ -213,12 +261,14 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
     };
   }, [
     clearStopFlushTimer,
+    clearRestartTimer,
     emitTranscript,
     flushTranscriptBuffer,
     markTranscriptEmitted,
     normalizeTranscript,
     pendingTranscript,
     resetTranscriptBuffer,
+    startRecognition,
   ]);
 
   const toggleVoice = useCallback(() => {
@@ -227,6 +277,7 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       shouldListenRef.current = false;
       startInProgressRef.current = false;
       clearStopFlushTimer();
+      clearRestartTimer();
       try {
         recognitionRef.current?.stop();
       } catch {
@@ -241,28 +292,10 @@ export function useSpeechRecognition(onTranscript: (transcript: string) => void)
       return;
     }
 
-    void (async () => {
-      startInProgressRef.current = true;
-      shouldListenRef.current = true;
-      resetTranscriptBuffer();
-      setVoiceState("processing");
-      try {
-        if (!shouldListenRef.current) {
-          startInProgressRef.current = false;
-          setVoiceState("idle");
-          return;
-        }
-        recognitionRef.current?.start();
-        setVoiceState("listening");
-      } catch (err) {
-        shouldListenRef.current = false;
-        startInProgressRef.current = false;
-        clearStopFlushTimer();
-        resetTranscriptBuffer();
-        setVoiceState(isPermissionDeniedError(err) ? "denied" : "idle");
-      }
-    })();
-  }, [clearStopFlushTimer, flushTranscriptBuffer, resetTranscriptBuffer, voiceState]);
+    shouldListenRef.current = true;
+    resetTranscriptBuffer();
+    startRecognition();
+  }, [clearRestartTimer, clearStopFlushTimer, flushTranscriptBuffer, resetTranscriptBuffer, startRecognition, voiceState]);
 
   return { voiceState, toggleVoice, interimTranscript };
 }

@@ -3,7 +3,6 @@ import os
 import uuid
 import pytest
 from datetime import datetime
-from unittest.mock import patch, AsyncMock
 
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
@@ -11,7 +10,7 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
-from app.models.models import AIMemory, AIChatMessage, AIChatSession
+from app.models.models import AIMemory, AIChatMessage
 
 
 class MockSession:

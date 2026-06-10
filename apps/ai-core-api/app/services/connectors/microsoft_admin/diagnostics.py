@@ -8,7 +8,6 @@ from uuid import UUID
 
 import httpx
 
-from app.services.token_storage import retrieve_token
 from app.services.connectors.microsoft_admin.azure_cli import (
     _list_azure_subscriptions,
     ensure_azure_cli_profile,
@@ -16,15 +15,10 @@ from app.services.connectors.microsoft_admin.azure_cli import (
 )
 from app.services.connectors.microsoft_admin.constants import (
     AZURE_ARM_SCOPE,
-    MICROSOFT_ADMIN_PROVIDER,
-    MICROSOFT_ADMIN_SCOPE_PROFILES,
+    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_GRAPH_BASE_URL,
     MICROSOFT_GRAPH_SCOPE,
-    microsoft_admin_app_name_for_scope_profile,
-    microsoft_admin_client_id_for_scope_profile,
     microsoft_admin_scope_label,
-    microsoft_admin_scope_profile,
-    microsoft_admin_scope_summary,
 )
 from app.services.connectors.microsoft_admin.graph import _graph_error_details, _graph_response_data
 from app.services.connectors.microsoft_admin.tokens import (
@@ -35,51 +29,6 @@ from app.services.connectors.microsoft_admin.tokens import (
 )
 
 logger = logging.getLogger(__name__)
-
-async def _microsoft_admin_status(user_id: Optional[UUID], request_id: str) -> dict[str, Any]:
-    diagnosis = await diagnose_microsoft_admin_connection(user_id)
-    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id) if user_id else None
-    consented_profiles = set((token_data or {}).get("consented_scope_profiles") or [])
-    primary_profile = (token_data or {}).get("scope_profile")
-    if primary_profile:
-        consented_profiles.add(microsoft_admin_scope_profile(primary_profile))
-    return {
-        **diagnosis,
-        "connector": "microsoft_admin",
-        "mode": "status",
-        "request_id": request_id,
-        "auth_profiles": {
-            profile: {
-                "label": microsoft_admin_scope_label(profile),
-                "auth_app_name": microsoft_admin_app_name_for_scope_profile(profile),
-                "client_id": microsoft_admin_client_id_for_scope_profile(profile),
-                "scope_summary": microsoft_admin_scope_summary(profile),
-                "consented": profile in consented_profiles,
-            }
-            for profile in MICROSOFT_ADMIN_SCOPE_PROFILES
-        },
-        "tooling": {
-            "powershell_7": "pwsh",
-            "graph_powershell": "Microsoft.Graph",
-            "exchange_online_powershell": "ExchangeOnlineManagement",
-            "teams_powershell": "MicrosoftTeams",
-            "pnp_powershell": "PnP.PowerShell",
-            "az_powershell": "Az",
-            "azure_resource_manager_cli": "az",
-            "bicep_cli": "bicep",
-            "direct_graph": "https://graph.microsoft.com",
-            "powershell_helpers": [
-                "Connect-AIPlatformAz",
-                "Connect-AIPlatformGraph",
-                "Connect-AIPlatformExchange",
-                "Connect-AIPlatformTeams",
-            ],
-        },
-        "notes": [
-            "GitHub CLI is intentionally excluded; use the GitHub connector.",
-            "PowerShell module access is controlled by the signed-in Microsoft user's permissions and consented scopes.",
-        ],
-    }
 
 async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[str, Any]:
     request_id = uuid.uuid4().hex[:16]
@@ -141,6 +90,8 @@ async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[s
                 subscriptions = subscriptions_result.get("subscriptions", [])
                 arm_details = {
                     "status": "available",
+                    "token_status": "available",
+                    "read_check": "passed",
                     "subscriptions_count": len(subscriptions),
                     "subscriptions": [
                         {
@@ -177,17 +128,27 @@ async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[s
             else:
                 arm_details = {
                     "status": "limited",
+                    "token_status": "available",
+                    "read_check": "failed",
                     "message": subscriptions_result.get("message"),
                     "stderr": subscriptions_result.get("stderr", ""),
                 }
         else:
             arm_details = {
-                "status": "missing",
+                "status": arm_token.get("status") if isinstance(arm_token, dict) and arm_token.get("status") else "missing",
+                "token_status": "missing",
+                "read_check": "failed",
+                "error_type": arm_token.get("error_type") if isinstance(arm_token, dict) else "token_unavailable",
                 "message": arm_token.get("refresh_error") if arm_token else "Azure Resource Manager token is not available.",
             }
 
         authorization_profiles = {
-            "graph": {"status": "available", "label": microsoft_admin_scope_label("graph")},
+            "graph": {
+                "status": "available",
+                "token_status": "available",
+                "read_check": "passed",
+                "label": microsoft_admin_scope_label("graph"),
+            },
             "exchange": {"label": microsoft_admin_scope_label("exchange"), **secondary.get("exchange", {})},
             "arm": {"label": microsoft_admin_scope_label("arm"), **arm_details},
             "teams": {"label": microsoft_admin_scope_label("teams"), **secondary.get("teams", {})},
@@ -201,6 +162,7 @@ async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[s
 
         return {
             "status": status,
+            "overall_status": "ready" if status == "success" else status,
             "connector": "microsoft_admin",
             "request_id": request_id,
             "message": message,
@@ -221,21 +183,31 @@ async def diagnose_microsoft_admin_connection(user_id: Optional[UUID]) -> dict[s
 def _microsoft_admin_diagnostic_summary(
     authorization_profiles: dict[str, dict[str, Any]],
 ) -> tuple[str, str]:
-    problem_statuses = {"missing", "failed", "error", "limited"}
+    ready_statuses = {"available", "ready", "read_only"}
+    problem_statuses = {"missing", "missing_consent", "missing_permission", "failed", "error", "limited"}
     problem_labels = [
         str(profile.get("label") or key)
         for key, profile in authorization_profiles.items()
-        if profile.get("status") in problem_statuses
+        if key in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES and profile.get("status") in problem_statuses
+    ]
+    required_profiles = [
+        authorization_profiles.get(profile, {})
+        for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
     ]
     if problem_labels:
         return (
             "partial",
             (
-                "Microsoft Admin core connection is valid, but these authorization profiles need attention: "
+                "Microsoft Admin sign-in is valid, but these required authorization profiles need attention: "
                 f"{', '.join(problem_labels)}."
             ),
         )
+    if not all(profile.get("status") in ready_statuses for profile in required_profiles):
+        return (
+            "partial",
+            "Microsoft Admin sign-in is valid, but required authorization profiles have not all been verified.",
+        )
     return (
         "success",
-        "Microsoft Admin is connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams validation succeeded.",
+        "Microsoft Admin is connected. Microsoft Graph, Azure Resource Manager, and Exchange Online validation succeeded.",
     )

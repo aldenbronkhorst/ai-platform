@@ -1,5 +1,5 @@
 import pytest
-from uuid import uuid4, UUID
+from uuid import uuid4
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from app.models.models import AIModel, AIRoute, AIProvider
@@ -206,7 +206,7 @@ class TestModelRoutingPolicy:
 
         mock_build_foundry_cls.side_effect = mock_build_client
 
-        with patch("app.services.model_router.get_enabled_route") as mock_get_enabled, \
+        with patch("app.services.model_router.get_enabled_route"), \
              patch("app.services.model_routing_policy.ModelRoutingPolicyService.select_route", new=mock_select_route):
             result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid4())
             assert result["content"] == "Succeeded via fallback"

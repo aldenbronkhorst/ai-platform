@@ -2,7 +2,7 @@
 import logging
 import uuid
 import time
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from app.core.security import api_key_auth
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.services.connected_account_state import (
 from app.services.connectors.microsoft_admin.constants import (
     AZURE_AUTHORITY_HOST,
     AZURE_TOKEN_ENDPOINT,
+    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_ADMIN_PROVIDER,
     TENANT_ID,
     microsoft_admin_app_name_for_scope_profile,
@@ -36,7 +37,7 @@ router = APIRouter(prefix="/connector/microsoft-admin", tags=["Connector"])
 
 
 @router.post("/device-code")
-async def start_device_code(req: dict | None = Body(default=None), auth: dict = Depends(api_key_auth)):
+async def start_device_code(auth: dict = Depends(api_key_auth)):
     """Start the single Microsoft Admin OAuth device-code flow."""
     request_id = uuid.uuid4().hex[:16]
     # Sign in once against the primary Graph profile. Secondary resource tokens
@@ -146,8 +147,8 @@ async def device_code_callback(
         warmed_profiles = await warm_microsoft_admin_delegated_tokens(user_id)
         authorization_profiles = {
             "graph": {
-                "status": "available",
                 "label": microsoft_admin_scope_label("graph"),
+                **warmed_profiles.get("graph", {"status": "available", "token_status": "available"}),
             },
             "arm": {
                 "label": microsoft_admin_scope_label("arm"),
@@ -170,14 +171,19 @@ async def device_code_callback(
         missing_profiles = [
             profile["label"]
             for profile in authorization_profiles.values()
-            if profile.get("status") == "missing"
+            if profile.get("status") in {"missing", "missing_consent", "missing_permission", "limited", "failed", "error"}
         ]
+        required_ready = all(
+            authorization_profiles.get(profile, {}).get("status") == "available"
+            for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
+        )
+        overall_status = "ready" if required_ready else "partial"
         message = (
-            "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams tokens were acquired."
-            if not missing_profiles
+            "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange Online tokens were acquired."
+            if required_ready
             else (
                 "Microsoft Admin connected with one sign-in. "
-                f"Additional admin consent is still required for: {', '.join(missing_profiles)}."
+                f"These required authorization profiles still need attention: {', '.join(missing_profiles)}."
             )
         )
         await upsert_delegated_account(
@@ -195,6 +201,7 @@ async def device_code_callback(
         )
         return {
             "status": "connected",
+            "overall_status": overall_status,
             "request_id": request_id,
             "scope_profile": scope_profile,
             "scope_label": microsoft_admin_scope_label(scope_profile),
@@ -233,6 +240,15 @@ async def microsoft_admin_diagnose(
     if user_id:
         await record_delegated_diagnosis(db, MICROSOFT_ADMIN_PROVIDER, user_id, result, commit=True)
     return result
+
+
+@router.post("/validate")
+async def microsoft_admin_validate(
+    auth: dict = Depends(api_key_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Validate all required Microsoft Admin authorization profiles."""
+    return await microsoft_admin_diagnose(auth=auth, db=db)
 
 
 @router.post("/disconnect")

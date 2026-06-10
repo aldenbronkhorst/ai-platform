@@ -40,7 +40,7 @@ export function AdminPage({ accessToken }: { accessToken: string }) {
 
   const fetchRules = useCallback(async () => {
     try {
-      const res = await fetch(`${APIM_BASE_URL}/context/rules`, { headers });
+      const res = await fetch(`${APIM_BASE_URL}/rules?limit=500`, { headers });
       if (res.ok) setRules(await res.json());
     } catch { /* ignore transient rule load errors */ }
   }, [headers]);

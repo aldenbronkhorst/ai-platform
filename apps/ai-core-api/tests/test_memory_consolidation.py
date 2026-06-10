@@ -1,7 +1,7 @@
-import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock
 from uuid import uuid4
+import pytest
 
 from app.models.models import AIMemory, AITask, AIRule
 from app.services.memory_consolidation import MemoryConsolidationService
@@ -106,20 +106,3 @@ class TestMemoryConsolidationService:
 
         assert rule_item.status == "draft"  # High risk, never auto-activated
         assert "company currency" in rule_item.title.lower()
-
-    @pytest.mark.asyncio
-    @patch("app.services.search_service.get_settings")
-    async def test_indexing_skipped_when_search_disabled(self, mock_get_settings):
-        # Setup search disabled config
-        mock_config = MagicMock()
-        mock_config.azure_search_enable = False
-        mock_get_settings.return_value = mock_config
-
-        from app.services.search_service import SearchService
-        svc = SearchService()
-        assert svc.enabled is False
-
-        # Attempting to index should return False cleanly without raising exceptions
-        memory = AIMemory(id=uuid4(), title="Test", status="active")
-        success = await svc.index_memory_record(memory)
-        assert success is False

@@ -295,7 +295,7 @@ class TestReportFallbackAnswer:
     def test_fallback_ignores_non_report_tools(self):
         from app.services.model_router import _build_report_fallback_answer
         result = _build_report_fallback_answer([
-            {"tool_name": "azure_cli", "result": {"stdout": ""}},
+            {"tool_name": "github_cli", "result": {"stdout": ""}},
         ])
         assert result is None
 
@@ -360,7 +360,7 @@ class TestExecuteChatReportFallback:
     @pytest.mark.asyncio
     async def test_execute_chat_fallback_on_blank_content(self):
         """Blank model content + successful report tool must produce fallback answer."""
-        from app.services.model_router import execute_chat, _build_report_fallback_answer
+        from app.services.model_router import _build_report_fallback_answer
         tool_results = [{"tool_name": "odoo_ops_runner", "arguments": {"mode": "report"}, "result": {
             "report_name": "Profit and Loss",
             "date_from": "2026-06-01", "date_to": "2026-06-30",
@@ -377,7 +377,7 @@ class TestExecuteChatReportFallback:
         """Non-report tools must not produce a fallback."""
         from app.services.model_router import _build_report_fallback_answer
         fallback = _build_report_fallback_answer([
-            {"tool_name": "azure_cli", "result": {"stdout": ""}},
+            {"tool_name": "github_cli", "result": {"stdout": ""}},
         ])
         assert fallback is None
 

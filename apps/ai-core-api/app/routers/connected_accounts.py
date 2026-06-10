@@ -8,7 +8,7 @@ import re
 import socket
 from datetime import datetime
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from app.services.audit import AuditService
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.services.connected_account_state import effective_connected_accounts
 from app.services.connectors.microsoft_admin.constants import (
+    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     microsoft_admin_app_name_for_scope_profile,
     microsoft_admin_scope_label,
     microsoft_admin_scope_summary,
@@ -333,7 +334,16 @@ def _connector_state(account: Optional[AIConnectedAccount], provider: str, inclu
     }
 
 
-MICROSOFT_ADMIN_PROFILE_ORDER = ("graph", "arm", "exchange", "teams", "sharepoint")
+MICROSOFT_ADMIN_PROFILE_ORDER = MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
+MICROSOFT_ADMIN_READY_PROFILE_STATUSES = {"authorized", "ready", "available", "read_only"}
+MICROSOFT_ADMIN_ATTENTION_PROFILE_STATUSES = {
+    "missing",
+    "missing_consent",
+    "missing_permission",
+    "limited",
+    "failed",
+    "error",
+}
 
 
 def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]:
@@ -383,24 +393,61 @@ async def _microsoft_admin_authorization_metadata(
             "profile": profile,
             "label": microsoft_admin_scope_label(profile),
             "status": profile_status,
+            "message": _microsoft_admin_profile_status_message(profile, profile_status),
             "scope_summary": microsoft_admin_scope_summary(profile),
             "auth_app_name": microsoft_admin_app_name_for_scope_profile(profile),
         })
 
-    authorized_labels = [row["label"] for row in profile_rows if row["status"] == "authorized"]
-    missing_labels = [row["label"] for row in profile_rows if row["status"] == "missing"]
+    overall_status = _microsoft_admin_overall_authorization_status(profile_rows, account, include_token_state)
+    authorized_labels = [row["label"] for row in profile_rows if row["status"] in MICROSOFT_ADMIN_READY_PROFILE_STATUSES]
+    missing_labels = [row["label"] for row in profile_rows if row["status"] in MICROSOFT_ADMIN_ATTENTION_PROFILE_STATUSES]
+    not_checked_labels = [row["label"] for row in profile_rows if row["status"] == "not_checked"]
     summary_parts = []
     if authorized_labels:
-        summary_parts.append(f"Authorized: {', '.join(authorized_labels)}")
+        summary_parts.append(f"Ready: {', '.join(authorized_labels)}")
     if missing_labels:
-        summary_parts.append(f"Missing: {', '.join(missing_labels)}")
+        summary_parts.append(f"Needs attention: {', '.join(missing_labels)}")
+    if not_checked_labels:
+        summary_parts.append(f"Not checked: {', '.join(not_checked_labels)}")
     if not summary_parts and _is_configured(account):
         summary_parts.append("Authorization profiles not checked")
 
     return {
+        "overall_status": overall_status,
         "authorization_profiles": profile_rows,
         "authorization_summary": "; ".join(summary_parts) if summary_parts else None,
     }
+
+
+def _microsoft_admin_overall_authorization_status(
+    profile_rows: list[dict],
+    account: Optional[AIConnectedAccount],
+    include_token_state: bool,
+) -> str:
+    if not _is_configured(account):
+        return "not_connected"
+    if not include_token_state:
+        return "not_checked"
+
+    rows_by_profile = {row["profile"]: row for row in profile_rows}
+    required_rows = [rows_by_profile.get(profile, {}) for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES]
+    if all(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
+        return "ready"
+    if any(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
+        return "partial"
+    return "setup_required"
+
+
+def _microsoft_admin_profile_status_message(profile: str, status_value: str) -> str:
+    if profile == "teams" and status_value in {"missing", "missing_consent", "missing_permission"}:
+        return "Requires Skype and Teams Tenant Admin API delegated user_impersonation and tenant admin consent."
+    if profile == "sharepoint" and status_value == "not_checked":
+        return "Requires a SharePoint site_url or admin_url for validation."
+    if status_value == "authorized":
+        return "Token available for this signed-in Microsoft Admin user."
+    if status_value == "missing":
+        return "Token is not available for this signed-in Microsoft Admin user."
+    return microsoft_admin_app_name_for_scope_profile(profile)
 
 
 async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key: str) -> dict:
@@ -1112,11 +1159,14 @@ async def get_connected_accounts(
         microsoft_admin,
         include_token_state,
     )
+    microsoft_admin_state = _connector_state(microsoft_admin, "microsoft_admin", include_token_state)
+    microsoft_admin_state["readiness_status"] = microsoft_auth_metadata.get("overall_status")
 
     connectors = [
         {
             "connector_key": "odoo",
             "display_name": "Odoo Enterprise",
+            "subtitle": "ERP connector",
             "status": _account_status(odoo),
             "auth_method": "api_key",
             "last_verified_at": _account_last_verified(odoo),
@@ -1131,11 +1181,12 @@ async def get_connected_accounts(
         {
             "connector_key": "microsoft_admin",
             "display_name": "Microsoft Admin",
+            "subtitle": "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager",
             "status": _account_status(microsoft_admin),
             "auth_method": "delegated_microsoft",
             "last_verified_at": _account_last_verified(microsoft_admin),
             "actions_available": ["connect", "test", "disconnect"],
-            "state": _connector_state(microsoft_admin, "microsoft_admin", include_token_state),
+            "state": microsoft_admin_state,
             "metadata": {
                 "provider_username": microsoft_admin.provider_username if microsoft_admin else None,
                 "permission_summary": microsoft_admin.permission_summary if microsoft_admin else None,
@@ -1155,6 +1206,7 @@ async def get_connected_accounts(
         {
             "connector_key": "github",
             "display_name": "GitHub CLI",
+            "subtitle": "Native GitHub CLI connector",
             "status": _account_status(github),
             "auth_method": "github_oauth",
             "last_verified_at": _account_last_verified(github),
@@ -1235,24 +1287,12 @@ async def test_odoo_connection(
             detail="Odoo connected account not found."
         )
 
-    # 1. Use the saved Odoo URL/DB from the connected account record.
-    #    Fall back to company facts or env vars for backwards compatibility
-    #    with accounts created before odoo_url/odoo_db were added.
     odoo_url = account.odoo_url or ""
     odoo_db = account.odoo_db or ""
     if not odoo_url or not odoo_db:
-        from app.models.models import AICompanyFact
-        url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-        db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-        url_fact = url_fact_res.scalar_one_or_none()
-        db_fact = db_fact_res.scalar_one_or_none()
-        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
-
-    if not odoo_url or not odoo_db:
         raise HTTPException(
             status_code=500,
-            detail="Odoo URL or DB name not configured."
+            detail="Odoo connected account is missing its saved URL or database."
         )
 
     # 2. Retrieve credentials from Key Vault
@@ -1282,7 +1322,7 @@ async def test_odoo_connection(
             account.odoo_company_name = company_meta.get("odoo_company_name")
             account.odoo_currency_code = company_meta.get("odoo_currency_code")
             account.odoo_currency_symbol = company_meta.get("odoo_currency_symbol")
-    except Exception as e:
+    except Exception:
         test_status = "error"
         account.status = "error"
         # We still update verified/last verified timestamp to reflect test run
@@ -1342,18 +1382,13 @@ async def rotate_odoo_credentials(
             detail="Odoo connected account not found. Please connect first."
         )
 
-    # Use the saved Odoo URL/DB from the connected account record.
-    # Fall back to company facts or env vars for backwards compatibility.
     odoo_url = account.odoo_url or ""
     odoo_db = account.odoo_db or ""
     if not odoo_url or not odoo_db:
-        from app.models.models import AICompanyFact
-        url_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_url"))
-        db_fact_res = await db.execute(select(AICompanyFact).where(AICompanyFact.key == "odoo_primary_db"))
-        url_fact = url_fact_res.scalar_one_or_none()
-        db_fact = db_fact_res.scalar_one_or_none()
-        odoo_url = url_fact.value if url_fact else os.environ.get("ODOO_URL", "")
-        odoo_db = db_fact.value if db_fact else os.environ.get("ODOO_DB", "")
+        raise HTTPException(
+            status_code=500,
+            detail="Odoo connected account is missing its saved URL or database.",
+        )
 
     # Validate the new credentials
     await _verify_odoo_credentials_via_connector(

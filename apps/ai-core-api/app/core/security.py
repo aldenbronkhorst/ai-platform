@@ -14,7 +14,6 @@ from app.models.models import AIUser
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
 
-ADMIN_ROLES = {"AIPlatform.Admin"}
 DEVELOPER_ROLES = {"AIPlatform.Admin", "AIPlatform.Developer"}
 AUDIT_ROLES = {"AIPlatform.Admin", "AIPlatform.Auditor"}
 AUTOMATION_ROLES = {"AIPlatform.Admin", "AIPlatform.Developer", "AIPlatform.AutomationAdmin"}

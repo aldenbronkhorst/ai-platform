@@ -5,12 +5,12 @@ proposes save/update/archive actions based on risk and confidence.
 """
 import logging
 import re
-from typing import Optional, Any
+from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select
 
-from app.models.models import AIMemory, AIChatMessage, AIRule
+from app.models.models import AIMemory, AIChatMessage
 from app.schemas.schemas import MemoryCandidate
 
 
@@ -103,7 +103,7 @@ class MemoryCandidateService:
             if pat.search(content):
                 return [MemoryCandidate(
                     type="correction",
-                    title=f"Correction from user",
+                    title="Correction from user",
                     body=content.strip(),
                     confidence="medium",
                     risk_level="medium",

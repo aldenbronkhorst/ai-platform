@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.routers import health, audit, artifact, context, job, task, tool, connected_accounts, chat, ai_config, memory, rules, admin_traces, connector_microsoft_admin, connector_github
+from app.routers import health, audit, artifact, context, task, tool, connected_accounts, chat, ai_config, memory, rules, admin_traces, connector_microsoft_admin, connector_github
 
 settings = get_settings()
 docs_enabled = settings.app_env != "production"
@@ -34,7 +34,6 @@ app.include_router(health.router)
 app.include_router(audit.router)
 app.include_router(artifact.router)
 app.include_router(context.router)
-app.include_router(job.router)
 app.include_router(task.router)
 app.include_router(tool.router)
 app.include_router(connected_accounts.router)

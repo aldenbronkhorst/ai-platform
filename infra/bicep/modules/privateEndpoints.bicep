@@ -13,9 +13,7 @@ param subnetName string = 'private-endpoints'
 param keyVaultId string
 param storageAccountId string
 param serviceBusNamespaceId string
-param aiSearchId string
 param postgresServerId string
-param deploySearch bool = false
 
 var namePrefix = '${workload}-${environment}-${regionCode}-${instance}'
 
@@ -49,12 +47,6 @@ resource privateDnsServiceBus 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 
 resource privateDnsPostgres 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   name: 'privatelink.postgres.database.azure.com'
-  location: 'global'
-  tags: tags
-}
-
-resource privateDnsSearch 'Microsoft.Network/privateDnsZones@2020-06-01' = if (deploySearch) {
-  name: 'privatelink.search.windows.net'
   location: 'global'
   tags: tags
 }
@@ -97,18 +89,6 @@ resource privateDnsServiceBusLink 'Microsoft.Network/privateDnsZones/virtualNetw
 
 resource privateDnsPostgresLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   parent: privateDnsPostgres
-  name: '${namePrefix}-vnet-link'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnet.id
-    }
-  }
-}
-
-resource privateDnsSearchLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = if (deploySearch) {
-  parent: privateDnsSearch
   name: '${namePrefix}-vnet-link'
   location: 'global'
   properties: {
@@ -218,41 +198,6 @@ resource privateEndpointServiceBusDns 'Microsoft.Network/privateEndpoints/privat
         name: 'servicebus'
         properties: {
           privateDnsZoneId: privateDnsServiceBus.id
-        }
-      }
-    ]
-  }
-}
-
-resource privateEndpointAIsearch 'Microsoft.Network/privateEndpoints@2023-11-01' = if (deploySearch) {
-  name: 'pe-${namePrefix}-srch'
-  location: location
-  tags: tags
-  properties: {
-    subnet: {
-      id: subnet.id
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'search'
-        properties: {
-          privateLinkServiceId: aiSearchId
-          groupIds: ['searchService']
-        }
-      }
-    ]
-  }
-}
-
-resource privateEndpointAIsearchDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (deploySearch) {
-  parent: privateEndpointAIsearch
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'search'
-        properties: {
-          privateDnsZoneId: privateDnsSearch.id
         }
       }
     ]

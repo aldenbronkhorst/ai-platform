@@ -2,7 +2,7 @@ import logging
 import re
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID, uuid4
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import AIRule, AITask

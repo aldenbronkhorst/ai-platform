@@ -27,33 +27,6 @@ class AIUserResponse(BaseModel):
     created_at: datetime
 
 
-class AIJobCreate(BaseModel):
-    workflow_type: Optional[str] = None
-    title: str
-    linked_system: Optional[str] = None
-    linked_model: Optional[str] = None
-    linked_record_id: Optional[str] = None
-    identity_mode: str = "user-delegated"
-
-
-class AIJobResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    workflow_type: Optional[str]
-    title: str
-    status: str
-    requested_by_user_id: Optional[UUID]
-    identity_mode: str
-    linked_system: Optional[str]
-    linked_model: Optional[str]
-    linked_record_id: Optional[str]
-    current_step: Optional[str]
-    summary: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-    completed_at: Optional[datetime]
-
-
 class AITaskCreate(BaseModel):
     title: str
     description: Optional[str] = None

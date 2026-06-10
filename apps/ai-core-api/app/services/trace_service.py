@@ -3,12 +3,10 @@
 Every operation in AI Platform gets a trace with spans for each step.
 Traces are persisted to the database and include redacted payload summaries.
 """
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import AITrace, AITraceSpan
 
@@ -199,11 +197,6 @@ def _summarize_value(v: Any) -> Any:
     return v
 
 
-def estimate_prompt_tokens(text: str) -> int:
-    """Rough token estimation (~4 chars per token)."""
-    return len(text) // 4
-
-
 def _activity_input_summary(span_type: str, data: dict[str, Any]) -> dict[str, Any]:
     if span_type == "provider_call":
         request = data.get("request") if isinstance(data.get("request"), dict) else {}
@@ -256,7 +249,6 @@ def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, 
             "rules_injected": data.get("rules_injected"),
             "facts_injected": data.get("facts_injected"),
             "memories_injected": data.get("memories_injected"),
-            "search_results_injected": data.get("search_results_injected"),
             "subtasks_injected": data.get("subtasks_injected"),
         }
     if span_type == "provider_call":
@@ -454,14 +446,3 @@ class TraceService:
 
     def span_error(self, span_id: str, error_type: str, error_message: str):
         self.end_span(span_id, status="failed", error_type=error_type, error_message=error_message)
-
-    def add_metadata(self, span_id: str = None, metadata: dict = None):
-        target = None
-        if span_id:
-            target = self._spans.get(span_id)
-        else:
-            target = self._trace
-        if target and metadata:
-            existing = target.metadata_json or {}
-            existing.update(metadata)
-            target.metadata_json = existing

@@ -13,9 +13,8 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory
+from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory, AICompanyFact
 from app.services.model_router import (
-    RouteNotFoundError,
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
     _fallback_chat_title,
@@ -404,13 +403,69 @@ async def mock_get_db_with_connector(connected_type="odoo"):
 
 
 @pytest.mark.asyncio
+async def test_odoo_tool_credentials_fall_back_to_company_facts_for_legacy_accounts():
+    from app.services.model_router import _resolve_odoo_credentials_for_tool
+
+    user_id = uuid.uuid4()
+    account = AIConnectedAccount(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        provider="odoo",
+        provider_username="odoo@example.com",
+        status="connected",
+        secret_reference="odoo-secret",
+        odoo_url=None,
+        odoo_db=None,
+    )
+    facts = [
+        AICompanyFact(key="odoo_url", value="https://legacy.odoo.com"),
+        AICompanyFact(key="odoo_db", value="legacy-db"),
+    ]
+
+    class FakeResult:
+        def __init__(self, scalar=None, items=None):
+            self._scalar = scalar
+            self._items = items or []
+
+        def scalar_one_or_none(self):
+            return self._scalar
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self._items
+
+    class FakeSession:
+        async def execute(self, stmt, *args, **kwargs):
+            stmt_text = str(stmt).lower()
+            if "ai_connected_accounts" in stmt_text:
+                return FakeResult(scalar=account)
+            if "ai_company_facts" in stmt_text:
+                return FakeResult(items=facts)
+            return FakeResult()
+
+    with patch("app.services.model_router.key_vault_uri", return_value="https://vault.example.com"), patch(
+        "app.services.model_router.get_secret_value", new=AsyncMock(return_value="api-key")
+    ):
+        credentials = await _resolve_odoo_credentials_for_tool(FakeSession(), user_id)
+
+    assert credentials == {
+        "url": "https://legacy.odoo.com",
+        "db": "legacy-db",
+        "username": "odoo@example.com",
+        "api_key": "api-key",
+        "transport": "auto",
+    }
+
+
+@pytest.mark.asyncio
 async def test_generate_chat_title_falls_back_when_title_model_unavailable():
     from app.services.model_router import generate_chat_title
 
-    title = await generate_chat_title(
-        MockSession(has_config=False),
-        [{"role": "user", "content": "what are all my azure resources and month to date costs"}],
-    )
+    title = await generate_chat_title([
+        {"role": "user", "content": "what are all my azure resources and month to date costs"}
+    ])
 
     assert title == "Azure Resources and Costs"
 
@@ -420,13 +475,9 @@ async def test_generate_chat_title_does_not_call_model():
     from app.services.model_router import generate_chat_title
 
     with patch("app.services.model_router._call_model", new=AsyncMock()) as call_model:
-        title = await generate_chat_title(
-            MockSession(has_config=True),
-            [{"role": "user", "content": "there are 2 gerhard employees in my odoo?"}],
-            chat_session_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
-            request_id="req-title",
-        )
+        title = await generate_chat_title([
+            {"role": "user", "content": "there are 2 gerhard employees in my odoo?"}
+        ])
 
     assert title == "Gerhard Employee Duplicates"
     assert call_model.await_count == 0
@@ -630,6 +681,104 @@ class TestConnectorContext:
         assert result["content"] == "Azure is connected."
 
     @pytest.mark.asyncio
+    async def test_execute_chat_recovers_azure_inventory_when_model_quota_blocks_tool_call(self):
+        from app.services.model_router import execute_chat
+
+        user_id = uuid.uuid4()
+        account = AIConnectedAccount(
+            provider="microsoft_admin",
+            status="connected",
+            user_id=user_id,
+            provider_username="alden@lotslotsmore.com",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+        ms_azure_cli_tool = AITool(
+            name="ms_azure_cli",
+            display_name="Azure Resource Manager CLI",
+            description="Run Azure Resource Manager CLI commands.",
+            target_system="microsoft_admin",
+            input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
+        )
+        tool_schema = [{
+            "type": "function",
+            "function": {
+                "name": "ms_azure_cli",
+                "description": "Run Azure Resource Manager CLI commands.",
+                "parameters": ms_azure_cli_tool.input_schema,
+            },
+        }]
+
+        async def fake_select_tools(*_args, **_kwargs):
+            system_prompt = _args[-1]
+            return [ms_azure_cli_tool], tool_schema, system_prompt
+
+        async def fake_tool_call(_db, _user_id, tool_name, arguments, trace_svc=None):
+            assert tool_name == "ms_azure_cli"
+            command = arguments["command"]
+            if command.startswith("account show"):
+                return {
+                    "status": "success",
+                    "stdout": json.dumps({
+                        "name": "Lots Lots More",
+                        "id": "sub-123",
+                        "user": {"name": "alden@lotslotsmore.com"},
+                    }),
+                    "stderr": "",
+                    "exit_code": 0,
+                }
+            if command.startswith("resource list"):
+                return {
+                    "status": "success",
+                    "stdout": json.dumps([
+                        {
+                            "name": "ca-ai-platform-api-prod-san-001",
+                            "type": "Microsoft.App/containerApps",
+                            "resourceGroup": "rg-ai-platform-prod-san-001",
+                            "location": "southafricanorth",
+                        }
+                    ]),
+                    "stderr": "",
+                    "exit_code": 0,
+                }
+            raise AssertionError(f"unexpected command: {command}")
+
+        with patch.object(
+            type(db), "add"
+        ), patch.object(
+            type(db), "flush"
+        ), patch(
+            "app.services.model_router._select_tools_for_model",
+            new=fake_select_tools,
+        ), patch(
+            "app.services.model_router._fallback_candidates",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "app.services.model_router._call_model",
+            new=AsyncMock(return_value=({
+                "error": True,
+                "error_type": "quota_exceeded",
+                "message": "quota exhausted",
+                "status_code": 429,
+                "latency_ms": 20,
+            }, MagicMock())),
+        ), patch(
+            "app.services.model_router._execute_tool_call",
+            new=AsyncMock(side_effect=fake_tool_call),
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "can you access my azure if so list active resources"}],
+                user_id=user_id,
+            )
+
+        assert result["finish_reason"] == "deterministic_connector_fallback"
+        assert "Azure Resource Manager is accessible" in result["content"]
+        assert "Lots Lots More" in result["content"]
+        assert "ca-ai-platform-api-prod-san-001" in result["content"]
+        assert result["tool_call_count"] == 2
+        assert result["tool_calls"][0]["tool_name"] == "ms_azure_cli"
+
+    @pytest.mark.asyncio
     async def test_execute_chat_injects_active_memories(self):
         """Active AIMemory records for the user must appear in '## Learned from Past Interactions'."""
         from app.services.model_router import execute_chat
@@ -775,157 +924,6 @@ class TestConnectorContext:
              result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
              assert result["content"] == "OK"
 
-    @pytest.mark.asyncio
-    @patch("app.services.search_service.SearchService")
-    @pytest.mark.skip(reason="Requires azure-search-documents not in CI")
-    async def test_execute_chat_injects_search_results(self, mock_search_svc_cls):
-        """Active search results from Azure Search must appear in '## Relevant Reference Materials'."""
-        from app.services.model_router import execute_chat
-        from app.models.models import AIProvider, AIModel, AIRoute
-
-        db = MockSession(has_config=False)
-
-        # Setup mock SearchService
-        mock_svc = MagicMock()
-        mock_svc.enabled = True
-        mock_svc.search_memories = AsyncMock(return_value=[
-            {
-                "id": "search_1",
-                "title": "Test Document",
-                "type": "reference",
-                "chunk_text": "This is test content for search injection.",
-            }
-        ])
-        mock_search_svc_cls.return_value = mock_svc
-
-        provider = AIProvider(
-            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
-            secret_reference="mock-key", enabled="true",
-        )
-        model = AIModel(
-            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-            model_family="Kimi", model_version="2026-04-20",
-            supports_tools="true", supports_json_schema="false",
-            context_window=262144, enabled="true",
-        )
-        route = AIRoute(
-            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
-            temperature=0.3, max_tokens=2000, enabled="true",
-            system_prompt="You are the AI Platform.",
-        )
-
-        async def mock_get_enabled_route(*args, **kwargs):
-            return (route, model, provider)
-
-        mock_chat_completion = AsyncMock(return_value={
-            "content": "I see the printer SOP details.",
-            "finish_reason": "stop",
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "latency_ms": 50,
-        })
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.get_enabled_route',
-            new=mock_get_enabled_route,
-        ), patch(
-            'app.services.model_router.build_foundry_client',
-            new=AsyncMock(return_value=AsyncMock(
-                chat_completion=mock_chat_completion
-            ))
-        ):
-            result = await execute_chat(db, [{"role": "user", "content": "how to print downstairs"}], user_id=uuid.uuid4())
-            assert result["content"] == "I see the printer SOP details."
-            
-            # Verify system prompt has search injection
-            called_messages = mock_chat_completion.call_args[1]["messages"]
-            system_prompt_content = called_messages[0]["content"]
-            assert "## Relevant Reference Materials" in system_prompt_content
-            assert "[reference] Test Document" in system_prompt_content
-            assert "Details: Select tray 2 and downstairs printer" in system_prompt_content
-
-            # Verify response contains injected search metadata
-            assert "search_results_injected" in result["context"]
-            assert len(result["context"]["search_results_injected"]) == 1
-            assert result["context"]["search_results_injected"][0]["id"] == "doc123"
-
-    @pytest.mark.asyncio
-    @patch("app.services.search_service.SearchService")
-    @pytest.mark.skip(reason="Requires azure-search-documents not in CI")
-    async def test_execute_chat_search_disabled_does_not_inject(self, mock_search_svc_cls):
-        """When search service is disabled, no search results are injected and context metadata is empty."""
-        from app.services.model_router import execute_chat
-        from app.models.models import AIProvider, AIModel, AIRoute
-
-        db = MockSession(has_config=False)
-
-        # Setup disabled mock SearchService
-        mock_svc = MagicMock()
-        mock_svc.enabled = False
-        mock_search_svc_cls.return_value = mock_svc
-
-        provider = AIProvider(
-            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
-            secret_reference="mock-key", enabled="true",
-        )
-        model = AIModel(
-            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-            model_family="Kimi", model_version="2026-04-20",
-            supports_tools="true", supports_json_schema="false",
-            context_window=262144, enabled="true",
-        )
-        route = AIRoute(
-            id=uuid.uuid4(), task_type="general_chat", primary_model_id=model.id,
-            temperature=0.3, max_tokens=2000, enabled="true",
-            system_prompt="You are the AI Platform.",
-        )
-
-        async def mock_get_enabled_route(*args, **kwargs):
-            return (route, model, provider)
-
-        mock_chat_completion = AsyncMock(return_value={
-            "content": "Hi",
-            "finish_reason": "stop",
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "latency_ms": 50,
-        })
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.get_enabled_route',
-            new=mock_get_enabled_route,
-        ), patch(
-            'app.services.model_router.build_foundry_client',
-            new=AsyncMock(return_value=AsyncMock(
-                chat_completion=mock_chat_completion
-            ))
-        ):
-            result = await execute_chat(db, [{"role": "user", "content": "how to print downstairs"}], user_id=uuid.uuid4())
-            
-            # Verify system prompt does not have search injection
-            called_messages = mock_chat_completion.call_args[1]["messages"]
-            system_prompt_content = called_messages[0]["content"]
-            assert "## Relevant Reference Materials" not in system_prompt_content
-
-            # Verify response does not contain injected search metadata
-            assert "search_results_injected" in result["context"]
-            assert len(result["context"]["search_results_injected"]) == 0
-
-
 # ── Seed Script Tests ──
 
 class TestSeedIdempotent:
@@ -1009,7 +1007,6 @@ class TestContextServiceFiltering:
     async def test_connected_account_status_used_by_context(self):
         """The context service should use connected account status to filter."""
         from app.services.context import ContextService
-        from app.schemas.schemas import ContextRequest
 
         db = MockSession(has_config=False, connected_accounts=[])
         svc = ContextService(db)
@@ -1083,7 +1080,6 @@ class TestGreetingIdentity:
 
     def test_no_hardcoded_odoo_assistant_in_backend(self):
         """Verify no 'Odoo assistant' or 'ERP assistant' string in backend code."""
-        import sys
         import os as os_module
 
         backend_root = os_module.path.join(os_module.path.dirname(__file__), "..", "app")
@@ -1241,7 +1237,7 @@ class TestProviderErrorHandling:
         type(self)._mock_route = route
 
     async def _run_execute_chat(self, chat_completion_return: dict):
-        from app.services.model_router import execute_chat, get_enabled_route
+        from app.services.model_router import execute_chat
         db = MockSession(has_config=True)
 
         # Mock get_enabled_route to return our properly constructed objects

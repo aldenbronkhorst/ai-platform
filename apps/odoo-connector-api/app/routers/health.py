@@ -1,4 +1,3 @@
-import os
 import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse

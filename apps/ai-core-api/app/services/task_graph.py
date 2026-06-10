@@ -1,12 +1,8 @@
 import logging
-import asyncio
-import time
 from typing import List, Dict, Any, Optional
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import AIModel, AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +70,6 @@ class TaskNode:
 
 
 class TaskGraphExecutor:
-    def __init__(self):
-        self.nodes: Dict[str, TaskNode] = {}
-
-    def add_node(self, node: TaskNode):
-        self.nodes[node.name] = node
-
     async def execute_all(self, user_query: str, db: Optional[AsyncSession] = None) -> List[Dict[str, Any]]:
         """Task graph execution is not yet implemented — returns not_implemented node."""
         logger.info("Task Graph execution not implemented for query: '%s'", user_query)

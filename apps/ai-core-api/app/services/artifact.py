@@ -163,15 +163,6 @@ class ArtifactService:
             return text
         return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
 
-    async def upload_json(self, data: AIArtifactCreate, json_content: dict, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
-        import json
-        file_content = json.dumps(json_content, default=str).encode("utf-8")
-        if not data.filename.endswith(".json"):
-            data.filename = data.filename + ".json"
-        if not data.mime_type:
-            data.mime_type = "application/json"
-        return await self.upload(data, file_content, created_by_user_id=created_by_user_id)
-
     async def get_by_id(self, artifact_id: UUID) -> Optional[AIArtifact]:
         result = await self.db.execute(select(AIArtifact).where(AIArtifact.id == artifact_id))
         return result.scalar_one_or_none()
