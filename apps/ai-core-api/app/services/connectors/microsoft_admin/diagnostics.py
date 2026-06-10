@@ -184,7 +184,15 @@ def _microsoft_admin_diagnostic_summary(
     authorization_profiles: dict[str, dict[str, Any]],
 ) -> tuple[str, str]:
     ready_statuses = {"available", "ready", "read_only"}
-    problem_statuses = {"missing", "missing_consent", "missing_permission", "failed", "error", "limited"}
+    problem_statuses = {
+        "missing",
+        "missing_consent",
+        "missing_permission",
+        "failed",
+        "error",
+        "limited",
+        "not_checked",
+    }
     problem_labels = [
         str(profile.get("label") or key)
         for key, profile in authorization_profiles.items()
@@ -207,7 +215,20 @@ def _microsoft_admin_diagnostic_summary(
             "partial",
             "Microsoft Admin sign-in is valid, but required authorization profiles have not all been verified.",
         )
+    optional_not_ready = [
+        str(profile.get("label") or key)
+        for key, profile in authorization_profiles.items()
+        if key not in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES and profile.get("status") not in ready_statuses
+    ]
+    if optional_not_ready:
+        return (
+            "partial",
+            (
+                "Microsoft Admin required profiles are connected. "
+                f"Optional authorization profiles not checked or unavailable: {', '.join(optional_not_ready)}."
+            ),
+        )
     return (
         "success",
-        "Microsoft Admin is connected. Microsoft Graph, Azure Resource Manager, and Exchange Online validation succeeded.",
+        "Microsoft Admin is connected. Microsoft Graph, Azure Resource Manager, Exchange Online, and Teams validation succeeded.",
     )

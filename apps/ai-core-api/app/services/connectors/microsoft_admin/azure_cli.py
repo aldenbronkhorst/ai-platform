@@ -61,7 +61,6 @@ async def _run_microsoft_admin_azure_cli(
     token_data = await _get_fresh_microsoft_admin_token_for_scope(
         user_id,
         AZURE_ARM_SCOPE,
-        require_account_metadata=True,
     ) if user_id else None
     if not token_data or not token_data.get("access_token"):
         message = (
@@ -177,6 +176,15 @@ async def ensure_azure_cli_profile(
             "ready": False,
             "message": (
                 "Microsoft Admin sign-in returned an Azure Resource Manager token but no usable user identity. "
+                "Reconnect Microsoft Admin so the platform can store a user-scoped CLI session."
+            ),
+        }
+
+    if not _has_azure_cli_account_metadata(token_data):
+        return {
+            "ready": False,
+            "message": (
+                "Azure Resource Manager token is missing account metadata needed to prepare an Azure CLI profile. "
                 "Reconnect Microsoft Admin so the platform can store a user-scoped CLI session."
             ),
         }

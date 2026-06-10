@@ -7,6 +7,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, Any
+from urllib.parse import urlsplit
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
@@ -426,23 +427,17 @@ def _normalize_tool_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:64]
 
 
-TOOL_NAME_MAP: dict[str, str] = {}
 ODOO_OPS_RUNNER_MODES = {
     "health",
     "schema",
     "query",
-    "records",
     "count",
     "aggregate",
     "report",
-    "account_report",
     "attachment",
     "content",
     "message",
     "mutation",
-    "write",
-    "create",
-    "delete",
     "execute",
 }
 ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
@@ -457,7 +452,12 @@ ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
 }
 ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
 ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION = {"message_post", "action_feedback", "action_done"}
-ODOO_QUERY_SHAPE_KEYS = {"domain", "fields", "limit", "offset", "order"}
+MICROSOFT_TOOL_NAME_ALIASES = {
+    "microsoft_graph": "ms_graph",
+    "microsoft_graph_api": "ms_graph",
+    "graph_api": "ms_graph",
+}
+GRAPH_API_VERSION_SEGMENTS = {"v1.0", "beta"}
 
 
 def _strip_function_prefix(name: str) -> str:
@@ -469,149 +469,62 @@ def _strip_function_prefix(name: str) -> str:
     return value.strip()
 
 
-def _odoo_positional_arg(arguments: dict[str, Any], index: int, default: Any = None) -> Any:
-    args = arguments.get("args")
-    if isinstance(args, list) and len(args) > index:
-        return args[index]
-    return default
+def _normalize_ms_graph_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(arguments or {})
+    raw_target = normalized.get("path") or normalized.pop("url", None) or normalized.pop("endpoint", None)
+    if raw_target is None:
+        return normalized
 
+    target = str(raw_target).strip()
+    if not target:
+        return normalized
 
-def _odoo_kwargs(arguments: dict[str, Any]) -> dict[str, Any]:
-    kwargs = arguments.get("kwargs")
-    return kwargs if isinstance(kwargs, dict) else {}
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme.lower() not in {"http", "https"} or parsed.netloc.lower() != "graph.microsoft.com":
+            normalized["path"] = target
+            return normalized
 
-
-def _looks_like_odoo_query(arguments: dict[str, Any]) -> bool:
-    if not str(arguments.get("model") or "").strip():
-        return False
-    if arguments.get("mode") or arguments.get("operation") or arguments.get("method"):
-        return False
-    if arguments.get("values") is not None:
-        return False
-    if isinstance(arguments.get("ids"), list):
-        return False
-    return any(key in arguments for key in ODOO_QUERY_SHAPE_KEYS)
-
-
-def _odoo_query_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    kwargs = _odoo_kwargs(arguments)
-    domain = arguments.get("domain", _odoo_positional_arg(arguments, 0, []))
-    fields = arguments.get("fields", _odoo_positional_arg(arguments, 1, kwargs.get("fields")))
-    converted: dict[str, Any] = {
-        "mode": "query",
-        "model": arguments.get("model"),
-        "domain": domain if isinstance(domain, list) else [],
-    }
-    if isinstance(fields, list):
-        converted["fields"] = fields
-    for key in ("limit", "offset", "order"):
-        value = arguments.get(key, kwargs.get(key))
-        if value is not None:
-            converted[key] = value
-    return converted
-
-
-def _odoo_read_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    kwargs = _odoo_kwargs(arguments)
-    ids = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
-    fields = arguments.get("fields", _odoo_positional_arg(arguments, 1, kwargs.get("fields")))
-    converted: dict[str, Any] = {
-        "mode": "records",
-        "model": arguments.get("model"),
-        "ids": ids if isinstance(ids, list) else [],
-    }
-    if isinstance(fields, list):
-        converted["fields"] = fields
-    return converted
-
-
-def _odoo_mutation_arguments(arguments: dict[str, Any], operation: str) -> dict[str, Any]:
-    converted: dict[str, Any] = {
-        "mode": operation,
-        "operation": operation,
-        "model": arguments.get("model"),
-    }
-    if operation == "create":
-        converted["values"] = arguments.get("values", _odoo_positional_arg(arguments, 0, {}))
-    elif operation == "write":
-        converted["ids"] = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
-        converted["values"] = arguments.get("values", _odoo_positional_arg(arguments, 1, {}))
-    elif operation == "delete":
-        converted["ids"] = arguments.get("ids", _odoo_positional_arg(arguments, 0, []))
-    return converted
-
-
-def _odoo_alias_to_ops_runner(alias: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    method = str(arguments.get("method") or "").strip()
-    normalized_alias = alias.lower()
-    operation = normalized_alias.removeprefix("odoo_")
-    if normalized_alias == "odoo":
-        operation = method
-    if operation in {"search_read", "search"}:
-        return _odoo_query_arguments(arguments)
-    if operation in {"read", "browse"}:
-        return _odoo_read_arguments(arguments)
-    if operation == "search_count":
-        return {
-            "mode": "count",
-            "model": arguments.get("model"),
-            "domain": arguments.get("domain", _odoo_positional_arg(arguments, 0, [])),
-        }
-    if operation in {"fields_get", "schema"}:
-        return {
-            "mode": "schema",
-            "model": arguments.get("model"),
-            "fields": arguments.get("fields"),
-        }
-    if operation in {"create", "write", "unlink", "delete"}:
-        return _odoo_mutation_arguments(arguments, "delete" if operation == "unlink" else operation)
-    if method:
-        converted = {
-            "mode": "execute",
-            "model": arguments.get("model"),
-            "method": method,
-            "args": arguments.get("args") or [],
-            "kwargs": arguments.get("kwargs") or {},
-        }
-        for key in ("ids", "record_id"):
-            if key in arguments:
-                converted[key] = arguments[key]
-        return converted
-    if _looks_like_odoo_query(arguments):
-        return _odoo_query_arguments(arguments)
-    return {"mode": "execute", **arguments}
+    path = parsed.path or target
+    query = parsed.query
+    parts = [part for part in path.split("/") if part]
+    if parts and parts[0].lower() in GRAPH_API_VERSION_SEGMENTS:
+        if not normalized.get("api_version"):
+            normalized["api_version"] = parts[0]
+        path = "/" + "/".join(parts[1:])
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if query:
+        path = f"{path}?{query}"
+    normalized["path"] = path
+    return normalized
 
 
 def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     cleaned = _strip_function_prefix(name)
     normalized = _normalize_tool_name(cleaned)
     normalized_lower = normalized.lower()
-    mapped = TOOL_NAME_MAP.get(normalized) or TOOL_NAME_MAP.get(normalized_lower)
-    if not mapped:
-        mapped = (
-            normalized_lower
-            if (
-                normalized_lower in {
-                    "ms_azure_cli",
-                    "ms_graph",
-                    "ms_graph_powershell",
-                    "ms_exchange_powershell",
-                    "ms_teams_powershell",
-                    "ms_sharepoint_pnp_powershell",
-                    "ms_az_powershell",
-                    "ms_bicep",
-                    "github_cli",
-                    "odoo_ops_runner",
-                }
-                or normalized_lower == "odoo"
-                or normalized_lower.startswith("odoo_")
-            )
-            else cleaned
-        )
-    if mapped in MICROSOFT_ADMIN_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner"}:
+    canonical_names = {
+        "ms_azure_cli",
+        "ms_graph",
+        "ms_graph_powershell",
+        "ms_exchange_powershell",
+        "ms_teams_powershell",
+        "ms_sharepoint_pnp_powershell",
+        "ms_az_powershell",
+        "ms_bicep",
+        "github_cli",
+        "odoo_ops_runner",
+        "document_reader",
+    }
+    mapped = MICROSOFT_TOOL_NAME_ALIASES.get(
+        normalized_lower,
+        normalized_lower if normalized_lower in canonical_names else cleaned,
+    )
+    if mapped == "ms_graph":
+        return mapped, _normalize_ms_graph_arguments(arguments)
+    if mapped in MICROSOFT_ADMIN_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner", "document_reader"}:
         return mapped, arguments
-    if mapped == "odoo" or mapped.startswith("odoo_"):
-        return "odoo_ops_runner", _odoo_alias_to_ops_runner(mapped, arguments)
     return mapped, arguments
 
 
@@ -883,9 +796,6 @@ def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
 def _normalize_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
     mode = str(normalized.get("mode") or "").strip()
-    if not mode and _looks_like_odoo_query(normalized):
-        normalized["mode"] = "query"
-        mode = "query"
     if mode == "message" and not normalized.get("operation"):
         normalized["operation"] = "post"
     return normalized
@@ -1003,14 +913,12 @@ def _build_tool_definitions(tools: list[AITool]) -> list[dict[str, Any]]:
     """Convert AITool records to OpenAI-compatible tool definitions.
     Normalizes names to comply with the API's allowed character set.
     """
-    global TOOL_NAME_MAP
     definitions = []
     for tool in tools:
         schema = tool.input_schema
         if not schema:
             continue
         normalized = _normalize_tool_name(tool.name)
-        TOOL_NAME_MAP[normalized] = tool.name
         if normalized != tool.name:
             logger.info("Normalized tool name '%s' to '%s'", tool.name, normalized)
         definitions.append({
@@ -1173,21 +1081,18 @@ async def _execute_tool_call_impl(
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
-    if tool_name.startswith("odoo_"):
-        if tool_name == "odoo_ops_runner":
-            arguments = _normalize_odoo_ops_runner_arguments(arguments)
-            validation_error = _validate_odoo_ops_runner_arguments(arguments)
-            if validation_error:
-                return validation_error
+    if tool_name == "odoo_ops_runner":
+        arguments = _normalize_odoo_ops_runner_arguments(arguments)
+        validation_error = _validate_odoo_ops_runner_arguments(arguments)
+        if validation_error:
+            return validation_error
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
-        path = _map_odoo_tool_to_path(tool_name)
-        if not path:
-            return {"error_type": "unknown_tool", "tool_name": tool_name}
         payload = {
             "credentials": credentials,
             "identity_mode": "user-delegated",
             **arguments,
         }
+        path = "/odoo/ops/run"
         url = f"{ODOO_CONNECTOR_URL.rstrip('/')}{path}" if ODOO_CONNECTOR_URL else ""
         if not url:
             return {"error": "Odoo connector URL not configured"}
@@ -1211,7 +1116,7 @@ async def _execute_tool_call_impl(
                 "message": detail.get("message") or "Connector returned an error.",
             }
         result = response.json()
-        if tool_name == "odoo_ops_runner" and isinstance(result, dict):
+        if isinstance(result, dict):
             return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
@@ -2016,7 +1921,7 @@ def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
         if tool_result.get("tool_name") != "odoo_ops_runner":
             continue
         arguments = tool_result.get("arguments") or {}
-        if tool_result.get("tool_name") == "odoo_ops_runner" and arguments.get("mode") not in ("report", "account_report"):
+        if tool_result.get("tool_name") == "odoo_ops_runner" and arguments.get("mode") != "report":
             continue
         result = tool_result.get("result", {})
         if not isinstance(result, dict):
@@ -2286,10 +2191,6 @@ def _guard_connected_system_denial(
     )
 
 
-def _map_odoo_tool_to_path(tool_name: str) -> str:
-    return "/odoo/ops/run" if tool_name == "odoo_ops_runner" else ""
-
-
 async def _load_connected_accounts(db: AsyncSession, user_id: Optional[UUID]) -> ConnectedAccountsSnapshot:
     if not user_id:
         return ConnectedAccountsSnapshot()
@@ -2455,7 +2356,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         )
         guidance_parts.append("Odoo: use `odoo_ops_runner` only. Select a broad mode for the operation.")
         guidance_parts.append(
-            "Modes: health, schema, query, aggregate, report, attachment, content, message, mutation, execute. "
+            "Modes: health, schema, query, count, aggregate, report, attachment, content, message, mutation, execute. "
             "For create/write/delete, use mode `mutation` with the `operation` field."
         )
         guidance_parts.append(

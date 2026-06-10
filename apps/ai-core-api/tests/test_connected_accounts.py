@@ -135,7 +135,7 @@ class TestConnectedAccountsFlow:
             return {"status": "not_connected", "provider": provider}
 
         async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
-            assert profile == "graph"
+            assert profile in {"graph", "arm", "exchange", "teams", "sharepoint"}
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
@@ -256,12 +256,16 @@ class TestConnectedAccountsFlow:
             "graph": "authorized",
             "arm": "missing",
             "exchange": "authorized",
+            "teams": "missing",
+            "sharepoint": "not_checked",
         }
         assert connectors["microsoft_admin"]["metadata"]["overall_status"] == "partial"
         assert connectors["microsoft_admin"]["state"]["readiness_status"] == "partial"
-        assert "Needs attention: Azure Resource Manager" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
-        assert "Teams Admin" not in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
-        assert "SharePoint / PnP" not in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert (
+            "Needs attention: Azure Resource Manager, Teams Admin"
+            in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        )
+        assert "Not checked: SharePoint / PnP" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
 
     @pytest.mark.asyncio
     async def test_microsoft_admin_token_state_refreshes_before_reporting_expired(self):

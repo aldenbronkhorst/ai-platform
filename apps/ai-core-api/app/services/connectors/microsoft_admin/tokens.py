@@ -144,10 +144,6 @@ async def _get_fresh_microsoft_admin_token(user_id: Optional[UUID]) -> Optional[
         }
         updated["username"] = extract_microsoft_admin_username(updated)
         await store_token(MICROSOFT_ADMIN_PROVIDER, user_id, updated)
-        if scope_profile == "arm":
-            from app.services.connectors.microsoft_admin.azure_cli import ensure_azure_cli_profile
-
-            await ensure_azure_cli_profile(user_id, updated)
         return updated
     except Exception as exc:
         logger.warning("Microsoft Admin token refresh failed for user %s: %s", user_id.hex[:12], exc)
@@ -157,13 +153,10 @@ async def _get_fresh_microsoft_admin_token(user_id: Optional[UUID]) -> Optional[
 async def _get_fresh_microsoft_admin_token_for_scope(
     user_id: Optional[UUID],
     scope: str,
-    *,
-    require_account_metadata: bool = False,
 ) -> Optional[dict[str, Any]]:
     """Return a fresh Microsoft token for a requested Microsoft Admin resource."""
     if not user_id:
         return None
-    from app.services.connectors.microsoft_admin.azure_cli import _has_azure_cli_account_metadata
 
     token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id)
     if not token_data:
@@ -175,8 +168,7 @@ async def _get_fresh_microsoft_admin_token_for_scope(
     if scope_profile and token_data.get("scope_profile") == scope_profile:
         expires_on = _expires_on(token_data)
         if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            if not require_account_metadata or _has_azure_cli_account_metadata(token_data):
-                return token_data
+            return token_data
     cached_token = (token_data.get("delegated_tokens") or {}).get(scope_profile) if scope_profile else None
     cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error(cached_token)
     if scope_profile == "sharepoint" and cached_token_is_current:
@@ -185,9 +177,7 @@ async def _get_fresh_microsoft_admin_token_for_scope(
     if cached_token_is_current:
         expires_on = _expires_on(cached_token)
         if cached_token.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-            merged_token = {**token_data, **cached_token}
-            if not require_account_metadata or _has_azure_cli_account_metadata(merged_token):
-                return merged_token
+            return {**token_data, **cached_token}
 
     refresh_token = cached_token.get("refresh_token") if cached_token_is_current else None
     refresh_token = refresh_token or token_data.get("refresh_token")
@@ -365,11 +355,7 @@ async def get_microsoft_admin_token(
             return None
     else:
         scope = MICROSOFT_GRAPH_SCOPE
-    return await _get_fresh_microsoft_admin_token_for_scope(
-        user_id,
-        scope,
-        require_account_metadata=bool(context.get("require_account_metadata")),
-    )
+    return await _get_fresh_microsoft_admin_token_for_scope(user_id, scope)
 
 
 def _expires_on(token_data: dict[str, Any]) -> int:

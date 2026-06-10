@@ -334,7 +334,7 @@ def _connector_state(account: Optional[AIConnectedAccount], provider: str, inclu
     }
 
 
-MICROSOFT_ADMIN_PROFILE_ORDER = MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
+MICROSOFT_ADMIN_PROFILE_ORDER = (*MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES, "sharepoint")
 MICROSOFT_ADMIN_READY_PROFILE_STATUSES = {"authorized", "ready", "available", "read_only"}
 MICROSOFT_ADMIN_ATTENTION_PROFILE_STATUSES = {
     "missing",
@@ -432,6 +432,13 @@ def _microsoft_admin_overall_authorization_status(
     rows_by_profile = {row["profile"]: row for row in profile_rows}
     required_rows = [rows_by_profile.get(profile, {}) for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES]
     if all(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
+        optional_rows = [
+            row
+            for row in profile_rows
+            if row.get("profile") not in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
+        ]
+        if any(row.get("status") not in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in optional_rows):
+            return "partial"
         return "ready"
     if any(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
         return "partial"

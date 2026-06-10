@@ -77,7 +77,7 @@ MICROSOFT_ADMIN_SCOPE_PROFILES = {
     "teams": (TEAMS_TENANT_ADMIN_SCOPE,),
     "sharepoint": (),
 }
-MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES = ("graph", "arm", "exchange")
+MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES = ("graph", "arm", "exchange", "teams")
 MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
     "arm": "Azure Resource Manager",
     "graph": "Microsoft Graph Admin",

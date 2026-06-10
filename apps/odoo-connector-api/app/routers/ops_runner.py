@@ -903,7 +903,7 @@ def _verify_mutation(client: OdooClient, req: OdooOpsRunnerRequest, operation: s
 
 
 def _run_mutation(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
-    operation = req.operation or (req.mode if req.mode in ("create", "write") else None)
+    operation = req.operation
     if operation == "create":
         result, affected_ids = _create_record(client, req)
     elif operation == "write":
@@ -1004,18 +1004,13 @@ MODE_HANDLERS: dict[str, Callable[[OdooClient, OdooOpsRunnerRequest], dict[str, 
     "health": _run_health,
     "schema": _run_schema,
     "query": _run_query,
-    "records": _run_query,
     "count": _run_count,
     "aggregate": _run_aggregate,
     "report": _run_report,
-    "account_report": _run_report,
     "attachment": _run_attachment,
     "content": _run_content,
     "message": _run_message,
     "mutation": _run_mutation,
-    "write": _run_mutation,
-    "create": _run_mutation,
-    "delete": _run_mutation,
     "execute": _run_execute,
 }
 
