@@ -43,9 +43,23 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
 
     if settings.debug and token == "mock-local-token":
         fallback_email = "alden@lotslotsmore.com"
-        result = await db.execute(select(AIUser).where(AIUser.email == fallback_email))
-        db_user = result.scalar_one_or_none()
-        if not db_user:
+        try:
+            result = await db.execute(select(AIUser).where(AIUser.email == fallback_email))
+            db_user = result.scalar_one_or_none()
+            if not db_user:
+                db_user = AIUser(
+                    id=uuid.UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
+                    email=fallback_email,
+                    display_name="Alden Bronkhorst",
+                    role="admin",
+                    is_active="true"
+                )
+                db.add(db_user)
+                await db.commit()
+                await db.refresh(db_user)
+        except Exception:
+            if settings.app_env == "production":
+                raise
             db_user = AIUser(
                 id=uuid.UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
                 email=fallback_email,
@@ -53,9 +67,6 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
                 role="admin",
                 is_active="true"
             )
-            db.add(db_user)
-            await db.commit()
-            await db.refresh(db_user)
         return {
             "user_id": db_user.id,
             "email": db_user.email,

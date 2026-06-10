@@ -115,16 +115,26 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "return prev;" in app_content
 
 
-def test_voice_uses_browser_recognition_without_shadow_microphone_stream():
+def test_voice_uses_recording_fallback_when_browser_recognition_has_no_text():
     hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
+    app_path = os.path.join(SRC_DIR, "App.tsx")
     with open(hook_path, "r", encoding="utf-8") as f:
-        content = f.read()
+        hook_content = f.read()
+    with open(app_path, "r", encoding="utf-8") as f:
+        app_content = f.read()
 
-    assert "SpeechRecognition" in content
-    assert "micStreamRef" not in content
-    assert "getUserMedia" not in content
-    assert "recognition.start()" in content
-    assert "recognitionRef.current?.stop()" in content
+    assert "SpeechRecognition" in hook_content
+    assert "AudioContext" in hook_content
+    assert "getUserMedia" in hook_content
+    assert "transcribeAudio" in hook_content
+    assert "audio/wav" in hook_content
+    assert "finalTranscriptEmittedRef" in hook_content
+    assert "hasFinalTranscriptEmitted()" in hook_content
+    assert "recognition.start()" in hook_content
+    assert "recognitionRef.current?.stop()" in hook_content
+    assert "/voice/transcribe" in app_content
+    assert "FormData" in app_content
+    assert "Authorization: `Bearer ${accessToken}`" in app_content
 
 
 def test_voice_commits_final_results_and_tracks_interim_text():
