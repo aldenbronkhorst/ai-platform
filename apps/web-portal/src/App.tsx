@@ -108,11 +108,41 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const handleTranscript = useCallback((transcript: string) => {
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
   }, []);
+  const transcribeVoiceAudio = useCallback(async (audioBlob: Blob) => {
+    if (!accessToken) throw new Error("Please sign in again before using voice input.");
+    const formData = new FormData();
+    const extension = audioBlob.type.includes("ogg")
+      ? "ogg"
+      : audioBlob.type.includes("mp4")
+        ? "m4a"
+        : audioBlob.type.includes("wav")
+          ? "wav"
+          : "webm";
+    formData.append("file", audioBlob, `voice-input.${extension}`);
+    const res = await fetch(`${APIM_BASE_URL}/voice/transcribe`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: formData,
+    });
+    if (!res.ok) {
+      let message = `Voice transcription failed with HTTP ${res.status}.`;
+      try {
+        const detail = await res.json();
+        const payload = detail?.detail || detail;
+        message = payload?.error_message || payload?.message || message;
+      } catch {
+        // Keep the HTTP status message if the response is not JSON.
+      }
+      throw new Error(message);
+    }
+    const data = await res.json() as { transcript?: string };
+    return (data.transcript || "").trim();
+  }, [accessToken]);
   const {
     voiceState,
     toggleVoice: handleToggleVoice,
     interimTranscript: voiceInterimTranscript,
-  } = useSpeechRecognition(handleTranscript);
+  } = useSpeechRecognition(handleTranscript, { transcribeAudio: transcribeVoiceAudio });
   const activeUserEmail = activeUser?.email || "";
 
   useEffect(() => {
