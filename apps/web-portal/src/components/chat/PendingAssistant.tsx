@@ -118,7 +118,11 @@ function displayToolName(value: string) {
 
 function displaySystemName(value: string) {
   if (value === "odoo") return "Odoo";
-  if (value === "microsoft_admin") return "Microsoft Admin";
+  if (value === "azure_cli") return "Azure CLI";
+  if (value === "microsoft_graph") return "Microsoft Graph";
+  if (value === "exchange_online") return "Exchange Online";
+  if (value === "teams_admin") return "Teams Admin";
+  if (value === "sharepoint_pnp") return "SharePoint / PnP";
   if (value === "github") return "GitHub";
   return value.replace(/_/g, " ");
 }

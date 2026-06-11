@@ -12,7 +12,8 @@ from app.services.connected_account_state import effective_connected_accounts
 from app.services.tool_registry import (
     CONNECTOR_TOOLS_BY_SYSTEM,
     CONSOLIDATED_TOOL_NAMES,
-    MICROSOFT_ADMIN_TOOL_NAMES,
+    MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
+    MICROSOFT_NATIVE_TOOL_NAMES,
     is_model_facing_tool,
 )
 
@@ -79,24 +80,35 @@ SYSTEM_INTENT_KEYWORDS = {
         "expense", "expenses", "payment", "payments",
         "receipt", "receipts", "crm",
     },
-    "microsoft_admin": {
+    "azure_cli": {
         "azure", "az", "resource group", "resource groups", "subscription",
         "subscriptions", "tenant", "container app", "container apps", "revision",
         "revisions", "key vault", "storage",
         "blob", "service bus", "queue", "queues", "azure search", "foundry",
         "apim", "api management", "managed identity",
         "rbac", "role assignment", "vnet", "network", "dns", "keda",
-        "bicep", "microsoft admin", "m365", "microsoft 365", "office 365",
+        "bicep", "cost", "costs", "billing", "spend",
+    },
+    "microsoft_graph": {
+        "microsoft admin", "m365", "microsoft 365", "office 365",
         "microsoft", "entra", "entra id", "azure ad", "azure active directory",
-        "aad", "graph", "microsoft graph", "powershell", "pwsh",
-        "exchange", "exchange online", "mailbox", "mailboxes", "mail flow",
-        "transport rule", "message trace", "intune", "device management",
+        "aad", "graph", "microsoft graph", "intune", "device management",
         "managed device", "compliance policy", "conditional access",
-        "teams admin", "sharepoint admin", "connect-mggraph", "connect-exchangeonline",
-        "connect-microsoftteams", "connect-azaccount", "microsoft user",
-        "microsoft users", "ms user", "ms users", "m365 user", "m365 users",
-        "microsoft active user", "microsoft active users", "entra user", "entra users",
-        "user principal name", "userprincipalname",
+        "microsoft user", "microsoft users", "ms user", "ms users",
+        "m365 user", "m365 users", "microsoft active user",
+        "microsoft active users", "entra user", "entra users",
+        "user principal name", "userprincipalname", "connect-mggraph",
+    },
+    "exchange_online": {
+        "exchange", "exchange online", "mailbox", "mailboxes", "mail flow",
+        "transport rule", "message trace", "connect-exchangeonline",
+    },
+    "teams_admin": {
+        "teams admin", "teams powershell", "connect-microsoftteams",
+    },
+    "sharepoint_pnp": {
+        "sharepoint admin", "sharepoint powershell", "pnp", "pnp powershell",
+        "connect-pnponline",
     },
     "github": {
         "github", "gh", "git", "repo", "repos", "repository", "repositories",
@@ -159,9 +171,11 @@ def _requested_systems(user_message: str, task_type: str) -> set[str]:
         if any(_contains_keyword(message, tokens, keyword) for keyword in keywords):
             requested.add(system)
     if _has_microsoft_abbreviation_intent(message, tokens):
-        requested.add("microsoft_admin")
+        requested.add("microsoft_graph")
 
-    if task_type in {"microsoft_admin", "github", "odoo"}:
+    if task_type == "microsoft_admin":
+        requested.update(MICROSOFT_NATIVE_CONNECTOR_SYSTEMS)
+    elif task_type in {"github", "odoo", *MICROSOFT_NATIVE_CONNECTOR_SYSTEMS}:
         requested.add(task_type)
     return requested
 
@@ -184,7 +198,7 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
             selected.add(tool_name)
 
     if "microsoft admin" in message or "all microsoft" in message or any(pattern in message for pattern in BROAD_CONNECTED_PATTERNS):
-        selected.update(MICROSOFT_ADMIN_TOOL_NAMES)
+        selected.update(MICROSOFT_NATIVE_TOOL_NAMES)
     if _has_microsoft_abbreviation_intent(message, tokens) and not selected:
         selected.add("ms_graph")
     if not selected:
@@ -193,8 +207,11 @@ def _requested_microsoft_tools(user_message: str) -> set[str]:
 
 
 def _requested_connector_tools_for_system(system: str, user_message: str) -> set[str]:
-    if system == "microsoft_admin":
-        return _requested_microsoft_tools(user_message)
+    if system in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS:
+        requested = _requested_microsoft_tools(user_message)
+        system_tool_names = set(CONNECTOR_TOOLS_BY_SYSTEM.get(system, frozenset()))
+        selected = requested.intersection(system_tool_names)
+        return selected or system_tool_names
     tool_names = CONNECTOR_TOOLS_BY_SYSTEM.get(system, frozenset())
     if len(tool_names) == 1:
         return set(tool_names)

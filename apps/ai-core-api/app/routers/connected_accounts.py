@@ -20,15 +20,12 @@ from app.core.database import get_db
 from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
-from app.services.connected_account_state import effective_connected_accounts
+from app.services.connected_account_state import DELEGATED_TOKEN_PROVIDERS, effective_connected_accounts
 from app.services.connectors.microsoft_admin.constants import (
-    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
-    microsoft_admin_app_name_for_scope_profile,
-    microsoft_admin_scope_label,
-    microsoft_admin_scope_summary,
-    microsoft_admin_scope_profile,
+    MICROSOFT_NATIVE_CONNECTOR_PROFILES,
+    microsoft_native_app_name_for_provider,
+    microsoft_native_label_for_provider,
 )
-from app.services.token_storage import retrieve_token
 from app.schemas.schemas import AIAuditEventCreate
 
 router = APIRouter(prefix="/connected-accounts", tags=["connected-accounts"])
@@ -310,7 +307,7 @@ def _diagnostics_status(account: Optional[AIConnectedAccount]) -> str:
 
 
 def _cli_status(account: Optional[AIConnectedAccount], provider: str) -> str:
-    if provider not in {"microsoft_admin", "github"}:
+    if provider not in DELEGATED_TOKEN_PROVIDERS:
         return "not_applicable"
     status_value = _account_status(account)
     if status_value in {"error", "expired"}:
@@ -327,134 +324,11 @@ def _connector_state(account: Optional[AIConnectedAccount], provider: str, inclu
     return {
         "configured": _is_configured(account),
         "account_status": _account_status(account),
-        "token_status": token_status or ("not_checked" if provider in {"microsoft_admin", "github"} else "not_applicable"),
+        "token_status": token_status or ("not_checked" if provider in DELEGATED_TOKEN_PROVIDERS else "not_applicable"),
         "diagnostics_status": _diagnostics_status(account),
         "cli_status": _cli_status(account, provider),
-        "source": "token_store" if include_token_state and provider in {"microsoft_admin", "github"} else "database",
+        "source": "token_store" if include_token_state and provider in DELEGATED_TOKEN_PROVIDERS else "database",
     }
-
-
-MICROSOFT_ADMIN_PROFILE_ORDER = (*MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES, "sharepoint")
-MICROSOFT_ADMIN_READY_PROFILE_STATUSES = {"authorized", "ready", "available", "read_only"}
-MICROSOFT_ADMIN_ATTENTION_PROFILE_STATUSES = {
-    "missing",
-    "missing_consent",
-    "missing_permission",
-    "limited",
-    "failed",
-    "error",
-}
-
-
-def _authorized_microsoft_admin_profiles(token_data: Optional[dict]) -> set[str]:
-    if not token_data:
-        return set()
-
-    authorized: set[str] = set()
-    primary_profile = token_data.get("scope_profile")
-    if primary_profile:
-        authorized.add(microsoft_admin_scope_profile(primary_profile))
-
-    for profile in token_data.get("consented_scope_profiles") or []:
-        authorized.add(microsoft_admin_scope_profile(profile))
-
-    delegated_tokens = token_data.get("delegated_tokens") or {}
-    if isinstance(delegated_tokens, dict):
-        for profile, profile_token in delegated_tokens.items():
-            if isinstance(profile_token, dict) and (
-                profile_token.get("access_token") or profile_token.get("refresh_token")
-            ):
-                authorized.add(microsoft_admin_scope_profile(profile))
-
-    return {profile for profile in authorized if profile in MICROSOFT_ADMIN_PROFILE_ORDER}
-
-
-async def _microsoft_admin_authorization_metadata(
-    user_id: UUID,
-    account: Optional[AIConnectedAccount],
-    include_token_state: bool,
-) -> dict:
-    token_data = None
-    if include_token_state and _is_configured(account):
-        token_data = await retrieve_token("microsoft_admin", user_id)
-
-    authorized_profiles = _authorized_microsoft_admin_profiles(token_data)
-    profile_rows = []
-    for profile in MICROSOFT_ADMIN_PROFILE_ORDER:
-        if not _is_configured(account):
-            profile_status = "not_connected"
-        elif not include_token_state:
-            profile_status = "not_checked"
-        elif profile == "sharepoint":
-            profile_status = "authorized" if profile in authorized_profiles else "not_checked"
-        else:
-            profile_status = "authorized" if profile in authorized_profiles else "missing"
-        profile_rows.append({
-            "profile": profile,
-            "label": microsoft_admin_scope_label(profile),
-            "status": profile_status,
-            "message": _microsoft_admin_profile_status_message(profile, profile_status),
-            "scope_summary": microsoft_admin_scope_summary(profile),
-            "auth_app_name": microsoft_admin_app_name_for_scope_profile(profile),
-        })
-
-    overall_status = _microsoft_admin_overall_authorization_status(profile_rows, account, include_token_state)
-    authorized_labels = [row["label"] for row in profile_rows if row["status"] in MICROSOFT_ADMIN_READY_PROFILE_STATUSES]
-    missing_labels = [row["label"] for row in profile_rows if row["status"] in MICROSOFT_ADMIN_ATTENTION_PROFILE_STATUSES]
-    not_checked_labels = [row["label"] for row in profile_rows if row["status"] == "not_checked"]
-    summary_parts = []
-    if authorized_labels:
-        summary_parts.append(f"Ready: {', '.join(authorized_labels)}")
-    if missing_labels:
-        summary_parts.append(f"Needs attention: {', '.join(missing_labels)}")
-    if not_checked_labels:
-        summary_parts.append(f"Not checked: {', '.join(not_checked_labels)}")
-    if not summary_parts and _is_configured(account):
-        summary_parts.append("Authorization profiles not checked")
-
-    return {
-        "overall_status": overall_status,
-        "authorization_profiles": profile_rows,
-        "authorization_summary": "; ".join(summary_parts) if summary_parts else None,
-    }
-
-
-def _microsoft_admin_overall_authorization_status(
-    profile_rows: list[dict],
-    account: Optional[AIConnectedAccount],
-    include_token_state: bool,
-) -> str:
-    if not _is_configured(account):
-        return "not_connected"
-    if not include_token_state:
-        return "not_checked"
-
-    rows_by_profile = {row["profile"]: row for row in profile_rows}
-    required_rows = [rows_by_profile.get(profile, {}) for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES]
-    if all(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
-        optional_rows = [
-            row
-            for row in profile_rows
-            if row.get("profile") not in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES
-        ]
-        if any(row.get("status") not in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in optional_rows):
-            return "partial"
-        return "ready"
-    if any(row.get("status") in MICROSOFT_ADMIN_READY_PROFILE_STATUSES for row in required_rows):
-        return "partial"
-    return "setup_required"
-
-
-def _microsoft_admin_profile_status_message(profile: str, status_value: str) -> str:
-    if profile == "teams" and status_value in {"missing", "missing_consent", "missing_permission"}:
-        return "Requires Skype and Teams Tenant Admin API delegated user_impersonation and tenant admin consent."
-    if profile == "sharepoint" and status_value == "not_checked":
-        return "Requires a SharePoint site_url or admin_url for validation."
-    if status_value == "authorized":
-        return "Token available for this signed-in Microsoft Admin user."
-    if status_value == "missing":
-        return "Token is not available for this signed-in Microsoft Admin user."
-    return microsoft_admin_app_name_for_scope_profile(profile)
 
 
 async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key: str) -> dict:
@@ -1159,15 +1033,7 @@ async def get_connected_accounts(
     user_id = auth.get("user_id")
     db_accounts = await effective_connected_accounts(db, user_id, include_token_state=include_token_state)
     odoo = next((a for a in db_accounts if a.provider == "odoo"), None)
-    microsoft_admin = next((a for a in db_accounts if a.provider == "microsoft_admin"), None)
     github = next((a for a in db_accounts if a.provider == "github"), None)
-    microsoft_auth_metadata = await _microsoft_admin_authorization_metadata(
-        user_id,
-        microsoft_admin,
-        include_token_state,
-    )
-    microsoft_admin_state = _connector_state(microsoft_admin, "microsoft_admin", include_token_state)
-    microsoft_admin_state["readiness_status"] = microsoft_auth_metadata.get("overall_status")
 
     connectors = [
         {
@@ -1185,31 +1051,7 @@ async def get_connected_accounts(
                 "provider_username": odoo.provider_username if odoo else None,
             } if odoo else {},
         },
-        {
-            "connector_key": "microsoft_admin",
-            "display_name": "Microsoft Admin",
-            "subtitle": "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager",
-            "status": _account_status(microsoft_admin),
-            "auth_method": "delegated_microsoft",
-            "last_verified_at": _account_last_verified(microsoft_admin),
-            "actions_available": ["connect", "test", "disconnect"],
-            "state": microsoft_admin_state,
-            "metadata": {
-                "provider_username": microsoft_admin.provider_username if microsoft_admin else None,
-                "permission_summary": microsoft_admin.permission_summary if microsoft_admin else None,
-                "tooling": [
-                    "Direct Microsoft Graph",
-                    "Microsoft Graph PowerShell",
-                    "Exchange Online PowerShell",
-                    "Microsoft Teams PowerShell",
-                    "SharePoint / PnP PowerShell",
-                    "Azure PowerShell",
-                    "Azure Resource Manager CLI",
-                    "Bicep CLI",
-                ],
-                **microsoft_auth_metadata,
-            } if microsoft_admin else {},
-        },
+        *_microsoft_native_connector_cards(db_accounts, include_token_state),
         {
             "connector_key": "github",
             "display_name": "GitHub CLI",
@@ -1226,6 +1068,50 @@ async def get_connected_accounts(
         },
     ]
     return {"connectors": connectors}
+
+
+def _microsoft_native_connector_cards(db_accounts: list[AIConnectedAccount], include_token_state: bool) -> list[dict]:
+    subtitles = {
+        "azure_cli": "Native Azure CLI, Azure PowerShell, and Bicep",
+        "microsoft_graph": "Microsoft Graph and Graph PowerShell",
+        "exchange_online": "Exchange Online PowerShell",
+        "teams_admin": "Microsoft Teams PowerShell",
+        "sharepoint_pnp": "SharePoint / PnP PowerShell",
+    }
+    tooling = {
+        "azure_cli": ["Azure CLI", "Azure PowerShell", "Bicep CLI"],
+        "microsoft_graph": ["Direct Microsoft Graph", "Microsoft Graph PowerShell"],
+        "exchange_online": ["Exchange Online PowerShell"],
+        "teams_admin": ["Microsoft Teams PowerShell"],
+        "sharepoint_pnp": ["SharePoint / PnP PowerShell"],
+    }
+    cards: list[dict] = []
+    for provider in MICROSOFT_NATIVE_CONNECTOR_PROFILES:
+        account = next((a for a in db_accounts if a.provider == provider), None)
+        cards.append(
+            {
+                "connector_key": provider,
+                "display_name": microsoft_native_label_for_provider(provider),
+                "subtitle": subtitles.get(provider, "Native Microsoft connector"),
+                "status": _account_status(account),
+                "auth_method": "native_microsoft",
+                "last_verified_at": _account_last_verified(account),
+                "actions_available": ["connect", "test", "disconnect"],
+                "state": _connector_state(account, provider, include_token_state),
+                "metadata": {
+                    "provider_username": account.provider_username if account else None,
+                    "permission_summary": account.permission_summary if account else None,
+                    "tooling": tooling.get(provider, []),
+                    "auth_app_name": microsoft_native_app_name_for_provider(provider),
+                    "native_connector": True,
+                } if account else {
+                    "tooling": tooling.get(provider, []),
+                    "auth_app_name": microsoft_native_app_name_for_provider(provider),
+                    "native_connector": True,
+                },
+            }
+        )
+    return cards
 
 
 @router.get("/odoo/status", response_model=OdooStatusResponse)

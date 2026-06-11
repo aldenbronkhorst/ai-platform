@@ -1,4 +1,4 @@
-"""Shared PowerShell and result helpers for Microsoft Admin tools."""
+"""Shared PowerShell and result helpers for native Microsoft tools."""
 from __future__ import annotations
 
 import os
@@ -29,7 +29,7 @@ def _failed_microsoft_admin_result(
     message: str,
     command: str = "",
     error_type: str = "invalid_tool_arguments",
-    connector: str = "microsoft_admin",
+    connector: str = "microsoft_native",
 ) -> dict[str, Any]:
     return {
         "stdout": "",
@@ -78,7 +78,7 @@ def _prepare_microsoft_admin_powershell_script(
         return request_id, bounded_timeout, script, _failed_microsoft_admin_result(
             request_id=request_id,
             mode=connector_name,
-            message="GitHub commands are not available in the Microsoft Admin connector. Use the GitHub connector.",
+            message="GitHub commands are not available in Microsoft tool connectors. Use the GitHub connector.",
             command=script,
             error_type="unsupported_command",
             connector=connector_name,
@@ -101,7 +101,7 @@ async def _run_microsoft_admin_powershell_tool(
         return _failed_microsoft_admin_result(
             request_id=request_id,
             mode=connector_name,
-            message="Microsoft Admin is not connected for this user.",
+            message=f"{connector_name} is not connected for this user.",
             command=script,
             error_type="not_connected",
             connector=connector_name,
@@ -112,8 +112,8 @@ async def _run_microsoft_admin_powershell_tool(
             request_id=request_id,
             mode=connector_name,
             message=(
-                f"{connector_name} authorization profile is not available. "
-                "Reconnect Microsoft Admin and ensure tenant consent/user permissions for this Microsoft workload."
+                f"{connector_name} token is not available. "
+                "Reconnect that Microsoft connector and ensure the signed-in user has the required workload permissions."
             ),
             command=script,
             error_type="authorization_profile_unavailable",
@@ -136,7 +136,7 @@ def _microsoft_admin_forbidden_command(script: str) -> bool:
 
 
 def _microsoft_admin_home_dir(user_id: UUID) -> str:
-    base = os.environ.get("MS_ADMIN_USER_HOME_ROOT", "/tmp/ai-platform-ms-admin")
+    base = os.environ.get("MS_NATIVE_USER_HOME_ROOT", os.environ.get("MS_ADMIN_USER_HOME_ROOT", "/tmp/ai-platform-ms-native"))
     path = os.path.join(base, user_id.hex)
     os.makedirs(path, mode=0o700, exist_ok=True)
     return path
@@ -181,7 +181,7 @@ async def run_microsoft_pwsh_tool(
         return _failed_microsoft_admin_result(
             request_id=request_id,
             mode=tool_name,
-            message="Microsoft Admin is not connected for this user.",
+            message=f"{tool_name} is not connected for this user.",
             command=script,
             error_type="not_connected",
             connector=tool_name,
@@ -201,7 +201,7 @@ async def run_microsoft_pwsh_tool(
         "mode": tool_name,
         "request_id": request_id,
         "status": "success" if result.success else "failed",
-        "auth_method": "user_scoped_microsoft_admin_shell",
+        "auth_method": "native_microsoft_tool_shell",
     })
     if not result.success:
         output.setdefault("error_type", "command_failed")

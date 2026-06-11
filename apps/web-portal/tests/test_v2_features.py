@@ -226,7 +226,7 @@ def test_connections_page_loads_backend_platform_tools():
     assert "canonicalPlatformTools(data)" in content
 
 
-def test_microsoft_admin_connect_uses_one_interactive_sign_in():
+def test_microsoft_native_connectors_use_separate_native_sign_ins():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -234,11 +234,21 @@ def test_microsoft_admin_connect_uses_one_interactive_sign_in():
     assert 'body: JSON.stringify({ scope_profile: "graph" })' not in content
     assert "MICROSOFT_CONSENT_STEPS" not in content
     assert "Authorize Missing Profiles" not in content
-    assert "One Microsoft Admin sign-in" in content
-    assert "Refresh User Sign-In" in content
-    assert "readiness_status" in content
-    assert "AuthorizationProfileList" in content
-    assert "authorization_profiles" in content
+    assert "microsoft_admin" not in content
+    assert "/connector/microsoft-native/" in content
+    assert "Azure CLI" in content
+    assert "Microsoft Graph" in content
+    assert "Exchange Online" in content
+    assert "Teams Admin" in content
+    assert "SharePoint / PnP" in content
+    assert "azure_cli" in content
+    assert "microsoft_graph" in content
+    assert "exchange_online" in content
+    assert "teams_admin" in content
+    assert "sharepoint_pnp" in content
+    assert 'connectorKey === "sharepoint_pnp"' in content
+    assert "window.prompt" in content
+    assert "site_url" in content
 
 
 def test_pending_activity_uses_result_keys_not_summary_object_keys():

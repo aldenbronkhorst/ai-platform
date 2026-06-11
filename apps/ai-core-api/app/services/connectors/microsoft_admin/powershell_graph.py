@@ -1,4 +1,4 @@
-"""ms_graph_powershell runner for the Microsoft Admin connector."""
+"""ms_graph_powershell runner for the native Microsoft Graph connector."""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -12,7 +12,7 @@ from app.services.connectors.microsoft_admin.powershell_common import (
 from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
 async def run_ms_graph_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute Microsoft Graph PowerShell through the Microsoft Admin connector."""
+    """Execute Microsoft Graph PowerShell through the Microsoft Graph connector."""
     request_id, timeout, script, error = _prepare_microsoft_admin_powershell_script(
         arguments,
         timeout,
@@ -41,7 +41,7 @@ def _ms_graph_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformGraph {
-    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Check Microsoft Admin tenant consent and the signed-in user''s directory roles.' }
+    if (-not $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN) { throw 'Microsoft Graph token is not available. Reconnect Microsoft Graph and check the signed-in user''s directory roles.' }
     Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
     $secureToken = ConvertTo-SecureString $env:AI_PLATFORM_GRAPH_ACCESS_TOKEN -AsPlainText -Force
     Connect-MgGraph -AccessToken $secureToken -NoWelcome

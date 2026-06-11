@@ -154,7 +154,7 @@ class AITool(Base, AuditMixin):
     name = Column(String(100), unique=True, nullable=False, index=True)
     display_name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    target_system = Column(String(50), nullable=False)  # odoo, github, microsoft_admin, runner, ai-platform
+    target_system = Column(String(50), nullable=False)  # odoo, github, azure_cli, microsoft_graph, runner, ai-platform
     input_schema = Column(JSON, nullable=True)
     output_schema = Column(JSON, nullable=True)
     version = Column(String(20), default="1.0.0", nullable=False)

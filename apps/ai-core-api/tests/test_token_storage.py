@@ -161,6 +161,55 @@ async def test_store_token_compacts_large_microsoft_admin_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_store_token_compacts_native_microsoft_provider_payload(monkeypatch):
+    monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
+    user_id = UUID("e4807f22-97c8-4000-8000-000000000001")
+    captured: dict[str, str] = {}
+
+    async def fake_set_secret_value(name: str, value: str) -> None:
+        captured["name"] = name
+        captured["value"] = value
+
+    monkeypatch.setattr(token_storage, "set_secret_value", fake_set_secret_value)
+
+    stored = await token_storage.store_token(
+        "microsoft_graph",
+        user_id,
+        {
+            "client_id": "graph-powershell-client-id",
+            "token_type": "Bearer",
+            "access_token": "graph-access-token",
+            "refresh_token": "graph-refresh-token",
+            "scope": "https://graph.microsoft.com/User.Read offline_access",
+            "scope_profile": "graph",
+            "username": "alden@example.com",
+            "id_token": "x" * 8_000,
+            "id_token_claims": {"name": "Alden", "blob": "y" * 8_000},
+            "client_info": "z" * 2_000,
+            "delegated_tokens": {
+                "graph": {
+                    "access_token": "graph-access-token",
+                    "refresh_token": "graph-refresh-token",
+                    "scope_profile": "graph",
+                    "id_token": "x" * 8_000,
+                    "client_info": "z" * 2_000,
+                },
+            },
+        },
+    )
+
+    assert stored is True
+    payload = json.loads(captured["value"])
+    assert len(captured["value"]) < 25_600
+    assert payload["provider"] == "microsoft_graph"
+    assert payload["access_token"] == "graph-access-token"
+    assert payload["refresh_token"] == "graph-refresh-token"
+    assert "id_token" not in payload
+    assert "id_token_claims" not in payload
+    assert "delegated_tokens" not in payload
+
+
+@pytest.mark.asyncio
 async def test_store_token_does_not_recover_unrelated_write_failures(monkeypatch):
     monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
 

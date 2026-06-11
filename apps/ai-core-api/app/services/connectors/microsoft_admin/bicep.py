@@ -1,4 +1,4 @@
-"""Bicep CLI execution for the Microsoft Admin connector."""
+"""Bicep CLI execution for the native Azure CLI connector."""
 from __future__ import annotations
 
 import uuid
@@ -14,7 +14,7 @@ from app.services.connectors.microsoft_admin.powershell_common import (
 )
 
 async def run_ms_bicep_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute the native Bicep CLI interface for the Microsoft Admin connector."""
+    """Execute the native Bicep CLI interface for the Azure CLI connector."""
     request_id = uuid.uuid4().hex[:16]
     timeout = _tool_timeout(arguments, timeout)
     command = str(arguments.get("command") or "").strip()
@@ -40,7 +40,7 @@ async def _run_microsoft_admin_bicep(
     timeout: int,
     request_id: str,
     *,
-    connector_name: str = "microsoft_admin",
+    connector_name: str = "ms_bicep",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
     _ = user_id
@@ -61,5 +61,5 @@ async def _run_microsoft_admin_bicep(
     })
     if not result.success:
         output.setdefault("error_type", "command_failed")
-        output.setdefault("message", _command_failure_message(output, "Microsoft Admin Bicep command failed."))
+        output.setdefault("message", _command_failure_message(output, "Bicep command failed."))
     return output

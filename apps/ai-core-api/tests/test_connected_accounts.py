@@ -111,9 +111,18 @@ class TestConnectedAccountsFlow:
         assert "connectors" in data
         assert isinstance(data["connectors"], list)
         connector_keys = {item["connector_key"] for item in data["connectors"]}
-        assert connector_keys == {"odoo", "microsoft_admin", "github"}
+        assert connector_keys == {
+            "odoo",
+            "azure_cli",
+            "microsoft_graph",
+            "exchange_online",
+            "teams_admin",
+            "sharepoint_pnp",
+            "github",
+        }
         connectors = {item["connector_key"]: item for item in data["connectors"]}
-        assert connectors["microsoft_admin"]["display_name"] == "Microsoft Admin"
+        assert connectors["azure_cli"]["display_name"] == "Azure CLI"
+        assert connectors["microsoft_graph"]["display_name"] == "Microsoft Graph"
 
     def test_get_connected_accounts_uses_stored_delegated_state_without_token_lookup(self):
         async def fake_token_status(provider, _user_id):
@@ -127,7 +136,8 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        assert connectors["microsoft_admin"]["status"] == "not_connected"
+        assert connectors["azure_cli"]["status"] == "not_connected"
+        assert connectors["microsoft_graph"]["status"] == "not_connected"
         assert connectors["github"]["status"] == "not_connected"
 
     def test_get_connected_accounts_can_include_verified_token_state(self):
@@ -155,20 +165,70 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        assert connectors["microsoft_admin"]["status"] == "connected"
-        assert connectors["microsoft_admin"]["state"]["configured"] is True
-        assert connectors["microsoft_admin"]["state"]["token_status"] == "connected"
-        assert connectors["microsoft_admin"]["state"]["source"] == "token_store"
+        assert connectors["azure_cli"]["status"] == "connected"
+        assert connectors["azure_cli"]["state"]["configured"] is True
+        assert connectors["azure_cli"]["state"]["token_status"] == "connected"
+        assert connectors["azure_cli"]["state"]["source"] == "token_store"
+        assert connectors["microsoft_graph"]["status"] == "connected"
+        assert connectors["microsoft_graph"]["state"]["token_status"] == "connected"
+
+    def test_sharepoint_native_device_code_scope_is_site_scoped(self):
+        from app.routers import connector_microsoft_native as native
+
+        scope_string, scope_summary, site_url = native._device_scope_for_request(
+            "sharepoint_pnp",
+            {"site_url": "https://tenant.sharepoint.com/sites/example"},
+        )
+
+        assert scope_string == "https://tenant.sharepoint.com/.default openid profile offline_access"
+        assert scope_summary == "https://tenant.sharepoint.com/.default"
+        assert site_url == "https://tenant.sharepoint.com/sites/example"
 
     @pytest.mark.asyncio
-    async def test_record_partial_microsoft_admin_diagnosis_keeps_tools_connected(self, monkeypatch):
+    async def test_exchange_native_diagnose_refreshes_token_before_success(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+        from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_PROVIDER
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        calls = []
+
+        async def fake_retrieve_token(provider, _user_id):
+            assert provider == EXCHANGE_ONLINE_PROVIDER
+            return {
+                "provider": EXCHANGE_ONLINE_PROVIDER,
+                "client_id": native.microsoft_native_client_id_for_provider(EXCHANGE_ONLINE_PROVIDER),
+                "access_token": "stale-access-token",
+                "refresh_token": "refresh-token",
+                "scope_profile": "exchange",
+                "username": "alden@example.com",
+            }
+
+        async def fake_get_token(_user_id, profile, **context):
+            calls.append((profile, context))
+            return {
+                "access_token": "fresh-access-token",
+                "scope_profile": profile,
+                "username": "alden@example.com",
+            }
+
+        monkeypatch.setattr(native, "retrieve_token", fake_retrieve_token)
+        monkeypatch.setattr(native, "get_microsoft_admin_token", fake_get_token)
+
+        result = await native.diagnose_microsoft_native_connection(EXCHANGE_ONLINE_PROVIDER, user_id)
+
+        assert result["status"] == "success"
+        assert result["connector"] == EXCHANGE_ONLINE_PROVIDER
+        assert calls == [("exchange", {})]
+
+    @pytest.mark.asyncio
+    async def test_record_partial_native_microsoft_diagnosis_keeps_tools_connected(self, monkeypatch):
         from app.services.connected_account_state import record_delegated_diagnosis
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
         account = AIConnectedAccount(
             id=UUID("e4807f22-97c8-4778-87a2-160f56d25248"),
             user_id=user_id,
-            provider="microsoft_admin",
+            provider="teams_admin",
             provider_username="alden@example.com",
             status="connected",
         )
@@ -185,7 +245,7 @@ class TestConnectedAccountsFlow:
         async def fake_token_status(_provider, _user_id):
             return {
                 "status": "connected",
-                "provider": "microsoft_admin",
+                "provider": "teams_admin",
                 "username": "alden@example.com",
                 "scope": "https://graph.microsoft.com/User.Read",
             }
@@ -195,10 +255,10 @@ class TestConnectedAccountsFlow:
             fake_token_status,
         )
 
-        message = "Microsoft Admin core connection is valid, but these authorization profiles need attention: Teams Admin."
+        message = "Teams Admin validation returned a warning but the native connector token is available."
         await record_delegated_diagnosis(
             db,
-            "microsoft_admin",
+            "teams_admin",
             user_id,
             {"status": "partial", "message": message},
             commit=True,
@@ -209,12 +269,13 @@ class TestConnectedAccountsFlow:
         assert account.last_verified_at is not None
         db.commit.assert_awaited_once()
 
-    def test_get_connected_accounts_reports_microsoft_admin_profile_authorization_state(self):
+    def test_get_connected_accounts_reports_split_native_microsoft_connector_state(self):
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}
 
         async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
-            assert profile == "graph"
+            if profile != "graph":
+                return None
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
@@ -223,23 +284,9 @@ class TestConnectedAccountsFlow:
                 "scope_profile": "graph",
             }
 
-        async def fake_retrieve_token(_provider, _user_id):
-            return {
-                "access_token": "graph-access-token",
-                "expires_on": 4_102_444_800,
-                "username": "alden@example.com",
-                "scope_profile": "graph",
-                "consented_scope_profiles": ["graph", "exchange"],
-                "delegated_tokens": {
-                    "graph": {"access_token": "graph-access-token", "refresh_token": "graph-refresh-token"},
-                    "exchange": {"access_token": "exchange-access-token", "refresh_token": "exchange-refresh-token"},
-                },
-            }
-
         with (
             patch("app.services.connected_account_state.token_status", new=AsyncMock(side_effect=fake_token_status)),
             patch("app.services.connectors.microsoft_admin.tokens.get_microsoft_admin_token", new=AsyncMock(side_effect=fake_microsoft_admin_token)),
-            patch("app.routers.connected_accounts.retrieve_token", new=AsyncMock(side_effect=fake_retrieve_token)),
         ):
             response = client.get(
                 "/connected-accounts?include_token_state=true",
@@ -248,34 +295,22 @@ class TestConnectedAccountsFlow:
 
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
-        profiles = {
-            profile["profile"]: profile["status"]
-            for profile in connectors["microsoft_admin"]["metadata"]["authorization_profiles"]
-        }
-        assert profiles == {
-            "graph": "authorized",
-            "arm": "missing",
-            "exchange": "authorized",
-            "teams": "missing",
-            "sharepoint": "not_checked",
-        }
-        assert connectors["microsoft_admin"]["metadata"]["overall_status"] == "partial"
-        assert connectors["microsoft_admin"]["state"]["readiness_status"] == "partial"
-        assert (
-            "Needs attention: Azure Resource Manager, Teams Admin"
-            in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
-        )
-        assert "Not checked: SharePoint / PnP" in connectors["microsoft_admin"]["metadata"]["authorization_summary"]
+        assert connectors["microsoft_graph"]["status"] == "connected"
+        assert connectors["microsoft_graph"]["metadata"]["auth_app_name"] == "Microsoft Graph PowerShell"
+        assert connectors["microsoft_graph"]["metadata"]["native_connector"] is True
+        assert "Direct Microsoft Graph" in connectors["microsoft_graph"]["metadata"]["tooling"]
+        assert connectors["azure_cli"]["status"] == "not_connected"
+        assert connectors["exchange_online"]["status"] == "not_connected"
 
     @pytest.mark.asyncio
-    async def test_microsoft_admin_token_state_refreshes_before_reporting_expired(self):
+    async def test_native_microsoft_token_state_refreshes_before_reporting_expired(self):
         from app.services.connected_account_state import effective_connected_accounts
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
         account = AIConnectedAccount(
             id=UUID("e4807f22-97c8-4778-87a2-160f56d25248"),
             user_id=user_id,
-            provider="microsoft_admin",
+            provider="microsoft_graph",
             provider_username="alden@example.com",
             status="expired",
         )
@@ -294,7 +329,8 @@ class TestConnectedAccountsFlow:
             return {"status": "not_connected", "provider": provider}
 
         async def fake_microsoft_admin_token(_user_id, profile, **_kwargs):
-            assert profile == "graph"
+            if profile != "graph":
+                return None
             return {
                 "access_token": "fresh-access-token",
                 "expires_on": 4_102_444_800,
@@ -308,9 +344,9 @@ class TestConnectedAccountsFlow:
         ):
             accounts = await effective_connected_accounts(db, user_id, include_token_state=True)
 
-        microsoft_admin = next(item for item in accounts if item.provider == "microsoft_admin")
-        assert microsoft_admin.status == "connected"
-        assert microsoft_admin.token_status == "connected"
+        microsoft_graph = next(item for item in accounts if item.provider == "microsoft_graph")
+        assert microsoft_graph.status == "connected"
+        assert microsoft_graph.token_status == "connected"
 
     def test_get_odoo_status_not_connected(self):
         response = client.get(

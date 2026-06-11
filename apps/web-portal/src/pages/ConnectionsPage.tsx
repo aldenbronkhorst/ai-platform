@@ -41,20 +41,12 @@ interface ConnectorMeta {
     provider_username?: string | null;
     permission_summary?: string | null;
     overall_status?: string | null;
-    authorization_summary?: string | null;
-    authorization_profiles?: AuthorizationProfile[];
+    tooling?: string[];
+    auth_app_name?: string | null;
+    native_connector?: boolean;
     odoo_url?: string | null;
     odoo_db?: string | null;
   };
-}
-
-interface AuthorizationProfile {
-  profile: string;
-  label: string;
-  status: string;
-  scope_summary?: string | null;
-  auth_app_name?: string | null;
-  message?: string | null;
 }
 
 interface PlatformTool {
@@ -109,11 +101,13 @@ interface CliTestResult {
   commands?: CliCommandResult[];
 }
 
-interface MicrosoftAdminDeviceCode {
+interface MicrosoftNativeDeviceCode {
   status: string;
+  connector?: string;
   device_code: string;
   user_code: string;
   verification_url: string;
+  site_url?: string | null;
   scope_label?: string;
   scope_summary?: string;
   auth_app_name?: string;
@@ -121,19 +115,15 @@ interface MicrosoftAdminDeviceCode {
   interval?: number;
 }
 
-interface MicrosoftAuthorizationProfileResult {
-  status?: string;
-  label?: string;
-  message?: string;
-}
-
 interface MicrosoftAuthCallbackResult {
   status: string;
   overall_status?: string;
+  connector?: string;
   error?: string;
   message?: string;
   interval?: number;
-  authorization_profiles?: Record<string, MicrosoftAuthorizationProfileResult>;
+  scope_label?: string;
+  auth_app_name?: string;
 }
 
 type ApiRecord = Record<string, unknown>;
@@ -156,19 +146,6 @@ function formatStatusLabel(status: string) {
 
 function formatOptionalStatus(status?: string | null) {
   return status ? formatStatusLabel(status) : "—";
-}
-
-function formatMicrosoftAdminConnectMessage(profiles?: Record<string, MicrosoftAuthorizationProfileResult>) {
-  if (!profiles) return "";
-  const attentionStatuses = new Set(["missing", "missing_consent", "missing_permission", "limited", "failed", "error"]);
-  const missing = Object.values(profiles)
-    .filter(profile => attentionStatuses.has(profile.status || ""))
-    .map(profile => profile.label)
-    .filter(Boolean);
-  if (missing.length) {
-    return `Microsoft Admin connected with one sign-in. These required authorization profiles still need attention: ${missing.join(", ")}.`;
-  }
-  return "Microsoft Admin connected. Microsoft Graph, Azure Resource Manager, and Exchange Online tokens are available.";
 }
 
 function formatDateTime(value?: string | null) {
@@ -318,9 +295,9 @@ function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connectorKey: 
     );
   }
 
-  if (connectorKey === "microsoft_admin") {
+  if (isMicrosoftNativeConnector(connectorKey)) {
     return (
-      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Microsoft Admin logo">
+      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Microsoft connector logo">
         <rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1" fill="#F25022" />
         <rect x="13" y="2.5" width="8.5" height="8.5" rx="1" fill="#7FBA00" />
         <rect x="2.5" y="13" width="8.5" height="8.5" rx="1" fill="#00A4EF" />
@@ -380,32 +357,31 @@ function ConnectorDetailShell({
   );
 }
 
-function AuthorizationProfileList({ profiles }: { profiles?: AuthorizationProfile[] }) {
-  if (!profiles?.length) return null;
+const MICROSOFT_NATIVE_CONNECTOR_KEYS = [
+  "azure_cli",
+  "microsoft_graph",
+  "exchange_online",
+  "teams_admin",
+  "sharepoint_pnp",
+];
+const MICROSOFT_NATIVE_CONNECTOR_KEY_SET = new Set(MICROSOFT_NATIVE_CONNECTOR_KEYS);
+const CONNECTOR_TOOL_TARGET_SYSTEMS = new Set([
+  "odoo",
+  "github",
+  ...MICROSOFT_NATIVE_CONNECTOR_KEYS,
+]);
 
-  return (
-    <DetailCard>
-      <div className="space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted">Authorization Profiles</p>
-        <div className="space-y-2">
-          {profiles.map((profile) => (
-            <div key={profile.profile} className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-default truncate">{profile.label}</p>
-                <p className="text-xs text-muted truncate">{profile.message || profile.auth_app_name || "Microsoft Admin"}</p>
-              </div>
-              <StatusBadge status={profile.status} fallback="Not Checked" />
-            </div>
-          ))}
-        </div>
-      </div>
-    </DetailCard>
-  );
+function isMicrosoftNativeConnector(key: string) {
+  return MICROSOFT_NATIVE_CONNECTOR_KEY_SET.has(key);
 }
 
 const CONNECTOR_FALLBACKS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
-  { key: "microsoft_admin", name: "Microsoft Admin", subtitle: "Microsoft 365, Entra, Exchange, Intune, Teams, SharePoint, and Azure Resource Manager" },
+  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI, Azure PowerShell, and Bicep" },
+  { key: "microsoft_graph", name: "Microsoft Graph", subtitle: "Microsoft Graph and Graph PowerShell" },
+  { key: "exchange_online", name: "Exchange Online", subtitle: "Exchange Online PowerShell" },
+  { key: "teams_admin", name: "Teams Admin", subtitle: "Microsoft Teams PowerShell" },
+  { key: "sharepoint_pnp", name: "SharePoint / PnP", subtitle: "SharePoint / PnP PowerShell" },
   { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
 ];
 const CONNECTOR_FALLBACK_BY_KEY = new Map(CONNECTOR_FALLBACKS.map((connector) => [connector.key, connector]));
@@ -428,11 +404,19 @@ function connectorDefinitions(meta: Record<string, ConnectorMeta> | null): Conne
   });
 }
 
+function connectorDisplayNameForKey(key: string | undefined, meta: Record<string, ConnectorMeta> | null) {
+  if (!key) return "Connector";
+  return meta?.[key]?.display_name
+    || CONNECTOR_FALLBACK_BY_KEY.get(key)?.name
+    || formatStatusLabel(key);
+}
+
 interface ConnectionsPageProps { accessToken: string; }
 
 function canonicalPlatformTools(tools: PlatformTool[]) {
   const seen = new Set<string>();
   return tools.filter((tool) => {
+    if (CONNECTOR_TOOL_TARGET_SYSTEMS.has(tool.target_system)) return false;
     const key = `${(tool.display_name || tool.name).trim().toLowerCase()}::${tool.target_system}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -452,8 +436,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooUsername, setOdooUsername] = useState("");
   const [odooApiKey, setOdooApiKey] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
-  const [microsoftAdminDeviceCode, setMicrosoftAdminDeviceCode] = useState<MicrosoftAdminDeviceCode | null>(null);
-  const [microsoftAdminPolling, setMicrosoftAdminPolling] = useState(false);
+  const [microsoftDeviceCode, setMicrosoftDeviceCode] = useState<(MicrosoftNativeDeviceCode & { connectorKey: string }) | null>(null);
+  const [microsoftPollingConnector, setMicrosoftPollingConnector] = useState<string | null>(null);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
   const [connectorSearch, setConnectorSearch] = useState("");
@@ -614,80 +598,91 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     } catch { /* ignore transient disconnect errors */ }
   };
 
-  const handleConnectMicrosoftAdmin = async () => {
+  const handleConnectMicrosoftNative = async (connectorKey: string) => {
     if (!accessToken) return; setCliTestResult(null);
+    const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
+    const connectPayload: Record<string, string> = {};
+    if (connectorKey === "sharepoint_pnp") {
+      const siteUrl = window.prompt("Enter the SharePoint site or admin URL for this PnP connector");
+      if (!siteUrl?.trim()) {
+        setCliTestResult({ status: "failed", connector: connectorKey, message: "SharePoint / PnP sign-in requires a SharePoint site or admin URL." });
+        return;
+      }
+      connectPayload.site_url = siteUrl.trim();
+    }
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/device-code`, {
+      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/device-code`, {
         method: "POST",
         headers: headers(),
+        body: Object.keys(connectPayload).length ? JSON.stringify(connectPayload) : undefined,
       });
-      const data = await res.json() as MicrosoftAdminDeviceCode & { error?: string };
+      const data = await res.json() as MicrosoftNativeDeviceCode & { error?: string; message?: string };
       if (data.status === "device_code_ready") {
-        setMicrosoftAdminDeviceCode(data);
-        setMicrosoftAdminPolling(true);
+        setMicrosoftDeviceCode({ ...data, connectorKey });
+        setMicrosoftPollingConnector(connectorKey);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
-        setCliTestResult({ status: "pending", connector: "microsoft_admin", message: `Sign in once to Microsoft Admin${authApp}. Azure Resource Manager and Exchange Online tokens will be acquired silently when tenant consent is available.` });
+        setCliTestResult({ status: "pending", connector: connectorKey, message: `Sign in to ${displayName}${authApp}. This stores only the ${displayName} connector token.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
           try {
-            const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/token-callback`, {
+            const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
               method: "POST", headers: headers(),
-              body: JSON.stringify({ device_code: data.device_code }),
+              body: JSON.stringify({ device_code: data.device_code, site_url: data.site_url || connectPayload.site_url }),
             });
             const pd = await pr.json() as MicrosoftAuthCallbackResult;
             if (pd.status === "connected") {
-              setMicrosoftAdminPolling(false);
-              setMicrosoftAdminDeviceCode(null);
-              const ready = (pd.overall_status || "").toLowerCase() === "ready";
+              setMicrosoftPollingConnector(null);
+              setMicrosoftDeviceCode(null);
               setCliTestResult({
-                status: ready ? "success" : "warning",
-                connector: "microsoft_admin",
-                message: pd.message || formatMicrosoftAdminConnectMessage(pd.authorization_profiles) || "Microsoft Admin connected.",
+                status: "success",
+                connector: connectorKey,
+                message: pd.message || `${displayName} connected.`,
               });
               void fetchConnectors();
             } else if (pd.status === "pending") {
               setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
-              setMicrosoftAdminPolling(false);
-              setMicrosoftAdminDeviceCode(null);
-              setCliTestResult({ status: "failed", connector: "microsoft_admin", message: pd.message || pd.error || "Auth failed" });
+              setMicrosoftPollingConnector(null);
+              setMicrosoftDeviceCode(null);
+              setCliTestResult({ status: "failed", connector: connectorKey, message: pd.message || pd.error || "Auth failed" });
               void fetchConnectors();
             }
-          } catch { setMicrosoftAdminPolling(false); setMicrosoftAdminDeviceCode(null); }
+          } catch { setMicrosoftPollingConnector(null); setMicrosoftDeviceCode(null); }
         };
         setTimeout(poll, (data.interval || 5) * 1000);
       } else {
-        setMicrosoftAdminDeviceCode(null);
-        setCliTestResult({ status: "failed", connector: "microsoft_admin", message: data.error || "Failed to start device code flow" });
+        setMicrosoftDeviceCode(null);
+        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow" });
       }
-    } catch (err) { setMicrosoftAdminDeviceCode(null); setCliTestResult({ status: "failed", connector: "microsoft_admin", message: errorMessage(err) }); }
+    } catch (err) { setMicrosoftDeviceCode(null); setCliTestResult({ status: "failed", connector: connectorKey, message: errorMessage(err) }); }
   };
 
-  const handleMicrosoftAdminStatus = async () => {
+  const handleMicrosoftNativeStatus = async (connectorKey: string) => {
     if (!accessToken) return;
+    const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/diagnose`, { method: "POST", headers: headers() });
+      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/diagnose`, { method: "POST", headers: headers() });
       const data = await res.json() as { status?: string; overall_status?: string; message?: string; stderr?: string; request_id?: string };
       if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: "microsoft_admin", message: data.message || "Microsoft Admin connected", request_id: data.request_id });
+        setCliTestResult({ status: "success", connector: connectorKey, message: data.message || `${displayName} connected`, request_id: data.request_id });
         await fetchConnectors();
       } else if (data.status === "partial" || data.status === "limited" || data.status === "warning") {
-        setCliTestResult({ status: "warning", connector: "microsoft_admin", message: data.message || `Microsoft Admin status: ${formatStatusLabel(data.status || "partial")}`, stderr: data.stderr, request_id: data.request_id });
+        setCliTestResult({ status: "warning", connector: connectorKey, message: data.message || `${displayName} status: ${formatStatusLabel(data.status || "partial")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       } else {
-        setCliTestResult({ status: "failed", connector: "microsoft_admin", message: data.message || `Microsoft Admin status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
+        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || `${displayName} status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
         await fetchConnectors();
       }
-    } catch { /* ignore transient Microsoft Admin status errors */ }
+    } catch { /* ignore transient Microsoft connector status errors */ }
   };
 
-  const handleMicrosoftAdminDisconnect = async () => {
+  const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
-    await fetch(`${APIM_BASE_URL}/connector/microsoft-admin/disconnect`, { method: "POST", headers: headers() });
+    await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
-    setMicrosoftAdminDeviceCode(null);
-    setMicrosoftAdminPolling(false);
-    setCliTestResult({ status: "success", connector: "microsoft_admin", message: "Disconnected" });
+    setMicrosoftDeviceCode(null);
+    setMicrosoftPollingConnector(null);
+    setCliTestResult({ status: "success", connector: connectorKey, message: "Disconnected" });
   };
 
   const handleGithubOAuth = async () => {
@@ -791,61 +786,66 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       );
     }
 
-    if (key === "microsoft_admin") {
-      const authorizationProfiles = connectorMeta?.microsoft_admin?.metadata?.authorization_profiles;
-      const readinessStatus = connectorMeta?.microsoft_admin?.state?.readiness_status
-        || connectorMeta?.microsoft_admin?.metadata?.overall_status
+    if (isMicrosoftNativeConnector(key)) {
+      const meta = connectorMeta?.[key];
+      const readinessStatus = meta?.state?.readiness_status
+        || meta?.metadata?.overall_status
         || metaStatus;
+      const tooling = meta?.metadata?.tooling || [];
+      const authAppName = meta?.metadata?.auth_app_name;
+      const isPolling = microsoftPollingConnector === key;
+      const activeDeviceCode = microsoftDeviceCode?.connectorKey === key ? microsoftDeviceCode : null;
       return (
         <ConnectorDetailShell connector={c} status={readinessStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
           <DetailCard>
-            <p className="text-sm text-muted">
-              Connect with one Microsoft Admin sign-in. Required profiles are Microsoft Graph, Azure Resource Manager, and Exchange Online. Teams and SharePoint/PnP are optional advanced surfaces and are checked only when used.
-            </p>
+            <div className="space-y-2 text-sm text-muted">
+              <p>
+                Separate native Microsoft connector. This stores only the {c.name} token; access is still limited by the signed-in user's Microsoft roles, Azure RBAC, workload permissions, and tenant consent.
+              </p>
+              {authAppName ? <p className="text-xs">Microsoft sign-in app: {authAppName}</p> : null}
+              {tooling.length > 0 ? <p className="text-xs">Tools: {tooling.join(", ")}</p> : null}
+            </div>
           </DetailCard>
 
           <InfoGrid
             rows={[
-              { label: "Account", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.account_status || metaStatus) },
+              { label: "Account", value: formatOptionalStatus(meta?.state?.account_status || metaStatus) },
               { label: "Readiness", value: formatOptionalStatus(readinessStatus) },
-              { label: "Token", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.token_status) },
-              { label: "Diagnostics", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.diagnostics_status) },
-              { label: "Admin Shell", value: formatOptionalStatus(connectorMeta?.microsoft_admin?.state?.cli_status) },
-              { label: "User", value: connectorMeta?.microsoft_admin?.metadata?.provider_username || "—" },
-              { label: "Profiles", value: connectorMeta?.microsoft_admin?.metadata?.authorization_summary || "—" },
-              { label: "Last Verified", value: formatDateTime(connectorMeta?.microsoft_admin?.last_verified_at) },
+              { label: "Token", value: formatOptionalStatus(meta?.state?.token_status) },
+              { label: "Diagnostics", value: formatOptionalStatus(meta?.state?.diagnostics_status) },
+              { label: "Shell", value: formatOptionalStatus(meta?.state?.cli_status) },
+              { label: "User", value: meta?.metadata?.provider_username || "—" },
+              { label: "Last Verified", value: formatDateTime(meta?.last_verified_at) },
             ]}
           />
 
-          <AuthorizationProfileList profiles={authorizationProfiles} />
-
           <ActionGroup>
-            <GlassButton size="sm" onClick={handleConnectMicrosoftAdmin} disabled={microsoftAdminPolling}>
-              {microsoftAdminPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Refresh User Sign-In" : "Connect Microsoft Admin"}
+            <GlassButton size="sm" onClick={() => handleConnectMicrosoftNative(key)} disabled={Boolean(microsoftPollingConnector)}>
+              {isPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Refresh Sign-In" : `Connect ${c.name}`}
             </GlassButton>
-            <GlassButton size="sm" onClick={handleMicrosoftAdminStatus}>
+            <GlassButton size="sm" onClick={() => handleMicrosoftNativeStatus(key)}>
               <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
             </GlassButton>
-            <GlassButton size="sm" variant="danger" onClick={handleMicrosoftAdminDisconnect}>
+            <GlassButton size="sm" variant="danger" onClick={() => handleMicrosoftNativeDisconnect(key)}>
               <Trash2 className="w-3.5 h-3.5" /> Disconnect
             </GlassButton>
           </ActionGroup>
 
-          {microsoftAdminDeviceCode && (
+          {activeDeviceCode && (
             <DetailCard>
               <div className="text-sm space-y-3">
                 <div className="space-y-1">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted">One Microsoft Admin sign-in</p>
-                  <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{microsoftAdminDeviceCode.user_code}</span></p>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted">{c.name} sign-in</p>
+                  <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{activeDeviceCode.user_code}</span></p>
                   <p className="text-muted text-xs">
-                    {microsoftAdminDeviceCode.scope_label || "Microsoft Admin"} via {microsoftAdminDeviceCode.auth_app_name || "Microsoft"}.
+                    {activeDeviceCode.scope_label || c.name} via {activeDeviceCode.auth_app_name || "Microsoft"}.
                   </p>
                   <p className="text-muted text-xs">
-                    Open <a href={microsoftAdminDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{microsoftAdminDeviceCode.verification_url}</a> and enter the code above.
+                    Open <a href={activeDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{activeDeviceCode.verification_url}</a> and enter the code above.
                   </p>
                 </div>
                 <ActionGroup>
-                  <GlassButton size="sm" onClick={() => window.open(microsoftAdminDeviceCode.verification_url, "_blank", "noopener,noreferrer")}>
+                  <GlassButton size="sm" onClick={() => window.open(activeDeviceCode.verification_url, "_blank", "noopener,noreferrer")}>
                     Open Microsoft Sign-In
                   </GlassButton>
                 </ActionGroup>
@@ -980,7 +980,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
-          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setMicrosoftAdminDeviceCode(null); setMicrosoftAdminPolling(false); }}
+          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setMicrosoftDeviceCode(null); setMicrosoftPollingConnector(null); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
@@ -1057,7 +1057,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {availableConnectors.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
-              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setMicrosoftAdminDeviceCode(null); setMicrosoftAdminPolling(false); }}
+              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setMicrosoftDeviceCode(null); setMicrosoftPollingConnector(null); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>
@@ -1091,7 +1091,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               {cliTestResult && (
                 <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${panelToneClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
                   <p className={`font-semibold ${panelTitleClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
-                    {cliTestResult.connector === "microsoft_admin" ? "Microsoft Admin" : "GitHub CLI"} — {cliResultHeading(cliTestResult)}
+                    {connectorDisplayNameForKey(cliTestResult.connector, connectorMeta)} — {cliResultHeading(cliTestResult)}
                   </p>
                   {cliTestResult.request_id && (
                     <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>

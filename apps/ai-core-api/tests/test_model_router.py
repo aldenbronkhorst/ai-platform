@@ -27,7 +27,7 @@ from app.services.model_router import (
     _guard_connected_system_denial,
     _execute_tool_call_impl,
 )
-from app.services.tool_registry import MICROSOFT_ADMIN_TOOL_NAMES
+from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
 
 # ── Canonical prompt sanity ──
@@ -160,7 +160,21 @@ def test_tool_selection_message_inherits_context_for_date_correction():
     assert "i meant 4 june" in selection_text
 
 
-MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_ADMIN_TOOL_NAMES))
+MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_NATIVE_TOOL_NAMES))
+MICROSOFT_TOOL_TARGET_SYSTEMS = {
+    "ms_azure_cli": "azure_cli",
+    "ms_az_powershell": "azure_cli",
+    "ms_bicep": "azure_cli",
+    "ms_graph": "microsoft_graph",
+    "ms_graph_powershell": "microsoft_graph",
+    "ms_exchange_powershell": "exchange_online",
+    "ms_teams_powershell": "teams_admin",
+    "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
+}
+
+
+def _microsoft_tool_target(tool_name: str) -> str:
+    return MICROSOFT_TOOL_TARGET_SYSTEMS[tool_name]
 
 
 def test_removed_azure_cli_tool_name_is_not_canonicalized():
@@ -227,7 +241,7 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
             name=name,
             display_name=name,
             description="Run Microsoft admin tooling",
-            target_system="microsoft_admin",
+            target_system=_microsoft_tool_target(name),
             input_schema={"type": "object", "properties": {}, "required": []},
         )
         for name in MICROSOFT_TOOL_NAMES
@@ -238,15 +252,15 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
         [{"type": "function", "function": {"name": tool.name, "parameters": {"type": "object"}}} for tool in tools],
     )
 
-    assert "use only these native-interface tools" in prompt
+    assert "use only these broad native-interface tools" in prompt
     assert "`ms_graph`, `ms_graph_powershell`, `ms_exchange_powershell`" in prompt
     assert "`ms_az_powershell`, `ms_azure_cli`, and `ms_bicep`" in prompt
     assert "do not call removed generic Microsoft tools" in prompt
     assert "do not use `az costmanagement query`" in prompt
     assert "az rest --method post" in prompt
     assert "Microsoft.CostManagement/query" in prompt
-    assert "do not claim Microsoft Admin is disconnected" in prompt
-    assert "operations are limited by that user's platform roles/RBAC plus consent" in prompt
+    assert "Do not claim all Microsoft access is broken" in prompt
+    assert "limited by that user's platform roles/RBAC plus consent" in prompt
     assert "does not by itself prove Azure Resource Manager" in prompt
     assert "Never invent Azure cost totals" in prompt
     assert "successful tool result only" in prompt
@@ -270,7 +284,7 @@ def test_tool_finalizer_keeps_ms_admin_connection_distinct_from_command_errors()
     finalizer_messages = _build_tool_finalizer_messages(messages, tool_results)
     system_text = finalizer_messages[0]["content"]
 
-    assert "failed command or unsupported CLI subcommand does not mean Microsoft Admin is disconnected" in system_text
+    assert "failed command, missing role, or unsupported CLI subcommand does not mean every Microsoft connector" in system_text
 
 
 def test_guard_replaces_false_azure_not_connected_denial_when_connected():
@@ -282,7 +296,7 @@ def test_guard_replaces_false_azure_not_connected_denial_when_connected():
 
     guarded = _guard_connected_system_denial(
         bad_content,
-        {"microsoft_admin"},
+        {"azure_cli"},
         [{
             "tool_name": "ms_azure_cli",
             "error_type": "command_failed",
@@ -290,7 +304,7 @@ def test_guard_replaces_false_azure_not_connected_denial_when_connected():
         }],
     )
 
-    assert "Microsoft Admin is connected" in guarded
+    assert "Azure CLI is connected" in guarded
     assert "successful Azure Cost Management tool result" in guarded
     assert "Connected Accounts" not in guarded
 
@@ -300,7 +314,7 @@ def test_guard_preserves_real_connected_azure_permission_error():
 
     guarded = _guard_connected_system_denial(
         content,
-        {"microsoft_admin"},
+        {"azure_cli"},
         [{
             "tool_name": "ms_azure_cli",
             "error_type": "AuthorizationFailed",
@@ -311,13 +325,13 @@ def test_guard_preserves_real_connected_azure_permission_error():
     assert guarded == content
 
 
-def test_guard_allows_real_microsoft_admin_not_connected_tool_error():
+def test_guard_allows_real_microsoft_connector_not_connected_tool_error():
     content = "Azure is not connected. Go to Connected Accounts."
 
     guarded = _guard_connected_system_denial(
         content,
-        {"microsoft_admin"},
-        [{"tool_name": "ms_graph", "error_type": "not_connected", "message": "Microsoft Admin is not connected."}],
+        {"microsoft_graph"},
+        [{"tool_name": "ms_graph", "error_type": "not_connected", "message": "Microsoft Graph is not connected."}],
     )
 
     assert guarded == content
@@ -548,18 +562,17 @@ class TestConnectorContext:
         assert "GitHub: not connected" in result
 
     @pytest.mark.asyncio
-    async def test_get_connector_context_microsoft_admin_connected_names_azure_capability(self):
+    async def test_get_connector_context_azure_cli_connected_names_azure_capability(self):
         from app.services.model_router import _get_connector_context
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="microsoft_admin", status="connected",
+            provider="azure_cli", status="connected",
         )
         db = MockSession(has_config=False, connected_accounts=[account])
 
         result = await _get_connector_context(db, user_id=uuid.uuid4())
 
-        assert "Microsoft Admin: connected" in result
-        assert "Azure Resource Manager CLI" in result
+        assert "Azure CLI: connected" in result
         assert "Do not claim a specific Microsoft resource is accessible until that operation succeeds" in result
         assert "Azure RBAC" in result
 
@@ -638,11 +651,11 @@ class TestConnectorContext:
         assert result["context"]["current_date"] == "2026-06-03"
 
     @pytest.mark.asyncio
-    async def test_execute_chat_treats_stored_microsoft_admin_account_as_connected_without_token_lookup(self):
+    async def test_execute_chat_treats_stored_azure_cli_account_as_connected_without_token_lookup(self):
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
-            provider="microsoft_admin",
+            provider="azure_cli",
             status="connected",
             user_id=uuid.uuid4(),
             provider_username="admin-user",
@@ -658,7 +671,7 @@ class TestConnectorContext:
                                 name=name,
                                 display_name=name,
                                 description="Run Microsoft admin tooling",
-                                target_system="microsoft_admin",
+                                target_system=_microsoft_tool_target(name),
                                 input_schema={"type": "object", "properties": {}, "required": []},
                             )
                             for name in MICROSOFT_TOOL_NAMES
@@ -705,8 +718,8 @@ class TestConnectorContext:
         called_kwargs = mock_chat_completion.call_args[1]
         system_prompt_content = called_kwargs["messages"][0]["content"]
         tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
-        assert "Microsoft Admin: connected" in system_prompt_content
-        assert "do not claim Microsoft Admin is disconnected" in system_prompt_content
+        assert "Azure CLI: connected" in system_prompt_content
+        assert "Do not claim all Microsoft access is broken" in system_prompt_content
         assert "ms_azure_cli" in tool_names
         assert "ms_admin" not in tool_names
         assert result["content"] == "Azure is connected."
@@ -717,7 +730,7 @@ class TestConnectorContext:
 
         user_id = uuid.uuid4()
         account = AIConnectedAccount(
-            provider="microsoft_admin",
+            provider="azure_cli",
             status="connected",
             user_id=user_id,
             provider_username="alden@lotslotsmore.com",
@@ -727,7 +740,7 @@ class TestConnectorContext:
             name="ms_azure_cli",
             display_name="Azure Resource Manager CLI",
             description="Run Azure Resource Manager CLI commands.",
-            target_system="microsoft_admin",
+            target_system="azure_cli",
             input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
         )
         tool_schema = [{

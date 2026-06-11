@@ -17,6 +17,14 @@ from app.services.key_vault import (
 logger = logging.getLogger(__name__)
 
 KEY_VAULT_SECRET_VALUE_SOFT_LIMIT = 25_000
+MICROSOFT_NATIVE_TOKEN_PROVIDERS = {
+    "azure_cli",
+    "microsoft_graph",
+    "exchange_online",
+    "teams_admin",
+    "sharepoint_pnp",
+}
+MICROSOFT_TOKEN_STORAGE_PROVIDERS = {*MICROSOFT_NATIVE_TOKEN_PROVIDERS, "microsoft_admin"}
 
 MICROSOFT_ADMIN_TOKEN_TOP_LEVEL_KEYS = {
     "provider",
@@ -121,11 +129,12 @@ def _compact_microsoft_admin_token_for_storage(
 ) -> dict[str, Any]:
     """Drop nonessential Microsoft identity blobs before storing in Key Vault.
 
-    The Microsoft Admin connector can hold Graph, ARM, and Exchange profile tokens
-    in one user secret. ID tokens, decoded claims, and duplicate primary delegated
-    tokens push that secret over Key Vault's 25,600 character value limit while not
-    being needed after we have stored the username. client_info is deliberately kept
-    because Azure CLI/MSAL needs it to create a user account entry in its token cache.
+    Microsoft native connector secrets only need access/refresh token material
+    plus account metadata. ID tokens, decoded claims, and duplicate primary
+    delegated tokens push secrets toward Key Vault's 25,600 character value
+    limit while not being needed after we have stored the username.
+    client_info is deliberately kept because Azure CLI/MSAL needs it to create a
+    user account entry in its token cache.
     """
     compact_token_data = {
         key: token_data.get(key)
@@ -143,7 +152,7 @@ def _compact_microsoft_admin_token_for_storage(
 
 
 def _token_for_storage(provider: str, token_data: dict[str, Any]) -> dict[str, Any]:
-    if provider != "microsoft_admin":
+    if provider not in MICROSOFT_TOKEN_STORAGE_PROVIDERS:
         return token_data
 
     compact_token_data = _compact_microsoft_admin_token_for_storage({**token_data, "provider": provider})
@@ -158,7 +167,7 @@ def _token_for_storage(provider: str, token_data: dict[str, Any]) -> dict[str, A
     secret_value = json.dumps(compact_token_data, separators=(",", ":"))
     if len(secret_value) > KEY_VAULT_SECRET_VALUE_SOFT_LIMIT:
         logger.warning(
-            "Compacted Microsoft Admin token payload is still large (%s characters)",
+            "Compacted legacy Microsoft token payload is still large (%s characters)",
             len(secret_value),
         )
     return compact_token_data

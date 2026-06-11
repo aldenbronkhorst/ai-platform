@@ -14,7 +14,7 @@ from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, CONNECTOR_SYSTEM
 
 settings = get_settings()
 
-STALE_CONNECTOR_TARGET_SYSTEMS = {"azure"}
+STALE_CONNECTOR_TARGET_SYSTEMS = {"azure", "microsoft_admin"}
 
 
 async def seed_tools():

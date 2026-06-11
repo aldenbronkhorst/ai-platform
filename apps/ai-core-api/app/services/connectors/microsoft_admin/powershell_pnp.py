@@ -1,4 +1,4 @@
-"""ms_sharepoint_pnp_powershell runner for the Microsoft Admin connector."""
+"""ms_sharepoint_pnp_powershell runner for the native SharePoint/PnP connector."""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -13,7 +13,7 @@ from app.services.connectors.microsoft_admin.powershell_common import (
 from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
 async def run_ms_sharepoint_pnp_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute SharePoint/PnP PowerShell through the Microsoft Admin connector."""
+    """Execute SharePoint/PnP PowerShell through the SharePoint/PnP connector."""
     request_id, timeout, script, error = _prepare_microsoft_admin_powershell_script(
         arguments,
         timeout,
@@ -52,7 +52,7 @@ def _ms_sharepoint_pnp_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformPnP {
-    if (-not $env:AI_PLATFORM_PNP_ACCESS_TOKEN) { throw 'SharePoint/PnP token is not available. Check Microsoft Admin tenant consent and the signed-in user''s SharePoint permissions.' }
+    if (-not $env:AI_PLATFORM_PNP_ACCESS_TOKEN) { throw 'SharePoint/PnP token is not available. Reconnect SharePoint/PnP and check the signed-in user''s SharePoint permissions.' }
     if (-not $env:AI_PLATFORM_PNP_URL) { throw 'SharePoint site URL is required.' }
     Import-Module PnP.PowerShell -ErrorAction Stop
     Connect-PnPOnline -Url $env:AI_PLATFORM_PNP_URL -AccessToken $env:AI_PLATFORM_PNP_ACCESS_TOKEN
