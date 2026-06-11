@@ -163,7 +163,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and Push AI Core API
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ${{ env.API_PATH }}
           push: true
@@ -175,7 +175,7 @@ jobs:
             CACHEBUST=${{ github.sha }}
 
       - name: Build and Push Odoo Connector
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ${{ env.CONNECTOR_PATH }}
           push: true
