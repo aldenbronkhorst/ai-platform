@@ -143,6 +143,7 @@ jobs:
 
           CONTAINER_APP=$(resolve_container_app "ca-ai-platform-api-prod-san-001")
           CONNECTOR_APP=$(resolve_container_app "ca-odoo-connector-prod-san-001" "ca-ai-platform-odoo-connector-prod-san-001")
+          CONTAINER_FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
           CONNECTOR_FQDN=$(az containerapp show --name "$CONNECTOR_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
           DOCUMENT_INTELLIGENCE_ENDPOINT=$(az cognitiveservices account show --name "fnd-ai-platform-prod-san-001" --resource-group "$RESOURCE_GROUP" --query "properties.endpoint" -o tsv 2>/dev/null || true)
 
@@ -150,6 +151,7 @@ jobs:
           echo "acr_name=${ACR_NAME}" >> $GITHUB_OUTPUT
           echo "container_app=${CONTAINER_APP}" >> $GITHUB_OUTPUT
           echo "connector_app=${CONNECTOR_APP}" >> $GITHUB_OUTPUT
+          echo "api_url=https://${CONTAINER_FQDN}" >> $GITHUB_OUTPUT
           echo "connector_url=https://${CONNECTOR_FQDN}" >> $GITHUB_OUTPUT
           echo "document_intelligence_endpoint=${DOCUMENT_INTELLIGENCE_ENDPOINT}" >> $GITHUB_OUTPUT
 
@@ -217,7 +219,7 @@ jobs:
         run: |
           cd apps/web-portal
           npm ci --workspaces=false
-          VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build --workspaces=false
+          VITE_API_BASE_URL=${{ steps.env.outputs.api_url }} VITE_APP_COMMIT_SHA=${{ github.sha }} npm run build --workspaces=false
 
       - name: Deploy Web Portal to SWA
         uses: Azure/static-web-apps-deploy@v1

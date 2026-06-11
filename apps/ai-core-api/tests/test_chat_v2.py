@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
-# Enable debug mode for tests
+# Keep connector settings local; auth itself uses APP_ENV=test from conftest.
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
 os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
@@ -76,10 +76,10 @@ class TestChatSessionsV2:
         assert response.status_code == 405
 
 
-class TestSecureArtifactDownloads:
-    """Verifies that download URLs are secure and routed through backend permissions."""
+class TestArtifactDownloadSurface:
+    """Verifies that public artifact download URLs are no longer exposed."""
 
-    def test_download_artifact_not_found(self):
+    def test_download_artifact_is_not_public_api(self):
         import uuid
         response = client.get(
             f"/artifacts/{uuid.uuid4()}/download",
@@ -205,14 +205,12 @@ class TestChatAttachments:
             "id": attachment_id,
             "filename": "statement.csv",
             "mime_type": "text/csv",
-            "artifact_type": "job-file",
         }])
 
         assert payload["attachments"] == [{
             "id": attachment_id,
             "filename": "statement.csv",
             "mime_type": "text/csv",
-            "artifact_type": "job-file",
         }]
 
     def test_content_with_attachment_context_handles_attachment_only_messages(self):

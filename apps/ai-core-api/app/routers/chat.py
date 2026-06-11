@@ -20,8 +20,6 @@ from app.models.models import (
     AIArtifact, AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AIUsageLog,
 )
 from app.services.artifact import ArtifactService
-from app.services.audit import AuditService
-from app.schemas.schemas import AIAuditEventCreate
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +50,6 @@ class ChatMessageAttachmentResponse(BaseModel):
     id: UUID
     filename: str
     mime_type: str
-    artifact_type: str
 
 
 class ChatMessageResponse(BaseModel):
@@ -311,18 +308,12 @@ async def _apply_memory_feedback(
         return
 
     old_confidence = memory.confidence
-    audit_action = _adjust_memory_confidence(memory, feedback_kind)
+    action = _adjust_memory_confidence(memory, feedback_kind)
     memory.updated_at = _utcnow()
-
-    await AuditService(db).log_event(AIAuditEventCreate(
-        action_type=audit_action,
-        target_model="ai_memories",
-        target_record_id=str(memory.id),
-        actor_user_id=user_id,
-        input_summary=f"Natural language feedback detected: '{content}'. Confidence: {old_confidence} -> {memory.confidence}.",
-        risk_level="low",
-        status="success",
-    ))
+    logger.info(
+        "Applied memory feedback | memory_id=%s user_id=%s action=%s old_confidence=%s new_confidence=%s",
+        memory.id, user_id, action, old_confidence, memory.confidence,
+    )
 
 
 async def _apply_natural_language_feedback(
@@ -415,7 +406,6 @@ def _attachment_response(artifact: AIArtifact) -> dict[str, Any]:
         "id": artifact.id,
         "filename": artifact.filename,
         "mime_type": artifact.mime_type,
-        "artifact_type": artifact.artifact_type,
     }
 
 
@@ -858,20 +848,6 @@ async def _persist_success(
     session.updated_at = _utcnow()
     await db.commit()
     await db.refresh(assistant_msg)
-
-    partial_failure = bool(tool_error_summary)
-    await AuditService(db).log_event(AIAuditEventCreate(
-        action_type="chat_message",
-        target_system="ai-platform",
-        target_model="ai_chat_messages",
-        target_record_id=str(assistant_msg.id),
-        actor_user_id=user_id,
-        input_summary=f"Sent chat message in session {session_id}",
-        output_summary=_tool_error_summary_text(tool_error_summary or []) if partial_failure else None,
-        risk_level="low",
-        status="partial_failure" if partial_failure else "success",
-    ))
-    await db.commit()
 
 
 async def _enqueue_or_extract_memories(

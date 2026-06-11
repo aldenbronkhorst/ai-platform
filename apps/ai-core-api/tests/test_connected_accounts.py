@@ -5,7 +5,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 from uuid import UUID
 
-# Enable debug mode for tests
+# Keep test configuration local; auth itself uses APP_ENV=test from conftest.
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
 os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
@@ -1156,17 +1156,15 @@ class TestStructuredErrors:
         from app.routers.connected_accounts import ConnectErrorDetail
         err = ConnectErrorDetail(
             error_type="odoo_credentials_invalid",
-            stage="verify_odoo",
             message="Test message",
-            technical_detail="Test technical detail",
             request_id="abc123",
         )
         d = err.model_dump()
         assert d["error_type"] == "odoo_credentials_invalid"
-        assert d["stage"] == "verify_odoo"
         assert d["message"] == "Test message"
-        assert d["technical_detail"] == "Test technical detail"
         assert d["request_id"] == "abc123"
+        assert "stage" not in d
+        assert "technical_detail" not in d
 
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
     @patch("app.routers.connected_accounts._store_key_vault_secret")
@@ -1178,9 +1176,7 @@ class TestStructuredErrors:
             status_code=401,
             detail={
                 "error_type": "odoo_connector_auth_failed",
-                "stage": "verify_connector",
                 "message": "Internal connector API key mismatch.",
-                "technical_detail": "Connector returned 401: Invalid internal API key",
             }
         )
 
@@ -1197,8 +1193,6 @@ class TestStructuredErrors:
         assert response.status_code == 400
         detail = response.json().get("detail", {})
         assert detail.get("error_type") == "odoo_connector_auth_failed"
-        # Stage is propagated from the original error
-        assert detail.get("stage") == "verify_connector"
         assert "API key mismatch" in detail.get("message", "")
 
     @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
@@ -1211,9 +1205,7 @@ class TestStructuredErrors:
             status_code=502,
             detail={
                 "error_type": "odoo_connector_unreachable",
-                "stage": "verify_connector",
                 "message": "Could not reach the Odoo Connector service.",
-                "technical_detail": "Connection failed: ...",
             }
         )
 
@@ -1241,9 +1233,7 @@ class TestStructuredErrors:
             status_code=400,
             detail={
                 "error_type": "odoo_credentials_invalid",
-                "stage": "verify_odoo",
                 "message": "Odoo credentials are invalid.",
-                "technical_detail": "Odoo auth error: Invalid password",
             }
         )
 
@@ -1272,9 +1262,7 @@ class TestStructuredErrors:
                 status_code=500,
                 detail={
                     "error_type": "key_vault_write_failed",
-                    "stage": "store_secret",
                     "message": "Failed to save connection credentials securely.",
-                    "technical_detail": "RBAC authorization failed",
                 }
             )
             response = client.post(
@@ -1340,7 +1328,7 @@ class TestSaveAsUnverified:
             detail = response.json().get("detail", {})
             assert "error_type" in detail
 
-            # Find the AIConnectedAccount in db.add calls (there are also audit events)
+            # Find the AIConnectedAccount in db.add calls.
             from app.models.models import AIConnectedAccount as ACA
             add_calls = mock_session.add.call_args_list
             saved_accounts = [call[0][0] for call in add_calls if isinstance(call[0][0], ACA)]
@@ -1402,13 +1390,13 @@ class TestSaveAsUnverified:
         finally:
             app.dependency_overrides.pop(get_db, None)
 
-# ── Production Mode Debug Bypass Tests ──
+# ── Production Auth Tests ──
 
-class TestProductionDebugBypass:
-    """Production mode must reject debug anonymous admin bypass."""
+class TestProductionAuth:
+    """Production mode must reject unauthenticated connector access."""
 
-    def test_production_rejects_debug_anonymous_bypass(self, monkeypatch):
-        """When APP_ENV=production and DEBUG=true, anonymous access must be rejected."""
+    def test_production_rejects_unauthenticated_access(self, monkeypatch):
+        """When APP_ENV=production, anonymous access must be rejected."""
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("DEBUG", "true")
         from app.core.config import get_settings
@@ -1438,9 +1426,7 @@ class TestInternalKeyMismatch:
             status_code=401,
             detail={
                 "error_type": "odoo_connector_auth_failed",
-                "stage": "verify_connector",
                 "message": "Internal connector API key mismatch. Contact an administrator.",
-                "technical_detail": "Connector returned 401: Invalid internal API key",
             }
         )
 
@@ -1723,36 +1709,6 @@ class TestDisconnectCleanup:
         finally:
             app.dependency_overrides.pop(get_db, None)
 
-    @patch("app.routers.connected_accounts._delete_key_vault_secret")
-    def test_disconnect_creates_audit_event(self, _mock_delete):
-        """Disconnect must still create an audit event."""
-        account = self._make_account()
-        mock_session = self._setup_mock_db(account)
-
-        async def mock_get_db():
-            yield mock_session
-
-        from app.core.database import get_db
-        app.dependency_overrides[get_db] = mock_get_db
-        try:
-            response = client.post(
-                "/connected-accounts/odoo/disconnect",
-                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-            )
-            assert response.status_code == 200
-
-            log_event_calls = [
-                call for call in mock_session.add.call_args_list
-                if hasattr(call[0][0], 'action_type')
-            ]
-            assert len(log_event_calls) >= 1
-            audit_event = log_event_calls[0][0][0]
-            assert audit_event.action_type == "disconnect"
-            assert audit_event.target_system == "odoo"
-        finally:
-            app.dependency_overrides.pop(get_db, None)
-
-
 # ── Status Endpoint for Disconnected Accounts ──
 
 class TestDisconnectedAccountStatus:
@@ -1880,9 +1836,7 @@ class TestConnectorDnsFailure:
                     status_code=502,
                     detail={
                         "error_type": "odoo_connector_dns_failed",
-                        "stage": "verify_connector",
                         "message": "The AI Platform API could not resolve the Odoo Connector service hostname.",
-                        "technical_detail": "[Errno -2] Name or service not known",
                     }
                 )
             ):
@@ -1899,7 +1853,6 @@ class TestConnectorDnsFailure:
                 assert response.status_code == 400
                 detail = response.json().get("detail", {})
                 assert detail.get("error_type") == "odoo_connector_dns_failed"
-                assert detail.get("stage") == "verify_connector"
                 assert "could not resolve" in detail.get("message", "").lower()
         finally:
             logging.disable(logging.NOTSET)
@@ -1961,134 +1914,6 @@ class TestFrontendGuardLogic:
         assert should_show is False
 
 
-# ── Connection Trace Tests ──
-
-class TestConnectionTrace:
-    """Tests for the structured connection trace infrastructure."""
-
-    def test_generate_connection_attempt_id(self):
-        from app.routers.connected_accounts import _generate_connection_attempt_id
-        cid = _generate_connection_attempt_id()
-        assert cid.startswith("odoo_conn_")
-        assert len(cid) == 26  # "odoo_conn_" + 16 hex chars
-
-    def test_key_fingerprint_format(self):
-        from app.routers.connected_accounts import _key_fingerprint
-        fp = _key_fingerprint("my-secret-key")
-        assert fp.startswith("sha256:")
-        assert "..." in fp
-        # Should be deterministic
-        assert _key_fingerprint("my-secret-key") == _key_fingerprint("my-secret-key")
-        # Different keys produce different fingerprints
-        assert _key_fingerprint("key-a") != _key_fingerprint("key-b")
-        # Empty key returns empty string
-        assert _key_fingerprint(None) == ""
-        assert _key_fingerprint("") == ""
-
-    def test_fingerprint_does_not_reveal_secret(self):
-        from app.routers.connected_accounts import _key_fingerprint
-        fp = _key_fingerprint("super-secret-api-key-12345")
-        # The original key should not be in the fingerprint
-        assert "super-secret" not in fp
-        assert "12345" not in fp
-        assert "sha256:" in fp
-
-    def test_connect_response_includes_connection_attempt_id(self):
-        """Failure responses must include connection_attempt_id."""
-        from fastapi import HTTPException
-        with patch("app.routers.connected_accounts._store_key_vault_secret", return_value=None):
-            with patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector") as mock_v:
-                mock_v.side_effect = HTTPException(status_code=400, detail={"message": "test"})
-                response = client.post(
-                    "/connected-accounts/odoo/connect",
-                    json={
-                        "odoo_url": "https://odoo.example.com",
-                        "odoo_db": "my_db",
-                        "odoo_username": "user@example.com",
-                        "odoo_api_key": "test-key",
-                    },
-                    headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-                )
-                assert response.status_code == 400
-                detail = response.json().get("detail", {})
-                assert "connection_attempt_id" in detail
-                cid = detail["connection_attempt_id"]
-                assert cid.startswith("odoo_conn_")
-
-    def test_failure_response_includes_trace(self):
-        """Failure responses must include trace dict with stages."""
-        from fastapi import HTTPException
-        with patch("app.routers.connected_accounts._store_key_vault_secret", return_value=None):
-            with patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector") as mock_v:
-                mock_v.side_effect = HTTPException(status_code=400, detail={"message": "test"})
-                response = client.post(
-                    "/connected-accounts/odoo/connect",
-                    json={
-                        "odoo_url": "https://odoo.example.com",
-                        "odoo_db": "my_db",
-                        "odoo_username": "user@example.com",
-                        "odoo_api_key": "test-key",
-                    },
-                    headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-                )
-                assert response.status_code == 400
-                detail = response.json().get("detail", {})
-                assert "trace" in detail
-                trace = detail["trace"]
-                assert "stages" in trace
-                assert "ai_core_received" in trace["stages"]
-                assert "ai_core_verify_payload" in trace["stages"]
-                assert "key_vault_store" in trace["stages"]
-
-    def test_trace_never_contains_raw_api_key(self):
-        """Trace stages must never include the raw API key."""
-        from fastapi import HTTPException
-        with patch("app.routers.connected_accounts._store_key_vault_secret", return_value=None):
-            with patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector") as mock_v:
-                mock_v.side_effect = HTTPException(status_code=400, detail={"message": "test"})
-                response = client.post(
-                    "/connected-accounts/odoo/connect",
-                    json={
-                        "odoo_url": "https://odoo.example.com",
-                        "odoo_db": "my_db",
-                        "odoo_username": "user@example.com",
-                        "odoo_api_key": "my-super-secret-key-123",
-                    },
-                    headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-                )
-                assert response.status_code == 400
-                body = str(response.json())
-                # The raw API key must not appear anywhere in the response
-                assert "my-super-secret-key-123" not in body
-                # The fingerprint should be present instead
-                assert "sha256:" in body
-
-    def test_trace_shows_same_db_at_all_stages(self):
-        """The trace must show the same DB value at ai_core_received and ai_core_verify_payload stages."""
-        from fastapi import HTTPException
-        with patch("app.routers.connected_accounts._store_key_vault_secret", return_value=None):
-            with patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector") as mock_v:
-                mock_v.side_effect = HTTPException(status_code=400, detail={"message": "test"})
-                response = client.post(
-                    "/connected-accounts/odoo/connect",
-                    json={
-                        "odoo_url": "https://odoo.example.com",
-                        "odoo_db": "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717",
-                        "odoo_username": "alden@lotslotsmore.com",
-                        "odoo_api_key": "test-key",
-                    },
-                    headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-                )
-                assert response.status_code == 400
-                trace = response.json().get("detail", {}).get("trace", {})
-                stages = trace.get("stages", {})
-                received_db = stages.get("ai_core_received", {}).get("odoo_db")
-                verify_db = stages.get("ai_core_verify_payload", {}).get("odoo_db")
-                assert received_db == "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
-                assert verify_db == "aldenbronkhorst-lotslotsmore-lotslotsmore-15954717"
-                assert received_db == verify_db, "DB mismatch between stages"
-
-
 # ── Error Classification Tests ──
 
 class TestErrorClassification:
@@ -2128,40 +1953,3 @@ class TestErrorClassification:
         from app.routers.connected_accounts import _classify_odoo_error
         err = "Some random Odoo traceback"
         assert _classify_odoo_error(err) == "unknown_odoo_error"
-
-    def test_stage_trace_model(self):
-        """StageTrace must accept all expected fields."""
-        from app.routers.connected_accounts import StageTrace
-        st = StageTrace(
-            odoo_url="https://example.odoo.com",
-            odoo_host="example.odoo.com",
-            odoo_db="test_db",
-            odoo_username="admin@example.com",
-            api_key_present=True,
-            api_key_fingerprint="sha256:abc123...def456",
-            transport="auto",
-            model="res.partner",
-            method="search_read",
-            limit=1,
-            status="success",
-        )
-        d = st.model_dump(exclude_none=True)
-        assert d["odoo_db"] == "test_db"
-        assert d["odoo_url"] == "https://example.odoo.com"
-        assert d["api_key_present"] is True
-        assert "api_key" not in d
-
-    def test_connect_error_detail_includes_trace(self):
-        """ConnectErrorDetail must accept trace and connection_attempt_id fields."""
-        from app.routers.connected_accounts import ConnectErrorDetail
-        c = ConnectErrorDetail(
-            error_type="odoo_database_not_found",
-            stage="verify_odoo",
-            message="Database not found",
-            request_id="req_abc",
-            connection_attempt_id="odoo_conn_def",
-            trace={"stages": {"test": {"status": "failed"}}},
-        )
-        d = c.model_dump()
-        assert d["connection_attempt_id"] == "odoo_conn_def"
-        assert d["trace"]["stages"]["test"]["status"] == "failed"

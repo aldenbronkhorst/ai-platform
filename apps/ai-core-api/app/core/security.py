@@ -35,41 +35,6 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
 
     Resolves the matching database user based on email or Entra Object ID (oid).
     """
-    settings = get_settings()
-
-    if settings.debug and token == "mock-local-token":
-        fallback_email = "alden@lotslotsmore.com"
-        try:
-            result = await db.execute(select(AIUser).where(AIUser.email == fallback_email))
-            db_user = result.scalar_one_or_none()
-            if not db_user:
-                db_user = AIUser(
-                    id=uuid.UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
-                    email=fallback_email,
-                    display_name="Alden Bronkhorst",
-                    role="admin",
-                    is_active="true"
-                )
-                db.add(db_user)
-                await db.commit()
-                await db.refresh(db_user)
-        except Exception:
-            if settings.app_env == "production":
-                raise
-            db_user = AIUser(
-                id=uuid.UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
-                email=fallback_email,
-                display_name="Alden Bronkhorst",
-                role="admin",
-                is_active="true"
-            )
-        return {
-            "user_id": db_user.id,
-            "email": db_user.email,
-            "roles": ["AIPlatform.Admin", "AIPlatform.User"],
-            "mode": "local-mock"
-        }
-
     if not jwk_client:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -162,25 +127,30 @@ async def api_key_auth(
 ) -> dict:
     """Production-ready unified authentication dependency.
 
-    Accepts Entra Bearer Token (primary) or local development overrides (secondary, localhost-only).
+    Accepts Entra Bearer Token for users and API key auth for internal calls.
     """
     settings = get_settings()
 
-    # 1. Primary path: Microsoft Entra JWT
     if bearer and bearer.credentials:
         return await validate_entra_jwt(bearer.credentials, db)
 
-    # 2. API key authentication
+    if settings.app_env == "test":
+        try:
+            fallback_user_id = uuid.UUID(x_user_id) if x_user_id else uuid.UUID("00000000-0000-0000-0000-000000000001")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid X-User-Id format. Must be a UUID."
+            )
+        return {
+            "user_id": fallback_user_id,
+            "email": f"test-{fallback_user_id}@local",
+            "roles": ["AIPlatform.Admin", "AIPlatform.User"],
+            "mode": "test",
+        }
+
     if api_key and api_key == settings.api_key:
         fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        if x_user_id and settings.debug:
-            try:
-                fallback_user_id = uuid.UUID(x_user_id)
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid X-User-Id format. Must be a UUID."
-                )
         result = await db.execute(select(AIUser).where(AIUser.id == fallback_user_id))
         existing_user = result.scalar_one_or_none()
         if not existing_user:
@@ -196,16 +166,6 @@ async def api_key_auth(
             db.add(db_user)
             await db.commit()
         return {"user_id": fallback_user_id, "email": "api-key@internal", "roles": ["AIPlatform.User"], "mode": "api-key"}
-
-    # 3. Debug mode (local development only, requires DEBUG=true)
-    if settings.debug and not api_key:
-        if settings.app_env == "production":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Anonymous access is not allowed in production even with DEBUG=true."
-            )
-        fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        return {"user_id": fallback_user_id, "email": "anonymous@local", "roles": ["AIPlatform.Admin"], "mode": "debug"}
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

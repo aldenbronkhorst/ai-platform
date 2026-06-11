@@ -1,4 +1,4 @@
-"""Seed the initial Microsoft Foundry and Alibaba DashScope providers, models, and routes.
+"""Seed the model provider, chat model, and single chat route.
 
 Idempotent: creates records if missing, updates mutable config fields.
 Does NOT duplicate providers/models/routes.
@@ -18,14 +18,6 @@ PROVIDERS_TO_SEED = [
         "auth_type": "key_vault_secret",
         "secret_reference": "model-provider-foundry-primary-key",
         "enabled": "true",
-    },
-    {
-        "name": "Alibaba DashScope",
-        "provider_type": "alibaba_dashscope",
-        "base_url": "https://dashscope.aliyuncs.com",
-        "auth_type": "key_vault_secret",
-        "secret_reference": "model-provider-dashscope-primary-key",
-        "enabled": "false",
     }
 ]
 
@@ -46,54 +38,6 @@ MODELS_TO_SEED = [
             "latency_tier": "medium",
             "quality_tier": "advanced",
         }
-    },
-    {
-        "provider_name": "Microsoft Foundry",
-        "display_name": "DeepSeek Flash",
-        "model_name": "DeepSeek-V4-Flash",
-        "deployment_name": "deepseek-v4-flash",
-        "model_family": "DeepSeek",
-        "model_version": "2026-04-23",
-        "supports_tools": "false",
-        "supports_json_schema": "true",
-        "context_window": 131072,
-        "enabled": "true",
-        "config_json": {
-            "cost_tier": "low",
-            "latency_tier": "low",
-            "quality_tier": "standard",
-            "is_default_for_memory": True,
-            "enabled_for_routes": [
-                "simple_chat",
-                "memory_extraction",
-                "classification",
-                "formatting"
-            ]
-        }
-    },
-    {
-        "provider_name": "Alibaba DashScope",
-        "display_name": "Qwen Max",
-        "model_name": "qwen-max",
-        "deployment_name": "none",
-        "model_family": "Qwen",
-        "model_version": "latest",
-        "supports_tools": "true",
-        "supports_json_schema": "true",
-        "context_window": 32768,
-        "enabled": "false",
-        "config_json": {
-            "cost_tier": "medium",
-            "latency_tier": "medium",
-            "quality_tier": "advanced",
-            "disabled_reason": "Qwen Max requires Alibaba Cloud DashScope provider integration and is not available as a standard Azure AI Services deployment in the current environment.",
-            "enabled_for_routes": [
-                "general_chat",
-                "fallback",
-                "reasoning",
-                "reviewer_fallback"
-            ]
-        }
     }
 ]
 
@@ -101,73 +45,9 @@ ROUTES_TO_SEED = [
     {
         "task_type": "general_chat",
         "primary_model_name": "Kimi-K2.6",
-        "fallback_model_name": "qwen-max",
         "temperature": 0.3,
         "max_tokens": 2000,
         "system_prompt": CANONICAL_SYSTEM_PROMPT,
-        "enabled": "true"
-    },
-    {
-        "task_type": "simple_chat",
-        "primary_model_name": "DeepSeek-V4-Flash",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.5,
-        "max_tokens": 1500,
-        "system_prompt": "You are a brief, helpful business assistant. Keep answers concise.",
-        "enabled": "true"
-    },
-    {
-        "task_type": "memory_extraction",
-        "primary_model_name": "DeepSeek-V4-Flash",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.0,
-        "max_tokens": 1000,
-        "system_prompt": "Extract memory candidates from the conversation in valid JSON format.",
-        "enabled": "true"
-    },
-    {
-        "task_type": "classification",
-        "primary_model_name": "DeepSeek-V4-Flash",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.0,
-        "max_tokens": 500,
-        "system_prompt": "Classify the input category, intent, and risk level in valid JSON format.",
-        "enabled": "true"
-    },
-    {
-        "task_type": "formatting",
-        "primary_model_name": "DeepSeek-V4-Flash",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.0,
-        "max_tokens": 1500,
-        "system_prompt": "Format and structure the raw inputs cleanly into tables, markdown, or lists.",
-        "enabled": "true"
-    },
-    {
-        "task_type": "tool_chat",
-        "primary_model_name": "Kimi-K2.6",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.3,
-        "max_tokens": 2000,
-        "system_prompt": CANONICAL_SYSTEM_PROMPT,
-        "enabled": "true"
-    },
-    {
-        "task_type": "finance",
-        "primary_model_name": "Kimi-K2.6",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.1,
-        "max_tokens": 2000,
-        "system_prompt": CANONICAL_SYSTEM_PROMPT,
-        "enabled": "true"
-    },
-    {
-        "task_type": "reviewer",
-        "primary_model_name": "Kimi-K2.6",
-        "fallback_model_name": "qwen-max",
-        "temperature": 0.0,
-        "max_tokens": 1000,
-        "system_prompt": "Review the chat response for quality, safety, and correctness.",
         "enabled": "true"
     }
 ]
@@ -244,7 +124,6 @@ async def seed():
             route = existing_route.scalar_one_or_none()
 
             prim_model = model_name_map.get(r_data["primary_model_name"])
-            fb_model = model_name_map.get(r_data["fallback_model_name"])
 
             if route:
                 changed = []
@@ -256,9 +135,6 @@ async def seed():
                 if prim_model and route.primary_model_id != prim_model.id:
                     route.primary_model_id = prim_model.id
                     changed.append("primary_model_id")
-                if fb_model and route.fallback_model_id != fb_model.id:
-                    route.fallback_model_id = fb_model.id
-                    changed.append("fallback_model_id")
                 
                 if changed:
                     print(f"Route '{route.task_type}' updated fields: {', '.join(changed)}")
@@ -269,7 +145,6 @@ async def seed():
                     id=uuid.uuid4(),
                     task_type=r_data["task_type"],
                     primary_model_id=prim_model.id if prim_model else None,
-                    fallback_model_id=fb_model.id if fb_model else None,
                     temperature=r_data["temperature"],
                     max_tokens=r_data["max_tokens"],
                     system_prompt=r_data["system_prompt"],

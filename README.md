@@ -11,7 +11,7 @@ separate admin tools.
 
 - `apps/web-portal` - React web app for chat, connector setup, and admin review.
 - `apps/ai-core-api` - FastAPI orchestration API for auth, chat, memory, tools,
-  artifacts, audit, and connector routing.
+  chat file uploads, tracing, and connector routing.
 - `apps/odoo-connector-api` - Internal Odoo execution service.
 - `infra/bicep` - Azure infrastructure for the deployed app.
 

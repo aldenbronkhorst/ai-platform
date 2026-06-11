@@ -31,7 +31,6 @@ from app.services.tool_registry import (
 logger = logging.getLogger(__name__)
 
 ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to check the seeded model routes."
-RATE_LIMIT_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded"}
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
@@ -41,28 +40,7 @@ MAX_TOOL_RESULT_JSON_CHARS = 50000
 MAX_ODOO_RECORD_CONTEXT_CHARS = 20000
 MAX_ODOO_RECORD_CONTEXT_ITEMS = 25
 TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
-TOOL_FINALIZER_MAX_TOKENS = 4000
-TOOL_FINALIZER_MAX_TOOL_CALLS = 12
-TOOL_FINALIZER_RESULT_CHARS = 20000
-TOOL_FINALIZER_PAYLOAD_CHARS = 70000
-TOOL_FINALIZER_CHAT_MESSAGES = 8
-TOOL_FINALIZER_CHAT_MESSAGE_CHARS = 2000
 TOOL_ERROR_SUMMARY_LIMIT = 8
-DIRECT_BLANK_RETRY_MAX_TOKENS = 1000
-DIRECT_BLANK_RETRY_MESSAGE = {
-    "role": "system",
-    "content": (
-        "Your previous response returned no user-visible content. "
-        "Answer the latest user message now, concisely, without calling tools. "
-        "If the available conversation does not contain enough evidence, say exactly what is missing."
-    ),
-}
-AZURE_INVENTORY_FALLBACK_LIMIT = 30
-AZURE_RESOURCE_INVENTORY_TERMS = {
-    "resource", "resources", "resource group", "resource groups", "inventory",
-    "subscription", "subscriptions",
-}
-AZURE_RESOURCE_READ_TERMS = {"access", "active", "list", "show", "see", "inventory"}
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -163,9 +141,6 @@ class ModelCallState:
     used_provider: AIProvider
     client: FoundryClient
     stats: ModelCallStats
-    fallback_used: bool = False
-    fallback_model_display: str = "none"
-    fallback_reason: str = "noneeded"
 
 
 @dataclass
@@ -834,169 +809,6 @@ async def _record_delegated_tool_auth_failure(
         permission_summary=message[:500] if message else "Native Microsoft delegated credentials are not usable.",
     )
 
-
-def _is_azure_resource_inventory_request(user_message: str) -> bool:
-    text = (user_message or "").lower()
-    if "azure" not in text and "az " not in f"{text} ":
-        return False
-    return any(term in text for term in AZURE_RESOURCE_INVENTORY_TERMS) and any(
-        term in text for term in AZURE_RESOURCE_READ_TERMS
-    )
-
-
-def _json_from_cli_stdout(result: dict[str, Any]) -> Any:
-    stdout = result.get("stdout")
-    if not isinstance(stdout, str) or not stdout.strip():
-        return None
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError:
-        return None
-
-
-def _cli_failure_message(result: dict[str, Any]) -> str:
-    for key in ("message", "error", "stderr"):
-        value = result.get(key)
-        if isinstance(value, str) and value.strip():
-            return _truncate_tool_text(value.strip(), 300)
-    return "The command failed without a detailed error message."
-
-
-def _azure_resource_inventory_answer(
-    account_result: dict[str, Any],
-    resources_result: dict[str, Any],
-) -> str:
-    account_ok = account_result.get("status") == "success" and not account_result.get("error")
-    resources_ok = resources_result.get("status") == "success" and not resources_result.get("error")
-
-    if not account_ok:
-        return (
-            "I could not verify Azure Resource Manager access through the Azure CLI connector.\n\n"
-            "`az account show --output json` failed: "
-            f"{_cli_failure_message(account_result)}"
-        )
-
-    account = _json_from_cli_stdout(account_result)
-    if not isinstance(account, dict):
-        account = {}
-    sub_name = str(account.get("name") or "Unknown subscription")
-    sub_id = str(account.get("id") or "Unknown subscription ID")
-    user_info = account.get("user") if isinstance(account.get("user"), dict) else {}
-    user_name = str(user_info.get("name") or account.get("user") or "").strip()
-
-    if not resources_ok:
-        return (
-            "Azure Resource Manager is accessible through the Azure CLI connector, "
-            "but listing resources failed.\n\n"
-            f"- Subscription: {sub_name}\n"
-            f"- ID: {sub_id}\n"
-            + (f"- User: {user_name}\n" if user_name else "")
-            + "\n"
-            "`az resource list --output json` failed: "
-            f"{_cli_failure_message(resources_result)}"
-        )
-
-    resources = _json_from_cli_stdout(resources_result)
-    if not isinstance(resources, list):
-        return (
-            "Azure Resource Manager is accessible through the Azure CLI connector, "
-            "but the resource list output was not valid JSON.\n\n"
-            f"- Subscription: {sub_name}\n"
-            f"- ID: {sub_id}"
-        )
-
-    lines = [
-        "Azure Resource Manager is accessible through the Azure CLI connector.",
-        "",
-        f"- Subscription: {sub_name}",
-        f"- ID: {sub_id}",
-    ]
-    if user_name:
-        lines.append(f"- User: {user_name}")
-
-    total = len(resources)
-    if total == 0:
-        lines.extend(["", "No Azure resources were returned by `az resource list`."])
-        return "\n".join(lines)
-
-    lines.extend([
-        "",
-        f"Active Azure resources returned by `az resource list`: {total}",
-        "",
-        "| Name | Type | Resource group | Location |",
-        "|---|---|---|---|",
-    ])
-    for item in resources[:AZURE_INVENTORY_FALLBACK_LIMIT]:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "-")
-        resource_type = str(item.get("type") or "-")
-        resource_group = str(item.get("resourceGroup") or "-")
-        location = str(item.get("location") or "-")
-        lines.append(f"| {name} | {resource_type} | {resource_group} | {location} |")
-    hidden = total - AZURE_INVENTORY_FALLBACK_LIMIT
-    if hidden > 0:
-        lines.append(f"\nShowing first {AZURE_INVENTORY_FALLBACK_LIMIT} of {total}; ask for a specific resource group or type for more detail.")
-    return "\n".join(lines)
-
-
-async def _try_rate_limit_connector_fallback(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    state: ModelCallState,
-    messages: list,
-    tools: list[AITool],
-    trace_svc: Any = None,
-) -> tuple[ModelCallState, list[dict[str, Any]]]:
-    """Recover simple read-only connector requests when the model is rate-limited before tool use."""
-    if not _is_rate_limit_error(state.result):
-        return state, []
-
-    tool_names = {tool.name for tool in tools}
-    latest_user_message = _last_user_message(messages)
-    if "ms_azure_cli" not in tool_names or not _is_azure_resource_inventory_request(latest_user_message):
-        return state, []
-
-    tool_results: list[dict[str, Any]] = []
-
-    async def run_recovery_call(arguments: dict[str, Any]) -> dict[str, Any]:
-        tool_name = "ms_azure_cli"
-        result = await _execute_tool_call(db, user_id, tool_name, arguments, trace_svc=trace_svc)
-        if isinstance(result, dict):
-            await _record_delegated_tool_auth_failure(db, user_id, tool_name, result)
-            raw_result = result
-            compact_result = _compact_tool_result_for_model(result)
-        else:
-            raw_result = {"status": "failed", "error": "Tool returned an invalid result."}
-            compact_result = raw_result
-        tool_results.append({
-            "tool_call_id": f"deterministic_{len(tool_results) + 1}",
-            "tool_name": tool_name,
-            "arguments": arguments,
-            "result": compact_result,
-        })
-        return raw_result
-
-    account_result = await run_recovery_call({"command": "account show --output json", "timeout": 30})
-    if account_result.get("status") == "success" and not account_result.get("error"):
-        resources_result = await run_recovery_call({"command": "resource list --output json", "timeout": 60})
-    else:
-        resources_result = {"status": "skipped", "message": "Skipped because account discovery failed."}
-
-    state.stats.tool_calls += len(tool_results)
-    state.result = {
-        "error": False,
-        "content": _azure_resource_inventory_answer(account_result, resources_result),
-        "finish_reason": "deterministic_connector_fallback",
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "latency_ms": 0,
-    }
-    state.fallback_reason = "rate_limited_deterministic_ms_azure_cli"
-    return state, tool_results
-
-
 def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -> str:
     if len(value) <= limit:
         return value
@@ -1113,348 +925,6 @@ def _compact_tool_result_for_model(result: Any) -> Any:
 
 def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
-
-
-def _is_blank_model_content(result: dict[str, Any]) -> bool:
-    return not str(result.get("content") or "").strip()
-
-
-def _recent_chat_messages_for_finalizer(messages: list) -> list[dict[str, str]]:
-    recent: list[dict[str, str]] = []
-    for message in messages[-TOOL_FINALIZER_CHAT_MESSAGES:]:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        if role not in ("user", "assistant"):
-            continue
-        content = message.get("content")
-        if content is None:
-            continue
-        text = str(content).strip()
-        if not text:
-            continue
-        recent.append({
-            "role": role,
-            "content": _truncate_tool_text(text, TOOL_FINALIZER_CHAT_MESSAGE_CHARS),
-        })
-    return recent
-
-
-def _json_or_preview(value: Any, limit: int) -> Any:
-    payload = json.dumps(value, ensure_ascii=False, default=str)
-    if len(payload) <= limit:
-        return value
-    return {
-        "truncated": True,
-        "original_chars": len(payload),
-        "preview": payload[:limit],
-        "warning": "Only a preview is available. Do not infer missing values from truncated output.",
-    }
-
-
-def _tool_results_payload_for_finalizer(tool_results: list[dict[str, Any]]) -> str:
-    visible_results = tool_results[-TOOL_FINALIZER_MAX_TOOL_CALLS:]
-    first_index = max(len(tool_results) - len(visible_results) + 1, 1)
-    payload: dict[str, Any] = {
-        "tool_call_count": len(tool_results),
-        "included_tool_calls": len(visible_results),
-        "tool_results": [],
-    }
-    dropped = len(tool_results) - len(visible_results)
-    if dropped:
-        payload["dropped_earlier_tool_calls"] = dropped
-        payload["warning"] = "Earlier tool calls were omitted from this finalization payload."
-
-    for offset, tool_result in enumerate(visible_results):
-        payload["tool_results"].append({
-            "call_index": first_index + offset,
-            "tool_name": tool_result.get("tool_name"),
-            "arguments": _json_or_preview(tool_result.get("arguments") or {}, 2000),
-            "result": _json_or_preview(tool_result.get("result"), TOOL_FINALIZER_RESULT_CHARS),
-        })
-
-    text = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(text) <= TOOL_FINALIZER_PAYLOAD_CHARS:
-        return text
-    return (
-        text[:TOOL_FINALIZER_PAYLOAD_CHARS]
-        + f"\n...[finalizer payload truncated from {len(text)} chars; answer only from visible evidence]..."
-    )
-
-
-def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, Any]]) -> list[dict[str, str]]:
-    conversation = json.dumps(_recent_chat_messages_for_finalizer(messages), ensure_ascii=False, default=str)
-    tool_payload = _tool_results_payload_for_finalizer(tool_results)
-    return [
-        {
-            "role": "system",
-            "content": (
-                "You are finalizing a user-visible answer after connected-system tools have already run. "
-                "Do not call tools. Use only the conversation excerpt and tool results provided. "
-                "If the evidence is enough, answer directly and concisely. "
-                "If the evidence is partial, truncated, or blocked by tool errors, say exactly what is known "
-                "and what is still missing. Do not invent data. "
-                "For native Microsoft connectors, distinguish connector availability from operation failures: "
-                "a failed command, missing role, or unsupported CLI subcommand does not mean every Microsoft connector "
-                "is disconnected unless the tool result explicitly says not_connected. Do not tell users to run local "
-                "native-tool logins; connector auth must be handled by the platform, so report auth/profile failures as "
-                "platform issues on the specific connector."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Conversation excerpt:\n"
-                f"{conversation}\n\n"
-                "Tool results:\n"
-                f"{tool_payload}\n\n"
-                "Write the final answer for the user now."
-            ),
-        },
-    ]
-
-
-def _report_error_message(tool_result: dict[str, Any], result: dict[str, Any]) -> str:
-    connector_err = result.get("connector_error") or result
-    detail = connector_err.get("detail", connector_err) if isinstance(connector_err, dict) else {}
-    raw_message = detail.get("message") or detail.get("detail") or connector_err.get("message") or str(connector_err)
-    err_type = (
-        detail.get("error_type")
-        or (detail.get("error") if isinstance(detail.get("error"), str) else None)
-        or connector_err.get("error_type")
-        or "report_error"
-    )
-
-    if err_type == "report_not_found":
-        report_name = tool_result.get("arguments", {}).get("report_name", "unknown")
-        return (
-            f"I could not find a report named \"{report_name}\" in Odoo. "
-            "This may be because the report module is not installed or the name is different. "
-            "Try using the report discovery tool to list available reports."
-        )
-    if "Technical error" in raw_message:
-        return (
-            "I reached Odoo, but could not execute the report. "
-            f"The report engine encountered an internal issue: {raw_message}. "
-            "This usually means the report could not be resolved or executed "
-            "with the current Odoo account. Please check Accounting report access, "
-            "Odoo edition/version, or use the report discovery diagnostic "
-            "to confirm the available report names."
-        )
-    return (
-        "I reached Odoo, but could not execute the report. "
-        f"Reason: {raw_message}. "
-        "This may be due to report permissions, Odoo edition/version differences, "
-        "or unsupported report options."
-    )
-
-
-def _report_line_items(lines: list[dict[str, Any]], currency_symbol: str) -> list[str]:
-    items = []
-    for line in lines[:10]:
-        name = line.get("name", "")
-        value = line.get("formatted_value") or ""
-        if name and value:
-            items.append(f"{name}: {currency_symbol}{value}")
-        elif name:
-            items.append(name)
-    return items
-
-
-def _report_success_message(result: dict[str, Any]) -> str | None:
-    lines = result.get("lines") or []
-    report_name = result.get("report_name") or "report"
-    currency_symbol = result.get("currency_symbol") or ""
-    date_from = result.get("date_from") or ""
-    date_to = result.get("date_to") or ""
-    available = result.get("available_line_names") or []
-    missing = result.get("missing_line_names") or []
-
-    if not lines:
-        if not available:
-            return None
-        period = f" for {date_from} to {date_to}" if date_from and date_to else ""
-        return (
-            f"I opened the {report_name} report{period}, but could not find matching lines. "
-            f"Available top-level lines include: {', '.join(available[:10])}."
-        )
-
-    parts = [f"From the Odoo {report_name}"]
-    if date_from and date_to:
-        parts.append(f"for {date_from} to {date_to}")
-    parts.append(":")
-
-    items = _report_line_items(lines, currency_symbol)
-    if items:
-        parts.append("")
-        parts.extend(f"  - {item}" for item in items)
-    if len(lines) > 10:
-        parts.append(f"  ... and {len(lines) - 10} more lines")
-    if missing:
-        parts.append(f"Note: requested lines not found in report: {', '.join(missing[:5])}")
-    return "\n".join(parts)
-
-
-def _build_report_fallback_answer(tool_results: list[dict]) -> str | None:
-    """Build a clean user-facing answer when report tool output needs summarising."""
-    for tool_result in tool_results:
-        if tool_result.get("tool_name") != "odoo_ops_runner":
-            continue
-        arguments = tool_result.get("arguments") or {}
-        if tool_result.get("tool_name") == "odoo_ops_runner" and arguments.get("mode") != "report":
-            continue
-        result = tool_result.get("result", {})
-        if not isinstance(result, dict):
-            continue
-        if result.get("error"):
-            return _report_error_message(tool_result, result)
-        message = _report_success_message(result)
-        if message:
-            return message
-    return None
-
-
-def _strip_html_text(value: Any) -> str:
-    text = str(value or "")
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def _odoo_records_from_result(result: dict[str, Any]) -> list[dict[str, Any]]:
-    records = result.get("records")
-    if records is None:
-        records = result.get("result")
-    if isinstance(records, dict) and isinstance(records.get("items"), list):
-        records = records["items"]
-    if isinstance(records, list):
-        return [record for record in records if isinstance(record, dict)]
-    return []
-
-
-def _odoo_record_timestamp(record: dict[str, Any]) -> str:
-    for key in ("date", "create_date", "write_date"):
-        value = record.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
-def _odoo_display_value(value: Any) -> str:
-    if isinstance(value, dict):
-        if value.get("name"):
-            return str(value["name"])
-        if value.get("id") is not None:
-            return str(value["id"])
-        return ", ".join(f"{k}={v}" for k, v in list(value.items())[:3])
-    if isinstance(value, list):
-        return ", ".join(_odoo_display_value(item) for item in value[:3])
-    if value is False or value is None:
-        return ""
-    return str(value)
-
-
-def _odoo_record_summary(model: str, record: dict[str, Any]) -> str:
-    name = (
-        record.get("display_name")
-        or record.get("record_name")
-        or record.get("name")
-        or record.get("summary")
-        or record.get("subject")
-    )
-    if not name and record.get("body"):
-        name = _strip_html_text(record.get("body"))
-    if not name:
-        name = f"{model} #{record.get('id') or record.get('res_id') or '?'}"
-
-    extras: list[str] = []
-    for key in ("model", "res_model", "move_type", "state", "message_type", "payment_type"):
-        value = _odoo_display_value(record.get(key))
-        if value:
-            extras.append(value)
-    partner = _odoo_display_value(record.get("partner_id"))
-    if partner:
-        extras.append(partner)
-    amount = record.get("amount_total", record.get("amount"))
-    if amount not in (None, ""):
-        extras.append(f"amount={amount}")
-    origin = _odoo_display_value(record.get("invoice_origin"))
-    if origin:
-        extras.append(f"origin={origin}")
-
-    summary = _strip_html_text(name)
-    if extras:
-        summary = f"{summary} ({'; '.join(extras[:4])})"
-    return _truncate_tool_text(summary, 260)
-
-
-def _build_odoo_evidence_fallback_answer(tool_results: list[dict[str, Any]]) -> str | None:
-    """Build a deterministic answer when the model cannot finalize Odoo tool output."""
-    odoo_results = [item for item in tool_results if item.get("tool_name") == "odoo_ops_runner"]
-    if not odoo_results:
-        return None
-
-    timeline: list[tuple[str, str, str]] = []
-    counts: list[str] = []
-    errors: list[str] = []
-    omitted = 0
-
-    for tool_result in odoo_results:
-        arguments = tool_result.get("arguments") or {}
-        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
-        model = str(result.get("model") or arguments.get("model") or "Odoo")
-        if result.get("error"):
-            error_type = str(result.get("error_type") or "tool_error")
-            message = str(result.get("message") or result.get("error_type") or "tool error")
-            errors.append(f"{model}: {error_type}: {_truncate_tool_text(message, 220)}")
-            continue
-
-        returned = result.get("returned_count", result.get("count"))
-        total = result.get("total_count")
-        if isinstance(returned, int):
-            if isinstance(total, int) and total != returned:
-                counts.append(f"{model}: {returned} of {total} records returned")
-            else:
-                counts.append(f"{model}: {returned} records")
-
-        records = _odoo_records_from_result(result)
-        for record in records:
-            timestamp = _odoo_record_timestamp(record)
-            if not timestamp:
-                omitted += 1
-                continue
-            timeline.append((timestamp, model, _odoo_record_summary(model, record)))
-
-    if timeline:
-        timeline.sort(key=lambda item: item[0])
-        max_items = 40
-        visible = timeline[:max_items]
-        lines = ["Here is the Odoo timeline I could reconstruct from the connector results:"]
-        for timestamp, model, summary in visible:
-            lines.append(f"- {timestamp} - {model}: {summary}")
-        hidden = len(timeline) - len(visible)
-        if hidden > 0:
-            lines.append(f"- ... {hidden} more timestamped Odoo records were omitted from this fallback summary.")
-        if omitted:
-            lines.append(f"Note: {omitted} Odoo records had no timestamp field and were not placed on the timeline.")
-        if errors:
-            lines.append("Connector notes: " + "; ".join(errors[:3]))
-        return "\n".join(lines)
-
-    if counts or errors:
-        lines = ["I gathered Odoo connector evidence, but there were no timestamped records to turn into a timeline."]
-        if counts:
-            lines.append("Record counts: " + "; ".join(counts[:6]))
-        if errors:
-            lines.append("Connector notes: " + "; ".join(errors[:3]))
-        return "\n".join(lines)
-
-    return None
-
-
-def _build_tool_fallback_answer(tool_results: list[dict[str, Any]]) -> str | None:
-    return _build_report_fallback_answer(tool_results) or _build_odoo_evidence_fallback_answer(tool_results)
-
 
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
@@ -1661,57 +1131,12 @@ def _tool_selection_message(messages: list) -> str:
             recent.append(content[:1000])
     return "\n".join(recent) if recent else latest
 
-
-def _risk_level_for_message(user_msg_text: str) -> str:
-    q = user_msg_text.lower()
-    is_finance_topic = any(kw in q for kw in [
-        "revenue", "income", "expense", "profit", "loss", "balance", "invoice",
-        "bill", "payment", "cost", "price", "tax", "vat", "accounting",
-    ])
-
-    is_odoo_lookup = any(phrase in q for phrase in [
-        "check odoo", "odoo", "account.move", "ir.attachment", "credit note",
-        "find", "search", "look up",
-    ])
-    if is_odoo_lookup and q.count("amount") <= 2:
-        contains_aggregate_intent = any(kw in q for kw in [
-            "compare", "reconcile", "audit", "forecast", "budget", "analyze",
-            "trend", "variance", "total revenue", "total income", "net profit",
-        ])
-        if not contains_aggregate_intent:
-            is_finance_topic = False
-
-    return "high" if is_finance_topic else "low"
-
-
 async def _select_route_model_provider(
     db: AsyncSession,
     task_type: str,
-    risk_level: str,
 ) -> tuple[AIRoute, AIModel, AIProvider, dict[str, Any]]:
-    from app.services.model_routing_policy import ModelRoutingPolicyService
-
-    policy = await ModelRoutingPolicyService(db).select_route(
-        task_type=task_type,
-        risk_level=risk_level,
-        requires_tools=task_type == "general_chat",
-    )
-    route_id = policy.get("selected_route_id")
-    model_id = policy.get("selected_model_id")
-
-    if route_id and model_id:
-        route_res = await db.execute(select(AIRoute).where(AIRoute.id == UUID(route_id)))
-        route = route_res.scalar_one_or_none()
-        model_res = await db.execute(select(AIModel).where(AIModel.id == UUID(model_id)))
-        model = model_res.scalar_one_or_none()
-        if route and model:
-            prov_res = await db.execute(select(AIProvider).where(AIProvider.id == model.provider_id))
-            provider = prov_res.scalar_one_or_none()
-            if provider:
-                return route, model, provider, policy
-
-    route, model, provider = await get_enabled_route(db, task_type)
-    return route, model, provider, policy
+    route, model, provider = await get_enabled_route(db, "general_chat")
+    return route, model, provider, {"reason": "single_general_chat_route", "requested_task_type": task_type}
 
 
 def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definitions: list[dict[str, Any]]) -> str:
@@ -2048,119 +1473,9 @@ async def _call_model(
     return result, client
 
 
-def _is_rate_limit_error(result: dict[str, Any]) -> bool:
-    return bool(result.get("error") and result.get("error_type") in RATE_LIMIT_ERROR_TYPES)
-
-
-async def _fallback_candidates(
-    db: AsyncSession,
-    route: AIRoute,
-    primary_model: AIModel,
-    needs_tools: bool,
-) -> list[tuple[AIModel, AIProvider]]:
-    candidates: list[tuple[AIModel, AIProvider]] = []
-    if route.fallback_model_id:
-        fb_model_res = await db.execute(
-            select(AIModel).where(AIModel.id == route.fallback_model_id, AIModel.enabled == "true")
-        )
-        fb_model = fb_model_res.scalar_one_or_none()
-        if fb_model:
-            fb_prov_res = await db.execute(
-                select(AIProvider).where(AIProvider.id == fb_model.provider_id, AIProvider.enabled == "true")
-            )
-            fb_prov = fb_prov_res.scalar_one_or_none()
-            if fb_prov:
-                candidates.append((fb_model, fb_prov))
-
-    first_candidate_supports_tools = bool(candidates) and (
-        candidates[0][0].supports_tools == "true" or (candidates[0][0].config_json or {}).get("supports_tools") is True
-    )
-    if not needs_tools or first_candidate_supports_tools:
-        return candidates
-
-    all_models_res = await db.execute(
-        select(AIModel).where(
-            AIModel.enabled == "true",
-            AIModel.id != primary_model.id,
-            AIModel.id != (route.fallback_model_id or UUID(int=0)),
-        ).limit(10)
-    )
-    for alt_model in all_models_res.scalars().all():
-        supports_tools = alt_model.supports_tools == "true" or (alt_model.config_json or {}).get("supports_tools") is True
-        if not supports_tools:
-            continue
-        alt_prov_res = await db.execute(
-            select(AIProvider).where(AIProvider.id == alt_model.provider_id, AIProvider.enabled == "true")
-        )
-        alt_prov = alt_prov_res.scalar_one_or_none()
-        if alt_prov:
-            candidates.append((alt_model, alt_prov))
-    return candidates
-
-
-async def _try_rate_limit_fallbacks(
-    db: AsyncSession,
-    route: AIRoute,
-    primary_model: AIModel,
-    state: ModelCallState,
-    messages: list[dict[str, Any]],
-    temperature: float,
-    max_tokens: int,
-    tool_definitions: list[dict[str, Any]],
-    reason: str,
-    trace_svc: Any = None,
-) -> ModelCallState:
-    if not _is_rate_limit_error(state.result):
-        return state
-
-    state.fallback_reason = reason
-    attempted_fallback = False
-    for fb_model, fb_provider in await _fallback_candidates(db, route, primary_model, bool(tool_definitions)):
-        if fb_model.id == state.used_model.id:
-            continue
-        supports_tools = fb_model.supports_tools == "true" or (fb_model.config_json or {}).get("supports_tools") is True
-        if tool_definitions and not supports_tools:
-            logger.warning("Fallback candidate %s does not support required tools. Skipping.", fb_model.display_name)
-            continue
-
-        attempted_fallback = True
-        state.fallback_model_display = fb_model.display_name
-        logger.warning(
-            "Model quota exceeded, trying fallback | failed_model=%s fallback=%s reason=%s",
-            state.used_model.display_name,
-            fb_model.display_name,
-            reason,
-        )
-        fb_result, fb_client = await _call_model(
-            fb_model,
-            fb_provider,
-            messages,
-            temperature,
-            max_tokens,
-            tool_definitions,
-            trace_svc=trace_svc,
-            attempt_reason=reason,
-        )
-        state.stats.add_result(fb_result)
-        state.result = fb_result
-        state.used_model = fb_model
-        state.used_provider = fb_provider
-        state.client = fb_client
-        state.fallback_used = True
-        if not fb_result.get("error"):
-            return state
-        state.fallback_reason = f"tried_fallback_{fb_model.display_name}_also_failed"
-
-    if not attempted_fallback:
-        state.fallback_model_display = "none"
-    return state
-
-
-async def _run_model_with_fallbacks(
-    db: AsyncSession,
-    route: AIRoute,
-    primary_model: AIModel,
-    primary_provider: AIProvider,
+async def _run_model_once(
+    model: AIModel,
+    provider: AIProvider,
     messages: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
@@ -2169,8 +1484,8 @@ async def _run_model_with_fallbacks(
 ) -> ModelCallState:
     stats = ModelCallStats()
     result, client = await _call_model(
-        primary_model,
-        primary_provider,
+        model,
+        provider,
         messages,
         temperature,
         max_tokens,
@@ -2179,21 +1494,13 @@ async def _run_model_with_fallbacks(
         attempt_reason="primary",
     )
     stats.add_result(result)
-    state = ModelCallState(result=result, used_model=primary_model, used_provider=primary_provider, client=client, stats=stats)
-
-    return await _try_rate_limit_fallbacks(
-        db, route, primary_model, state, messages, temperature, max_tokens, tool_definitions,
-        reason="primary_quota_exceeded",
-        trace_svc=trace_svc,
-    )
+    return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
 
 
 async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
     state: ModelCallState,
-    route: AIRoute,
-    primary_model: AIModel,
     messages: list[dict[str, Any]],
     tools: list[AITool],
     tool_definitions: list[dict[str, Any]],
@@ -2263,151 +1570,7 @@ async def _run_tool_loop(
         state.result = result
         state.client = client
         state.stats.add_result(state.result)
-        state = await _try_rate_limit_fallbacks(
-            db, route, primary_model, state, followup_messages, temperature, followup_max_tokens, tool_definitions,
-            reason="tool_loop_quota_exceeded",
-            trace_svc=trace_svc,
-        )
     return tool_results
-
-
-def _should_finalize_blank_tool_response(state: ModelCallState, tool_results: list[dict[str, Any]]) -> bool:
-    if not tool_results:
-        return False
-    if state.result.get("error") or state.result.get("tool_calls"):
-        return False
-    return _is_blank_model_content(state.result)
-
-
-async def _finalize_blank_tool_response(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    route: AIRoute,
-    primary_model: AIModel,
-    state: ModelCallState,
-    original_messages: list,
-    tool_results: list[dict[str, Any]],
-    temperature: float,
-    max_tokens: int,
-    trace_svc: Any = None,
-) -> ModelCallState:
-    if not _should_finalize_blank_tool_response(state, tool_results):
-        return state
-
-    fallback = _build_tool_fallback_answer(tool_results)
-    if fallback:
-        logger.info("Used deterministic tool fallback before finalizer | user_id=%s tool_calls=%d", user_id, len(tool_results))
-        state.result["content"] = fallback
-        state.result["finish_reason"] = state.result.get("finish_reason") or "fallback"
-        return state
-
-    finalizer_messages = _build_tool_finalizer_messages(original_messages, tool_results)
-    finalizer_max_tokens = max(max_tokens, TOOL_FINALIZER_MAX_TOKENS)
-    logger.warning(
-        "Retrying blank post-tool model response with finalizer | user_id=%s finish_reason=%s tool_calls=%d max_tokens=%d",
-        user_id,
-        state.result.get("finish_reason", ""),
-        len(tool_results),
-        finalizer_max_tokens,
-    )
-
-    result, client = await _call_model(
-        state.used_model,
-        state.used_provider,
-        finalizer_messages,
-        min(temperature, 0.2),
-        finalizer_max_tokens,
-        [],
-        trace_svc=trace_svc,
-        attempt_reason="tool_finalizer",
-        client=state.client,
-    )
-    state.result = result
-    state.client = client
-    state.stats.add_result(state.result)
-    state = await _try_rate_limit_fallbacks(
-        db,
-        route,
-        primary_model,
-        state,
-        finalizer_messages,
-        min(temperature, 0.2),
-        finalizer_max_tokens,
-        [],
-        reason="tool_finalizer_quota_exceeded",
-        trace_svc=trace_svc,
-    )
-
-    if _is_blank_model_content(state.result):
-        logger.warning(
-            "Tool finalizer returned blank content | finish_reason=%s tool_calls=%d",
-            state.result.get("finish_reason", ""),
-            len(tool_results),
-        )
-    else:
-        logger.info("Recovered blank post-tool model response with finalizer | tool_calls=%d", len(tool_results))
-    return state
-
-
-def _should_retry_blank_direct_response(state: ModelCallState, tool_results: list[dict[str, Any]]) -> bool:
-    if tool_results:
-        return False
-    if state.result.get("error") or state.result.get("tool_calls"):
-        return False
-    return _is_blank_model_content(state.result)
-
-
-async def _retry_blank_direct_response(
-    db: AsyncSession,
-    route: AIRoute,
-    primary_model: AIModel,
-    state: ModelCallState,
-    messages: list[dict[str, Any]],
-    tool_results: list[dict[str, Any]],
-    temperature: float,
-    trace_svc: Any = None,
-) -> ModelCallState:
-    if not _should_retry_blank_direct_response(state, tool_results):
-        return state
-
-    retry_messages = messages + [DIRECT_BLANK_RETRY_MESSAGE]
-    logger.warning(
-        "Retrying blank direct model response without tools | finish_reason=%s max_tokens=%d",
-        state.result.get("finish_reason", ""),
-        DIRECT_BLANK_RETRY_MAX_TOKENS,
-    )
-    result, client = await _call_model(
-        state.used_model,
-        state.used_provider,
-        retry_messages,
-        min(temperature, 0.2),
-        DIRECT_BLANK_RETRY_MAX_TOKENS,
-        [],
-        trace_svc=trace_svc,
-        attempt_reason="blank_direct_retry",
-        client=state.client,
-    )
-    state.result = result
-    state.client = client
-    state.stats.add_result(state.result)
-    state = await _try_rate_limit_fallbacks(
-        db,
-        route,
-        primary_model,
-        state,
-        retry_messages,
-        min(temperature, 0.2),
-        DIRECT_BLANK_RETRY_MAX_TOKENS,
-        [],
-        reason="blank_direct_retry_quota_exceeded",
-        trace_svc=trace_svc,
-    )
-    if _is_blank_model_content(state.result):
-        logger.warning("Blank direct model retry returned blank content | finish_reason=%s", state.result.get("finish_reason", ""))
-    else:
-        logger.info("Recovered blank direct model response with no-tool retry")
-    return state
-
 
 async def _log_usage(
     db: AsyncSession,
@@ -2447,23 +1610,14 @@ async def _log_usage(
 
 def _provider_error_message(
     result: dict[str, Any],
-    state: ModelCallState,
     primary_model_display: str,
 ) -> str:
     error_type = result.get("error_type", "unknown")
     if error_type in ("rate_limit_exceeded", "quota_exceeded"):
-        if state.fallback_used:
-            return (
-                "The AI service is temporarily unavailable because all models "
-                "reached their quota or rate limit. "
-                f"Tried: {primary_model_display} (primary) and {state.fallback_model_display} (fallback). "
-                "Please try again shortly, or contact support if this continues."
-            )
-        fallback_note = f" (fallback model: {state.fallback_model_display})" if state.fallback_model_display != "none" else ""
         return (
             "The AI service is temporarily unavailable because the model "
             "quota or rate limit has been reached. "
-            f"Primary: {primary_model_display}{fallback_note}. "
+            f"Model: {primary_model_display}. "
             "Please try again shortly, or contact support if this continues."
         )
 
@@ -2492,7 +1646,7 @@ def _raise_if_provider_failed(
     status_code = state.result.get("status_code", 0)
     logger.error(
         "Provider call failed | primary_model=%s primary_provider=%s used_model=%s used_provider=%s "
-        "error_type=%s status_code=%s raw_message=%s fallback_used=%s fallback_model=%s "
+        "error_type=%s status_code=%s raw_message=%s "
         "user_id=%s chat_session_id=%s tools_enabled=%s",
         primary_model.display_name,
         primary_provider.name,
@@ -2501,91 +1655,29 @@ def _raise_if_provider_failed(
         error_type,
         status_code,
         raw_message,
-        state.fallback_used,
-        state.fallback_model_display,
         user_id,
         chat_session_id,
         tools_enabled,
     )
     raise ProviderCallError(
-        _provider_error_message(state.result, state, primary_model.display_name),
+        _provider_error_message(state.result, primary_model.display_name),
         state.used_provider.name,
         state.used_model.display_name,
     )
 
 
-def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any], primary_model: AIModel) -> dict[str, Any]:
+def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any]) -> dict[str, Any]:
     return {
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
         "currency_source": injected.currency_source,
         "current_date": _platform_now().date().isoformat(),
-        "model_routing": {
-            "primary_model": primary_model.display_name,
-            "fallback_model": state.fallback_model_display,
-            "fallback_used": state.fallback_used,
-            "fallback_reason": state.fallback_reason,
+        "model": {
+            "route": "general_chat",
+            "model": state.used_model.display_name,
+            "provider": state.used_provider.name,
             "routing_reason": policy.get("reason", "unknown"),
-            "cost_tier": policy.get("cost_tier", "medium"),
         },
     }
-
-
-def _build_blank_direct_fallback_answer(messages: list, response: dict[str, Any]) -> str | None:
-    finish_reason = str(response.get("finish_reason") or "")
-    if finish_reason != "length":
-        return None
-
-    latest = _last_user_message(messages).lower()
-    recent_text = " ".join(
-        str(message.get("content") or "")
-        for message in messages[-4:]
-        if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
-    ).lower()
-    if "odoo" in recent_text and any(term in latest for term in ("strategy", "invalid field", "activity", "timeline", "schema")):
-        return (
-            "Safe repeatable Odoo read-only strategy:\n"
-            "- Start with `schema` for candidate models and fields; do not assume fields exist.\n"
-            "- Resolve the user with `res.users`, then query activity-bearing models using fields confirmed by schema.\n"
-            "- Prefer `create_uid`, `write_uid`, `create_date`, and `write_date` when the model supports them.\n"
-            "- For login/device style evidence, verify the available fields on `res.users.log`, `bus.presence`, or device-related models before filtering.\n"
-            "- Keep `query` fields explicit and narrow; use `content` only for specific ids or a tight domain.\n"
-            "- If a model has no user-link field, report that limitation instead of inventing a relationship."
-        )
-
-    return (
-        "I could not generate a usable answer for that turn because the model hit its output limit before "
-        "returning visible content. No new connector result was available for a deterministic answer. "
-        "Ask for a narrower slice or a shorter summary."
-    )
-
-
-async def _apply_blank_content_fallback(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    messages: list,
-    response: dict[str, Any],
-    tool_results: list[dict[str, Any]],
-    trace_svc: Any = None,
-) -> dict[str, Any]:
-    if not _is_blank_model_content(response):
-        return response
-
-    if tool_results:
-        fallback = _build_tool_fallback_answer(tool_results)
-        if fallback:
-            logger.info("Used tool fallback answer (from tool results) | user_id=%s tool_calls=%d", user_id, len(tool_results))
-            response["content"] = fallback
-        return response
-
-    finish_reason = str(response.get("finish_reason") or "")
-    fallback = _build_blank_direct_fallback_answer(messages, response)
-    if fallback:
-        response["content"] = fallback
-        response["finish_reason"] = "fallback"
-        logger.info("Used blank direct-response fallback | user_id=%s finish_reason=%s", user_id, finish_reason)
-
-    return response
-
 
 async def execute_chat(
     db: AsyncSession,
@@ -2612,8 +1704,8 @@ async def execute_chat(
             },
         )
     try:
-        risk_level = _risk_level_for_message(user_msg_text)
-        route, model_obj, provider, policy = await _select_route_model_provider(db, task_type, risk_level)
+        risk_level = "low"
+        route, model_obj, provider, policy = await _select_route_model_provider(db, task_type)
         connected_accounts = await _load_connected_accounts(db, user_id)
 
         system_prompt = route.system_prompt or ""
@@ -2659,46 +1751,15 @@ async def execute_chat(
             trace_svc.span_error(context_span, type(exc).__name__, str(exc))
         raise
 
-    state = await _run_model_with_fallbacks(
-        db, route, model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
+    state = await _run_model_once(
+        model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
         trace_svc=trace_svc,
     )
     tool_results: list[dict[str, Any]] = []
-    state, deterministic_tool_results = await _try_rate_limit_connector_fallback(
-        db,
-        user_id,
-        state,
-        messages,
-        tools,
-        trace_svc=trace_svc,
-    )
-    tool_results.extend(deterministic_tool_results)
     tool_results.extend(await _run_tool_loop(
-        db, user_id, state, route, model_obj, full_messages, tools, tool_definitions, temperature, max_tokens,
+        db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,
     ))
-    state = await _finalize_blank_tool_response(
-        db,
-        user_id,
-        route,
-        model_obj,
-        state,
-        messages,
-        tool_results,
-        temperature,
-        max_tokens,
-        trace_svc=trace_svc,
-    )
-    state = await _retry_blank_direct_response(
-        db,
-        route,
-        model_obj,
-        state,
-        full_messages,
-        tool_results,
-        temperature,
-        trace_svc=trace_svc,
-    )
     tool_error_summary = _tool_result_error_summary(tool_results)
 
     await _log_usage(
@@ -2731,7 +1792,7 @@ async def execute_chat(
         "tool_calls": tool_results if tool_results else None,
         "tool_error_summary": tool_error_summary if tool_error_summary else None,
         "has_tool_errors": bool(tool_error_summary),
-        "context": _context_metadata(injected, state, policy, model_obj),
+        "context": _context_metadata(injected, state, policy),
         "tool_call_count": state.stats.tool_calls,
     }
-    return await _apply_blank_content_fallback(db, user_id, messages, response, tool_results, trace_svc=trace_svc)
+    return response

@@ -1,7 +1,6 @@
 import { FileText } from "lucide-react";
 import type { ChatAttachment, ChatMessage } from "../../types";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { TechnicalDetails } from "./TechnicalDetails";
 import { PendingAssistant } from "./PendingAssistant";
 import { FailedMessage } from "./FailedMessage";
 import { MessageActions } from "./MessageActions";
@@ -28,8 +27,7 @@ function isChatAttachment(value: unknown): value is ChatAttachment {
   return isRecord(value)
     && typeof value.id === "string"
     && typeof value.filename === "string"
-    && typeof value.mime_type === "string"
-    && typeof value.artifact_type === "string";
+    && typeof value.mime_type === "string";
 }
 
 function messageAttachments(message: ChatMessage): ChatAttachment[] {
@@ -111,11 +109,6 @@ export function MessageBubble({
     return <FailedMessage errorMessage={message.error_message} onRetry={onRetry} />;
   }
 
-  const metadata = message.metadata_json && typeof message.metadata_json === "object"
-    ? message.metadata_json as Record<string, unknown>
-    : null;
-  const technicalDetails = metadata?.technical_details;
-
   return (
     <div className="w-full flex justify-start">
       <div className="group w-full max-w-none min-w-0">
@@ -130,10 +123,6 @@ export function MessageBubble({
             onCopy={() => onCopy?.(message.content)}
           />
         </div>
-
-        {Boolean(technicalDetails) && (
-          <TechnicalDetails data={technicalDetails} />
-        )}
       </div>
     </div>
   );

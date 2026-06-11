@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type { AttachedFile, ChatAttachment, ChatMessage, ChatSession } from "../types";
-import { APIM_BASE_URL, fetchWithTimeout } from "../hooks/useApi";
+import { API_BASE_URL, fetchWithTimeout } from "../hooks/useApi";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import {
   appendActivityEvent,
@@ -89,7 +89,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           ? "wav"
           : "webm";
     formData.append("file", audioBlob, `voice-input.${extension}`);
-    const res = await fetch(`${APIM_BASE_URL}/voice/transcribe`, {
+    const res = await fetch(`${API_BASE_URL}/voice/transcribe`, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
       body: formData,
@@ -168,7 +168,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     if (!accessToken || !activeUserEmail) return;
     setIsSessionsLoading(true);
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: getHeaders() });
       if (res.ok) {
         const data = sortChatSessions(await res.json() as ChatSession[]);
         setChatSessions(prev => {
@@ -197,7 +197,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const refreshChatSession = useCallback(async (sessionId: string) => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sessionId}`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}`, { headers: getHeaders() });
       if (res.ok) {
         upsertChatSession(await res.json() as ChatSession);
       }
@@ -220,7 +220,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     updateLocalChatSession(sessionId, { title: cleanTitle });
 
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${sessionId}`, {
+      const res = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`, {
         method: "PATCH",
         headers: getHeaders(),
         body: JSON.stringify({ title: cleanTitle }),
@@ -277,7 +277,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const createNewChat = useCallback(async (): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions`, {
+      const res = await fetch(`${API_BASE_URL}/chat/sessions`, {
         method: "POST",
         headers: getHeaders(),
         body: JSON.stringify({ title: "New Chat" }),
@@ -303,7 +303,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const fetchSessionMessages = useCallback(async (sid: string, showLoading = true) => {
     if (showLoading) setIsMessagesLoading(true);
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
       if (res.ok) {
         const data = await res.json() as ChatMessage[];
         if (activeSessionIdRef.current === sid) {
@@ -322,7 +322,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const deleteChatSession = useCallback(async (sid: string) => {
     if (!confirm("Archive/delete this chat session?")) return;
     try {
-      await fetch(`${APIM_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: getHeaders() });
+      await fetch(`${API_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: getHeaders() });
       setChatSessions(prev => prev.filter(s => s.id !== sid));
       if (activeSession?.id === sid) setActiveSession(null);
       void fetchChatSessions();
@@ -390,7 +390,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     markSessionSending(session.id);
 
     try {
-      const res = await fetch(`${APIM_BASE_URL}/chat/sessions/${session.id}/messages/stream`, {
+      const res = await fetch(`${API_BASE_URL}/chat/sessions/${session.id}/messages/stream`, {
         method: "POST",
         headers: { ...getHeaders(), "X-Request-ID": requestId },
         body: JSON.stringify({
@@ -455,7 +455,6 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             requestId,
             errorType: "stream_error",
             errorMessage: "The AI service finished without returning a response.",
-            technicalDetail: "Chat stream ended before a final message event was received.",
             httpStatus: 0,
           });
         }
@@ -501,7 +500,6 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         id: file.id as string,
         filename: file.file.name,
         mime_type: file.file.type || "application/octet-stream",
-        artifact_type: "job-file",
       });
     const artifactIds = attachedArtifacts.map(artifact => artifact.id);
 
@@ -639,11 +637,8 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       setAttachedFiles(prev => [...prev, { file, id: tempId, uploading: true }]);
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("artifact_type", "job-file");
-      formData.append("filename", file.name);
-      formData.append("mime_type", file.type || "application/octet-stream");
       try {
-        const response = await fetch(`${APIM_BASE_URL}/artifacts`, {
+        const response = await fetch(`${API_BASE_URL}/artifacts`, {
           method: "POST",
           headers: { Authorization: `Bearer ${accessToken}` },
           body: formData,
@@ -654,7 +649,6 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             id: art.id,
             filename: art.filename || file.name,
             mime_type: art.mime_type || file.type || "application/octet-stream",
-            artifact_type: art.artifact_type || "job-file",
           };
           setAttachedFiles(prev => prev.map(f => f.id === tempId ? {
             file,

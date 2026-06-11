@@ -19,7 +19,6 @@ from app.services.model_router import (
     _tool_selection_message,
     _compact_tool_result_for_model,
     _append_tool_guidance,
-    _build_tool_finalizer_messages,
     _guard_connected_system_denial,
     _execute_tool_call_impl,
 )
@@ -263,27 +262,6 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
     assert "Never invent Azure cost totals" in prompt
     assert "successful tool result only" in prompt
     assert "do not say there is no Microsoft user-management tool" in prompt
-
-
-def test_tool_finalizer_keeps_ms_admin_connection_distinct_from_command_errors():
-    messages = [{"role": "user", "content": "what is costing so much in Azure?"}]
-    tool_results = [
-        {
-            "tool_name": "ms_azure_cli",
-            "arguments": {"command": "costmanagement query --type Usage"},
-            "result": {
-                "status": "failed",
-                "error_type": "command_failed",
-                "message": "ERROR: 'query' is misspelled or not recognized by the system.",
-            },
-        }
-    ]
-
-    finalizer_messages = _build_tool_finalizer_messages(messages, tool_results)
-    system_text = finalizer_messages[0]["content"]
-
-    assert "failed command, missing role, or unsupported CLI subcommand does not mean every Microsoft connector" in system_text
-
 
 def test_guard_replaces_false_azure_not_connected_denial_when_connected():
     bad_content = (
@@ -688,104 +666,6 @@ class TestConnectorContext:
         assert "ms_azure_cli" in tool_names
         assert "ms_admin" not in tool_names
         assert result["content"] == "Azure is connected."
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_recovers_azure_inventory_when_model_quota_blocks_tool_call(self):
-        from app.services.model_router import execute_chat
-
-        user_id = uuid.uuid4()
-        account = AIConnectedAccount(
-            provider="azure_cli",
-            status="connected",
-            user_id=user_id,
-            provider_username="alden@lotslotsmore.com",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-        ms_azure_cli_tool = AITool(
-            name="ms_azure_cli",
-            display_name="Azure Resource Manager CLI",
-            description="Run Azure Resource Manager CLI commands.",
-            target_system="azure_cli",
-            input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
-        )
-        tool_schema = [{
-            "type": "function",
-            "function": {
-                "name": "ms_azure_cli",
-                "description": "Run Azure Resource Manager CLI commands.",
-                "parameters": ms_azure_cli_tool.input_schema,
-            },
-        }]
-
-        async def fake_select_tools(*_args, **_kwargs):
-            system_prompt = _args[-1]
-            return [ms_azure_cli_tool], tool_schema, system_prompt
-
-        async def fake_tool_call(_db, _user_id, tool_name, arguments, trace_svc=None):
-            assert tool_name == "ms_azure_cli"
-            command = arguments["command"]
-            if command.startswith("account show"):
-                return {
-                    "status": "success",
-                    "stdout": json.dumps({
-                        "name": "Lots Lots More",
-                        "id": "sub-123",
-                        "user": {"name": "alden@lotslotsmore.com"},
-                    }),
-                    "stderr": "",
-                    "exit_code": 0,
-                }
-            if command.startswith("resource list"):
-                return {
-                    "status": "success",
-                    "stdout": json.dumps([
-                        {
-                            "name": "ca-ai-platform-api-prod-san-001",
-                            "type": "Microsoft.App/containerApps",
-                            "resourceGroup": "rg-ai-platform-prod-san-001",
-                            "location": "southafricanorth",
-                        }
-                    ]),
-                    "stderr": "",
-                    "exit_code": 0,
-                }
-            raise AssertionError(f"unexpected command: {command}")
-
-        with patch.object(
-            type(db), "add"
-        ), patch.object(
-            type(db), "flush"
-        ), patch(
-            "app.services.model_router._select_tools_for_model",
-            new=fake_select_tools,
-        ), patch(
-            "app.services.model_router._fallback_candidates",
-            new=AsyncMock(return_value=[]),
-        ), patch(
-            "app.services.model_router._call_model",
-            new=AsyncMock(return_value=({
-                "error": True,
-                "error_type": "quota_exceeded",
-                "message": "quota exhausted",
-                "status_code": 429,
-                "latency_ms": 20,
-            }, MagicMock())),
-        ), patch(
-            "app.services.model_router._execute_tool_call",
-            new=AsyncMock(side_effect=fake_tool_call),
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "can you access my azure if so list active resources"}],
-                user_id=user_id,
-            )
-
-        assert result["finish_reason"] == "deterministic_connector_fallback"
-        assert "Azure Resource Manager is accessible" in result["content"]
-        assert "Lots Lots More" in result["content"]
-        assert "ca-ai-platform-api-prod-san-001" in result["content"]
-        assert result["tool_call_count"] == 2
-        assert result["tool_calls"][0]["tool_name"] == "ms_azure_cli"
 
     @pytest.mark.asyncio
     async def test_execute_chat_injects_active_memories(self):
@@ -1900,41 +1780,6 @@ class TestToolExecution:
         assert len(compacted["records"]) == MAX_ODOO_RECORD_CONTEXT_ITEMS
         assert "model_context_warning" in compacted
 
-    def test_tool_finalizer_keeps_complete_odoo_page_visible(self):
-        from app.services.model_router import _tool_results_payload_for_finalizer
-
-        records = [
-            {
-                "id": i,
-                "display_name": f"BILL-2025-{i:05d} - Vendor",
-                "write_date": "2026-06-04 12:30:00",
-                "amount_total_money": {"formatted": f"R{i * 100}.00"},
-            }
-            for i in range(43)
-        ]
-        payload = _tool_results_payload_for_finalizer([
-            {
-                "tool_name": "odoo_ops_runner",
-                "arguments": {"mode": "query", "model": "account.move", "limit": 50},
-                "result": {
-                    "model": "account.move",
-                    "records": records,
-                    "count": 43,
-                    "returned_count": 43,
-                    "total_count": 43,
-                    "limit": 50,
-                    "offset": 0,
-                    "has_more": False,
-                    "complete": True,
-                },
-            }
-        ])
-
-        assert "BILL-2025-00042" in payload
-        assert '"complete": true' in payload
-        assert "Only a preview is available" not in payload
-        assert "finalizer payload truncated" not in payload
-
     def test_tool_result_compaction_keeps_practical_cli_stdout_complete(self):
         from app.services.model_router import _compact_tool_result_for_model
 
@@ -1968,71 +1813,6 @@ class TestToolExecution:
         assert compacted["stdout"]["truncated"] is True
         assert compacted["stdout"]["chars"] == len(huge_stdout)
         assert "Do not infer missing rows" in compacted["stdout"]["warning"]
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_fallback_helper_switches_model(self):
-        from app.services.model_router import ModelCallStats, ModelCallState, _try_rate_limit_fallbacks
-
-        route = AIRoute(
-            id=uuid.uuid4(),
-            task_type="general_chat",
-            primary_model_id=uuid.uuid4(),
-            fallback_model_id=uuid.uuid4(),
-            enabled="true",
-        )
-        primary_provider = AIProvider(id=uuid.uuid4(), name="Primary", enabled="true")
-        fallback_provider = AIProvider(id=uuid.uuid4(), name="Fallback Provider", enabled="true")
-        primary_model = AIModel(
-            id=route.primary_model_id,
-            provider_id=primary_provider.id,
-            display_name="Primary Model",
-            supports_tools="true",
-            enabled="true",
-        )
-        fallback_model = AIModel(
-            id=route.fallback_model_id,
-            provider_id=fallback_provider.id,
-            display_name="Fallback Model",
-            supports_tools="true",
-            enabled="true",
-        )
-        state = ModelCallState(
-            result={"error": True, "error_type": "rate_limit_exceeded", "latency_ms": 10},
-            used_model=primary_model,
-            used_provider=primary_provider,
-            client=MagicMock(),
-            stats=ModelCallStats(),
-        )
-
-        with patch(
-            "app.services.model_router._fallback_candidates",
-            new=AsyncMock(return_value=[(fallback_model, fallback_provider)]),
-        ), patch(
-            "app.services.model_router._call_model",
-            new=AsyncMock(return_value=({
-                "error": False,
-                "content": "fallback response",
-                "prompt_tokens": 7,
-                "completion_tokens": 3,
-                "latency_ms": 20,
-            }, MagicMock())),
-        ):
-            updated = await _try_rate_limit_fallbacks(
-                MockSession(),
-                route,
-                primary_model,
-                state,
-                [{"role": "user", "content": "hi"}],
-                0.3,
-                2000,
-                [{"type": "function"}],
-                reason="tool_loop_quota_exceeded",
-            )
-
-        assert updated.fallback_used is True
-        assert updated.used_model.id == fallback_model.id
-        assert updated.result["content"] == "fallback response"
-        assert updated.stats.total_tokens == 10
 
     @pytest.mark.asyncio
     async def test_execute_chat_with_tools(self):
@@ -2129,8 +1909,8 @@ class TestToolExecution:
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
-    async def test_execute_chat_finalizes_blank_response_after_tools(self):
-        """A blank length-limited final response after tools must be retried without tools."""
+    async def test_execute_chat_leaves_blank_response_after_tools_for_chat_guard(self):
+        """A blank post-tool response is no longer patched by a fallback finalizer."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2188,15 +1968,6 @@ class TestToolExecution:
                     "latency_ms": 200,
                     "error": False,
                 },
-                {
-                    "content": "The Odoo evidence shows the receipt was adjusted by a later completed move.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 30,
-                    "completion_tokens": 12,
-                    "latency_ms": 150,
-                    "error": False,
-                },
             ])
         )
 
@@ -2217,190 +1988,15 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == "The Odoo evidence shows the receipt was adjusted by a later completed move."
-        assert result["finish_reason"] == "stop"
-        assert result["total_tokens"] == 2077
-        assert client.chat_completion.call_count == 3
+        assert result["content"] == ""
+        assert result["finish_reason"] == "length"
+        assert result["total_tokens"] == 2035
+        assert client.chat_completion.call_count == 2
 
         post_tool_call = client.chat_completion.call_args_list[1]
         assert post_tool_call.kwargs["max_tokens"] == 4000
         assert post_tool_call.kwargs["tools"] is not None
         assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
-
-        finalizer_call = client.chat_completion.call_args_list[2]
-        assert finalizer_call.kwargs["tools"] is None
-        assert finalizer_call.kwargs["max_tokens"] == 4000
-        assert "Tool results:" in finalizer_call.kwargs["messages"][1]["content"]
-        assert "WH01-IN-2026-02586" in finalizer_call.kwargs["messages"][1]["content"]
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_uses_odoo_evidence_fallback_for_blank_timeline(self):
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": None,
-                    "finish_reason": "tool_calls",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "account.move", "fields": ["create_date", "name"]}',
-                        },
-                    }],
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "",
-                    "finish_reason": "length",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 2000,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        odoo_result = {
-            "model": "account.move",
-            "records": [
-                {
-                    "id": 57912,
-                    "create_date": "2026-06-05 09:23:31",
-                    "name": "BILL-2026-02555",
-                    "move_type": "in_invoice",
-                    "state": "posted",
-                    "amount_total": 5400.0,
-                    "partner_id": {"id": 48, "name": "Reddish Store"},
-                },
-            ],
-            "count": 1,
-            "returned_count": 1,
-            "total_count": 1,
-        }
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_foundry_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=AsyncMock(return_value=odoo_result)
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "give me a full Odoo timeline please"}],
-                user_id=uuid.uuid4(),
-            )
-
-        assert "Here is the Odoo timeline" in result["content"]
-        assert "2026-06-05 09:23:31 - account.move: BILL-2026-02555" in result["content"]
-        assert "Reddish Store" in result["content"]
-        assert client.chat_completion.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_retries_blank_direct_response_without_tools(self):
-        from app.services.model_router import execute_chat
-
-        db = MockSession(has_config=True)
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": "",
-                    "finish_reason": "length",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 2000,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-                {
-                    "content": "Use schema first, then query with valid fields and a narrow domain.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 30,
-                    "completion_tokens": 14,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-            ])
-        )
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_foundry_client',
-            new=AsyncMock(return_value=client),
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "Explain the safest Odoo activity query strategy"}],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Use schema first, then query with valid fields and a narrow domain."
-        assert result["finish_reason"] == "stop"
-        assert result["total_tokens"] == 2064
-        assert client.chat_completion.call_count == 2
-        retry_call = client.chat_completion.call_args_list[1]
-        assert retry_call.kwargs["tools"] is None
-        assert retry_call.kwargs["max_tokens"] == 1000
-        assert "previous response returned no user-visible content" in retry_call.kwargs["messages"][-1]["content"]
-
-    def test_blank_direct_fallback_returns_odoo_strategy_for_activity_followup(self):
-        from app.services.model_router import _build_blank_direct_fallback_answer
-
-        fallback = _build_blank_direct_fallback_answer(
-            [
-                {"role": "user", "content": "In Odoo, inspect activity schema."},
-                {"role": "assistant", "content": "res.users.log has create_date and ip."},
-                {"role": "user", "content": "Explain the safest repeatable query strategy without invalid fields."},
-            ],
-            {"content": "", "finish_reason": "length"},
-        )
-
-        assert fallback is not None
-        assert "Start with `schema`" in fallback
-        assert "create_uid" in fallback
-        assert "If a model has no user-link field" in fallback
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):

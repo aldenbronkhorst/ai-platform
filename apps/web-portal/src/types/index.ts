@@ -32,7 +32,6 @@ export interface ChatAttachment {
   id: string;
   filename: string;
   mime_type: string;
-  artifact_type: string;
 }
 
 export interface AttachedFile {

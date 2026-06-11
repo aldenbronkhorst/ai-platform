@@ -1,13 +1,9 @@
-import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
-import { useState, useMemo } from "react";
+import { RefreshCw } from "lucide-react";
+import { useMemo } from "react";
 
 interface ChatError {
-  requestId?: string;
-  traceId?: string;
   errorType?: string;
   errorMessage: string;
-  technicalDetail?: string;
-  httpStatus?: number;
 }
 
 const ERROR_HEADINGS: Record<string, string> = {
@@ -39,23 +35,17 @@ interface FailedMessageProps {
 }
 
 export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
-  const [showDetails, setShowDetails] = useState(false);
-
   const parsed = useMemo<ChatError | null>(() => {
     if (!errorMessage) return null;
     try {
       const parsed = JSON.parse(errorMessage) as unknown;
       if (isRecord(parsed) && (parsed.errorMessage || parsed.error_message)) {
         return {
-          requestId: displayValue(parsed.requestId ?? parsed.request_id),
-          traceId: displayValue(parsed.traceId ?? parsed.trace_id),
           errorType: displayValue(parsed.errorType ?? parsed.error_type),
           errorMessage: displayValue(
             parsed.errorMessage ?? parsed.error_message,
             "Sorry, I could not complete that request. Please try again.",
           ),
-          technicalDetail: displayValue(parsed.technicalDetail ?? parsed.technical_detail),
-          httpStatus: typeof parsed.httpStatus === "number" ? parsed.httpStatus : undefined,
         };
       }
     } catch { /* ignore malformed error payloads */ }
@@ -86,36 +76,7 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
           Retry
         </button>
 
-        {parsed && (
-          <button
-            onClick={() => setShowDetails(!showDetails)}
-            className="flex items-center gap-1 text-[11px] text-muted hover:text-default font-semibold transition-colors"
-          >
-            {showDetails ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-            View details
-          </button>
-        )}
       </div>
-
-      {showDetails && parsed && (
-        <div className="mt-3 p-3 rounded-xl bg-canvas border border-subtle text-[10px] font-mono text-muted whitespace-pre-wrap break-words space-y-1.5">
-          {parsed.requestId && (
-            <div><span className="font-semibold text-default">Request ID:</span> {parsed.requestId}</div>
-          )}
-          {parsed.traceId && (
-            <div><span className="font-semibold text-default">Trace ID:</span> {parsed.traceId}</div>
-          )}
-          {parsed.httpStatus ? (
-            <div><span className="font-semibold text-default">Status:</span> HTTP {parsed.httpStatus}</div>
-          ) : null}
-          {parsed.errorType && (
-            <div><span className="font-semibold text-default">Error type:</span> {parsed.errorType}</div>
-          )}
-          {parsed.technicalDetail && (
-            <div><span className="font-semibold text-default">Details:</span> {parsed.technicalDetail}</div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

@@ -3,6 +3,9 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.dialects.sqlite.base import SQLiteTypeCompiler
 
+os.environ["APP_ENV"] = "test"
+os.environ["DEBUG"] = "false"
+
 # Register UUID type support for SQLite DDL compiler (models use PostgreSQL UUID)
 def visit_uuid(self, _type_, **kw):
     return "CHAR(36)"
@@ -12,10 +15,6 @@ SQLiteTypeCompiler.visit_UUID = visit_uuid
 from app.main import app  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import Base, get_db  # noqa: E402
-
-# Force debug/test override at test runtime to allow anonymous localhost/test bypass
-os.environ["DEBUG"] = "true"
-get_settings.cache_clear()
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 

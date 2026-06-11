@@ -206,20 +206,6 @@ module containerApps 'modules/containerApps.bicep' = {
   }
 }
 
-// Module: API Management
-module apiManagement 'modules/apiManagement.bicep' = {
-  name: 'apiManagementDeploy'
-  scope: rg
-  params: {
-    workload: workload
-    environment: environment
-    regionCode: regionCode
-    instance: instance
-    location: location
-    tags: tags
-  }
-}
-
 // Module: Private Endpoints and Private DNS
 module privateEndpoints 'modules/privateEndpoints.bicep' = {
   name: 'privateEndpointsDeploy'
@@ -282,8 +268,6 @@ output appInsightsName string = monitoring.outputs.name
 output containerAppName string = containerApps.outputs.containerAppName
 output containerAppsEnvironmentName string = containerApps.outputs.environmentName
 output vnetName string = network.outputs.vnetName
-output apiManagementName string = apiManagement.outputs.name
-output apiManagementGatewayUrl string = apiManagement.outputs.gatewayUrl
 output apiManagedIdentityClientId string = identity.outputs.apiManagedIdentityClientId
 output apiManagedIdentityPrincipalId string = identity.outputs.apiManagedIdentityPrincipalId
 output apiUrl string = containerApps.outputs.apiUrl

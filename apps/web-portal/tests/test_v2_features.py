@@ -25,8 +25,9 @@ def test_production_build_cleanliness():
             # 1. No dev diagnostics by default in production
             assert "Security Diagnostics" not in content or "VITE_SHOW_AUTH_DIAGNOSTICS=true" not in content
             
-            # 2. No mock login visible by default
-            assert "Local Mock Sign In" not in content or "VITE_ENABLE_LOCAL_MOCK_AUTH=true" not in content
+            # 2. No mock login code in production
+            assert "Local Mock Sign In" not in content
+            assert "VITE_ENABLE_LOCAL_MOCK_AUTH" not in content
             
             # 3. No environment selector/cycle logic in production
             assert "cycleEnvironment" not in content
@@ -218,7 +219,8 @@ def test_connections_page_does_not_load_backend_platform_tools():
 
     assert "interface PlatformTool" not in content
     assert "fetchPlatformTools" not in content
-    assert '`${APIM_BASE_URL}/tools`' not in content
+    assert '`${API_BASE_URL}/tools`' not in content
+    assert "APIM_BASE_URL" not in content
     assert "Platform Tools" not in content
     assert "canonicalPlatformTools" not in content
 
