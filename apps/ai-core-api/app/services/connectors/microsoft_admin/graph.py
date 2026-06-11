@@ -1,4 +1,4 @@
-"""Direct Microsoft Graph tool for the Microsoft Admin connector."""
+"""Direct Microsoft Graph tool for the native Microsoft Graph connector."""
 from __future__ import annotations
 
 import logging
@@ -21,7 +21,7 @@ from app.services.connectors.microsoft_admin.tokens import _get_fresh_microsoft_
 logger = logging.getLogger(__name__)
 
 async def run_ms_graph_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute a direct Microsoft Graph request through the Microsoft Admin connector."""
+    """Execute a direct Microsoft Graph request through the native Microsoft Graph connector."""
     request_id = uuid.uuid4().hex[:16]
     return await _run_microsoft_admin_graph_request(arguments, user_id, request_id=request_id, connector_name="ms_graph")
 
@@ -30,7 +30,7 @@ async def _run_microsoft_admin_graph_request(
     user_id: Optional[UUID],
     request_id: str,
     *,
-    connector_name: str = "microsoft_admin",
+    connector_name: str = "ms_graph",
 ) -> dict[str, Any]:
     method = str(arguments.get("method") or "GET").strip().upper()
     path = str(arguments.get("path") or "").strip()
@@ -60,7 +60,7 @@ async def _run_microsoft_admin_graph_request(
             "mode": "graph_request",
             "request_id": request_id,
             "error_type": "not_connected",
-            "message": "Microsoft Graph token is not available. Check Microsoft Admin tenant consent and reconnect Microsoft Admin if the user token is expired.",
+            "message": "Microsoft Graph token is not available. Reconnect Microsoft Graph and ensure tenant consent/user permissions are available.",
             "refresh_error": token_data.get("refresh_error") if token_data else None,
         }
 

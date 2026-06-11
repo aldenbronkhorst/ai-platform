@@ -21,7 +21,11 @@ from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.schemas.schemas import ContextRequest
-from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, MICROSOFT_ADMIN_TOOL_NAMES
+from app.services.tool_registry import (
+    CONSOLIDATED_TOOL_NAMES,
+    MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
+    MICROSOFT_NATIVE_TOOL_NAMES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,7 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "content": (
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
-        "Do not tell users to run local `az login` for Microsoft Admin connector auth; report connector auth/profile failures as platform issues. "
+        "Do not tell users to run local native-tool logins; report connector auth/profile failures as platform issues. "
         "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
     ),
 }
@@ -187,7 +191,7 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "tasks, connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, GitHub, Microsoft Admin, and documents "
+    "You may use connected tools such as Odoo, GitHub, Azure CLI, Microsoft Graph, Exchange Online, Teams Admin, SharePoint/PnP, and documents "
     "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
@@ -378,12 +382,16 @@ async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryC
     )
 
 
-KNOWN_CONNECTOR_TYPES = ["odoo", "github", "microsoft_admin"]
+KNOWN_CONNECTOR_TYPES = ["odoo", *MICROSOFT_NATIVE_CONNECTOR_SYSTEMS, "github"]
 
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "odoo": "Odoo",
+    "azure_cli": "Azure CLI",
+    "microsoft_graph": "Microsoft Graph",
+    "exchange_online": "Exchange Online",
+    "teams_admin": "Teams Admin",
+    "sharepoint_pnp": "SharePoint / PnP",
     "github": "GitHub",
-    "microsoft_admin": "Microsoft Admin",
     "slack": "Slack",
     "teams": "Microsoft Teams",
 }
@@ -417,7 +425,10 @@ DELEGATED_AUTH_FAILURE_MARKERS = (
     "azure cli profile",
     "azure is not connected",
     "azure token is expired",
-    "microsoft admin is not connected",
+    "microsoft graph is not connected",
+    "exchange online is not connected",
+    "teams admin is not connected",
+    "sharepoint is not connected",
     "microsoft delegated credentials",
 )
 
@@ -456,6 +467,16 @@ MICROSOFT_TOOL_NAME_ALIASES = {
     "microsoft_graph": "ms_graph",
     "microsoft_graph_api": "ms_graph",
     "graph_api": "ms_graph",
+}
+MICROSOFT_TOOL_PROVIDER_BY_NAME = {
+    "ms_azure_cli": "azure_cli",
+    "ms_az_powershell": "azure_cli",
+    "ms_bicep": "azure_cli",
+    "ms_graph": "microsoft_graph",
+    "ms_graph_powershell": "microsoft_graph",
+    "ms_exchange_powershell": "exchange_online",
+    "ms_teams_powershell": "teams_admin",
+    "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
 }
 GRAPH_API_VERSION_SEGMENTS = {"v1.0", "beta"}
 
@@ -523,7 +544,7 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
     )
     if mapped == "ms_graph":
         return mapped, _normalize_ms_graph_arguments(arguments)
-    if mapped in MICROSOFT_ADMIN_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner", "document_reader"}:
+    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo_ops_runner", "document_reader"}:
         return mapped, arguments
     return mapped, arguments
 
@@ -1120,7 +1141,7 @@ async def _execute_tool_call_impl(
             return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
-    if tool_name in MICROSOFT_ADMIN_TOOL_NAMES or tool_name == "github_cli":
+    if tool_name in MICROSOFT_NATIVE_TOOL_NAMES or tool_name == "github_cli":
         from app.services.connectors.github_cli import run_github_cli_command
         from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
         from app.services.connectors.microsoft_admin.bicep import run_ms_bicep_tool
@@ -1152,14 +1173,14 @@ async def _execute_tool_call_impl(
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {
-        "status": "failed",
-        "error": f"Unknown tool: {tool_name}",
-        "error_type": "unknown_tool",
-        "message": (
-            "This tool name is not part of the current tool registry. "
-            "Use the module-specific Microsoft Admin tools."
-        ),
-    }
+            "status": "failed",
+            "error": f"Unknown tool: {tool_name}",
+            "error_type": "unknown_tool",
+            "message": (
+                "This tool name is not part of the current tool registry. "
+                "Use the registered native Microsoft tool surfaces."
+            ),
+        }
 
 
 async def _execute_tool_call(
@@ -1212,7 +1233,7 @@ async def _record_delegated_tool_auth_failure(
     tool_name: str,
     result: dict[str, Any],
 ) -> None:
-    if not user_id or tool_name not in MICROSOFT_ADMIN_TOOL_NAMES or result.get("status") != "failed":
+    if not user_id or tool_name not in MICROSOFT_NATIVE_TOOL_NAMES or result.get("status") != "failed":
         return
 
     message = " ".join(
@@ -1223,13 +1244,17 @@ async def _record_delegated_tool_auth_failure(
     if not any(marker in lower_message for marker in DELEGATED_AUTH_FAILURE_MARKERS):
         return
 
+    provider = MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name)
+    if not provider:
+        return
+
     status = "expired" if "expired" in lower_message else "error"
     await upsert_delegated_account(
         db,
-        "microsoft_admin",
+        provider,
         user_id,
         status=status,
-        permission_summary=message[:500] if message else "Microsoft delegated credentials are not usable.",
+        permission_summary=message[:500] if message else "Native Microsoft delegated credentials are not usable.",
     )
 
 
@@ -1269,7 +1294,7 @@ def _azure_resource_inventory_answer(
 
     if not account_ok:
         return (
-            "I could not verify Azure Resource Manager access through the Microsoft Admin connector.\n\n"
+            "I could not verify Azure Resource Manager access through the Azure CLI connector.\n\n"
             "`az account show --output json` failed: "
             f"{_cli_failure_message(account_result)}"
         )
@@ -1284,7 +1309,7 @@ def _azure_resource_inventory_answer(
 
     if not resources_ok:
         return (
-            "Azure Resource Manager is accessible for this Microsoft Admin connection, "
+            "Azure Resource Manager is accessible through the Azure CLI connector, "
             "but listing resources failed.\n\n"
             f"- Subscription: {sub_name}\n"
             f"- ID: {sub_id}\n"
@@ -1297,14 +1322,14 @@ def _azure_resource_inventory_answer(
     resources = _json_from_cli_stdout(resources_result)
     if not isinstance(resources, list):
         return (
-            "Azure Resource Manager is accessible for this Microsoft Admin connection, "
+            "Azure Resource Manager is accessible through the Azure CLI connector, "
             "but the resource list output was not valid JSON.\n\n"
             f"- Subscription: {sub_name}\n"
             f"- ID: {sub_id}"
         )
 
     lines = [
-        "Azure Resource Manager is accessible for this Microsoft Admin connection.",
+        "Azure Resource Manager is accessible through the Azure CLI connector.",
         "",
         f"- Subscription: {sub_name}",
         f"- ID: {sub_id}",
@@ -1527,7 +1552,7 @@ def _semantic_chat_title(first_user_text: str, context_text: str) -> str | None:
         if _has_title_pattern(combined, r"\bodoo\b"):
             return "Odoo Thinking Errors"
         if _has_title_pattern(combined, r"\bazure|microsoft|ms admin\b"):
-            return "Microsoft Admin Thinking Errors"
+            return "Microsoft Connector Thinking Errors"
         return "Thinking Error Investigation"
 
     if _has_title_pattern(combined, r"\b(?:voice|microphone|mic|dictation|speech)\b"):
@@ -1586,7 +1611,7 @@ def _semantic_chat_title(first_user_text: str, context_text: str) -> str | None:
 
     if _has_title_pattern(combined, r"\bconnector|connectors|tool|tools\b"):
         if _has_title_pattern(combined, r"\bmicrosoft|azure|ms admin\b"):
-            return "Microsoft Admin Connector"
+            return "Microsoft Connectors"
         if _has_title_pattern(combined, r"\bodoo\b"):
             return "Odoo Connector Errors" if _has_title_pattern(combined, r"\berror|failed|failure\b") else "Odoo Connector"
         return "Connector Configuration"
@@ -1815,10 +1840,11 @@ def _build_tool_finalizer_messages(messages: list, tool_results: list[dict[str, 
                 "If the evidence is enough, answer directly and concisely. "
                 "If the evidence is partial, truncated, or blocked by tool errors, say exactly what is known "
                 "and what is still missing. Do not invent data. "
-                "For Microsoft Admin, distinguish connector availability from operation failures: "
-                "a failed command or unsupported CLI subcommand does not mean Microsoft Admin is disconnected unless the "
-                "tool result explicitly says not_connected. Do not tell users to run local `az login`; Microsoft Admin "
-                "Azure CLI auth must be handled by the connector, so report connector auth/profile failures as platform issues."
+                "For native Microsoft connectors, distinguish connector availability from operation failures: "
+                "a failed command, missing role, or unsupported CLI subcommand does not mean every Microsoft connector "
+                "is disconnected unless the tool result explicitly says not_connected. Do not tell users to run local "
+                "native-tool logins; connector auth must be handled by the platform, so report auth/profile failures as "
+                "platform issues on the specific connector."
             ),
         },
         {
@@ -2141,10 +2167,10 @@ def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str
     return "; ".join(parts)
 
 
-def _microsoft_admin_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
+def _azure_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
     for item in tool_error_summary:
         tool_name = str(item.get("tool_name") or "")
-        if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
+        if MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name) != "azure_cli":
             continue
         error_type = str(item.get("error_type") or "").lower()
         message = str(item.get("message") or "").lower()
@@ -2153,10 +2179,10 @@ def _microsoft_admin_tool_summary_says_not_connected(tool_error_summary: list[di
     return False
 
 
-def _microsoft_admin_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
+def _azure_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
     for item in tool_error_summary:
         tool_name = str(item.get("tool_name") or "")
-        if tool_name not in MICROSOFT_ADMIN_TOOL_NAMES:
+        if MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name) != "azure_cli":
             continue
         error_type = str(item.get("error_type") or "").lower()
         message = str(item.get("message") or "").lower()
@@ -2173,18 +2199,18 @@ def _guard_connected_system_denial(
     connected_systems: set[str],
     tool_error_summary: list[dict[str, Any]],
 ) -> str:
-    if "microsoft_admin" not in connected_systems or not content:
+    if "azure_cli" not in connected_systems or not content:
         return content
     if not AZURE_FALSE_DENIAL_RE.search(content):
         return content
-    if _microsoft_admin_tool_summary_says_not_connected(tool_error_summary):
+    if _azure_tool_summary_says_not_connected(tool_error_summary):
         return content
-    if _microsoft_admin_tool_summary_has_connected_access_error(tool_error_summary):
+    if _azure_tool_summary_has_connected_access_error(tool_error_summary):
         return content
 
-    logger.warning("Correcting assistant response that contradicted connected Microsoft Admin account")
+    logger.warning("Correcting assistant response that contradicted connected Azure CLI connector")
     return (
-        "Microsoft Admin is connected for this user. I cannot verify Azure cost figures or a cost "
+        "Azure CLI is connected for this user. I cannot verify Azure cost figures or a cost "
         "breakdown unless they come from a successful Azure Cost Management tool result. For this request, "
         "I should query Cost Management through `ms_azure_cli` using `az rest`, or report the exact command, RBAC, "
         "billing, or permission error if that query fails."
@@ -2230,13 +2256,12 @@ async def _get_connector_context(
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"
             lines.append(f"  {icon} {display_name}: {status}")
-            if conn_type == "microsoft_admin" and status == "connected":
+            if conn_type in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS and status == "connected":
                 lines.append(
-                    "    Microsoft Admin exposes Microsoft Graph, Exchange, Teams, SharePoint/PnP, Intune, "
-                    "Azure Resource Manager CLI, Az PowerShell, and Bicep through the signed-in Microsoft session. "
+                    "    Native Microsoft connector access is scoped to this connector's signed-in account. "
                     "Do not claim a specific Microsoft resource is accessible until that operation succeeds. "
-                    "Specific operations can fail because the required profile was not consented or because the signed-in "
-                    "user lacks the needed admin role, Azure RBAC, Exchange role, Intune role, SharePoint permission, or billing permission."
+                    "Operations can fail because consent is missing or because the signed-in user lacks the needed "
+                    "Microsoft 365 role, Azure RBAC role, Exchange role, Intune role, SharePoint permission, Teams role, or billing permission."
                 )
         else:
             lines.append(f"  - {display_name}: not connected")
@@ -2399,19 +2424,18 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if MICROSOFT_ADMIN_TOOL_NAMES.intersection(available_names):
+    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
         guidance_parts.append(
-            "Microsoft Admin: use only these native-interface tools: `ms_graph`, `ms_graph_powershell`, "
-            "`ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, "
-            "`ms_az_powershell`, `ms_azure_cli`, and `ms_bicep`. "
-            "Do not invent detailed Microsoft tools and do not call removed generic Microsoft tools. "
-            "Azure Resource Manager is one capability inside Microsoft Admin; do not split Azure Cost Management into "
-            "a separate connector and do not claim Microsoft Admin is disconnected while this connector is connected. "
-            "Microsoft Admin is delegated per signed-in user: Azure, Exchange, Intune, Teams, SharePoint, and Entra "
-            "operations are limited by that user's platform roles/RBAC plus consent for the relevant Microsoft API "
-            "resource. A connected Microsoft Admin account does not by itself prove Azure Resource Manager, "
-            "Exchange, or Intune access; verify the specific operation with the relevant tool result before saying it "
-            "is accessible. "
+            "Native Microsoft tools: use only these broad native-interface tools: `ms_graph`, `ms_graph_powershell`, "
+            "`ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, `ms_az_powershell`, "
+            "`ms_azure_cli`, and `ms_bicep`. Do not invent detailed Microsoft tools and do not call removed generic "
+            "Microsoft tools. These are separate connectors: Azure CLI/Az/Bicep use `azure_cli`; Graph/Intune/Entra use "
+            "`microsoft_graph`; Exchange uses `exchange_online`; Teams uses `teams_admin`; SharePoint/PnP uses "
+            "`sharepoint_pnp`. Do not claim all Microsoft access is broken when only one native connector fails. "
+            "Each connector is delegated per signed-in user and limited by that user's platform roles/RBAC plus consent "
+            "for the relevant Microsoft API resource. A connected Microsoft connector does not by itself prove Azure "
+            "Resource Manager, Exchange, Intune, Teams, or SharePoint access; verify the specific operation with the "
+            "relevant tool result before saying it is accessible. "
             "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
             "`ms_graph_powershell` for Microsoft Graph PowerShell, `ms_exchange_powershell` for Exchange Online PowerShell, "
             "`ms_teams_powershell` for Teams PowerShell, `ms_sharepoint_pnp_powershell` for SharePoint/PnP PowerShell, "
@@ -2432,7 +2456,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "If a Microsoft user/group/license write fails, report the exact Graph/PowerShell permission or admin-role "
             "error and ask for the missing consent/role; do not downgrade that to 'no write-capable connector'. "
             "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
-            "In Microsoft Admin PowerShell tools, call Connect-AIPlatformAz, Connect-AIPlatformGraph, "
+            "In Microsoft PowerShell tools, call Connect-AIPlatformAz, Connect-AIPlatformGraph, "
             "Connect-AIPlatformExchange, or Connect-AIPlatformTeams before using authenticated cmdlets. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
         )

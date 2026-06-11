@@ -50,8 +50,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_azure_cli",
         "display_name": "Azure Resource Manager CLI",
-        "description": "Azure Resource Manager CLI surface inside the Microsoft Admin connector. Runs user-scoped az commands only from the signed-in Microsoft Admin session. Use for Azure subscriptions, resources, resource groups, Container Apps, Key Vault, storage, RBAC, logs, and Azure Cost Management via az rest. Do not use az costmanagement query; use az rest against the Microsoft.CostManagement query endpoint and answer cost questions only from successful tool results. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "Native Azure CLI connector. Runs user-scoped az commands from the connected Azure CLI session. Use for Azure subscriptions, resources, resource groups, Container Apps, Key Vault, storage, RBAC, logs, and Azure Cost Management via az rest. Do not use az costmanagement query; use az rest against the Microsoft.CostManagement query endpoint and answer cost questions only from successful tool results. GitHub commands are excluded.",
+        "target_system": "azure_cli",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -65,8 +65,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_graph",
         "display_name": "Microsoft Graph",
-        "description": "Direct Microsoft Graph interface for the Microsoft Admin connector. Use for Entra/Microsoft 365 users, groups, licensing, Intune, managed devices, directory objects, and Graph APIs. Uses the signed-in user's Microsoft Graph token and consent. Path must start with /. GET collection requests auto-follow @odata.nextLink where practical; do not invent manual $skip paging for /users. Microsoft Graph permissions and tenant consent decide access.",
-        "target_system": "microsoft_admin",
+        "description": "Direct Microsoft Graph connector. Use for Entra/Microsoft 365 users, groups, licensing, Intune, managed devices, directory objects, and Graph APIs. Uses the signed-in user's Microsoft Graph token and consent. Path must start with /. GET collection requests auto-follow @odata.nextLink where practical; do not invent manual $skip paging for /users. Microsoft Graph permissions and tenant consent decide access.",
+        "target_system": "microsoft_graph",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -85,8 +85,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_graph_powershell",
         "display_name": "Microsoft Graph PowerShell",
-        "description": "Microsoft Graph PowerShell surface inside the Microsoft Admin connector. Runs pwsh with the signed-in user's Graph token. Use Microsoft.Graph cmdlets for Entra/Microsoft 365 users, groups, roles, licensing, Intune, and directory administration. Call Connect-AIPlatformGraph before authenticated cmdlets. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "Microsoft Graph PowerShell connector. Runs pwsh with the signed-in user's Graph token. Use Microsoft.Graph cmdlets for Entra/Microsoft 365 users, groups, roles, licensing, Intune, and directory administration. Call Connect-AIPlatformGraph before authenticated cmdlets. GitHub commands are excluded.",
+        "target_system": "microsoft_graph",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -100,8 +100,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_exchange_powershell",
         "display_name": "Exchange Online PowerShell",
-        "description": "Exchange Online PowerShell surface inside the Microsoft Admin connector. Runs pwsh with the signed-in user's Exchange token. Use ExchangeOnlineManagement cmdlets for mailboxes, permissions, mail flow, transport rules, and message trace. Call Connect-AIPlatformExchange before authenticated Exchange cmdlets. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "Exchange Online PowerShell connector. Runs pwsh with the signed-in user's Exchange token. Use ExchangeOnlineManagement cmdlets for mailboxes, permissions, mail flow, transport rules, and message trace. Call Connect-AIPlatformExchange before authenticated Exchange cmdlets. GitHub commands are excluded.",
+        "target_system": "exchange_online",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -115,8 +115,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_teams_powershell",
         "display_name": "Microsoft Teams PowerShell",
-        "description": "Microsoft Teams PowerShell surface inside the Microsoft Admin connector. Runs pwsh with the signed-in user's Microsoft token. Use MicrosoftTeams cmdlets for Teams admin work and policies. Call Connect-AIPlatformTeams before authenticated Teams cmdlets. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "Microsoft Teams PowerShell connector. Runs pwsh with the signed-in user's Teams admin token. Use MicrosoftTeams cmdlets for Teams admin work and policies. Call Connect-AIPlatformTeams before authenticated Teams cmdlets. GitHub commands are excluded.",
+        "target_system": "teams_admin",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -130,8 +130,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_sharepoint_pnp_powershell",
         "display_name": "SharePoint PnP PowerShell",
-        "description": "SharePoint/PnP PowerShell surface inside the Microsoft Admin connector. Runs pwsh in the signed-in Microsoft Admin shell for SharePoint and PnP.PowerShell work. Use for SharePoint admin/site automation where the user has permission and the required token/consent is available. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "SharePoint/PnP PowerShell connector. Runs pwsh in the signed-in SharePoint/PnP shell for SharePoint and PnP.PowerShell work. Use for SharePoint admin/site automation where the user has permission and the required token/consent is available. GitHub commands are excluded.",
+        "target_system": "sharepoint_pnp",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -145,8 +145,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_az_powershell",
         "display_name": "Azure PowerShell",
-        "description": "Az PowerShell surface inside the Microsoft Admin connector. Runs pwsh with the signed-in user's Azure Resource Manager token. Use Az cmdlets for Azure resources, subscriptions, RBAC, Container Apps, Key Vault, storage, logs, and deployments. Call Connect-AIPlatformAz before authenticated Az cmdlets. GitHub commands are excluded.",
-        "target_system": "microsoft_admin",
+        "description": "Azure PowerShell connector. Runs pwsh with the signed-in user's Azure Resource Manager token. Use Az cmdlets for Azure resources, subscriptions, RBAC, Container Apps, Key Vault, storage, logs, and deployments. Call Connect-AIPlatformAz before authenticated Az cmdlets. GitHub commands are excluded.",
+        "target_system": "azure_cli",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -160,8 +160,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "ms_bicep",
         "display_name": "Microsoft Bicep CLI",
-        "description": "Native Bicep CLI interface for the Microsoft Admin connector. Runs bicep commands only. Use for Bicep version checks, build, decompile, format, lint, and template validation/build workflows. Azure deployments that require Azure Resource Manager should use ms_azure_cli with az deployment or ms_az_powershell with Az cmdlets.",
-        "target_system": "microsoft_admin",
+        "description": "Native Bicep CLI interface for the Azure CLI connector. Runs bicep commands only. Use for Bicep version checks, build, decompile, format, lint, and template validation/build workflows. Azure deployments that require Azure Resource Manager should use ms_azure_cli with az deployment or ms_az_powershell with Az cmdlets.",
+        "target_system": "azure_cli",
         "input_schema": {
             "type": "object",
             "properties": {

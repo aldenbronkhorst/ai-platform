@@ -11,7 +11,6 @@ from app.services.connectors.microsoft_admin import (
     azure_cli,
     bicep,
     constants,
-    diagnostics,
     graph,
     powershell_az,
     powershell_common,
@@ -27,15 +26,15 @@ microsoft_admin_commands = SimpleNamespace(
     AZURE_CLI_CLIENT_ID=constants.AZURE_CLI_CLIENT_ID,
     AZURE_ARM_SCOPE=constants.AZURE_ARM_SCOPE,
     EXCHANGE_ONLINE_SCOPE=constants.EXCHANGE_ONLINE_SCOPE,
-    MICROSOFT_ADMIN_APP_DISPLAY_NAME=constants.MICROSOFT_ADMIN_APP_DISPLAY_NAME,
-    MICROSOFT_ADMIN_CLIENT_ID=constants.MICROSOFT_ADMIN_CLIENT_ID,
+    EXCHANGE_ONLINE_CLIENT_ID=constants.EXCHANGE_ONLINE_CLIENT_ID,
     MICROSOFT_GRAPH_SCOPE=constants.MICROSOFT_GRAPH_SCOPE,
     MICROSOFT_GRAPH_SCOPES=constants.MICROSOFT_GRAPH_SCOPES,
+    MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME=constants.MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME,
+    MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID=constants.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
     MS_AZURE_CLI_ALLOWED_BINARIES=constants.MS_AZURE_CLI_ALLOWED_BINARIES,
     MS_BICEP_ALLOWED_BINARIES=constants.MS_BICEP_ALLOWED_BINARIES,
     MS_POWERSHELL_ALLOWED_BINARIES=constants.MS_POWERSHELL_ALLOWED_BINARIES,
     TENANT_ID=constants.TENANT_ID,
-    _get_fresh_microsoft_admin_token=tokens._get_fresh_microsoft_admin_token,
     _get_fresh_microsoft_admin_token_for_scope=tokens._get_fresh_microsoft_admin_token_for_scope,
     _microsoft_admin_scope_request=tokens._microsoft_admin_scope_request,
     _scope_profile_for_scope=tokens._scope_profile_for_scope,
@@ -108,21 +107,19 @@ def test_sharepoint_profile_uses_target_site_scope():
     assert "target SharePoint site" in microsoft_admin_commands.microsoft_admin_scope_summary("sharepoint")
 
 
-def test_microsoft_admin_client_id_is_profile_specific(monkeypatch):
-    monkeypatch.setattr(constants, "MICROSOFT_ADMIN_CLIENT_ID", "admin-client-id")
-
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("arm") == "admin-client-id"
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("graph") == "admin-client-id"
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("exchange") == "admin-client-id"
-    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("arm") == microsoft_admin_commands.MICROSOFT_ADMIN_APP_DISPLAY_NAME
-    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("graph") == microsoft_admin_commands.MICROSOFT_ADMIN_APP_DISPLAY_NAME
+def test_microsoft_native_client_id_is_profile_specific():
+    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("arm") == microsoft_admin_commands.AZURE_CLI_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("exchange") == microsoft_admin_commands.EXCHANGE_ONLINE_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("arm") == "Microsoft Azure CLI"
+    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME
 
 
 def test_extract_microsoft_admin_username_does_not_use_old_fake_fallback():
     assert microsoft_admin_commands.extract_microsoft_admin_username({"username": "azure-user"}) == ""
 
     claims = {
-        "aud": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "aud": microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
         "exp": int(time.time()) + 3600,
         "iat": int(time.time()),
         "sub": "subject-id",
@@ -135,7 +132,7 @@ def test_extract_microsoft_admin_username_does_not_use_old_fake_fallback():
 def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_path):
     user_name = "alden@example.com"
     claims = {
-        "aud": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "aud": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "exp": int(time.time()) + 3600,
         "iat": int(time.time()),
         "oid": "00000000-0000-0000-0000-000000000001",
@@ -144,7 +141,7 @@ def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_pat
         "tid": microsoft_admin_commands.TENANT_ID,
     }
     token_data = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "token_type": "Bearer",
         "access_token": "access-token",
         "refresh_token": "refresh-token",
@@ -192,7 +189,7 @@ def test_write_azure_cli_files_adds_native_azure_cli_cache_entry(tmp_path):
         "tid": microsoft_admin_commands.TENANT_ID,
     }
     token_data = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "token_type": "Bearer",
         "access_token": _jwt(claims),
         "refresh_token": "refresh-token",
@@ -225,7 +222,7 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
         "tid": microsoft_admin_commands.TENANT_ID,
     }
     token_data = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "token_type": "Bearer",
         "access_token": _jwt(claims),
         "refresh_token": "refresh-token",
@@ -256,33 +253,6 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
     assert len(accounts) == 1
     assert accounts[0]["home_account_id"] == f"{oid}.{microsoft_admin_commands.TENANT_ID}"
     assert accounts[0]["username"] == user_name
-
-
-def test_microsoft_admin_diagnostics_reports_required_profile_gaps():
-    status, message = diagnostics._microsoft_admin_diagnostic_summary({
-        "graph": {"status": "available", "label": "Microsoft Graph Admin"},
-        "arm": {"status": "available", "label": "Azure Resource Manager"},
-        "exchange": {"status": "available", "label": "Exchange Online"},
-        "teams": {"status": "missing", "label": "Teams Admin"},
-        "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
-    })
-
-    assert status == "partial"
-    assert "Teams Admin" in message
-
-
-def test_microsoft_admin_diagnostics_reports_optional_not_checked_after_required_pass():
-    status, message = diagnostics._microsoft_admin_diagnostic_summary({
-        "graph": {"status": "available", "label": "Microsoft Graph Admin"},
-        "arm": {"status": "available", "label": "Azure Resource Manager"},
-        "exchange": {"status": "available", "label": "Exchange Online"},
-        "teams": {"status": "available", "label": "Teams Admin"},
-        "sharepoint": {"status": "not_checked", "label": "SharePoint / PnP"},
-    })
-
-    assert status == "partial"
-    assert "required profiles are connected" in message
-    assert "SharePoint / PnP" in message
 
 
 def test_microsoft_admin_default_graph_scopes_include_teams_prerequisites():
@@ -825,13 +795,13 @@ async def test_ms_bicep_uses_only_bicep_binary(monkeypatch):
 async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_primary_refresh(monkeypatch):
     user_id = uuid.uuid4()
     stored_token = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
         "access_token": "primary-access",
         "refresh_token": "primary-refresh",
-        "expires_on": int(time.time()) + 3600,
+        "expires_on": int(time.time()) - 10,
         "delegated_tokens": {
             "graph": {
-                "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+                "client_id": microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
                 "access_token": "old-graph-access",
                 "refresh_token": "graph-refresh",
                 "expires_on": int(time.time()) - 10,
@@ -841,12 +811,12 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
     captured: dict[str, object] = {}
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "microsoft_admin"
+        assert provider == "microsoft_graph"
         assert received_user_id == user_id
         return stored_token
 
     async def fake_store(provider, received_user_id, token_data):
-        assert provider == "microsoft_admin"
+        assert provider == "microsoft_graph"
         assert received_user_id == user_id
         captured["stored"] = token_data
         return True
@@ -886,7 +856,7 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
     result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(user_id, microsoft_admin_commands.MICROSOFT_GRAPH_SCOPE)
 
     assert result["access_token"] == "new-graph-access"
-    assert captured["data"]["client_id"] == microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID
+    assert captured["data"]["client_id"] == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID
     assert captured["data"]["refresh_token"] == "graph-refresh"
     assert "https://graph.microsoft.com/User.ReadWrite.All" in captured["data"]["scope"]
     stored = captured["stored"]
@@ -895,18 +865,18 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
 
 
 @pytest.mark.asyncio
-async def test_scoped_arm_token_retrieval_does_not_require_cli_account_metadata(monkeypatch):
+async def test_scoped_arm_token_retrieval_returns_native_provider_token_without_cli_account_metadata(monkeypatch):
     user_id = uuid.uuid4()
     stored_token = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "access_token": "primary-graph-access",
         "refresh_token": "primary-refresh",
         "expires_on": int(time.time()) + 3600,
-        "scope_profile": "graph",
+        "scope_profile": "arm",
         "username": "alden@example.com",
         "delegated_tokens": {
             "arm": {
-                "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+                "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
                 "access_token": "old-arm-access",
                 "scope": microsoft_admin_commands.AZURE_ARM_SCOPE,
                 "scope_profile": "arm",
@@ -917,7 +887,7 @@ async def test_scoped_arm_token_retrieval_does_not_require_cli_account_metadata(
     captured: dict[str, object] = {}
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "microsoft_admin"
+        assert provider == "azure_cli"
         assert received_user_id == user_id
         return stored_token
 
@@ -933,7 +903,7 @@ async def test_scoped_arm_token_retrieval_does_not_require_cli_account_metadata(
         microsoft_admin_commands.AZURE_ARM_SCOPE,
     )
 
-    assert result["access_token"] == "old-arm-access"
+    assert result["access_token"] == "primary-graph-access"
     assert "stored" not in captured
 
 
@@ -941,16 +911,16 @@ async def test_scoped_arm_token_retrieval_does_not_require_cli_account_metadata(
 async def test_scoped_token_consent_required_does_not_return_primary_access_token(monkeypatch):
     user_id = uuid.uuid4()
     stored_token = {
-        "client_id": microsoft_admin_commands.MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": microsoft_admin_commands.AZURE_CLI_CLIENT_ID,
         "access_token": "primary-graph-access",
         "refresh_token": "primary-refresh",
-        "expires_on": int(time.time()) + 3600,
-        "scope_profile": "graph",
+        "expires_on": int(time.time()) - 10,
+        "scope_profile": "arm",
         "username": "alden@example.com",
     }
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "microsoft_admin"
+        assert provider == "azure_cli"
         assert received_user_id == user_id
         return stored_token
 
@@ -989,14 +959,14 @@ async def test_scoped_token_consent_required_does_not_return_primary_access_toke
 
 
 @pytest.mark.asyncio
-async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
+async def test_scoped_token_from_wrong_native_client_requires_reconnect(monkeypatch):
     user_id = uuid.uuid4()
 
     async def fake_retrieve(provider, received_user_id):
-        assert provider == "microsoft_admin"
+        assert provider == "azure_cli"
         assert received_user_id == user_id
         return {
-            "client_id": "04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+            "client_id": microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
             "access_token": "old-access",
             "refresh_token": "old-refresh",
             "expires_on": int(time.time()) + 3600,
@@ -1005,11 +975,14 @@ async def test_primary_token_from_retired_app_requires_reconnect(monkeypatch):
 
     monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
 
-    result = await microsoft_admin_commands._get_fresh_microsoft_admin_token(user_id)
+    result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(
+        user_id,
+        microsoft_admin_commands.AZURE_ARM_SCOPE,
+    )
 
     assert result["error_type"] == "reconnect_required"
     assert "access_token" not in result
-    assert "retired application" in result["refresh_error"]
+    assert "different native tool" in result["refresh_error"]
 
 
 class _FakeGraphResponse:

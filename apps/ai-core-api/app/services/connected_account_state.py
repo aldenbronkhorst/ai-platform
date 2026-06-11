@@ -13,7 +13,14 @@ from app.models.models import AIConnectedAccount
 from app.services.token_storage import token_secret_name, token_status, token_status_from_data
 
 
-DELEGATED_TOKEN_PROVIDERS = {"microsoft_admin", "github"}
+MICROSOFT_NATIVE_TOKEN_PROFILES = {
+    "azure_cli": "arm",
+    "microsoft_graph": "graph",
+    "exchange_online": "exchange",
+    "teams_admin": "teams",
+    "sharepoint_pnp": "sharepoint",
+}
+DELEGATED_TOKEN_PROVIDERS = {*MICROSOFT_NATIVE_TOKEN_PROFILES, "github"}
 CONNECTED_DIAGNOSIS_STATUSES = {"success", "partial", "limited", "warning"}
 logger = logging.getLogger(__name__)
 
@@ -87,14 +94,14 @@ def _delegated_account_view(
 
 async def _delegated_token_status(provider: str, user_id: UUID) -> dict[str, Any]:
     """Return delegated token status, refreshing providers that support it."""
-    if provider == "microsoft_admin":
+    if provider in MICROSOFT_NATIVE_TOKEN_PROFILES:
         try:
             from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
-            token_data = await get_microsoft_admin_token(user_id, "graph")
+            token_data = await get_microsoft_admin_token(user_id, MICROSOFT_NATIVE_TOKEN_PROFILES[provider])
             return token_status_from_data(provider, token_data)
         except Exception as exc:
-            logger.warning("Microsoft Admin token refresh status check failed for user %s: %s", user_id.hex[:12], exc)
+            logger.warning("%s token refresh status check failed for user %s: %s", provider, user_id.hex[:12], exc)
     return await token_status(provider, user_id)
 
 

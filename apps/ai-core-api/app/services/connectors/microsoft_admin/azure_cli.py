@@ -1,4 +1,4 @@
-"""Azure CLI profile and execution for the Microsoft Admin connector."""
+"""Azure CLI profile and execution for the native Azure CLI connector."""
 from __future__ import annotations
 
 import asyncio
@@ -22,10 +22,8 @@ from app.services.connectors.microsoft_admin.constants import (
     AZURE_CLI_CLIENT_ID,
     AZURE_ENVIRONMENT_NAME,
     AZURE_TOKEN_ENDPOINT,
-    MICROSOFT_ADMIN_CLIENT_ID,
     MS_AZURE_CLI_ALLOWED_BINARIES,
     TENANT_ID,
-    microsoft_admin_arm_device_scope_string,
 )
 from app.services.connectors.microsoft_admin.powershell_common import (
     _command_failure_message,
@@ -53,7 +51,7 @@ async def _run_microsoft_admin_azure_cli(
     timeout: int,
     request_id: str,
     *,
-    connector_name: str = "microsoft_admin",
+    connector_name: str = "ms_azure_cli",
     allowed_binaries: set[str] | None = None,
 ) -> dict[str, Any]:
     normalized = _normalize_azure_command(command)
@@ -66,7 +64,7 @@ async def _run_microsoft_admin_azure_cli(
         message = (
             token_data.get("refresh_error")
             if isinstance(token_data, dict) and token_data.get("refresh_error")
-            else "Azure Resource Manager access is not connected for this Microsoft Admin user."
+            else "Azure CLI is not connected for this user."
         )
         error_type = (
             token_data.get("error_type")
@@ -87,7 +85,7 @@ async def _run_microsoft_admin_azure_cli(
         result = _failed_microsoft_admin_result(
             request_id=request_id,
             mode="ms_azure_cli",
-            message="Azure Resource Manager token is expired. Reconnect Microsoft Admin for this user.",
+            message="Azure CLI token is expired. Reconnect Azure CLI for this user.",
             command=normalized,
             error_type="expired_user_token",
             connector=connector_name,
@@ -100,12 +98,12 @@ async def _run_microsoft_admin_azure_cli(
         result = _failed_microsoft_admin_result(
             request_id=request_id,
             mode="ms_azure_cli",
-            message=profile.get("message", "Azure Resource Manager CLI profile could not be prepared for this Microsoft Admin user."),
+            message=profile.get("message", "Azure CLI profile could not be prepared for this user."),
             command=normalized,
             error_type="profile_not_ready",
             connector=connector_name,
         )
-        result["auth_method"] = "user_scoped_microsoft_admin_shell"
+        result["auth_method"] = "native_azure_cli"
         return result
 
     env: dict[str, str] = {
@@ -127,7 +125,7 @@ async def _run_microsoft_admin_azure_cli(
         "subtool": "ms_azure_cli",
         "request_id": request_id,
         "status": "success" if result.success else "failed",
-        "auth_method": "user_scoped_microsoft_admin_shell",
+        "auth_method": "native_azure_cli",
     })
     if not result.success:
         output.setdefault("error_type", "command_failed")
@@ -135,7 +133,7 @@ async def _run_microsoft_admin_azure_cli(
     return output
 
 async def run_ms_azure_cli_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute the Azure Resource Manager CLI surface for the Microsoft Admin connector."""
+    """Execute the Azure CLI surface for the native Azure CLI connector."""
     request_id = uuid.uuid4().hex[:16]
     timeout = _tool_timeout(arguments, timeout)
     command = str(arguments.get("command") or "").strip()
@@ -166,17 +164,17 @@ async def ensure_azure_cli_profile(
     token_data: dict[str, Any],
     subscriptions_result: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Persist an isolated Azure Resource Manager CLI profile/cache for the connected user."""
+    """Persist an isolated native Azure CLI profile/cache for the connected user."""
     if not token_data.get("access_token"):
-        return {"ready": False, "message": "Azure Resource Manager token is not available for this Microsoft Admin connection."}
+        return {"ready": False, "message": "Azure CLI token is not available for this user."}
 
     username = extract_microsoft_admin_username(token_data)
     if not username:
         return {
             "ready": False,
             "message": (
-                "Microsoft Admin sign-in returned an Azure Resource Manager token but no usable user identity. "
-                "Reconnect Microsoft Admin so the platform can store a user-scoped CLI session."
+                "Azure CLI sign-in returned a Resource Manager token but no usable user identity. "
+                "Reconnect Azure CLI so the platform can store a user-scoped CLI session."
             ),
         }
 
@@ -184,8 +182,8 @@ async def ensure_azure_cli_profile(
         return {
             "ready": False,
             "message": (
-                "Azure Resource Manager token is missing account metadata needed to prepare an Azure CLI profile. "
-                "Reconnect Microsoft Admin so the platform can store a user-scoped CLI session."
+                "Azure CLI token is missing account metadata needed to prepare an Azure CLI profile. "
+                "Reconnect Azure CLI so the platform can store a user-scoped CLI session."
             ),
         }
 
@@ -257,12 +255,12 @@ def _write_azure_cli_token_cache(config_dir: Path, token_data: dict[str, Any]) -
         cache,
         token_data,
         client_info=client_info,
-        client_id=token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
-        scope=token_data.get("scope") or microsoft_admin_arm_device_scope_string(),
+        client_id=token_data.get("client_id") or AZURE_CLI_CLIENT_ID,
+        scope=token_data.get("scope") or AZURE_ARM_SCOPE,
         include_refresh_token=True,
     )
     # Azure CLI looks up ARM access tokens by its own first-party client id and
-    # legacy ARM resource target, even when the stored token came from our app.
+    # legacy ARM resource target.
     _add_msal_cache_token(
         cache,
         token_data,

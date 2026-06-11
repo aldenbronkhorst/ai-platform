@@ -1,4 +1,4 @@
-"""Token retrieval and identity helpers for the Microsoft Admin connector."""
+"""Token retrieval and identity helpers for native Microsoft tool connectors."""
 from __future__ import annotations
 
 import base64
@@ -16,14 +16,14 @@ from app.services.connectors.microsoft_admin.constants import (
     AZURE_ARM_SCOPE,
     AZURE_TOKEN_ENDPOINT,
     EXCHANGE_ONLINE_SCOPE,
-    MICROSOFT_ADMIN_CLIENT_ID,
-    MICROSOFT_ADMIN_PROVIDER,
     MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_ADMIN_SCOPE_PROFILES,
     MICROSOFT_GRAPH_SCOPE,
     TEAMS_TENANT_ADMIN_SCOPE,
-    microsoft_admin_client_id_for_scope_profile,
-    microsoft_admin_device_scope_string,
+    microsoft_native_client_id_for_provider,
+    microsoft_native_device_scope_string,
+    microsoft_native_provider,
+    microsoft_native_provider_for_profile,
     microsoft_admin_scope_label,
     microsoft_admin_scope_profile,
 )
@@ -33,12 +33,19 @@ logger = logging.getLogger(__name__)
 def microsoft_admin_token_client_error(token_data: dict[str, Any] | None) -> str:
     if not token_data:
         return ""
+    provider = (
+        microsoft_native_provider(token_data.get("provider"))
+        or microsoft_native_provider_for_profile(token_data.get("scope_profile"))
+    )
+    expected_client_id = microsoft_native_client_id_for_provider(provider)
     client_id = str(token_data.get("client_id") or "").strip()
-    if client_id == MICROSOFT_ADMIN_CLIENT_ID:
+    if expected_client_id and client_id == expected_client_id:
         return ""
     if not client_id:
-        return "Stored Microsoft Admin token is missing its application identity. Reconnect Microsoft Admin."
-    return "Stored Microsoft Admin token was issued for a retired application. Reconnect Microsoft Admin."
+        return "Stored Microsoft token is missing its application identity. Reconnect this Microsoft connector."
+    if not expected_client_id:
+        return "This Microsoft connector does not have a native public client configured."
+    return "Stored Microsoft token was issued for a different native tool. Reconnect this Microsoft connector."
 
 
 def _invalid_microsoft_admin_token(token_data: dict[str, Any], message: str) -> dict[str, Any]:
@@ -58,7 +65,7 @@ def _microsoft_admin_scope_unavailable(
     error_type: str,
 ) -> dict[str, Any]:
     return {
-        "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
+        "client_id": token_data.get("client_id"),
         "scope_profile": scope_profile,
         "username": token_data.get("username"),
         "refresh_error": message,
@@ -88,89 +95,48 @@ def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[s
     if scope_profile == "teams" and error_type in {"consent_required", "invalid_scope"}:
         return (
             "Skype and Teams Tenant Admin API delegated user_impersonation is missing or not consented. "
-            "Add that API permission to the AI Platform Microsoft Admin app registration and grant tenant admin consent."
+            "Configure a native Teams Admin client for the Teams connector and grant tenant admin consent."
         )
     if error_type == "consent_required":
         return (
             f"Tenant admin consent is required for {label}. "
-            "Grant consent to the Microsoft Admin app once, then refresh the Microsoft Admin user sign-in."
+            "Grant consent for that native Microsoft connector, then reconnect it."
         )
     return data.get("error_description") or data.get("error") or fallback
-
-async def _get_fresh_microsoft_admin_token(user_id: Optional[UUID]) -> Optional[dict[str, Any]]:
-    if not user_id:
-        return None
-    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id)
-    if not token_data:
-        return None
-    client_error = microsoft_admin_token_client_error(token_data)
-    if client_error:
-        return _invalid_microsoft_admin_token(token_data, client_error)
-    expires_on = _expires_on(token_data)
-    if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
-        return token_data
-    refresh_token = token_data.get("refresh_token")
-    if not refresh_token:
-        return token_data
-    scope_profile = microsoft_admin_scope_profile(token_data.get("scope_profile"))
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                AZURE_TOKEN_ENDPOINT,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
-                    "refresh_token": refresh_token,
-                    "scope": microsoft_admin_device_scope_string(scope_profile),
-                    "client_info": "1",
-                },
-            )
-        data = response.json()
-        if response.status_code >= 400 or "access_token" not in data:
-            return {**token_data, "refresh_error": data.get("error_description") or data.get("error") or response.text[:500]}
-        updated = {
-            **token_data,
-            "client_id": token_data.get("client_id") or MICROSOFT_ADMIN_CLIENT_ID,
-            "token_type": data.get("token_type", token_data.get("token_type")),
-            "access_token": data.get("access_token"),
-            "refresh_token": data.get("refresh_token", refresh_token),
-            "scope": data.get("scope", token_data.get("scope")),
-            "scope_profile": scope_profile,
-            "id_token": data.get("id_token", token_data.get("id_token")),
-            "id_token_claims": _microsoft_identity_claims({"id_token": data.get("id_token")}) or token_data.get("id_token_claims"),
-            "client_info": data.get("client_info", token_data.get("client_info")),
-            "expires_in": data.get("expires_in"),
-            "expires_on": int(time.time()) + int(data.get("expires_in") or 0),
-        }
-        updated["username"] = extract_microsoft_admin_username(updated)
-        await store_token(MICROSOFT_ADMIN_PROVIDER, user_id, updated)
-        return updated
-    except Exception as exc:
-        logger.warning("Microsoft Admin token refresh failed for user %s: %s", user_id.hex[:12], exc)
-        return {**token_data, "refresh_error": "token_refresh_failed"}
-
 
 async def _get_fresh_microsoft_admin_token_for_scope(
     user_id: Optional[UUID],
     scope: str,
 ) -> Optional[dict[str, Any]]:
-    """Return a fresh Microsoft token for a requested Microsoft Admin resource."""
+    """Return a fresh Microsoft token for a requested native Microsoft resource."""
     if not user_id:
         return None
 
-    token_data = await retrieve_token(MICROSOFT_ADMIN_PROVIDER, user_id)
+    scope_profile = _scope_profile_for_scope(scope)
+    provider = microsoft_native_provider_for_profile(scope_profile)
+    token_data = await retrieve_token(provider, user_id)
     if not token_data:
         return None
+    token_data = {**token_data, "provider": provider, "scope_profile": scope_profile or token_data.get("scope_profile")}
     client_error = microsoft_admin_token_client_error(token_data)
     if client_error:
         return _invalid_microsoft_admin_token(token_data, client_error)
-    scope_profile = _scope_profile_for_scope(scope)
     if scope_profile and token_data.get("scope_profile") == scope_profile:
+        if scope_profile == "sharepoint":
+            token_scope = str(token_data.get("scope") or "")
+            if scope not in token_scope.split() and token_scope != scope:
+                token_data = {**token_data, "scope_mismatch": True}
+            else:
+                token_data = {**token_data, "scope_mismatch": False}
         expires_on = _expires_on(token_data)
-        if token_data.get("access_token") and (not expires_on or expires_on > int(time.time()) + 300):
+        if (
+            token_data.get("access_token")
+            and not token_data.get("scope_mismatch")
+            and (not expires_on or expires_on > int(time.time()) + 300)
+        ):
             return token_data
     cached_token = (token_data.get("delegated_tokens") or {}).get(scope_profile) if scope_profile else None
-    cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error(cached_token)
+    cached_token_is_current = isinstance(cached_token, dict) and not microsoft_admin_token_client_error({**cached_token, "provider": provider, "scope_profile": scope_profile})
     if scope_profile == "sharepoint" and cached_token_is_current:
         cached_scope = str(cached_token.get("scope") or "")
         cached_token_is_current = scope in cached_scope.split() or cached_scope == scope
@@ -186,10 +152,17 @@ async def _get_fresh_microsoft_admin_token_for_scope(
         return _microsoft_admin_scope_unavailable(
             token_data,
             scope_profile,
-            f"Stored {profile_name} token has no refresh token. Reconnect Microsoft Admin.",
+            f"Stored {profile_name} token has no refresh token. Reconnect that native Microsoft connector.",
             "reconnect_required",
         )
-    client_id = microsoft_admin_client_id_for_scope_profile(scope_profile) if scope_profile else MICROSOFT_ADMIN_CLIENT_ID
+    client_id = microsoft_native_client_id_for_provider(provider)
+    if not client_id:
+        return _microsoft_admin_scope_unavailable(
+            token_data,
+            scope_profile,
+            f"{microsoft_admin_scope_label(scope_profile)} has no native public client configured in this environment.",
+            "native_client_not_configured",
+        )
     scope_request = _microsoft_admin_scope_request(scope, scope_profile)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -242,10 +215,11 @@ async def _get_fresh_microsoft_admin_token_for_scope(
             consented = set(token_data.get("consented_scope_profiles") or [])
             consented.add(scope_profile)
             await store_token(
-                MICROSOFT_ADMIN_PROVIDER,
+                provider,
                 user_id,
                 {
                     **token_data,
+                    "provider": provider,
                     "delegated_tokens": delegated_tokens,
                     "consented_scope_profiles": sorted(consented),
                 },
@@ -256,13 +230,13 @@ async def _get_fresh_microsoft_admin_token_for_scope(
         return _microsoft_admin_scope_unavailable(
             token_data,
             scope_profile,
-            "Microsoft Admin scoped token refresh failed. Check connector logs.",
+            "Microsoft connector token refresh failed. Check connector logs.",
             "token_refresh_failed",
         )
 
 
 async def warm_microsoft_admin_delegated_tokens(user_id: Optional[UUID]) -> dict[str, Any]:
-    """Best-effort silent token warmup for required Microsoft Admin resources."""
+    """Best-effort status check for separate native Microsoft connector tokens."""
     if not user_id:
         return {}
     results: dict[str, Any] = {}
@@ -301,7 +275,7 @@ def _microsoft_admin_profile_token_status(profile: str, token: Optional[dict[str
             "status": "missing_permission",
             "token_status": "missing",
             "error_type": error_type,
-            "message": message or f"The Microsoft Admin app registration is missing {microsoft_admin_scope_label(profile)} permissions.",
+            "message": message or f"The native Microsoft connector is missing {microsoft_admin_scope_label(profile)} permissions.",
         }
     return {
         "status": "missing",
@@ -326,7 +300,8 @@ def _scope_profile_for_scope(scope: str) -> str:
 def _microsoft_admin_scope_request(scope: str, scope_profile: str | None) -> str:
     if scope_profile == "sharepoint":
         return f"{scope} openid profile offline_access"
-    return microsoft_admin_device_scope_string(scope_profile) if scope_profile else f"{scope} openid profile offline_access"
+    provider = microsoft_native_provider_for_profile(scope_profile)
+    return microsoft_native_device_scope_string(provider) if scope_profile else f"{scope} openid profile offline_access"
 
 
 def _sharepoint_scope_for_url(site_url: str | None) -> str:
@@ -341,7 +316,7 @@ async def get_microsoft_admin_token(
     profile: str,
     **context: Any,
 ) -> Optional[dict[str, Any]]:
-    """Return a fresh delegated Microsoft Admin token for one authorization profile."""
+    """Return a fresh delegated token for one native Microsoft connector profile."""
     scope_profile = microsoft_admin_scope_profile(profile)
     if scope_profile == "arm":
         scope = AZURE_ARM_SCOPE

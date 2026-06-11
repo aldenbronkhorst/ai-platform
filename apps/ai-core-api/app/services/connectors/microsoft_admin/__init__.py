@@ -1,1 +1,1 @@
-"""Microsoft Admin connector service modules."""
+"""Native Microsoft connector service modules."""

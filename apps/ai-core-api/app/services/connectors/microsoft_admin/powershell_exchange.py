@@ -1,4 +1,4 @@
-"""ms_exchange_powershell runner for the Microsoft Admin connector."""
+"""ms_exchange_powershell runner for the native Exchange Online connector."""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -12,7 +12,7 @@ from app.services.connectors.microsoft_admin.powershell_common import (
 from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
 async def run_ms_exchange_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute Exchange Online PowerShell through the Microsoft Admin connector."""
+    """Execute Exchange Online PowerShell through the Exchange Online connector."""
     request_id, timeout, script, error = _prepare_microsoft_admin_powershell_script(
         arguments,
         timeout,
@@ -41,7 +41,7 @@ def _ms_exchange_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformExchange {
-    if (-not $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN) { throw 'Exchange Online token is not available. Check Microsoft Admin tenant consent and the signed-in user''s Exchange admin roles.' }
+    if (-not $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN) { throw 'Exchange Online token is not available. Reconnect Exchange Online and check the signed-in user''s Exchange admin roles.' }
     Import-Module ExchangeOnlineManagement -ErrorAction Stop
     Connect-ExchangeOnline -AccessToken $env:AI_PLATFORM_EXCHANGE_ACCESS_TOKEN -UserPrincipalName $env:AI_PLATFORM_MS_USERNAME -ShowBanner:$false
 }

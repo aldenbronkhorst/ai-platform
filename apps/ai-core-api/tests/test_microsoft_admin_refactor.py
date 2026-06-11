@@ -3,18 +3,15 @@ import re
 import uuid
 from pathlib import Path
 
-from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM
+from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM, MICROSOFT_NATIVE_CONNECTOR_SYSTEMS
 
 
-MICROSOFT_ADMIN_TOOLS = {
-    "ms_graph",
-    "ms_graph_powershell",
-    "ms_exchange_powershell",
-    "ms_teams_powershell",
-    "ms_sharepoint_pnp_powershell",
-    "ms_az_powershell",
-    "ms_azure_cli",
-    "ms_bicep",
+MICROSOFT_NATIVE_TOOLS_BY_SYSTEM = {
+    "azure_cli": {"ms_azure_cli", "ms_az_powershell", "ms_bicep"},
+    "microsoft_graph": {"ms_graph", "ms_graph_powershell"},
+    "exchange_online": {"ms_exchange_powershell"},
+    "teams_admin": {"ms_teams_powershell"},
+    "sharepoint_pnp": {"ms_sharepoint_pnp_powershell"},
 }
 
 
@@ -56,13 +53,14 @@ def test_microsoft_admin_tool_runners_import_from_split_modules():
     assert callable(run_ms_az_powershell_tool)
 
 
-def test_tool_registry_uses_microsoft_admin_not_azure_connector():
-    assert "microsoft_admin" in CONNECTOR_TOOLS_BY_SYSTEM
+def test_tool_registry_uses_split_native_microsoft_connectors():
+    assert set(MICROSOFT_NATIVE_CONNECTOR_SYSTEMS) == set(MICROSOFT_NATIVE_TOOLS_BY_SYSTEM)
+    assert "microsoft_admin" not in CONNECTOR_TOOLS_BY_SYSTEM
     assert "azure" not in CONNECTOR_TOOLS_BY_SYSTEM
-    assert CONNECTOR_TOOLS_BY_SYSTEM["microsoft_admin"] == frozenset(MICROSOFT_ADMIN_TOOLS)
-    assert "ms_admin" not in CONNECTOR_TOOLS_BY_SYSTEM["microsoft_admin"]
-    assert "ms_powershell" not in CONNECTOR_TOOLS_BY_SYSTEM["microsoft_admin"]
-    assert "azure_cli" not in CONNECTOR_TOOLS_BY_SYSTEM["microsoft_admin"]
+    for system, tools in MICROSOFT_NATIVE_TOOLS_BY_SYSTEM.items():
+        assert CONNECTOR_TOOLS_BY_SYSTEM[system] == frozenset(tools)
+        assert "ms_admin" not in CONNECTOR_TOOLS_BY_SYSTEM[system]
+        assert "ms_powershell" not in CONNECTOR_TOOLS_BY_SYSTEM[system]
 
 
 def test_removed_microsoft_admin_names_are_not_in_active_source_paths():
@@ -75,7 +73,6 @@ def test_removed_microsoft_admin_names_are_not_in_active_source_paths():
     banned_patterns = {
         "quoted ms_admin": re.compile(r"['\"]ms_admin['\"]"),
         "quoted ms_powershell": re.compile(r"['\"]ms_powershell['\"]"),
-        "quoted azure_cli": re.compile(r"['\"]azure_cli['\"]"),
         "legacy default connector tool map": re.compile(r"\bCONNECTOR_TOOL_BY_SYSTEM\b"),
         "legacy Microsoft Admin token top-level keys": re.compile(r"\bAZURE_TOKEN_TOP_LEVEL_KEYS\b"),
         "legacy Microsoft Admin delegated token keys": re.compile(r"\bAZURE_DELEGATED_TOKEN_KEYS\b"),
@@ -87,6 +84,7 @@ def test_removed_microsoft_admin_names_are_not_in_active_source_paths():
         "provider azure": re.compile(r"\bprovider\b\s*(?:==|=|:)\s*['\"]azure['\"]"),
         "connector_key azure": re.compile(r"\bconnector_key\b\s*(?:==|=|:)\s*['\"]azure['\"]"),
         "target_system azure": re.compile(r"\btarget_system\b\s*(?:==|=|:)\s*['\"]azure['\"]"),
+        "connector system microsoft_admin": re.compile(r"\btarget_system\b\s*(?:==|=|:)\s*['\"]microsoft_admin['\"]"),
     }
 
     violations: list[str] = []

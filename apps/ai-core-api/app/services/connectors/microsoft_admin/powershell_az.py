@@ -1,4 +1,4 @@
-"""ms_az_powershell runner for the Microsoft Admin connector."""
+"""ms_az_powershell runner for the native Azure CLI connector."""
 from __future__ import annotations
 
 from typing import Any, Optional
@@ -12,7 +12,7 @@ from app.services.connectors.microsoft_admin.powershell_common import (
 from app.services.connectors.microsoft_admin.tokens import get_microsoft_admin_token
 
 async def run_ms_az_powershell_tool(arguments: dict[str, Any], user_id: Optional[UUID], timeout: int = 60) -> dict[str, Any]:
-    """Execute Az PowerShell through the Microsoft Admin connector."""
+    """Execute Az PowerShell through the Azure CLI connector."""
     request_id, timeout, script, error = _prepare_microsoft_admin_powershell_script(
         arguments,
         timeout,
@@ -41,7 +41,7 @@ def _ms_az_powershell_preamble() -> str:
     return r"""
 $ErrorActionPreference = 'Stop'
 function Connect-AIPlatformAz {
-    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Azure Resource Manager token is not available. Check Microsoft Admin tenant consent and the signed-in user''s Azure RBAC access.' }
+    if (-not $env:AI_PLATFORM_ARM_ACCESS_TOKEN) { throw 'Azure Resource Manager token is not available. Reconnect Azure CLI and check the signed-in user''s Azure RBAC access.' }
     Import-Module Az.Accounts -ErrorAction Stop
     $secureToken = ConvertTo-SecureString $env:AI_PLATFORM_ARM_ACCESS_TOKEN -AsPlainText -Force
     Connect-AzAccount -AccessToken $secureToken -AccountId $env:AI_PLATFORM_MS_USERNAME -Tenant $env:AZURE_TENANT_ID | Out-Null
