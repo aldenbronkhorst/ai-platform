@@ -162,10 +162,7 @@ def test_tool_selection_message_inherits_context_for_date_correction():
 MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_NATIVE_TOOL_NAMES))
 MICROSOFT_TOOL_TARGET_SYSTEMS = {
     "ms_azure_cli": "azure_cli",
-    "ms_az_powershell": "azure_cli",
-    "ms_bicep": "azure_cli",
     "ms_graph": "microsoft_graph",
-    "ms_graph_powershell": "microsoft_graph",
     "ms_exchange_powershell": "exchange_online",
     "ms_teams_powershell": "teams_admin",
     "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
@@ -227,7 +224,7 @@ def test_microsoft_graph_alias_normalizes_relative_version_endpoint():
 
 @pytest.mark.asyncio
 async def test_model_router_rejects_removed_microsoft_tool_names():
-    for old_tool_name in ("azure_cli", "ms_admin", "ms_powershell"):
+    for old_tool_name in ("azure_cli", "ms_admin", "ms_powershell", "ms_az_powershell", "ms_graph_powershell", "ms_bicep"):
         result = await _execute_tool_call_impl(AsyncMock(), uuid.uuid4(), old_tool_name, {"command": "account show"})
         assert result["status"] == "failed"
         assert result["error_type"] == "unknown_tool"
@@ -252,9 +249,12 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
     )
 
     assert "use only these broad native-interface tools" in prompt
-    assert "`ms_graph`, `ms_graph_powershell`, `ms_exchange_powershell`" in prompt
-    assert "`ms_az_powershell`, `ms_azure_cli`, and `ms_bicep`" in prompt
-    assert "do not call removed generic Microsoft tools" in prompt
+    assert "`ms_azure_cli`, `ms_graph`" in prompt
+    assert "`ms_exchange_powershell`, `ms_teams_powershell`, and `ms_sharepoint_pnp_powershell`" in prompt
+    assert "ms_graph_powershell" not in prompt
+    assert "ms_az_powershell" not in prompt
+    assert "ms_bicep" not in prompt
+    assert "do not call removed generic or duplicate Microsoft tools" in prompt
     assert "do not use `az costmanagement query`" in prompt
     assert "az rest --method post" in prompt
     assert "Microsoft.CostManagement/query" in prompt
@@ -402,7 +402,7 @@ class MockSession:
                 return self
 
             def all(self):
-                if "ai_tools" in stmt_str or "ai_rules" in stmt_str or "ai_company_facts" in stmt_str or "ai_memories" in stmt_str:
+                if "ai_tools" in stmt_str or "ai_company_facts" in stmt_str or "ai_memories" in stmt_str:
                     return []
                 return self._accounts
 
@@ -989,9 +989,7 @@ class TestSeedIdempotent:
 
 class TestContextServiceFiltering:
     @pytest.mark.asyncio
-    async def test_system_scoped_rules_excluded_when_disconnected(self):
-        """Rules with scope_type='system' and scope_value='odoo' should be
-        excluded when Odoo is not connected for the user."""
+    async def test_context_service_no_longer_returns_business_rules(self):
         from app.services.context import ContextService
         from app.schemas.schemas import ContextRequest
 
@@ -999,8 +997,7 @@ class TestContextServiceFiltering:
         svc = ContextService(db)
         req = ContextRequest()
         result = await svc.get_context(req, user_id=uuid.uuid4())
-        # The mock returns no rules since MockSession.execute returns empty
-        assert "rules" in result
+        assert "rules" not in result
 
     @pytest.mark.asyncio
     async def test_odoo_facts_excluded_when_disconnected(self):

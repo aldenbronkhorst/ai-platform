@@ -90,12 +90,9 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
     canonical_names = {
         "ms_azure_cli",
         "ms_graph",
-        "ms_graph_powershell",
         "ms_exchange_powershell",
         "ms_teams_powershell",
         "ms_sharepoint_pnp_powershell",
-        "ms_az_powershell",
-        "ms_bicep",
         "github_cli",
         "odoo_ops_runner",
         "document_reader",

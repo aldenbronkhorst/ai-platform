@@ -106,12 +106,9 @@ function displayToolName(value: string) {
   if (value === "odoo_ops_runner") return "Odoo";
   if (value === "ms_azure_cli") return "Azure Resource Manager";
   if (value === "ms_graph") return "Microsoft Graph";
-  if (value === "ms_graph_powershell") return "Microsoft Graph PowerShell";
   if (value === "ms_exchange_powershell") return "Exchange Online PowerShell";
   if (value === "ms_teams_powershell") return "Microsoft Teams PowerShell";
   if (value === "ms_sharepoint_pnp_powershell") return "SharePoint PnP PowerShell";
-  if (value === "ms_az_powershell") return "Azure PowerShell";
-  if (value === "ms_bicep") return "Bicep";
   if (value === "github_cli") return "GitHub CLI";
   return value.replace(/_/g, " ");
 }
@@ -252,10 +249,8 @@ function detailFor(event: ActivityEvent) {
     const tools = stringList(output.tools);
     const model = textValue(output.selected_model);
     const memories = numberValue(output.memories_injected);
-    const rules = numberValue(output.rules_injected);
     const contextCounts = [
       memories ? plural(memories, "memory", "memories") : "",
-      rules ? plural(rules, "rule") : "",
     ].filter(Boolean);
     const parts = [
       systems.length > 0 ? `Connected: ${systems.map(displaySystemName).join(", ")}` : "No connected account context",
@@ -267,7 +262,7 @@ function detailFor(event: ActivityEvent) {
   }
   if (event.span_type === "context_build") {
     const preview = textValue(input.user_message_preview);
-    return preview ? `Reviewing: “${truncateText(preview, 90)}”` : "Checking account status, rules, memory, and available tools.";
+    return preview ? `Reviewing: “${truncateText(preview, 90)}”` : "Checking account status, memory, and available tools.";
   }
   if (event.span_type === "model_request" && event.event === "span_finished") {
     const tokens = numberValue(output.total_tokens);

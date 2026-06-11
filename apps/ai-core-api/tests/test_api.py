@@ -37,14 +37,17 @@ class TestHealth:
 
 
 class TestAudit:
-    def test_audit_events_are_read_only(self, client):
+    def test_audit_events_are_not_public_api(self, client):
         response = client.post("/audit", json={"action_type": "test"})
-        assert response.status_code == 405
+        assert response.status_code == 404
 
-    def test_list_audit_events(self, client):
+    def test_list_audit_events_is_removed(self, client):
         response = client.get("/audit")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        assert response.status_code == 404
+
+    def test_admin_traces_are_not_public_api(self, client):
+        response = client.get("/admin/traces")
+        assert response.status_code == 404
 
 
 class TestTools:
@@ -74,12 +77,12 @@ class TestContext:
 
 
 class TestRules:
-    def test_rules_are_read_only(self, client):
+    def test_rules_are_not_public_api(self, client):
         response = client.post("/rules", json={
             "title": "Temporary rule",
             "body": "Do not create rules through the public API.",
         })
-        assert response.status_code == 405
+        assert response.status_code == 404
 
 
 class TestConnectedAccounts:

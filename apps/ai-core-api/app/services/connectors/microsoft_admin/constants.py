@@ -48,7 +48,7 @@ MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID = os.environ.get(
 )
 MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME = os.environ.get(
     "MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME",
-    "Microsoft Graph PowerShell",
+    "Microsoft Graph",
 )
 DEFAULT_MICROSOFT_GRAPH_SCOPES = (
     "https://graph.microsoft.com/User.Read",
@@ -103,7 +103,6 @@ SHAREPOINT_PNP_CLIENT_ID = os.environ.get("SHAREPOINT_PNP_CLIENT_ID", "").strip(
 SHAREPOINT_PNP_APP_DISPLAY_NAME = os.environ.get("SHAREPOINT_PNP_APP_DISPLAY_NAME", "PnP PowerShell")
 MS_AZURE_CLI_ALLOWED_BINARIES = {"az"}
 MS_POWERSHELL_ALLOWED_BINARIES = {"pwsh"}
-MS_BICEP_ALLOWED_BINARIES = {"bicep"}
 MS_ADMIN_FORBIDDEN_COMMAND_RE = re.compile(r"(?i)(^|[\s;&|`])(gh|git)(\.exe)?($|[\s;&|])")
 MICROSOFT_NATIVE_CONNECTOR_PROFILES = {
     AZURE_CLI_PROVIDER: {

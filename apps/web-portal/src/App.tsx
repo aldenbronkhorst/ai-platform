@@ -13,9 +13,6 @@ import { usePortalAuth } from "./hooks/usePortalAuth";
 const ConnectionsPage = lazy(() =>
   import("./pages/ConnectionsPage").then(module => ({ default: module.ConnectionsPage }))
 );
-const AuditPage = lazy(() =>
-  import("./pages/AuditPage").then(module => ({ default: module.AuditPage }))
-);
 const AdminPage = lazy(() =>
   import("./pages/AdminPage").then(module => ({ default: module.AdminPage }))
 );
@@ -189,12 +186,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             <ConnectionsPage accessToken={accessToken} />
           </Suspense>
         );
-      case "audit":
-        return hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) ? (
-          <Suspense fallback={<PageLoader />}>
-            <AuditPage accessToken={accessToken} />
-          </Suspense>
-        ) : null;
       case "admin":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
           <Suspense fallback={<PageLoader />}>

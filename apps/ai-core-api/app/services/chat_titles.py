@@ -6,7 +6,6 @@ CHAT_TITLE_CANONICAL_WORDS = {
     "ai": "AI",
     "api": "API",
     "azure": "Azure",
-    "bicep": "Bicep",
     "ci": "CI",
     "entra": "Entra",
     "exchange": "Exchange",

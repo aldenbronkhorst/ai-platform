@@ -9,13 +9,10 @@ import pytest
 
 from app.services.connectors.microsoft_admin import (
     azure_cli,
-    bicep,
     constants,
     graph,
-    powershell_az,
     powershell_common,
     powershell_exchange,
-    powershell_graph,
     powershell_pnp,
     powershell_teams,
     tokens,
@@ -38,7 +35,6 @@ microsoft_admin_commands = SimpleNamespace(
     TEAMS_TENANT_ADMIN_RESOURCE=constants.TEAMS_TENANT_ADMIN_RESOURCE,
     TEAMS_ADMIN_CLIENT_ID=constants.TEAMS_ADMIN_CLIENT_ID,
     MS_AZURE_CLI_ALLOWED_BINARIES=constants.MS_AZURE_CLI_ALLOWED_BINARIES,
-    MS_BICEP_ALLOWED_BINARIES=constants.MS_BICEP_ALLOWED_BINARIES,
     MS_POWERSHELL_ALLOWED_BINARIES=constants.MS_POWERSHELL_ALLOWED_BINARIES,
     TENANT_ID=constants.TENANT_ID,
     _get_fresh_microsoft_admin_token_for_scope=tokens._get_fresh_microsoft_admin_token_for_scope,
@@ -58,11 +54,8 @@ microsoft_admin_commands = SimpleNamespace(
     microsoft_native_oauth_flow_for_provider=constants.microsoft_native_oauth_flow_for_provider,
     microsoft_native_resource_for_provider=constants.microsoft_native_resource_for_provider,
     microsoft_native_scope_values=constants.microsoft_native_scope_values,
-    run_ms_az_powershell_tool=powershell_az.run_ms_az_powershell_tool,
     run_ms_azure_cli_tool=azure_cli.run_ms_azure_cli_tool,
-    run_ms_bicep_tool=bicep.run_ms_bicep_tool,
     run_ms_exchange_powershell_tool=powershell_exchange.run_ms_exchange_powershell_tool,
-    run_ms_graph_powershell_tool=powershell_graph.run_ms_graph_powershell_tool,
     run_ms_graph_tool=graph.run_ms_graph_tool,
     run_ms_sharepoint_pnp_powershell_tool=powershell_pnp.run_ms_sharepoint_pnp_powershell_tool,
     run_ms_teams_powershell_tool=powershell_teams.run_ms_teams_powershell_tool,
@@ -505,82 +498,6 @@ async def test_ms_azure_cli_failure_surfaces_stderr_message(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ms_graph_powershell_rejects_github_commands(monkeypatch):
-    async def unexpected_token_lookup(*_args, **_kwargs):
-        raise AssertionError("token lookup should not run for rejected GitHub command")
-
-    monkeypatch.setattr(powershell_graph, "get_microsoft_admin_token", unexpected_token_lookup)
-
-    result = await microsoft_admin_commands.run_ms_graph_powershell_tool(
-        {"script": "gh run list --repo owner/repo"},
-        uuid.uuid4(),
-    )
-
-    assert result["status"] == "failed"
-    assert result["connector"] == "ms_graph_powershell"
-    assert result["error_type"] == "unsupported_command"
-    assert "GitHub connector" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_ms_graph_powershell_uses_only_graph_token(monkeypatch):
-    profiles: list[tuple[str, dict]] = []
-    called: dict[str, object] = {}
-
-    async def fake_get_token(_user_id, profile, **context):
-        profiles.append((profile, context))
-        return {
-            "access_token": f"{profile}-access-token",
-            "username": "alden@example.com",
-            "expires_on": int(time.time()) + 3600,
-        }
-
-    class Result:
-        success = True
-
-        def to_dict(self):
-            return {
-                "stdout": "ok",
-                "stderr": "",
-                "exit_code": 0,
-                "timed_out": False,
-                "output_truncated": False,
-                "stdout_chars": 2,
-                "stderr_chars": 0,
-                "error": None,
-            }
-
-    async def fake_run_command(command, timeout, env, allowed_binaries=None):
-        called["command"] = command
-        called["timeout"] = timeout
-        called["env"] = env
-        called["allowed_binaries"] = allowed_binaries
-        return Result()
-
-    monkeypatch.setattr(powershell_graph, "get_microsoft_admin_token", fake_get_token)
-    monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
-
-    result = await microsoft_admin_commands.run_ms_graph_powershell_tool(
-        {"script": "Connect-AIPlatformGraph\nGet-MgUser -Top 1", "timeout": 45},
-        uuid.uuid4(),
-    )
-
-    assert profiles == [("graph", {})]
-    assert called["timeout"] == 45
-    assert called["allowed_binaries"] == microsoft_admin_commands.MS_POWERSHELL_ALLOWED_BINARIES
-    assert str(called["command"]).startswith("pwsh -NoLogo -NoProfile -NonInteractive -Command ")
-    env = called["env"]
-    assert env["AI_PLATFORM_GRAPH_ACCESS_TOKEN"] == "graph-access-token"
-    assert env["AI_PLATFORM_MS_USERNAME"] == "alden@example.com"
-    assert "AI_PLATFORM_ARM_ACCESS_TOKEN" not in env
-    assert "AI_PLATFORM_EXCHANGE_ACCESS_TOKEN" not in env
-    assert "AI_PLATFORM_TEAMS_ACCESS_TOKEN" not in env
-    assert "AI_PLATFORM_PNP_ACCESS_TOKEN" not in env
-    assert result["status"] == "success"
-    assert result["connector"] == "ms_graph_powershell"
-
-
-@pytest.mark.asyncio
 async def test_ms_teams_powershell_requires_graph_and_teams_tokens(monkeypatch):
     profiles: list[str] = []
     called: dict[str, object] = {}
@@ -706,7 +623,6 @@ async def test_ms_sharepoint_pnp_uses_target_sharepoint_token(monkeypatch):
     ("runner_name", "profile", "token_env_name", "script"),
     [
         ("run_ms_exchange_powershell_tool", "exchange", "AI_PLATFORM_EXCHANGE_ACCESS_TOKEN", "Connect-AIPlatformExchange\nGet-Mailbox -ResultSize 1"),
-        ("run_ms_az_powershell_tool", "arm", "AI_PLATFORM_ARM_ACCESS_TOKEN", "Connect-AIPlatformAz\nGet-AzResourceGroup"),
     ],
 )
 async def test_module_specific_powershell_tools_inject_only_required_token(
@@ -747,8 +663,7 @@ async def test_module_specific_powershell_tools_inject_only_required_token(
         called["allowed_binaries"] = allowed_binaries
         return Result()
 
-    module = powershell_exchange if runner_name == "run_ms_exchange_powershell_tool" else powershell_az
-    monkeypatch.setattr(module, "get_microsoft_admin_token", fake_get_token)
+    monkeypatch.setattr(powershell_exchange, "get_microsoft_admin_token", fake_get_token)
     monkeypatch.setattr(powershell_common, "run_command", fake_run_command)
 
     runner = getattr(microsoft_admin_commands, runner_name)
@@ -767,47 +682,6 @@ async def test_module_specific_powershell_tools_inject_only_required_token(
         assert other_token_name not in env
     assert called["allowed_binaries"] == microsoft_admin_commands.MS_POWERSHELL_ALLOWED_BINARIES
     assert result["status"] == "success"
-
-
-@pytest.mark.asyncio
-async def test_ms_bicep_uses_only_bicep_binary(monkeypatch):
-    called: dict[str, object] = {}
-
-    class Result:
-        success = True
-
-        def to_dict(self):
-            return {
-                "stdout": "Bicep CLI version 0.0.0",
-                "stderr": "",
-                "exit_code": 0,
-                "timed_out": False,
-                "output_truncated": False,
-                "stdout_chars": 23,
-                "stderr_chars": 0,
-                "error": None,
-            }
-
-    async def fake_run_command(command, timeout, env=None, allowed_binaries=None):
-        called["command"] = command
-        called["env"] = env
-        called["allowed_binaries"] = allowed_binaries
-        return Result()
-
-    monkeypatch.setattr(bicep, "run_command", fake_run_command)
-
-    result = await microsoft_admin_commands.run_ms_bicep_tool(
-        {"command": "version"},
-        uuid.uuid4(),
-    )
-
-    assert called["command"] == "bicep version"
-    assert called["env"] is None
-    assert called["allowed_binaries"] == microsoft_admin_commands.MS_BICEP_ALLOWED_BINARIES
-    assert result["status"] == "success"
-    assert result["connector"] == "ms_bicep"
-
-
 @pytest.mark.asyncio
 async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_primary_refresh(monkeypatch):
     user_id = uuid.uuid4()

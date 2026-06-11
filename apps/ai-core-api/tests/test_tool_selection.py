@@ -38,13 +38,10 @@ def test_connector_tool_registry_exposes_canonical_model_facing_tools():
     assert is_model_facing_tool("odoo_ops_runner", "odoo")
     assert set(MICROSOFT_TOOL_NAMES) == {
         "ms_graph",
-        "ms_graph_powershell",
         "ms_exchange_powershell",
         "ms_teams_powershell",
         "ms_sharepoint_pnp_powershell",
-        "ms_az_powershell",
         "ms_azure_cli",
-        "ms_bicep",
     }
     for system in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS:
         for tool_name in CONNECTOR_TOOLS_BY_SYSTEM[system]:
@@ -121,7 +118,7 @@ async def test_tool_selection_selects_only_matching_connected_system():
     )
 
     assert [tool.name for tool in result.selected] == ["ms_azure_cli"]
-    assert {tool.name for tool in result.excluded} == {"github_cli", "odoo_ops_runner", "ms_az_powershell", "ms_bicep"}
+    assert {tool.name for tool in result.excluded} == {"github_cli", "odoo_ops_runner"}
     assert result.intent == "azure_cli"
     assert result.selection_reason == "message_intent_matched_connected_systems"
 
@@ -179,7 +176,7 @@ async def test_tool_selection_selects_native_microsoft_tools_for_exchange_intune
     )
 
     assert {tool.name for tool in result.selected} == {"ms_graph", "ms_exchange_powershell"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_graph_powershell"}
+    assert {tool.name for tool in result.excluded} == {"github_cli"}
     assert result.intent == "exchange_online,microsoft_graph"
 
 
@@ -199,7 +196,7 @@ async def test_tool_selection_selects_microsoft_admin_for_cross_system_user_crea
     )
 
     assert {tool.name for tool in result.selected} == {"odoo_ops_runner", "ms_graph"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_graph_powershell"}
+    assert {tool.name for tool in result.excluded} == {"github_cli"}
     assert result.intent == "microsoft_graph,odoo"
     assert result.selection_reason == "message_intent_matched_connected_systems"
 
@@ -220,7 +217,7 @@ async def test_tool_selection_treats_ms_admin_abbreviation_as_microsoft_with_adm
     )
 
     assert {tool.name for tool in result.selected} == {"odoo_ops_runner", "ms_graph"}
-    assert {tool.name for tool in result.excluded} == {"github_cli", "ms_graph_powershell"}
+    assert {tool.name for tool in result.excluded} == {"github_cli"}
     assert result.intent == "microsoft_graph,odoo"
 
 
