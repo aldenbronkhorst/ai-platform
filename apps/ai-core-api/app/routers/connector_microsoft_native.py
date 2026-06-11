@@ -21,7 +21,6 @@ from app.services.connectors.microsoft_admin.constants import (
     AZURE_V1_DEVICE_CODE_ENDPOINT,
     AZURE_V1_TOKEN_ENDPOINT,
     AZURE_V2_DEVICE_CODE_ENDPOINT,
-    MICROSOFT_NATIVE_CONNECTOR_PROFILES,
     SHAREPOINT_PNP_PROVIDER,
     microsoft_native_app_name_for_provider,
     microsoft_native_client_id_for_provider,

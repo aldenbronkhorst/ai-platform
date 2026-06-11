@@ -17,7 +17,6 @@ from app.services.connectors.microsoft_admin.constants import (
     AZURE_TOKEN_ENDPOINT,
     AZURE_V1_TOKEN_ENDPOINT,
     EXCHANGE_ONLINE_SCOPE,
-    MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_ADMIN_SCOPE_PROFILES,
     MICROSOFT_GRAPH_SCOPE,
     TEAMS_TENANT_ADMIN_SCOPE,
@@ -251,56 +250,6 @@ async def _get_fresh_microsoft_admin_token_for_scope(
             "Microsoft connector token refresh failed. Check connector logs.",
             "token_refresh_failed",
         )
-
-
-async def warm_microsoft_admin_delegated_tokens(user_id: Optional[UUID]) -> dict[str, Any]:
-    """Best-effort status check for separate native Microsoft connector tokens."""
-    if not user_id:
-        return {}
-    results: dict[str, Any] = {}
-    scopes_by_profile = {
-        "graph": MICROSOFT_GRAPH_SCOPE,
-        "arm": AZURE_ARM_SCOPE,
-        "exchange": EXCHANGE_ONLINE_SCOPE,
-        "teams": TEAMS_TENANT_ADMIN_SCOPE,
-    }
-    for profile in MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES:
-        scope = scopes_by_profile[profile]
-        token = await _get_fresh_microsoft_admin_token_for_scope(user_id, scope)
-        results[profile] = _microsoft_admin_profile_token_status(profile, token)
-    return results
-
-
-def _microsoft_admin_profile_token_status(profile: str, token: Optional[dict[str, Any]]) -> dict[str, Any]:
-    if token and token.get("access_token") and not token.get("refresh_error"):
-        return {
-            "status": "available",
-            "token_status": "available",
-            "message": f"{microsoft_admin_scope_label(profile)} token is available.",
-        }
-
-    error_type = token.get("error_type") if isinstance(token, dict) else ""
-    message = token.get("refresh_error") if isinstance(token, dict) else ""
-    if error_type == "consent_required":
-        return {
-            "status": "missing_consent",
-            "token_status": "missing",
-            "error_type": error_type,
-            "message": message or f"Tenant admin consent is required for {microsoft_admin_scope_label(profile)}.",
-        }
-    if error_type == "invalid_scope":
-        return {
-            "status": "missing_permission",
-            "token_status": "missing",
-            "error_type": error_type,
-            "message": message or f"The native Microsoft connector is missing {microsoft_admin_scope_label(profile)} permissions.",
-        }
-    return {
-        "status": "missing",
-        "token_status": "missing",
-        "error_type": error_type or "token_unavailable",
-        "message": message or "No token returned.",
-    }
 
 
 def _scope_profile_for_scope(scope: str) -> str:

@@ -3,8 +3,6 @@ uvicorn[standard]==0.49.0
 pydantic==2.13.4
 pydantic-settings==2.14.1
 httpx==0.28.1
-python-multipart==0.0.32
 opencensus-ext-azure==1.1.15
-opencensus-ext-logging==0.1.1
 pytest==9.0.3
 pytest-asyncio==1.3.0
