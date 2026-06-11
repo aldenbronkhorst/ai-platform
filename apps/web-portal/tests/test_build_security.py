@@ -26,16 +26,14 @@ def test_no_api_keys_in_production_build():
 
 
 def test_no_mock_login_compiled_in_production_defaults():
-    """Verify that by default, the mock sign-in is disabled and cannot be enabled unless in local dev mode on localhost."""
+    """Verify that mock sign-in code is not compiled into the portal."""
     js_files = glob.glob(os.path.join(BUILD_DIR, "assets/*.js"))
     
     for js_path in js_files:
         with open(js_path, "r", encoding="utf-8") as f:
             content = f.read()
-            # Verify that mock login doesn't leak into production assets
-            # In Vite, process.env variables or import.meta.env default to undefined/empty unless set.
-            # VITE_ENABLE_LOCAL_MOCK_AUTH defaults to false in prod.
-            assert "VITE_ENABLE_LOCAL_MOCK_AUTH" not in content or "VITE_ENABLE_LOCAL_MOCK_AUTH=true" not in content
+            assert "VITE_ENABLE_LOCAL_MOCK_AUTH" not in content
+            assert "Local Mock Sign In" not in content
 
 
 def test_browser_requests_do_not_use_x_api_key():

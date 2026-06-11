@@ -16,11 +16,6 @@ def test_create_artifact_upload_failure_returns_structured_503(monkeypatch):
 
     response = client.post(
         "/artifacts",
-        data={
-            "artifact_type": "job-file",
-            "filename": "statement.csv",
-            "mime_type": "text/csv",
-        },
         files={"file": ("statement.csv", io.BytesIO(b"col\n1\n"), "text/csv")},
     )
 

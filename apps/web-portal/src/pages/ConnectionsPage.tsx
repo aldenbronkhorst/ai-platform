@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "../components/ui/GlassPanel";
 import { GlassButton } from "../components/ui/GlassButton";
-import { APIM_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
+import { API_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
 import {
   ConnectorLogo,
   DetailCard,
@@ -40,11 +40,7 @@ interface ConnectionTestResult {
   message: string;
   isKeyVaultError?: boolean;
   errorType?: string;
-  stage?: string;
-  technicalDetail?: string;
   requestId?: string;
-  connectionAttemptId?: string;
-  trace?: { trace_id?: string } | null;
 }
 
 interface CliCommandResult {
@@ -189,7 +185,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
-  const [showTechDetails, setShowTechDetails] = useState(false);
   const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
   const [odooUrl, setOdooUrl] = useState("");
   const [odooDb, setOdooDb] = useState("");
@@ -230,7 +225,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
         const meta: Record<string, ConnectorMeta> = {};
@@ -255,7 +250,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as OdooStatus;
         setOdooStatus(data);
@@ -281,7 +276,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!code) return;
     void (async () => {
       try {
-        const res = await fetch(`${APIM_BASE_URL}/connector/github/oauth-callback`, {
+        const res = await fetch(`${API_BASE_URL}/connector/github/oauth-callback`, {
           method: "POST",
           headers: headers(),
           body: JSON.stringify({ code, state }),
@@ -304,7 +299,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     e.preventDefault(); if (!accessToken) return;
     setIsConnecting(true); setTestResult(null);
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/connect`, {
+      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/connect`, {
         method: "POST", headers: headers(),
         body: JSON.stringify({ odoo_url: odooUrl, odoo_db: odooDb, odoo_username: odooUsername, odoo_api_key: odooApiKey }),
       });
@@ -320,10 +315,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setTestResult({
           success: false, message: detailMessage,
           isKeyVaultError: isKeyVaultError(detailMessage),
-          errorType: stringValue(detail.error_type), stage: stringValue(detail.stage),
-          technicalDetail: stringValue(detail.technical_detail), requestId: stringValue(detail.request_id),
-          connectionAttemptId: stringValue(detail.connection_attempt_id),
-          trace: detail.trace && typeof detail.trace === "object" ? detail.trace as { trace_id?: string } : null,
+          errorType: stringValue(detail.error_type),
+          requestId: stringValue(detail.request_id),
         });
         void Promise.all([fetchOdooStatus(), fetchConnectors()]);
       }
@@ -335,7 +328,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleDisconnectOdoo = async () => {
     if (!accessToken || !confirm("Disconnect Odoo? Credentials will be permanently deleted.")) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
+      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
       if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername(""); setOdooApiKey(""); setTestResult(null); }
       void Promise.all([fetchOdooStatus(), fetchConnectors()]);
     } catch { /* ignore transient disconnect errors */ }
@@ -361,7 +354,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     }
     const authWindow = openMicrosoftAuthWindow();
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/device-code`, {
+      const res = await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/device-code`, {
         method: "POST",
         headers: headers(),
         body: Object.keys(connectPayload).length ? JSON.stringify(connectPayload) : undefined,
@@ -390,7 +383,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             return;
           }
           try {
-            const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
+            const pr = await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
               method: "POST", headers: headers(),
               body: JSON.stringify({
                 auth_session_id: data.auth_session_id,
@@ -476,7 +469,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
     cancelMicrosoftAuthAttempt();
-    await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
+    await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
     setCliTestResult({ status: "success", connector: connectorKey, message: "Disconnected" });
   };
@@ -484,7 +477,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleGithubOAuth = async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
+      const res = await fetch(`${API_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
       const data = await res.json() as { auth_url?: string; message?: string };
       if (data.auth_url) window.location.href = data.auth_url;
       else setCliTestResult({ status: "failed", connector: "github", message: data.message || "GitHub OAuth not configured." });
@@ -686,18 +679,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                     {testResult.success ? "Success" : testResult.isKeyVaultError ? "Key Vault Permission Error" : "Connection Failed"}
                   </p>
                   <p className="text-muted mt-1">{testResult.message}</p>
-                  {!testResult.success && testResult.technicalDetail && (
-                    <>
-                      <button onClick={() => setShowTechDetails(!showTechDetails)}
-                        className="text-xs text-muted hover:text-default underline mt-2">{showTechDetails ? "Hide" : "Show"} technical details</button>
-                      {showTechDetails && (
-                        <pre className="text-xs text-muted bg-surface p-2 rounded-lg mt-2 overflow-x-auto font-mono border border-default whitespace-pre-wrap">
-                          {testResult.technicalDetail}
-                          {testResult.requestId && `\n\nRequest ID: ${testResult.requestId}`}
-                          {testResult.trace?.trace_id && `\nTrace ID: ${testResult.trace.trace_id}`}
-                        </pre>
-                      )}
-                    </>
+                  {!testResult.success && testResult.requestId && (
+                    <p className="mt-2 text-xs text-muted">Support reference: {testResult.requestId}</p>
                   )}
                 </div>
               )}

@@ -131,12 +131,6 @@ class TestArtifacts:
         import io
         response = client.post(
             "/artifacts",
-            data={
-                "artifact_type": "report",
-                "filename": "test_report.xlsx",
-                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "stage": "final"
-            },
             files={"file": ("test_report.xlsx", io.BytesIO(b"test content"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
         )
         # May fail in test env without Azure storage configured - that's acceptable for unit tests
@@ -145,4 +139,9 @@ class TestArtifacts:
     def test_get_artifact_not_found(self, client):
         import uuid
         response = client.get(f"/artifacts/{uuid.uuid4()}")
+        assert response.status_code == 404
+
+    def test_artifact_download_is_not_public_api(self, client):
+        import uuid
+        response = client.get(f"/artifacts/{uuid.uuid4()}/download")
         assert response.status_code == 404

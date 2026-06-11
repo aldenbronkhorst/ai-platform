@@ -13,7 +13,7 @@ export function ChatEmptyState({ displayName }: ChatEmptyStateProps) {
             What would you like to work on, {firstName}?
           </h2>
           <p className="text-sm text-muted">
-            Ask about business operations, run audits, or check connected systems.
+            Ask about business operations, files, or connected systems.
           </p>
         </div>
       </div>

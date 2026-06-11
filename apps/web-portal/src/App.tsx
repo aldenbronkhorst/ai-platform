@@ -28,11 +28,9 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     accounts,
     activeUser,
     authError,
-    enableLocalMock,
     inProgress,
     instance,
     isTokenLoading,
-    signInLocalMock,
     signOut,
   } = usePortalAuth();
 
@@ -123,9 +121,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         authError={authError}
         startupAuthError={startupAuthError}
         showDiagnostics={showDiagnostics}
-        enableLocalMock={enableLocalMock}
         onSignIn={() => instance.loginRedirect(hintedLoginRequest)}
-        onLocalMockSignIn={signInLocalMock}
         onToggleDiagnostics={() => setShowDiagnostics(!showDiagnostics)}
         instance={instance}
         loginRequest={hintedLoginRequest}

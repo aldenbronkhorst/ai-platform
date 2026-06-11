@@ -15,11 +15,6 @@ interface TokenClaims {
   roles?: string[];
 }
 
-const ENABLE_LOCAL_MOCK =
-  import.meta.env.VITE_ENABLE_LOCAL_MOCK_AUTH === "true" &&
-  typeof window !== "undefined" &&
-  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-
 interface TokenResult {
   accountId: string;
   accessToken: string;
@@ -35,8 +30,6 @@ export function usePortalAuth() {
   const { instance, accounts, inProgress } = useMsal();
   const [authError, setAuthError] = useState<string | null>(null);
   const [isTokenLoading, setIsTokenLoading] = useState(false);
-  const [localMockAuthenticated, setLocalMockAuthenticated] = useState(false);
-  const [localMockUser, setLocalMockUser] = useState<UserProfile | null>(null);
   const [tokenResult, setTokenResult] = useState<TokenResult | null>(null);
 
   const activeAccount = useMemo(
@@ -53,27 +46,20 @@ export function usePortalAuth() {
         roles: idTokenClaims?.roles || ["AIPlatform.User"],
       };
     }
-    if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser) {
-      return localMockUser;
-    }
     return null;
-  }, [activeAccount, localMockAuthenticated, localMockUser]);
+  }, [activeAccount]);
 
   const accessToken = useMemo(() => {
-    if (ENABLE_LOCAL_MOCK && localMockAuthenticated && localMockUser && !activeAccount) {
-      return "mock-local-token";
-    }
     if (!activeAccount || tokenResult?.accountId !== activeAccount.homeAccountId) {
       return "";
     }
     return tokenResult.accessToken;
-  }, [activeAccount, localMockAuthenticated, localMockUser, tokenResult]);
+  }, [activeAccount, tokenResult]);
 
   useEffect(() => {
     if (!activeAccount) {
       const storedHint = readStoredAuthHint();
       if (
-        !localMockAuthenticated &&
         inProgress === "none" &&
         storedHint &&
         shouldAttemptPromptlessRestore(storedHint)
@@ -87,7 +73,7 @@ export function usePortalAuth() {
       const timerId = window.setTimeout(() => {
         setTokenResult(null);
         setIsTokenLoading(false);
-        if (!localMockAuthenticated) setAuthError(null);
+        setAuthError(null);
       }, 0);
       return () => window.clearTimeout(timerId);
     }
@@ -131,23 +117,9 @@ export function usePortalAuth() {
       cancelled = true;
       window.clearInterval(refreshInterval);
     };
-  }, [activeAccount, inProgress, instance, localMockAuthenticated]);
-
-  const signInLocalMock = useCallback(() => {
-    setLocalMockUser({
-      email: "alden@lotslotsmore.com",
-      displayName: "Alden Bronkhorst (Local Mock)",
-      roles: ["AIPlatform.Admin", "AIPlatform.User"],
-    });
-    setLocalMockAuthenticated(true);
-  }, []);
+  }, [activeAccount, inProgress, instance]);
 
   const signOut = useCallback(async () => {
-    if (localMockAuthenticated) {
-      setLocalMockAuthenticated(false);
-      setLocalMockUser(null);
-      return;
-    }
     instance.setActiveAccount(null);
     try {
       await instance.clearCache();
@@ -159,18 +131,16 @@ export function usePortalAuth() {
       clearMsalStorage(localStorage);
       window.location.href = "/";
     }
-  }, [instance, localMockAuthenticated]);
+  }, [instance]);
 
   return {
     accessToken,
     accounts,
     activeUser,
     authError,
-    enableLocalMock: ENABLE_LOCAL_MOCK,
     inProgress,
     instance,
     isTokenLoading,
-    signInLocalMock,
     signOut,
   };
 }

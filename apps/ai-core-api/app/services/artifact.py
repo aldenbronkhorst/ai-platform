@@ -1,9 +1,10 @@
 import hashlib
 import asyncio
 from typing import Optional
-from uuid import UUID
+from urllib.parse import urlparse
+from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from app.models.models import AIArtifact
@@ -17,6 +18,8 @@ from app.services.document_processing import (
 
 
 class ArtifactService:
+    CHAT_UPLOAD_CONTAINER = "job-files"
+
     def __init__(self, db: AsyncSession):
         self.db = db
         self.settings = get_settings()
@@ -37,22 +40,16 @@ class ArtifactService:
             self._blob_client = BlobServiceClient(account_url=account_url, credential=self._get_credential())
         return self._blob_client
 
-    def _get_container(self, artifact_type: str) -> str:
-        mapping = {
-            "ocr": "ocr",
-            "report": "reports",
-            "raw-export": "raw-exports",
-            "runner-log": "runner-logs",
-            "job-file": "job-files",
-            "evidence": "evidence",
-            "debug": "temp",
-            "intermediate": "temp",
-            "final": "artifacts",
-        }
-        return mapping.get(artifact_type, "artifacts")
+    def _blob_name(self, artifact_id: UUID, filename: str) -> str:
+        return f"{artifact_id}/{filename}"
 
-    def _blob_name(self, job_id: Optional[UUID], filename: str) -> str:
-        return f"{job_id or 'standalone'}/{filename}"
+    def _blob_location(self, artifact: AIArtifact) -> tuple[str, str]:
+        parsed = urlparse(artifact.storage_uri or "")
+        path = parsed.path.lstrip("/")
+        container, _, blob_name = path.partition("/")
+        if container and blob_name:
+            return container, blob_name
+        return self.CHAT_UPLOAD_CONTAINER, self._blob_name(artifact.id, artifact.filename)
 
     def _apply_extraction_result(self, artifact: AIArtifact, result: DocumentExtractionResult) -> None:
         artifact.extraction_status = result.status
@@ -78,8 +75,9 @@ class ArtifactService:
         await self.db.flush()
 
     async def upload(self, data: AIArtifactCreate, file_content: bytes, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
-        container = self._get_container(data.artifact_type)
-        blob_name = self._blob_name(data.job_id, data.filename)
+        artifact_id = uuid4()
+        container = self.CHAT_UPLOAD_CONTAINER
+        blob_name = self._blob_name(artifact_id, data.filename)
 
         blob_client = self._get_blob_client().get_blob_client(container=container, blob=blob_name)
         await asyncio.to_thread(blob_client.upload_blob, file_content, overwrite=True)
@@ -88,7 +86,10 @@ class ArtifactService:
         storage_uri = f"https://{self.settings.storage_account_name}.blob.core.windows.net/{container}/{blob_name}"
 
         artifact = AIArtifact(
-            **data.model_dump(exclude_unset=True),
+            id=artifact_id,
+            artifact_type="chat-upload",
+            filename=data.filename,
+            mime_type=data.mime_type,
             storage_uri=storage_uri,
             sha256=sha256,
             created_by_user_id=created_by_user_id,
@@ -100,8 +101,7 @@ class ArtifactService:
         return artifact
 
     async def download_content(self, artifact: AIArtifact) -> bytes:
-        container = self._get_container(artifact.artifact_type)
-        blob_name = self._blob_name(artifact.job_id, artifact.filename)
+        container, blob_name = self._blob_location(artifact)
         blob_client = self._get_blob_client().get_blob_client(container=container, blob=blob_name)
         stream = await asyncio.to_thread(blob_client.download_blob)
         return await asyncio.to_thread(stream.readall)
@@ -166,41 +166,3 @@ class ArtifactService:
     async def get_by_id(self, artifact_id: UUID) -> Optional[AIArtifact]:
         result = await self.db.execute(select(AIArtifact).where(AIArtifact.id == artifact_id))
         return result.scalar_one_or_none()
-
-    async def list_for_user(self, user_id: Optional[UUID], limit: int = 50, offset: int = 0) -> list[AIArtifact]:
-        stmt = select(AIArtifact).order_by(desc(AIArtifact.created_at)).limit(limit).offset(offset)
-        if user_id:
-            stmt = stmt.where(AIArtifact.created_by_user_id == user_id)
-        result = await self.db.execute(stmt)
-        return list(result.scalars().all())
-
-    async def generate_sas_url(self, container: str, blob_name: str) -> str:
-        """Generate a short-lived read-only URL for the blob."""
-        from datetime import datetime, timedelta, timezone
-        from azure.storage.blob import generate_blob_sas, BlobSasPermissions
-
-        account_name = self.settings.storage_account_name
-        blob_url = f"https://{account_name}.blob.core.windows.net/{container}/{blob_name}"
-
-        try:
-            from azure.storage.blob import BlobServiceClient
-            blob_service = BlobServiceClient(
-                account_url=f"https://{account_name}.blob.core.windows.net",
-                credential=self._get_credential(),
-            )
-            user_delegation_key = await asyncio.to_thread(
-                blob_service.get_user_delegation_key,
-                key_start_time=datetime.now(timezone.utc),
-                key_expiry_time=datetime.now(timezone.utc) + timedelta(minutes=15),
-            )
-            sas_token = generate_blob_sas(
-                account_name=account_name,
-                container_name=container,
-                blob_name=blob_name,
-                user_delegation_key=user_delegation_key,
-                permission=BlobSasPermissions(read=True),
-                expiry=datetime.now(timezone.utc) + timedelta(minutes=15),
-            )
-            return f"{blob_url}?{sas_token}"
-        except Exception as exc:
-            raise RuntimeError("Could not generate a signed artifact download URL.") from exc

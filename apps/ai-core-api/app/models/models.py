@@ -71,16 +71,12 @@ class AIArtifact(Base, AuditMixin):
     __tablename__ = "ai_artifacts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    artifact_type = Column(String(50), nullable=False)  # ocr, report, raw-export, debug, intermediate, final
+    artifact_type = Column(String(50), default="chat-upload", nullable=False)
     filename = Column(String(500), nullable=False)
     mime_type = Column(String(100), nullable=False)
     storage_uri = Column(String(1000), nullable=False)
     sha256 = Column(String(64), nullable=True)
-    source_tool = Column(String(100), nullable=True)
-    stage = Column(String(50), nullable=True)  # intermediate, final, debug
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    retention_policy = Column(String(20), default="standard", nullable=False)
     extraction_status = Column(String(30), default="not_required", nullable=False)
     extraction_source = Column(String(100), nullable=True)
     extracted_text = Column(Text, nullable=True)
@@ -102,28 +98,6 @@ class AITool(Base, AuditMixin):
     status = Column(String(20), default="active", nullable=False)
     requires_approval = Column(String(10), default="false", nullable=False)
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-
-
-class AIAuditEvent(Base):
-    __tablename__ = "ai_audit_events"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
-    actor_type = Column(String(20), default="user", nullable=False)  # user, service, system
-    actor_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    identity_mode = Column(String(30), default="user-delegated", nullable=False)
-    interface = Column(String(50), nullable=True)  # chatgpt, claude, web, api
-    action_type = Column(String(50), nullable=False)  # read, write, create, delete, tool_call, job_start
-    tool_name = Column(String(100), nullable=True)
-    target_system = Column(String(50), nullable=True)
-    target_model = Column(String(100), nullable=True)
-    target_record_id = Column(String(100), nullable=True)
-    job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
-    input_summary = Column(Text, nullable=True)
-    output_summary = Column(Text, nullable=True)
-    risk_level = Column(String(20), default="low", nullable=False)  # low, medium, high, critical
-    status = Column(String(20), default="success", nullable=False)
-    cost_estimate = Column(Numeric(10, 4), nullable=True)
 
 
 class AIChatSession(Base, AuditMixin):
@@ -197,7 +171,6 @@ class AIRoute(Base, AuditMixin):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_type = Column(String(100), unique=True, nullable=False, index=True)
     primary_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=False)
-    fallback_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=True)
     temperature = Column(Numeric(4, 2), default=0.3, nullable=False)
     max_tokens = Column(Integer, default=2000, nullable=False)
     system_prompt = Column(Text, nullable=True)

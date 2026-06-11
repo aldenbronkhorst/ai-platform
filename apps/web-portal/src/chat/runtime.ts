@@ -10,10 +10,6 @@ const CONNECTOR_PROGRESS_HINTS = [
   { label: "Odoo", keywords: ["odoo", "invoice", "credit note", "customer", "sale order", "profit and loss", "turnover"] },
 ];
 
-function errorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function chatSessionsCacheKey(email: string) {
   return `${CHAT_SESSIONS_CACHE_PREFIX}${email.toLowerCase()}`;
 }
@@ -100,7 +96,6 @@ export interface ChatFailurePayload {
   requestId: string;
   errorType: string;
   errorMessage: string;
-  technicalDetail: string;
   httpStatus: number;
 }
 
@@ -121,7 +116,6 @@ export function chatFailureFromDetail(detail: unknown, requestId: string, httpSt
       requestId: detailString(record.request_id, requestId),
       errorType: detailString(record.error_type, "server_error"),
       errorMessage: detailString(record.error_message, "Something went wrong while generating the response."),
-      technicalDetail: detailString(record.technical_detail, detailString(detail)),
       httpStatus,
     };
   }
@@ -129,7 +123,6 @@ export function chatFailureFromDetail(detail: unknown, requestId: string, httpSt
     requestId,
     errorType: "server_error",
     errorMessage: "Something went wrong while generating the response.",
-    technicalDetail: detailString(detail),
     httpStatus,
   };
 }
@@ -144,7 +137,6 @@ export async function chatFailureFromResponse(res: Response, requestId: string):
     requestId: respRequestId,
     errorType: "server_error",
     errorMessage: `Server returned ${res.status}`,
-    technicalDetail: detailString(body),
     httpStatus: res.status,
   };
 }
@@ -200,9 +192,6 @@ export function chatFailureFromNetwork(err: unknown, requestId: string): ChatFai
     errorMessage: timeout
       ? "The request took too long to complete. Please try again or narrow the question."
       : "The AI service could not be reached. Please check your connection and try again.",
-    technicalDetail: timeout
-      ? `Request timed out after ${CHAT_REQUEST_TIMEOUT_MS / 1000} seconds`
-      : errorMessage(err),
     httpStatus: 0,
   };
 }
@@ -215,10 +204,6 @@ export function messageRequestId(message: ChatMessage): string | null {
   const metadata = message.metadata_json;
   if (!isRecord(metadata)) return null;
   if (typeof metadata.request_id === "string") return metadata.request_id;
-  const technicalDetails = metadata.technical_details;
-  if (isRecord(technicalDetails) && typeof technicalDetails.request_id === "string") {
-    return technicalDetails.request_id;
-  }
   return null;
 }
 
@@ -231,7 +216,6 @@ export function normalizeChatMessage(message: ChatMessage): ChatMessage {
   const errorText = typeof metadata.error_message === "string"
     ? metadata.error_message
     : "The model service could not generate a response right now.";
-  const traceId = typeof metadata.trace_id === "string" ? metadata.trace_id : "";
 
   return {
     ...message,
@@ -240,7 +224,6 @@ export function normalizeChatMessage(message: ChatMessage): ChatMessage {
       requestId,
       errorType,
       errorMessage: errorText,
-      technicalDetail: traceId ? `Trace ID: ${traceId}` : "",
       httpStatus: 502,
     }),
   };

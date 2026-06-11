@@ -1,6 +1,6 @@
-export const APIM_BASE_URL =
-  import.meta.env.VITE_APIM_BASE_URL ||
-  "https://apim-ai-platform-prod-san-001.azure-api.net";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:8000";
 
 const READ_REQUEST_TIMEOUT_MS = 15_000;
 

@@ -1,4 +1,4 @@
-import { AlertTriangle, User, Shield, RefreshCw } from "lucide-react";
+import { AlertTriangle, Shield, RefreshCw } from "lucide-react";
 import type { InteractionStatus } from "@azure/msal-browser";
 import type { AccountInfo, IPublicClientApplication, RedirectRequest } from "@azure/msal-browser";
 import { GlassButton } from "../ui/GlassButton";
@@ -9,9 +9,7 @@ interface LoginPageProps {
   authError: string | null;
   startupAuthError: string | null;
   showDiagnostics: boolean;
-  enableLocalMock: boolean;
   onSignIn: () => void;
-  onLocalMockSignIn: () => void;
   onToggleDiagnostics: () => void;
   instance: Pick<IPublicClientApplication, "acquireTokenRedirect">;
   loginRequest: RedirectRequest;
@@ -23,9 +21,7 @@ export function LoginPage({
   authError,
   startupAuthError,
   showDiagnostics,
-  enableLocalMock,
   onSignIn,
-  onLocalMockSignIn,
   onToggleDiagnostics,
   instance,
   loginRequest,
@@ -56,7 +52,7 @@ export function LoginPage({
             AI Platform
           </h2>
           <p className="text-xs text-muted mt-2 leading-relaxed">
-            Secure operational portal for business operations, audits, and automation.
+            Secure operational portal for business operations and automation.
           </p>
         </div>
 
@@ -89,27 +85,16 @@ export function LoginPage({
             Sign in with Microsoft ID
           </GlassButton>
 
-          {enableLocalMock && (
-            <button
-              onClick={onLocalMockSignIn}
-              className="w-full py-3 bg-surface border border-default text-muted font-bold rounded-2xl text-sm transition-all flex items-center justify-center gap-2 hover-text-default"
-            >
-              <User className="w-4 h-4" />
-              Local Mock Sign In
-            </button>
-          )}
         </div>
 
-        {enableLocalMock && (
-          <button
-            onClick={onToggleDiagnostics}
-            className="text-[11px] text-soft hover-text-default underline select-none block mx-auto"
-          >
-            {showDiagnostics ? "Hide Security Diagnostics" : "Show Security Diagnostics"}
-          </button>
-        )}
+        <button
+          onClick={onToggleDiagnostics}
+          className="text-[11px] text-soft hover-text-default underline select-none block mx-auto"
+        >
+          {showDiagnostics ? "Hide Security Diagnostics" : "Show Security Diagnostics"}
+        </button>
 
-        {showDiagnostics && enableLocalMock && (
+        {showDiagnostics && (
           <div className="border border-default p-4 bg-subtle rounded-2xl text-left font-mono text-[10px] text-muted space-y-1 select-text">
             <p className="text-muted font-bold border-b border-default pb-1 mb-1.5 flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5" /> Security Diagnostics

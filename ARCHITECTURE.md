@@ -12,8 +12,8 @@ read, reason, and act through those connectors.
 - Microsoft Entra user auth.
 - Per-user connector auth for Odoo, GitHub, and Microsoft admin workloads.
 - Key Vault for connector tokens and secrets.
-- PostgreSQL for chat, memory, audit, model route seed data, and connector state.
-- Blob Storage for uploaded chat attachments and generated artifacts.
+- PostgreSQL for chat, memory, model route seed data, traces, usage logs, and connector state.
+- Blob Storage for uploaded chat attachments.
 - Internal Odoo connector service.
 - Application Insights/Log Analytics.
 
