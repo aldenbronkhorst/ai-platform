@@ -29,6 +29,9 @@ def _scope_values_from_env(env_name: str, default_values: tuple[str, ...]) -> tu
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
 AZURE_AUTHORITY_HOST = os.environ.get("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.com")
 AZURE_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/token"
+AZURE_V1_TOKEN_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/token"
+AZURE_V1_DEVICE_CODE_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/devicecode"
+AZURE_V2_DEVICE_CODE_ENDPOINT = f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/devicecode"
 AZURE_ARM_SCOPE = os.environ.get("AZURE_ARM_SCOPE", "https://management.azure.com/user_impersonation")
 AZURE_ENVIRONMENT_NAME = os.environ.get("AZURE_ENVIRONMENT_NAME", "AzureCloud")
 AZURE_CLI_CLIENT_ID = os.environ.get("AZURE_CLI_CLIENT_ID", "04b07795-8ddb-461a-bbee-02f9e1bf7b46")
@@ -76,6 +79,7 @@ MICROSOFT_GRAPH_SCOPES = _scope_values_from_env(
 MICROSOFT_GRAPH_SCOPE = " ".join(MICROSOFT_GRAPH_SCOPES)
 MICROSOFT_GRAPH_BASE_URL = os.environ.get("MICROSOFT_GRAPH_BASE_URL", "https://graph.microsoft.com")
 EXCHANGE_ONLINE_SCOPE = os.environ.get("EXCHANGE_ONLINE_SCOPE", "https://outlook.office365.com/.default")
+EXCHANGE_ONLINE_RESOURCE = os.environ.get("EXCHANGE_ONLINE_RESOURCE", "https://outlook.office365.com/")
 EXCHANGE_ONLINE_SCOPES = _scope_values_from_env("EXCHANGE_ONLINE_SCOPES", (EXCHANGE_ONLINE_SCOPE,))
 EXCHANGE_ONLINE_CLIENT_ID = os.environ.get(
     "EXCHANGE_ONLINE_CLIENT_ID",
@@ -84,7 +88,11 @@ EXCHANGE_ONLINE_CLIENT_ID = os.environ.get(
 EXCHANGE_ONLINE_APP_DISPLAY_NAME = os.environ.get("EXCHANGE_ONLINE_APP_DISPLAY_NAME", "Exchange Online PowerShell")
 TEAMS_TENANT_ADMIN_SCOPE = os.environ.get(
     "TEAMS_TENANT_ADMIN_SCOPE",
-    "48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default",
+    "48ac35b8-9aa8-4d74-927d-1f4a14a0b239/user_impersonation",
+)
+TEAMS_TENANT_ADMIN_RESOURCE = os.environ.get(
+    "TEAMS_TENANT_ADMIN_RESOURCE",
+    "48ac35b8-9aa8-4d74-927d-1f4a14a0b239",
 )
 TEAMS_ADMIN_CLIENT_ID = os.environ.get(
     "TEAMS_ADMIN_CLIENT_ID",
@@ -120,6 +128,8 @@ MICROSOFT_NATIVE_CONNECTOR_PROFILES = {
         "auth_app_name": EXCHANGE_ONLINE_APP_DISPLAY_NAME,
         "client_id": EXCHANGE_ONLINE_CLIENT_ID,
         "scopes": EXCHANGE_ONLINE_SCOPES,
+        "oauth_flow": "v1_resource",
+        "resource": EXCHANGE_ONLINE_RESOURCE,
         "required": False,
     },
     TEAMS_ADMIN_PROVIDER: {
@@ -128,6 +138,8 @@ MICROSOFT_NATIVE_CONNECTOR_PROFILES = {
         "auth_app_name": TEAMS_ADMIN_APP_DISPLAY_NAME,
         "client_id": TEAMS_ADMIN_CLIENT_ID,
         "scopes": (TEAMS_TENANT_ADMIN_SCOPE,),
+        "oauth_flow": "v1_resource",
+        "resource": TEAMS_TENANT_ADMIN_RESOURCE,
         "required": False,
     },
     SHAREPOINT_PNP_PROVIDER: {
@@ -244,6 +256,18 @@ def microsoft_native_scope_values(provider: str | None) -> list[str]:
     normalized = microsoft_native_provider(provider)
     profile = MICROSOFT_NATIVE_CONNECTOR_PROFILES.get(normalized, {})
     return list(profile.get("scopes") or ())
+
+
+def microsoft_native_oauth_flow_for_provider(provider: str | None) -> str:
+    normalized = microsoft_native_provider(provider)
+    profile = MICROSOFT_NATIVE_CONNECTOR_PROFILES.get(normalized, {})
+    return str(profile.get("oauth_flow") or "v2_scope")
+
+
+def microsoft_native_resource_for_provider(provider: str | None) -> str:
+    normalized = microsoft_native_provider(provider)
+    profile = MICROSOFT_NATIVE_CONNECTOR_PROFILES.get(normalized, {})
+    return str(profile.get("resource") or "").strip()
 
 
 def microsoft_native_client_id_for_provider(provider: str | None) -> str:

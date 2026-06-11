@@ -43,6 +43,8 @@ MICROSOFT_ADMIN_TOKEN_TOP_LEVEL_KEYS = {
     "consented_scope_profiles",
     "refresh_error",
     "error_type",
+    "auth_flow",
+    "resource",
 }
 
 MICROSOFT_ADMIN_DELEGATED_TOKEN_KEYS = {
@@ -56,6 +58,7 @@ MICROSOFT_ADMIN_DELEGATED_TOKEN_KEYS = {
     "expires_on",
     "refresh_error",
     "error_type",
+    "resource",
 }
 
 
