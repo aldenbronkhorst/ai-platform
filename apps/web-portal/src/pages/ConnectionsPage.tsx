@@ -104,6 +104,7 @@ interface CliTestResult {
 interface MicrosoftNativeDeviceCode {
   status: string;
   connector?: string;
+  auth_session_id?: string;
   device_code: string;
   user_code: string;
   verification_url: string;
@@ -122,6 +123,9 @@ interface MicrosoftAuthCallbackResult {
   status: string;
   overall_status?: string;
   connector?: string;
+  auth_session_id?: string;
+  active_connector?: string;
+  active_auth_session_id?: string;
   error?: string;
   error_type?: string;
   message?: string;
@@ -446,6 +450,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooApiKey, setOdooApiKey] = useState("");
   const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [microsoftDeviceCode, setMicrosoftDeviceCode] = useState<(MicrosoftNativeDeviceCode & { connectorKey: string }) | null>(null);
+  const [microsoftStartingConnector, setMicrosoftStartingConnector] = useState<string | null>(null);
   const [microsoftPollingConnector, setMicrosoftPollingConnector] = useState<string | null>(null);
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
@@ -471,6 +476,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     clearMicrosoftPollTimer();
     microsoftAuthAttemptRef.current += 1;
     setMicrosoftDeviceCode(null);
+    setMicrosoftStartingConnector(null);
     setMicrosoftPollingConnector(null);
   }, [clearMicrosoftPollTimer]);
 
@@ -627,9 +633,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectMicrosoftNative = async (connectorKey: string) => {
     if (!accessToken) return; setCliTestResult(null);
+    if (microsoftStartingConnector || microsoftPollingConnector) return;
     cancelMicrosoftAuthAttempt();
     const attemptId = microsoftAuthAttemptRef.current + 1;
     microsoftAuthAttemptRef.current = attemptId;
+    setMicrosoftStartingConnector(connectorKey);
     const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
     const connectPayload: Record<string, string> = {};
     if (connectorKey === "sharepoint_pnp") {
@@ -648,6 +656,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       });
       const data = await res.json() as MicrosoftNativeDeviceCode & { error?: string; message?: string };
       if (data.status === "device_code_ready") {
+        setMicrosoftStartingConnector(null);
         setMicrosoftDeviceCode({ ...data, connectorKey });
         setMicrosoftPollingConnector(connectorKey);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
@@ -671,7 +680,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           try {
             const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
               method: "POST", headers: headers(),
-              body: JSON.stringify({ device_code: data.device_code, site_url: data.site_url || connectPayload.site_url }),
+              body: JSON.stringify({
+                auth_session_id: data.auth_session_id,
+                device_code: data.device_code,
+                site_url: data.site_url || connectPayload.site_url,
+              }),
             });
             const pd = await pr.json() as MicrosoftAuthCallbackResult;
             if (microsoftAuthAttemptRef.current !== attemptId) return;
@@ -694,6 +707,17 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                 request_id: pd.request_id || data.request_id,
               });
               microsoftPollTimerRef.current = window.setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
+            } else if (pd.status === "stale") {
+              setMicrosoftPollingConnector(null);
+              setMicrosoftDeviceCode(null);
+              setCliTestResult({
+                status: "failed",
+                connector: connectorKey,
+                message: pd.message || "A newer Microsoft sign-in was started. Use the newest device code.",
+                stderr: pd.error_type,
+                request_id: pd.request_id,
+              });
+              void fetchConnectors();
             } else {
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
@@ -708,6 +732,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             }
           } catch (err) {
             if (microsoftAuthAttemptRef.current !== attemptId) return;
+            setMicrosoftStartingConnector(null);
             setMicrosoftPollingConnector(null);
             setMicrosoftDeviceCode(null);
             setCliTestResult({
@@ -721,11 +746,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         };
         microsoftPollTimerRef.current = window.setTimeout(poll, (data.interval || 5) * 1000);
       } else {
+        setMicrosoftStartingConnector(null);
         setMicrosoftDeviceCode(null);
         setMicrosoftPollingConnector(null);
         setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow", request_id: data.request_id });
       }
     } catch (err) {
+      setMicrosoftStartingConnector(null);
       setMicrosoftPollingConnector(null);
       setMicrosoftDeviceCode(null);
       setCliTestResult({ status: "failed", connector: connectorKey, message: errorMessage(err) });
@@ -868,6 +895,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const tooling = meta?.metadata?.tooling || [];
       const authAppName = meta?.metadata?.auth_app_name;
       const isPolling = microsoftPollingConnector === key;
+      const isStarting = microsoftStartingConnector === key;
       const activeDeviceCode = microsoftDeviceCode?.connectorKey === key ? microsoftDeviceCode : null;
       return (
         <ConnectorDetailShell connector={c} status={readinessStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
@@ -894,8 +922,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           />
 
           <ActionGroup>
-            <GlassButton size="sm" onClick={() => handleConnectMicrosoftNative(key)} disabled={Boolean(microsoftPollingConnector)}>
-              {isPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Refresh Sign-In" : `Connect ${c.name}`}
+            <GlassButton size="sm" onClick={() => handleConnectMicrosoftNative(key)} disabled={Boolean(microsoftStartingConnector || microsoftPollingConnector)}>
+              {isStarting ? "Starting sign-in..." : isPolling ? "Waiting for authentication..." : metaStatus === "connected" ? "Refresh Sign-In" : `Connect ${c.name}`}
             </GlassButton>
             <GlassButton size="sm" onClick={() => handleMicrosoftNativeStatus(key)}>
               <CheckCircle2 className="w-3.5 h-3.5" /> Check Status

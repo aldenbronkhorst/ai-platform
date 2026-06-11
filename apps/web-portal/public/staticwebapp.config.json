@@ -1,0 +1,19 @@
+{
+  "globalHeaders": {
+    "Cache-Control": "no-store, max-age=0, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0"
+  },
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": [
+      "/assets/*",
+      "/favicon.svg",
+      "/icons.svg",
+      "/manifest.webmanifest",
+      "/pwa-icon-192.png",
+      "/pwa-icon-512.png",
+      "/apple-touch-icon.png"
+    ]
+  }
+}

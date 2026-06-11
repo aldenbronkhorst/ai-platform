@@ -36,6 +36,15 @@ def mock_db_override():
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def clear_microsoft_native_device_auth_flows():
+    from app.routers import connector_microsoft_native as native
+
+    native.DEVICE_AUTH_FLOWS.clear()
+    yield
+    native.DEVICE_AUTH_FLOWS.clear()
+
+
 class TestConnectedAccountsFlow:
     """Tests the full Connected Accounts API flow for Odoo."""
 
@@ -224,8 +233,42 @@ class TestConnectedAccountsFlow:
         )
 
         assert result["status"] == "device_code_ready"
+        assert result["auth_session_id"]
         assert result["expires_at"] == 1_800_000_600
         assert result["interval"] == 7
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_stops_stale_flow_before_polling_microsoft(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                raise AssertionError("stale device codes must not poll Microsoft")
+
+        await native._remember_device_auth_flow(
+            provider_key="microsoft_graph",
+            user_id=user_id,
+            device_code="newest-device-code",
+            expires_at=int(native.time.time()) + 900,
+            request_id="newest-request",
+        )
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        result = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "older-device-code", "auth_session_id": "older-session"},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        )
+
+        assert result["status"] == "stale"
+        assert result["error_type"] == "stale_device_code"
+        assert result["active_connector"] == "microsoft_graph"
 
     @pytest.mark.asyncio
     async def test_exchange_native_device_code_uses_workload_resource_flow(self, monkeypatch):
