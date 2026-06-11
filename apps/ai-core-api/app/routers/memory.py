@@ -1,7 +1,8 @@
-"""Memory router: CRUD for AIMemory, memory candidate extraction, approval workflow.
+"""Memory router: read/review surface for AIMemory records.
 
-Supports the Memory Agent lifecycle: list, create, update, approve, archive, and
-retrieve relevant memories for context injection.
+Supports the Memory Agent lifecycle: list, approve, archive, feedback, and
+retrieve memories used by chat context injection. Creation happens through
+chat-driven memory extraction and platform maintenance jobs, not raw public CRUD.
 """
 import logging
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role, require_auth_role
 from app.models.models import AIMemory, AIMemoryUsageEvent, AITask
-from app.schemas.schemas import AIMemoryCreate, AIMemoryUpdate, AIMemoryResponse, MemoryFeedbackRequest
+from app.schemas.schemas import AIMemoryResponse, MemoryFeedbackRequest
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
 
@@ -90,112 +91,6 @@ async def get_memory(
         raise HTTPException(status_code=404, detail="Memory not found")
     if not _can_read_memory(auth, memory):
         raise HTTPException(status_code=404, detail="Memory not found")
-    return memory
-
-
-@router.post("", response_model=AIMemoryResponse, status_code=status.HTTP_201_CREATED)
-async def create_memory(
-    req: AIMemoryCreate,
-    db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
-):
-    """Create a new memory record directly."""
-    user_id = auth.get("user_id")
-    memory = AIMemory(
-        id=uuid4(),
-        type=req.type,
-        title=req.title,
-        summary=req.summary,
-        body=req.body,
-        scope_type=req.scope_type,
-        scope_value=req.scope_value,
-        entities_json=req.entities_json,
-        source_type=req.source_type,
-        source_id=req.source_id,
-        conversation_id=req.conversation_id,
-        message_id=req.message_id,
-        confidence=req.confidence,
-        risk_level=req.risk_level,
-        status=req.status,
-        priority=req.priority,
-        success_count=0,
-        failure_count=0,
-        version=1,
-        created_by_user_id=user_id,
-        metadata_json=req.metadata_json,
-    )
-    db.add(memory)
-    await db.flush()
-
-    audit_svc = AuditService(db)
-    await audit_svc.log_event(AIAuditEventCreate(
-        action_type="memory_created",
-        target_model="ai_memories",
-        target_record_id=str(memory.id),
-        actor_user_id=user_id,
-        input_summary=f"Created memory: {req.type} - {req.title}",
-        risk_level=req.risk_level,
-        status="success",
-    ))
-    await db.commit()
-    await db.refresh(memory)
-    logger.info("Memory created | id=%s type=%s risk=%s", memory.id, memory.type, memory.risk_level)
-    return memory
-
-
-@router.patch("/{memory_id}", response_model=AIMemoryResponse)
-async def update_memory(
-    memory_id: UUID,
-    req: AIMemoryUpdate,
-    db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
-):
-    """Update a memory's metadata or status."""
-    result = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
-    memory = result.scalar_one_or_none()
-    if not memory:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    if not _can_manage_memory(auth, memory):
-        raise HTTPException(status_code=404, detail="Memory not found")
-
-    user_id = auth.get("user_id")
-    changed = []
-    if req.title is not None:
-        memory.title = req.title
-        changed.append("title")
-    if req.summary is not None:
-        memory.summary = req.summary
-        changed.append("summary")
-    if req.body is not None:
-        memory.body = req.body
-        changed.append("body")
-    if req.status is not None:
-        memory.status = req.status
-        changed.append(f"status={req.status}")
-        if req.status == "active":
-            memory.approved_by_user_id = user_id
-    if req.confidence is not None:
-        memory.confidence = req.confidence
-        changed.append("confidence")
-    if req.priority is not None:
-        memory.priority = req.priority
-        changed.append("priority")
-
-    memory.updated_at = _utcnow()
-
-    audit_svc = AuditService(db)
-    await audit_svc.log_event(AIAuditEventCreate(
-        action_type="memory_updated",
-        target_model="ai_memories",
-        target_record_id=str(memory.id),
-        actor_user_id=user_id,
-        input_summary=f"Updated memory {memory_id}: {', '.join(changed)}",
-        risk_level="low",
-        status="success",
-    ))
-    await db.commit()
-    await db.refresh(memory)
-    logger.info("Memory updated | id=%s changes=%s", memory.id, changed)
     return memory
 
 

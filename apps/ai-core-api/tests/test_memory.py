@@ -91,6 +91,37 @@ def client(mock_db):
     app.dependency_overrides.clear()
 
 
+def seed_memory(
+    mock_db: MockSession,
+    *,
+    type: str = "general_note",
+    title: str = "Seeded memory",
+    body: str | None = None,
+    status: str = "draft",
+    risk_level: str = "low",
+    created_by_user_id: uuid.UUID | None = None,
+) -> AIMemory:
+    now = datetime.now(timezone.utc)
+    memory = AIMemory(
+        id=uuid.uuid4(),
+        type=type,
+        title=title,
+        body=body,
+        status=status,
+        confidence="medium",
+        risk_level=risk_level,
+        priority=100,
+        success_count=0,
+        failure_count=0,
+        version=1,
+        created_by_user_id=created_by_user_id,
+        created_at=now,
+        updated_at=now,
+    )
+    mock_db.memories.append(memory)
+    return memory
+
+
 # ── MemoryCandidateService unit tests ──
 
 class TestMemoryCandidateService:
@@ -237,7 +268,7 @@ class TestMemoryCandidateService:
         assert memory.type == "system_behavior"
 
 
-# ── Memory CRUD endpoint tests ──
+# ── Memory endpoint tests ──
 
 class TestMemoryEndpoints:
     def test_list_memories_empty(self, client):
@@ -245,7 +276,7 @@ class TestMemoryEndpoints:
         assert res.status_code == 200
         assert res.json() == []
 
-    def test_create_memory(self, client):
+    def test_create_memory_is_not_public_api(self, client):
         res = client.post("/memories", json={
             "type": "general_note",
             "title": "Test memory",
@@ -253,65 +284,41 @@ class TestMemoryEndpoints:
             "risk_level": "low",
             "status": "draft",
         })
-        assert res.status_code == 201
-        data = res.json()
-        assert data["type"] == "general_note"
-        assert data["title"] == "Test memory"
-        assert data["status"] == "draft"
+        assert res.status_code == 405
 
-    def test_create_and_approve_memory(self, client):
-        res = client.post("/memories", json={
-            "type": "procedure",
-            "title": "Approval test",
-            "body": "Should be approved",
-            "risk_level": "medium",
-        })
-        assert res.status_code == 201
-        mem_id = res.json()["id"]
+    def test_approve_memory(self, client, mock_db):
+        memory = seed_memory(
+            mock_db,
+            type="procedure",
+            title="Approval test",
+            body="Should be approved",
+            risk_level="medium",
+        )
 
-        res = client.post(f"/memories/{mem_id}/approve")
+        res = client.post(f"/memories/{memory.id}/approve")
         assert res.status_code == 200
         assert res.json()["status"] == "active"
 
-    def test_create_and_archive_memory(self, client):
-        res = client.post("/memories", json={
-            "type": "general_note",
-            "title": "Archive test",
-            "risk_level": "low",
-        })
-        assert res.status_code == 201
-        mem_id = res.json()["id"]
+    def test_archive_memory(self, client, mock_db):
+        memory = seed_memory(mock_db, title="Archive test")
 
-        res = client.delete(f"/memories/{mem_id}")
+        res = client.delete(f"/memories/{memory.id}")
         assert res.status_code == 204
 
-    def test_update_memory(self, client):
-        res = client.post("/memories", json={
-            "type": "resolved_case",
-            "title": "Update test",
-            "body": "Original body",
-            "risk_level": "low",
-        })
-        assert res.status_code == 201
-        mem_id = res.json()["id"]
-
-        res = client.patch(f"/memories/{mem_id}", json={
+    def test_update_memory_is_not_public_api(self, client):
+        res = client.patch(f"/memories/{uuid.uuid4()}", json={
             "title": "Updated title",
             "body": "Updated body",
         })
-        assert res.status_code == 200
-        data = res.json()
-        assert data["title"] == "Updated title"
-        assert data["body"] == "Updated body"
+        assert res.status_code == 405
 
     def test_get_nonexistent_memory(self, client):
         res = client.get(f"/memories/{uuid.uuid4()}")
         assert res.status_code == 404
 
-    def test_filter_memories_by_type(self, client):
-        # Create two memories of different types
-        client.post("/memories", json={"type": "procedure", "title": "P1", "risk_level": "low"})
-        client.post("/memories", json={"type": "customer_note", "title": "C1", "risk_level": "low"})
+    def test_filter_memories_by_type(self, client, mock_db):
+        seed_memory(mock_db, type="procedure", title="P1")
+        seed_memory(mock_db, type="customer_note", title="C1")
 
         res = client.get("/memories?type=procedure")
         assert res.status_code == 200

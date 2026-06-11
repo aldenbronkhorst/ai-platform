@@ -136,34 +136,6 @@ class ContextRequest(BaseModel):
     limit: int = 10
 
 
-class AIMemoryCreate(BaseModel):
-    type: str
-    title: str
-    summary: Optional[str] = None
-    body: Optional[str] = None
-    scope_type: Optional[str] = None
-    scope_value: Optional[str] = None
-    entities_json: Optional[Any] = None
-    source_type: Optional[str] = None
-    source_id: Optional[str] = None
-    conversation_id: Optional[UUID] = None
-    message_id: Optional[UUID] = None
-    confidence: str = "medium"
-    risk_level: str = "low"
-    status: str = "draft"
-    priority: int = 100
-    metadata_json: Optional[Any] = None
-
-
-class AIMemoryUpdate(BaseModel):
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    body: Optional[str] = None
-    status: Optional[str] = None
-    confidence: Optional[str] = None
-    priority: Optional[int] = None
-
-
 class AIMemoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
