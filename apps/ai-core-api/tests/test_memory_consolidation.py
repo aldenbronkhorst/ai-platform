@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, AsyncMock
 from uuid import uuid4
 import pytest
 
-from app.models.models import AIMemory, AITask, AIRule
+from app.models.models import AIMemory, AITask
 from app.services.memory_consolidation import MemoryConsolidationService
 from tests.test_model_router import MockSession
 
@@ -61,7 +61,7 @@ class TestMemoryConsolidationService:
         assert isinstance(task_item, AITask)
 
     @pytest.mark.asyncio
-    async def test_consolidation_corrections_to_rule(self):
+    async def test_consolidation_corrections_to_memory_review_task(self):
         db = MockSession(has_config=False)
 
         # Create 2 currency corrections
@@ -96,13 +96,13 @@ class TestMemoryConsolidationService:
         svc = MemoryConsolidationService(db)
         stats = await svc.consolidate_memories()
 
-        # Verify candidate rule and task were created
-        assert stats["rule_candidates_created"] == 1
+        # Verify repeated corrections create memory review work, not business rules.
+        assert stats["correction_review_tasks_created"] == 1
         assert stats["merge_tasks_created"] == 1
-        assert db.add.call_count >= 2  # One AIRule + One AITask
+        assert db.add.call_count >= 2  # One AITask + one AIAuditEvent
 
         added_items = [arg[0] for arg, kw in db.add.call_args_list]
-        rule_item = [x for x in added_items if isinstance(x, AIRule)][0]
+        task_item = [x for x in added_items if isinstance(x, AITask)][0]
 
-        assert rule_item.status == "draft"  # High risk, never auto-activated
-        assert "company currency" in rule_item.title.lower()
+        assert task_item.linked_model == "ai_memories"
+        assert "corrections" in task_item.title.lower()

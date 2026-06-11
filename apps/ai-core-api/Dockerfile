@@ -20,24 +20,11 @@ RUN curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor 
     && apt-get install -y --no-install-recommends azure-cli jq powershell \
     && rm -rf /var/lib/apt/lists/*
 
-RUN set -eux; \
-    arch="$(dpkg --print-architecture)"; \
-    case "$arch" in \
-      amd64) bicep_arch="x64" ;; \
-      arm64) bicep_arch="arm64" ;; \
-      *) echo "Unsupported architecture for Bicep: $arch" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL -o /usr/local/bin/bicep "https://github.com/Azure/bicep/releases/latest/download/bicep-linux-${bicep_arch}"; \
-    chmod +x /usr/local/bin/bicep; \
-    bicep --version
-
 RUN pwsh -NoLogo -NoProfile -NonInteractive -Command "\
     Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
-    Install-Module Microsoft.Graph -Scope AllUsers -Force -AllowClobber; \
     Install-Module ExchangeOnlineManagement -Scope AllUsers -Force -AllowClobber; \
     Install-Module MicrosoftTeams -Scope AllUsers -Force -AllowClobber; \
-    Install-Module PnP.PowerShell -Scope AllUsers -Force -AllowClobber; \
-    Install-Module Az -Scope AllUsers -Force -AllowClobber"
+    Install-Module PnP.PowerShell -Scope AllUsers -Force -AllowClobber"
 
 # Copy requirements first for better layer caching
 COPY requirements.txt .

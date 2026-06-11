@@ -136,7 +136,6 @@ DATE_LIKE_RE = re.compile(r"\b\d{1,4}([/-]\d{1,2}){1,2}\b|\b\d{1,2}(st|nd|rd|th)
 @dataclass
 class InjectedContext:
     system_prompt: str
-    rules: list[Any] = field(default_factory=list)
     facts: list[Any] = field(default_factory=list)
     memories: list[Any] = field(default_factory=list)
     currency_source: str = "none"
@@ -366,10 +365,7 @@ ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
 ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION = {"message_post", "action_feedback", "action_done"}
 MICROSOFT_TOOL_PROVIDER_BY_NAME = {
     "ms_azure_cli": "azure_cli",
-    "ms_az_powershell": "azure_cli",
-    "ms_bicep": "azure_cli",
     "ms_graph": "microsoft_graph",
-    "ms_graph_powershell": "microsoft_graph",
     "ms_exchange_powershell": "exchange_online",
     "ms_teams_powershell": "teams_admin",
     "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
@@ -742,11 +738,8 @@ async def _execute_tool_call_impl(
     if tool_name in MICROSOFT_NATIVE_TOOL_NAMES or tool_name == "github_cli":
         from app.services.connectors.github_cli import run_github_cli_command
         from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
-        from app.services.connectors.microsoft_admin.bicep import run_ms_bicep_tool
         from app.services.connectors.microsoft_admin.graph import run_ms_graph_tool
-        from app.services.connectors.microsoft_admin.powershell_az import run_ms_az_powershell_tool
         from app.services.connectors.microsoft_admin.powershell_exchange import run_ms_exchange_powershell_tool
-        from app.services.connectors.microsoft_admin.powershell_graph import run_ms_graph_powershell_tool
         from app.services.connectors.microsoft_admin.powershell_pnp import run_ms_sharepoint_pnp_powershell_tool
         from app.services.connectors.microsoft_admin.powershell_teams import run_ms_teams_powershell_tool
 
@@ -756,18 +749,12 @@ async def _execute_tool_call_impl(
             return await run_ms_azure_cli_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_graph":
             return await run_ms_graph_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_graph_powershell":
-            return await run_ms_graph_powershell_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_exchange_powershell":
             return await run_ms_exchange_powershell_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_teams_powershell":
             return await run_ms_teams_powershell_tool(arguments, user_id, timeout=timeout)
         if tool_name == "ms_sharepoint_pnp_powershell":
             return await run_ms_sharepoint_pnp_powershell_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_az_powershell":
-            return await run_ms_az_powershell_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_bicep":
-            return await run_ms_bicep_tool(arguments, user_id, timeout=timeout)
         return await run_github_cli_command(command, user_id, timeout=timeout)
 
     return {
@@ -1801,10 +1788,10 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
     if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
         guidance_parts.append(
-            "Native Microsoft tools: use only these broad native-interface tools: `ms_graph`, `ms_graph_powershell`, "
-            "`ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, `ms_az_powershell`, "
-            "`ms_azure_cli`, and `ms_bicep`. Do not invent detailed Microsoft tools and do not call removed generic "
-            "Microsoft tools. These are separate connectors: Azure CLI/Az/Bicep use `azure_cli`; Graph/Intune/Entra use "
+            "Native Microsoft tools: use only these broad native-interface tools: `ms_azure_cli`, `ms_graph`, "
+            "`ms_exchange_powershell`, `ms_teams_powershell`, and `ms_sharepoint_pnp_powershell`. "
+            "Do not invent detailed Microsoft tools and do not call removed generic or duplicate Microsoft tools. "
+            "These are separate connectors: Azure CLI uses `azure_cli`; Graph/Intune/Entra use "
             "`microsoft_graph`; Exchange uses `exchange_online`; Teams uses `teams_admin`; SharePoint/PnP uses "
             "`sharepoint_pnp`. Do not claim all Microsoft access is broken when only one native connector fails. "
             "Each connector is delegated per signed-in user and limited by that user's platform roles/RBAC plus consent "
@@ -1812,10 +1799,9 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Resource Manager, Exchange, Intune, Teams, or SharePoint access; verify the specific operation with the "
             "relevant tool result before saying it is accessible. "
             "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
-            "`ms_graph_powershell` for Microsoft Graph PowerShell, `ms_exchange_powershell` for Exchange Online PowerShell, "
+            "`ms_exchange_powershell` for Exchange Online PowerShell, "
             "`ms_teams_powershell` for Teams PowerShell, `ms_sharepoint_pnp_powershell` for SharePoint/PnP PowerShell, "
-            "`ms_az_powershell` for Az PowerShell, and `ms_bicep` for "
-            "Bicep CLI validation/build work. "
+            "and `ms_azure_cli` for Azure deployment/template commands. "
             "For Azure Cost Management or spend questions, do not use `az costmanagement query`; use `ms_azure_cli` with "
             "`az rest --method post --url https://management.azure.com/subscriptions/{subscriptionId}/providers/"
             "Microsoft.CostManagement/query?api-version=2023-03-01` and a JSON body with type=Usage, "
@@ -1825,14 +1811,13 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "ResourceName, ResourceGroupName, ServiceName, MeterCategory, or MeterSubCategory, then answer from the "
             "successful tool result only. Never invent Azure cost totals or breakdowns from prior assistant text, "
             "and do not turn a failed command into a disconnected-connector claim unless the tool result says not_connected. "
-            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users or `ms_graph_powershell` "
-            "with Connect-AIPlatformGraph plus Microsoft.Graph cmdlets such as New-MgUser/Update-MgUser; "
-            "do not say there is no Microsoft user-management tool while `ms_graph` or `ms_graph_powershell` is available. "
-            "If a Microsoft user/group/license write fails, report the exact Graph/PowerShell permission or admin-role "
+            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users; "
+            "do not say there is no Microsoft user-management tool while `ms_graph` is available. "
+            "If a Microsoft user/group/license write fails, report the exact Graph permission or admin-role "
             "error and ask for the missing consent/role; do not downgrade that to 'no write-capable connector'. "
             "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
-            "In Microsoft PowerShell tools, call Connect-AIPlatformAz, Connect-AIPlatformGraph, "
-            "Connect-AIPlatformExchange, or Connect-AIPlatformTeams before using authenticated cmdlets. "
+            "In Microsoft PowerShell tools, call Connect-AIPlatformExchange or Connect-AIPlatformTeams before using "
+            "authenticated cmdlets when those tools require it. "
             "Do not use this connector for GitHub; use `github_cli` for GitHub work."
         )
     if "github_cli" in available_names:
@@ -1897,11 +1882,11 @@ async def _connected_systems_for_context(db: AsyncSession, user_id: Optional[UUI
     return {acct.provider for acct in acct_result.scalars().all()}
 
 
-async def _business_context(
+async def _company_facts_context(
     db: AsyncSession,
     user_id: Optional[UUID],
     connected_systems: Optional[set[str]] = None,
-) -> tuple[str, list[Any], list[Any]]:
+) -> tuple[str, list[Any]]:
     connected_systems = connected_systems if connected_systems is not None else await _connected_systems_for_context(db, user_id)
     context = await ContextService(db).get_context(
         ContextRequest(
@@ -1912,20 +1897,11 @@ async def _business_context(
         user_id=user_id,
         connected_systems=connected_systems,
     )
-    rules = context.get("rules", [])
     facts = context.get("facts", [])
-    prompt_parts: list[str] = []
-    if rules:
-        rules_text = "\n".join(f"- [Priority {rule.priority}] {rule.body}" for rule in rules)
-        prompt_parts.append(
-            "## Active Business Rules\n"
-            "Rules are listed in precedence order. Lower priority numbers override higher priority numbers.\n"
-            f"{rules_text}"
-        )
-    if facts:
-        facts_text = "\n".join(f"- {fact.key}: {fact.value}" for fact in facts)
-        prompt_parts.append(f"## Company Facts\n{facts_text}")
-    return ("\n\n".join(prompt_parts), rules, facts)
+    if not facts:
+        return "", []
+    facts_text = "\n".join(f"- {fact.key}: {fact.value}" for fact in facts)
+    return f"## Company Facts\n{facts_text}", facts
 
 
 async def _odoo_currency_context(
@@ -1997,10 +1973,10 @@ async def _inject_context_sections(
     connected_systems = snapshot.connected_systems if snapshot else None
 
     try:
-        section, injected.rules, injected.facts = await _business_context(db, user_id, connected_systems)
+        section, injected.facts = await _company_facts_context(db, user_id, connected_systems)
         injected.system_prompt = _append_context_section(injected.system_prompt, section)
     except Exception as exc:
-        logger.warning("Failed to inject business context: %s", exc)
+        logger.warning("Failed to inject company facts: %s", exc)
 
     try:
         section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id, snapshot)
@@ -2015,8 +1991,7 @@ async def _inject_context_sections(
         logger.warning("Failed to inject memories: %s", exc)
 
     logger.info(
-        "Context injected | rules=%d facts=%d memories=%d user_id=%s currency=%s",
-        len(injected.rules),
+        "Context injected | facts=%d memories=%d user_id=%s currency=%s",
         len(injected.facts),
         len(injected.memories),
         user_id,
@@ -2591,7 +2566,6 @@ def _raise_if_provider_failed(
 
 def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any], primary_model: AIModel) -> dict[str, Any]:
     return {
-        "rules_injected": [{"id": str(rule.id), "title": rule.title, "priority": rule.priority} for rule in injected.rules],
         "facts_injected": [{"key": fact.key, "value": fact.value} for fact in injected.facts],
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
         "currency_source": injected.currency_source,
@@ -2724,7 +2698,6 @@ async def execute_chat(
                     "connected_systems": sorted(connected_accounts.connected_systems),
                     "tools": [tool.name for tool in tools],
                     "tool_count": len(tools),
-                    "rules_injected": len(injected.rules),
                     "facts_injected": len(injected.facts),
                     "memories_injected": len(injected.memories),
                     "system_prompt_chars": len(injected.system_prompt or ""),

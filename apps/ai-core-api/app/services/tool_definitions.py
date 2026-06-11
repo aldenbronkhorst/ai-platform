@@ -83,21 +83,6 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "ms_graph_powershell",
-        "display_name": "Microsoft Graph PowerShell",
-        "description": "Microsoft Graph PowerShell connector. Runs pwsh with the signed-in user's Graph token. Use Microsoft.Graph cmdlets for Entra/Microsoft 365 users, groups, roles, licensing, Intune, and directory administration. Call Connect-AIPlatformGraph before authenticated cmdlets. GitHub commands are excluded.",
-        "target_system": "microsoft_graph",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "script": {"type": "string", "description": "PowerShell script to run with pwsh. Call Connect-AIPlatformGraph before authenticated Microsoft Graph cmdlets."},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)", "default": 60},
-                "purpose": {"type": "string", "description": "Short reason why this PowerShell script is needed"},
-            },
-            "required": ["script"],
-        },
-    },
-    {
         "name": "ms_exchange_powershell",
         "display_name": "Exchange Online PowerShell",
         "description": "Exchange Online PowerShell connector. Runs pwsh with the signed-in user's Exchange token. Use ExchangeOnlineManagement cmdlets for mailboxes, permissions, mail flow, transport rules, and message trace. Call Connect-AIPlatformExchange before authenticated Exchange cmdlets. GitHub commands are excluded.",
@@ -140,36 +125,6 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "purpose": {"type": "string", "description": "Short reason why this SharePoint/PnP script is needed"},
             },
             "required": ["script"],
-        },
-    },
-    {
-        "name": "ms_az_powershell",
-        "display_name": "Azure PowerShell",
-        "description": "Azure PowerShell connector. Runs pwsh with the signed-in user's Azure Resource Manager token. Use Az cmdlets for Azure resources, subscriptions, RBAC, Container Apps, Key Vault, storage, logs, and deployments. Call Connect-AIPlatformAz before authenticated Az cmdlets. GitHub commands are excluded.",
-        "target_system": "azure_cli",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "script": {"type": "string", "description": "PowerShell script to run with pwsh. Call Connect-AIPlatformAz before authenticated Az cmdlets."},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)", "default": 60},
-                "purpose": {"type": "string", "description": "Short reason why this Az PowerShell script is needed"},
-            },
-            "required": ["script"],
-        },
-    },
-    {
-        "name": "ms_bicep",
-        "display_name": "Microsoft Bicep CLI",
-        "description": "Native Bicep CLI interface for the Azure CLI connector. Runs bicep commands only. Use for Bicep version checks, build, decompile, format, lint, and template validation/build workflows. Azure deployments that require Azure Resource Manager should use ms_azure_cli with az deployment or ms_az_powershell with Az cmdlets.",
-        "target_system": "azure_cli",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "Bicep CLI command. May include or omit the leading bicep."},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 300)", "default": 60},
-                "purpose": {"type": "string", "description": "Short reason why this Bicep command is needed"},
-            },
-            "required": ["command"],
         },
     },
     {

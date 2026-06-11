@@ -86,45 +86,6 @@ class AIAuditEventCreate(BaseModel):
     cost_estimate: Optional[float] = None
 
 
-class AIAuditEventResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    timestamp: datetime
-    actor_type: str
-    actor_user_id: Optional[UUID]
-    identity_mode: str
-    interface: Optional[str]
-    action_type: str
-    tool_name: Optional[str]
-    target_system: Optional[str]
-    target_model: Optional[str]
-    target_record_id: Optional[str]
-    job_id: Optional[UUID]
-    input_summary: Optional[str]
-    output_summary: Optional[str]
-    risk_level: str
-    status: str
-    cost_estimate: Optional[float]
-
-
-class AIRuleResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    title: str
-    body: str
-    scope_type: Optional[str]
-    scope_value: Optional[str]
-    department: Optional[str]
-    workflow: Optional[str]
-    supplier: Optional[str]
-    customer: Optional[str]
-    status: str
-    priority: int
-    effective_from: datetime
-    effective_to: Optional[datetime]
-    version: int
-
-
 class ContextRequest(BaseModel):
     task: Optional[str] = None
     systems: Optional[List[str]] = None

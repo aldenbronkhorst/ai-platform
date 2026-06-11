@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import AIMemory, AITask, AIRule
+from app.models.models import AIMemory, AITask
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
 
@@ -21,7 +21,7 @@ class MemoryConsolidationService:
         return {
             "clusters_reviewed": 0,
             "sop_candidates_created": 0,
-            "rule_candidates_created": 0,
+            "correction_review_tasks_created": 0,
             "merge_tasks_created": 0,
             "archive_tasks_created": 0,
         }
@@ -173,61 +173,29 @@ class MemoryConsolidationService:
             source_ids=source_ids,
         )
 
-    @staticmethod
-    def _is_currency_related(corrections: list[AIMemory]) -> bool:
-        currency_terms = ["currency", "zar", "usd", "dollar", "rand"]
-        return any(
-            any(term in (memory.body or memory.title or "").lower() for term in currency_terms)
-            for memory in corrections
-        )
-
-    def _rule_title_and_body(self, lead: AIMemory, corrections: list[AIMemory]) -> tuple[str, str]:
-        title = f"Candidate Business Rule: {lead.title}"
-        if not self._is_currency_related(corrections):
-            body = "Proposed business rule directive: " + "; ".join(
-                memory.body or memory.summary or memory.title
-                for memory in corrections
-            )
-            return title, body
-
-        return (
-            "Candidate Rule: Use confirmed company currency for financial displays",
-            "Always display financial values and invoices using the confirmed Odoo/company currency "
-            "(such as ZAR / R). Do not assume USD ($) unless explicitly confirmed by Odoo metadata.",
-        )
-
-    async def _create_rule_candidate(self, lead: AIMemory, corrections: list[AIMemory], stats: dict[str, int]) -> None:
+    async def _create_correction_review_task(self, lead: AIMemory, corrections: list[AIMemory], stats: dict[str, int]) -> None:
         source_ids = [str(memory.id) for memory in corrections]
-        title, body = self._rule_title_and_body(lead, corrections)
-        rule_candidate = AIRule(
-            id=uuid4(),
-            workflow="general_chat",
-            title=title,
-            body=body,
-            status="draft",
-            priority=15,
-            version=1,
-        )
-        self.db.add(rule_candidate)
-        stats["rule_candidates_created"] += 1
+        title = f"Review repeated corrections: {lead.title}"
 
         self._add_review_task(
-            title=f"Review Rule Proposal: {title}",
+            title=title,
             description=(
-                f"Consolidation job compiled {len(corrections)} corrections into "
-                f"a draft candidate business rule (id={rule_candidate.id}). Please review and enable."
+                f"Detected {len(corrections)} related correction memories. "
+                f"Please review whether these should be merged into a single approved memory. "
+                f"Source IDs: {', '.join(source_ids)}."
             ),
             priority="high",
-            linked_model="ai_rules",
-            linked_record_id=str(rule_candidate.id),
+            linked_model="ai_memories",
+            linked_record_id=str(lead.id),
         )
+        stats["correction_review_tasks_created"] += 1
         stats["merge_tasks_created"] += 1
 
         await self._log_proposal(
-            action_type="rule_consolidation_proposed",
-            target_model="ai_rules",
-            target_record_id=str(rule_candidate.id),
-            input_summary=f"Proposed candidate business rule '{title}' from {len(corrections)} corrections.",
+            action_type="correction_consolidation_proposed",
+            target_model="ai_memories",
+            target_record_id=str(lead.id),
+            input_summary=f"Proposed correction memory review task for {len(corrections)} records.",
             risk_level="high",
             source_ids=source_ids,
         )
@@ -273,7 +241,7 @@ class MemoryConsolidationService:
         if len(resolved_cases) >= 2:
             await self._create_sop_candidate(lead, resolved_cases, stats)
         elif len(corrections) >= 2:
-            await self._create_rule_candidate(lead, corrections, stats)
+            await self._create_correction_review_task(lead, corrections, stats)
         elif len(preferences) >= 2:
             await self._create_preference_merge_task(lead, preferences, stats)
 

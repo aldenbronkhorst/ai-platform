@@ -40,11 +40,7 @@ MICROSOFT_TOOL_INTENT_KEYWORDS = {
         "managed devices", "compliance policy", "conditional access", "entra", "entra id",
         "azure ad", "azure active directory", "aad", "microsoft user", "microsoft users",
         "ms user", "ms users", "m365 user", "m365 users", "user principal name",
-        "userprincipalname", "uerer", "usre",
-    },
-    "ms_graph_powershell": {
-        "powershell", "pwsh", "cmdlet", "cmdlets", "graph powershell",
-        "microsoft graph powershell", "connect-mggraph", "new-mguser",
+        "userprincipalname", "uerer", "usre", "connect-mggraph", "new-mguser",
         "update-mguser", "get-mguser", "mguser", "mggraph",
     },
     "ms_exchange_powershell": {
@@ -59,14 +55,6 @@ MICROSOFT_TOOL_INTENT_KEYWORDS = {
     "ms_sharepoint_pnp_powershell": {
         "sharepoint", "sharepoint admin", "sharepoint powershell", "pnp",
         "pnp powershell", "connect-pnponline", "sites", "site collection",
-    },
-    "ms_az_powershell": {
-        "az powershell", "azure powershell", "connect-azaccount", "get-az",
-        "new-az", "set-az", "azaccount", "azresource", "azsubscription",
-    },
-    "ms_bicep": {
-        "bicep", "iac", "template", "templates", "build", "validate", "deployment",
-        "deployments",
     },
 }
 SYSTEM_INTENT_KEYWORDS = {

@@ -5,8 +5,8 @@ from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM, MICROSOFT_NATI
 
 
 MICROSOFT_NATIVE_TOOLS_BY_SYSTEM = {
-    "azure_cli": {"ms_azure_cli", "ms_az_powershell", "ms_bicep"},
-    "microsoft_graph": {"ms_graph", "ms_graph_powershell"},
+    "azure_cli": {"ms_azure_cli"},
+    "microsoft_graph": {"ms_graph"},
     "exchange_online": {"ms_exchange_powershell"},
     "teams_admin": {"ms_teams_powershell"},
     "sharepoint_pnp": {"ms_sharepoint_pnp_powershell"},
@@ -33,22 +33,16 @@ def test_connector_commands_module_is_removed_from_active_runtime():
 
 def test_microsoft_admin_tool_runners_import_from_split_modules():
     from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
-    from app.services.connectors.microsoft_admin.bicep import run_ms_bicep_tool
     from app.services.connectors.microsoft_admin.graph import run_ms_graph_tool
-    from app.services.connectors.microsoft_admin.powershell_az import run_ms_az_powershell_tool
     from app.services.connectors.microsoft_admin.powershell_exchange import run_ms_exchange_powershell_tool
-    from app.services.connectors.microsoft_admin.powershell_graph import run_ms_graph_powershell_tool
     from app.services.connectors.microsoft_admin.powershell_pnp import run_ms_sharepoint_pnp_powershell_tool
     from app.services.connectors.microsoft_admin.powershell_teams import run_ms_teams_powershell_tool
 
     assert callable(run_ms_graph_tool)
     assert callable(run_ms_azure_cli_tool)
-    assert callable(run_ms_bicep_tool)
-    assert callable(run_ms_graph_powershell_tool)
     assert callable(run_ms_exchange_powershell_tool)
     assert callable(run_ms_teams_powershell_tool)
     assert callable(run_ms_sharepoint_pnp_powershell_tool)
-    assert callable(run_ms_az_powershell_tool)
 
 
 def test_tool_registry_uses_split_native_microsoft_connectors():

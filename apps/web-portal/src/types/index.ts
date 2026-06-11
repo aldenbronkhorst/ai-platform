@@ -63,4 +63,4 @@ export interface AIMemory {
   updated_at: string;
 }
 
-export type ActiveTab = "chat" | "connected-accounts" | "audit" | "admin";
+export type ActiveTab = "chat" | "connected-accounts" | "admin";

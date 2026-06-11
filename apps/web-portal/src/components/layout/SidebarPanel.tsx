@@ -285,24 +285,6 @@ export function SidebarPanel({
             </div>
             <div className="border-t border-default my-1" />
 
-            {hasRole(["AIPlatform.Admin", "AIPlatform.Developer", "AIPlatform.Auditor"]) && (
-              <>
-                {hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) && (
-                  <button
-                    onClick={() => {
-                      onTabChange("audit");
-                      onToggleProfileMenu();
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-muted hover-text-default hover-bg-surface rounded-xl text-left transition-all"
-                  >
-                    <ShieldAlert className="w-3.5 h-3.5" />
-                    Audit Logs
-                  </button>
-                )}
-                <div className="border-t border-default my-1" />
-              </>
-            )}
-
             <button
               onClick={onSignOut}
               className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-[var(--color-danger)] hover:text-[var(--color-danger)] hover-bg-surface rounded-xl text-left transition-all"

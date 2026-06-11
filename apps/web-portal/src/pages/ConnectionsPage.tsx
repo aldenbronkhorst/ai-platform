@@ -169,8 +169,8 @@ const CONNECTOR_TOOL_TARGET_SYSTEMS = new Set([
 
 const CONNECTOR_FALLBACKS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
-  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI, Azure PowerShell, and Bicep" },
-  { key: "microsoft_graph", name: "Microsoft Graph", subtitle: "Microsoft Graph and Graph PowerShell" },
+  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI" },
+  { key: "microsoft_graph", name: "Microsoft Graph", subtitle: "Direct Microsoft Graph" },
   { key: "exchange_online", name: "Exchange Online", subtitle: "Exchange Online PowerShell" },
   { key: "teams_admin", name: "Teams Admin", subtitle: "Microsoft Teams PowerShell" },
   { key: "sharepoint_pnp", name: "SharePoint / PnP", subtitle: "SharePoint / PnP PowerShell" },

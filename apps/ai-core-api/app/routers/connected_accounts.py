@@ -1002,15 +1002,15 @@ async def get_connected_accounts(
 
 def _microsoft_native_connector_cards(db_accounts: list[AIConnectedAccount], include_token_state: bool) -> list[dict]:
     subtitles = {
-        "azure_cli": "Native Azure CLI, Azure PowerShell, and Bicep",
-        "microsoft_graph": "Microsoft Graph and Graph PowerShell",
+        "azure_cli": "Native Azure CLI",
+        "microsoft_graph": "Direct Microsoft Graph",
         "exchange_online": "Exchange Online PowerShell",
         "teams_admin": "Microsoft Teams PowerShell",
         "sharepoint_pnp": "SharePoint / PnP PowerShell",
     }
     tooling = {
-        "azure_cli": ["Azure CLI", "Azure PowerShell", "Bicep CLI"],
-        "microsoft_graph": ["Direct Microsoft Graph", "Microsoft Graph PowerShell"],
+        "azure_cli": ["Azure CLI"],
+        "microsoft_graph": ["Direct Microsoft Graph"],
         "exchange_online": ["Exchange Online PowerShell"],
         "teams_admin": ["Microsoft Teams PowerShell"],
         "sharepoint_pnp": ["SharePoint / PnP PowerShell"],

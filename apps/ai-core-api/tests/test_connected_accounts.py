@@ -901,7 +901,7 @@ class TestConnectedAccountsFlow:
         assert response.status_code == 200
         connectors = {item["connector_key"]: item for item in response.json()["connectors"]}
         assert connectors["microsoft_graph"]["status"] == "connected"
-        assert connectors["microsoft_graph"]["metadata"]["auth_app_name"] == "Microsoft Graph PowerShell"
+        assert connectors["microsoft_graph"]["metadata"]["auth_app_name"] == "Microsoft Graph"
         assert connectors["microsoft_graph"]["metadata"]["native_connector"] is True
         assert "Direct Microsoft Graph" in connectors["microsoft_graph"]["metadata"]["tooling"]
         assert connectors["azure_cli"]["status"] == "not_connected"
