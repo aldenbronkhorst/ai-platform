@@ -2,11 +2,8 @@ import type { FormEvent, ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
-  FileText,
   GitBranch,
-  RefreshCw,
   Trash2,
-  Wrench,
 } from "lucide-react";
 import { GlassButton } from "../ui/GlassButton";
 import { GlassInput } from "../ui/GlassInput";
@@ -138,13 +135,6 @@ export function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connect
   return <div className={`${className} rounded-full bg-muted`} />;
 }
 
-export function ToolLogo({ toolName, className = "w-5 h-5" }: { toolName: string; className?: string }) {
-  if (toolName === "document_reader") {
-    return <FileText className={`${className} text-[var(--color-info)]`} />;
-  }
-  return <Wrench className={`${className} text-default`} />;
-}
-
 function ConnectorDetailShell({
   connector,
   status,
@@ -186,9 +176,7 @@ export function OdooConnectorSection({
   odooUsername,
   odooApiKey,
   isConnecting,
-  isTesting,
   onConnect,
-  onTest,
   onDisconnect,
   onOdooUrlChange,
   onOdooDbChange,
@@ -205,9 +193,7 @@ export function OdooConnectorSection({
   odooUsername: string;
   odooApiKey: string;
   isConnecting: boolean;
-  isTesting: boolean;
   onConnect: (event: FormEvent) => void;
-  onTest: () => void;
   onDisconnect: () => void;
   onOdooUrlChange: (value: string) => void;
   onOdooDbChange: (value: string) => void;
@@ -242,9 +228,6 @@ export function OdooConnectorSection({
 
       {isOdooStatusLoaded && !isOdooDisconnected ? (
         <ActionGroup>
-          <GlassButton size="sm" onClick={onTest} disabled={isTesting}>
-            <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? "animate-spin" : ""}`} /> Test
-          </GlassButton>
           <GlassButton size="sm" variant="danger" onClick={onDisconnect}>
             <Trash2 className="w-3.5 h-3.5" /> Disconnect
           </GlassButton>
@@ -288,7 +271,6 @@ export function MicrosoftNativeConnectorSection({
   isPolling,
   activeDeviceCode,
   onConnect,
-  onCheckStatus,
   onDisconnect,
   onOpenDeviceLogin,
 }: {
@@ -301,7 +283,6 @@ export function MicrosoftNativeConnectorSection({
   isPolling: boolean;
   activeDeviceCode: (MicrosoftNativeDeviceCode & { connectorKey: string }) | null;
   onConnect: () => void;
-  onCheckStatus: () => void;
   onDisconnect: () => void;
   onOpenDeviceLogin: (verificationUrl?: string) => void;
 }) {
@@ -328,8 +309,6 @@ export function MicrosoftNativeConnectorSection({
           { label: "Account", value: formatOptionalStatus(meta?.state?.account_status || status) },
           { label: "Readiness", value: formatOptionalStatus(readinessStatus) },
           { label: "Token", value: formatOptionalStatus(meta?.state?.token_status) },
-          { label: "Diagnostics", value: formatOptionalStatus(meta?.state?.diagnostics_status) },
-          { label: "Shell", value: formatOptionalStatus(meta?.state?.cli_status) },
           { label: "User", value: meta?.metadata?.provider_username || "—" },
           { label: "Last Verified", value: formatDateTime(meta?.last_verified_at) },
         ]}
@@ -338,9 +317,6 @@ export function MicrosoftNativeConnectorSection({
       <ActionGroup>
         <GlassButton size="sm" onClick={onConnect} disabled={isStarting || isPolling}>
           {isStarting ? "Starting sign-in..." : isPolling ? "Waiting for authentication..." : status === "connected" ? "Refresh Sign-In" : `Connect ${connector.name}`}
-        </GlassButton>
-        <GlassButton size="sm" onClick={onCheckStatus}>
-          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
         </GlassButton>
         <GlassButton size="sm" variant="danger" onClick={onDisconnect}>
           <Trash2 className="w-3.5 h-3.5" /> Disconnect
@@ -379,7 +355,6 @@ export function GitHubConnectorSection({
   statusFallback,
   hasStatusError,
   onConnect,
-  onCheckStatus,
 }: {
   connector: ConnectorDef;
   meta?: ConnectorMeta;
@@ -387,7 +362,6 @@ export function GitHubConnectorSection({
   statusFallback: string;
   hasStatusError?: boolean;
   onConnect: () => void;
-  onCheckStatus: () => void;
 }) {
   return (
     <ConnectorDetailShell connector={connector} status={status} fallback={statusFallback} hasStatusError={hasStatusError}>
@@ -399,8 +373,6 @@ export function GitHubConnectorSection({
         rows={[
           { label: "Account", value: formatOptionalStatus(meta?.state?.account_status || status) },
           { label: "Token", value: formatOptionalStatus(meta?.state?.token_status) },
-          { label: "Diagnostics", value: formatOptionalStatus(meta?.state?.diagnostics_status) },
-          { label: "CLI", value: formatOptionalStatus(meta?.state?.cli_status) },
           { label: "User", value: meta?.metadata?.provider_username || "—" },
           { label: "Last Verified", value: formatDateTime(meta?.last_verified_at) },
         ]}
@@ -409,9 +381,6 @@ export function GitHubConnectorSection({
       <ActionGroup>
         <GlassButton size="sm" onClick={onConnect}>
           <GitBranch className="w-4 h-4" /> Connect with GitHub
-        </GlassButton>
-        <GlassButton size="sm" onClick={onCheckStatus}>
-          <CheckCircle2 className="w-3.5 h-3.5" /> Check Status
         </GlassButton>
       </ActionGroup>
     </ConnectorDetailShell>

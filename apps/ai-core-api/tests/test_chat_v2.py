@@ -66,14 +66,14 @@ class TestChatSessionsV2:
         )
         assert response.status_code == 404
 
-    def test_post_chat_message_not_found_session(self):
+    def test_legacy_non_stream_chat_post_is_removed(self):
         import uuid
         response = client.post(
             f"/chat/sessions/{uuid.uuid4()}/messages",
             json={"content": "Hello assist"},
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
-        assert response.status_code == 404
+        assert response.status_code == 405
 
 
 class TestSecureArtifactDownloads:

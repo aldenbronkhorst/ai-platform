@@ -21,7 +21,6 @@ MICROSOFT_NATIVE_TOKEN_PROFILES = {
     "sharepoint_pnp": "sharepoint",
 }
 DELEGATED_TOKEN_PROVIDERS = {*MICROSOFT_NATIVE_TOKEN_PROFILES, "github"}
-CONNECTED_DIAGNOSIS_STATUSES = {"success", "partial", "limited", "warning"}
 logger = logging.getLogger(__name__)
 
 
@@ -164,92 +163,6 @@ async def mark_delegated_account_disconnected(
     return account
 
 
-async def sync_delegated_account_from_token(
-    db: AsyncSession,
-    provider: str,
-    user_id: UUID,
-    *,
-    commit: bool = False,
-) -> dict[str, Any]:
-    token_state = await _delegated_token_status(provider, user_id)
-    account = await get_account(db, user_id, provider)
-    effective_status = effective_delegated_status(account, token_state)
-
-    if token_state.get("status") == "connected" and effective_status == "connected":
-        account = await upsert_delegated_account(
-            db,
-            provider,
-            user_id,
-            token_data=token_state,
-            status="connected",
-            commit=commit,
-        )
-    elif token_state.get("status") == "expired" and account:
-        account.status = "expired"
-        account.updated_at = _utcnow()
-        if commit:
-            await db.commit()
-            await db.refresh(account)
-    elif token_state.get("status") == "not_connected":
-        await mark_delegated_account_disconnected(db, provider, user_id, commit=commit)
-
-    return {
-        **token_state,
-        "status": effective_status,
-        "provider": provider,
-    }
-
-
-async def record_delegated_diagnosis(
-    db: AsyncSession,
-    provider: str,
-    user_id: UUID,
-    diagnosis: dict[str, Any],
-    *,
-    commit: bool = False,
-) -> None:
-    token_state = await _delegated_token_status(provider, user_id)
-    message = diagnosis.get("message") or diagnosis.get("error") or ""
-    if diagnosis.get("status") in CONNECTED_DIAGNOSIS_STATUSES and token_state.get("status") == "connected":
-        await upsert_delegated_account(
-            db,
-            provider,
-            user_id,
-            token_data=token_state,
-            status="connected",
-            username=diagnosis.get("login") or token_state.get("username"),
-            permission_summary=message,
-            commit=commit,
-        )
-        return
-
-    if token_state.get("status") == "not_connected":
-        await mark_delegated_account_disconnected(db, provider, user_id, commit=commit)
-        return
-
-    if token_state.get("status") == "expired":
-        account = await get_account(db, user_id, provider)
-        if account:
-            account.status = "expired"
-            account.permission_summary = message
-            account.updated_at = _utcnow()
-            if commit:
-                await db.commit()
-                await db.refresh(account)
-        return
-
-    await upsert_delegated_account(
-        db,
-        provider,
-        user_id,
-        token_data=token_state,
-        status="error",
-        username=diagnosis.get("login") or token_state.get("username"),
-        permission_summary=message,
-        commit=commit,
-    )
-
-
 async def effective_connected_accounts(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -260,8 +173,8 @@ async def effective_connected_accounts(
 
     The database row is the fast source of truth for page rendering, chat
     routing, and tool selection. Token-store reconciliation is intentionally
-    opt-in because Key Vault checks can be slow and should only run on explicit
-    connect/status/diagnose/disconnect paths.
+    opt-in because Key Vault checks can be slow and should only run when a
+    caller explicitly asks for fresh token state.
     """
     if not user_id:
         return []

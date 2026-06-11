@@ -15,8 +15,6 @@ export interface ConnectorMeta {
     configured?: boolean;
     account_status?: string;
     token_status?: string;
-    diagnostics_status?: string;
-    cli_status?: string;
     readiness_status?: string;
     source?: string;
   };
@@ -61,7 +59,7 @@ export interface MicrosoftNativeDeviceCode {
 
 export type StatusTone = "success" | "danger" | "warning" | "neutral";
 
-export const MICROSOFT_NATIVE_CONNECTOR_KEYS = [
+const MICROSOFT_NATIVE_CONNECTOR_KEYS = [
   "azure_cli",
   "microsoft_graph",
   "exchange_online",

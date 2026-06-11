@@ -38,11 +38,6 @@ async def health_check():
     return status_info
 
 
-@router.get("/dependencies")
-async def dependency_health_check(db: AsyncSession = Depends(get_db)):
-    return await _dependency_health_payload(db, deep=True)
-
-
 @router.get("/ready")
 async def readiness_check(db: AsyncSession = Depends(get_db)):
     status_info = await _dependency_health_payload(db, deep=_deep_dependency_checks_enabled())
@@ -82,7 +77,6 @@ async def _dependency_health_payload(db: AsyncSession, deep: bool = False):
             status_info["status"] = "degraded"
         status_info["config_issues"] = config_issues
 
-    # /health/dependencies returns a deep diagnostic payload as informational HTTP 200.
     # /health/ready is shallow by default unless HEALTH_CHECK_DEEP is enabled.
     all_healthy = all(
         dep in ("reachable", "not_configured", "configured")

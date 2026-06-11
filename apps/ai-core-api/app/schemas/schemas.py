@@ -32,19 +32,6 @@ class AIArtifactResponse(BaseModel):
     created_at: datetime
 
 
-class AIToolResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    name: str
-    display_name: str
-    description: Optional[str]
-    target_system: str
-    version: str
-    status: str
-    requires_approval: str
-    created_at: datetime
-
-
 class AIAuditEventCreate(BaseModel):
     actor_type: str = "user"
     actor_user_id: Optional[UUID] = None

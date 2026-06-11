@@ -211,16 +211,16 @@ def test_auth_session_restores_ios_pwa_accounts_promptlessly_once():
     assert "loginRequestWithAuthHint(loginRequest, readStoredAuthHint())" in app
 
 
-def test_connections_page_loads_backend_platform_tools():
+def test_connections_page_does_not_load_backend_platform_tools():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "interface PlatformTool" in content
-    assert "fetchPlatformTools" in content
-    assert '`${APIM_BASE_URL}/tools`' in content
-    assert "Platform Tools" in content
-    assert "canonicalPlatformTools(data)" in content
+    assert "interface PlatformTool" not in content
+    assert "fetchPlatformTools" not in content
+    assert '`${APIM_BASE_URL}/tools`' not in content
+    assert "Platform Tools" not in content
+    assert "canonicalPlatformTools" not in content
 
 
 def test_microsoft_native_connectors_use_separate_native_sign_ins():
@@ -264,11 +264,13 @@ def test_microsoft_native_device_login_resets_microsoft_browser_session():
     assert "targetWindow.location.href = targetUrl" in content
 
 
-def test_pending_activity_uses_result_keys_not_summary_object_keys():
+def test_pending_activity_uses_plain_user_facing_statuses():
     component_path = os.path.join(SRC_DIR, "components", "chat", "PendingAssistant.tsx")
     with open(component_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "function meaningfulResultKeys" in content
-    assert "stringList(result.keys)" in content
-    assert "`Returned: ${keys}`" not in content
+    assert "Checking connected apps" in content
+    assert "Writing the reply" in content
+    assert "token" not in content.lower()
+    assert "toolDetail" not in content
+    assert "duration_ms" not in content

@@ -14,10 +14,8 @@ import {
   MicrosoftNativeConnectorSection,
   OdooConnectorSection,
   StatusBadge,
-  ToolLogo,
 } from "../components/connections/ConnectorSections";
 import {
-  MICROSOFT_NATIVE_CONNECTOR_KEYS,
   MICROSOFT_NATIVE_CONNECTOR_KEY_SET,
   formatStatusLabel,
   getStatusTone,
@@ -36,18 +34,6 @@ const KV_ERROR_PHRASES = [
 const MICROSOFT_DEVICE_LOGIN_URL = "https://microsoft.com/devicelogin";
 const MICROSOFT_SESSION_RESET_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/logout";
 const MICROSOFT_SESSION_RESET_DELAY_MS = 1800;
-
-interface PlatformTool {
-  id: string;
-  name: string;
-  display_name: string;
-  description?: string | null;
-  target_system: string;
-  version: string;
-  status: string;
-  requires_approval: string;
-  created_at: string;
-}
 
 interface ConnectionTestResult {
   success: boolean;
@@ -161,12 +147,6 @@ function cliResultHeading(result: CliTestResult) {
   return "Issues found";
 }
 
-const CONNECTOR_TOOL_TARGET_SYSTEMS = new Set([
-  "odoo",
-  "github",
-  ...MICROSOFT_NATIVE_CONNECTOR_KEYS,
-]);
-
 const CONNECTOR_FALLBACKS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
   { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI" },
@@ -205,21 +185,9 @@ function connectorDisplayNameForKey(key: string | undefined, meta: Record<string
 
 interface ConnectionsPageProps { accessToken: string; }
 
-function canonicalPlatformTools(tools: PlatformTool[]) {
-  const seen = new Set<string>();
-  return tools.filter((tool) => {
-    if (CONNECTOR_TOOL_TARGET_SYSTEMS.has(tool.target_system)) return false;
-    const key = `${(tool.display_name || tool.name).trim().toLowerCase()}::${tool.target_system}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
   const [showTechDetails, setShowTechDetails] = useState(false);
   const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
@@ -234,8 +202,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
   const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
   const [connectorSearch, setConnectorSearch] = useState("");
-  const [platformTools, setPlatformTools] = useState<PlatformTool[] | null>(null);
-  const [platformToolsError, setPlatformToolsError] = useState<string | null>(null);
   const microsoftAuthAttemptRef = useRef(0);
   const microsoftPollTimerRef = useRef<number | null>(null);
 
@@ -286,26 +252,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     }
   }, [accessToken, headers]);
 
-  const fetchPlatformTools = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/tools`, { headers: headers() });
-      if (res.ok) {
-        const data = await res.json() as PlatformTool[];
-        setPlatformTools(canonicalPlatformTools(data));
-        setPlatformToolsError(null);
-      } else {
-        setPlatformToolsError(`Could not load platform tools (${res.status}).`);
-      }
-    } catch (err) {
-      setPlatformToolsError(
-        isAbortError(err)
-          ? "Platform tools are taking too long to load. Please retry."
-          : `Could not load platform tools: ${errorMessage(err)}`,
-      );
-    }
-  }, [accessToken, headers]);
-
   const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
@@ -324,8 +270,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   useEffect(() => {
     if (!accessToken) return;
-    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors(), fetchPlatformTools()]));
-  }, [accessToken, fetchOdooStatus, fetchConnectors, fetchPlatformTools]);
+    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors()]));
+  }, [accessToken, fetchOdooStatus, fetchConnectors]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -384,21 +330,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     } catch (err) {
       setTestResult({ success: false, message: `Could not reach backend: ${errorMessage(err)}` });
     } finally { setIsConnecting(false); }
-  };
-
-  const handleTestOdoo = async () => {
-    if (!accessToken) return; setIsTesting(true); setTestResult(null);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connected-accounts/odoo/test`, { method: "POST", headers: headers() });
-      const data = await res.json() as { status?: string; detail?: string };
-      if (res.ok) {
-        const status = data.status || "unknown";
-        setTestResult({ success: status === "connected", message: `Connection state: ${status.toUpperCase()}` });
-      }
-      else setTestResult({ success: false, message: data.detail || "Verification failed." });
-      void Promise.all([fetchOdooStatus(), fetchConnectors()]);
-    } catch (err) { setTestResult({ success: false, message: `Test failed: ${errorMessage(err)}` }); }
-    finally { setIsTesting(false); }
   };
 
   const handleDisconnectOdoo = async () => {
@@ -542,25 +473,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     }
   };
 
-  const handleMicrosoftNativeStatus = async (connectorKey: string) => {
-    if (!accessToken) return;
-    const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json() as { status?: string; overall_status?: string; message?: string; stderr?: string; request_id?: string };
-      if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: connectorKey, message: data.message || `${displayName} connected`, request_id: data.request_id });
-        await fetchConnectors();
-      } else if (data.status === "partial" || data.status === "limited" || data.status === "warning") {
-        setCliTestResult({ status: "warning", connector: connectorKey, message: data.message || `${displayName} status: ${formatStatusLabel(data.status || "partial")}`, stderr: data.stderr, request_id: data.request_id });
-        await fetchConnectors();
-      } else {
-        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || `${displayName} status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
-        await fetchConnectors();
-      }
-    } catch { /* ignore transient Microsoft connector status errors */ }
-  };
-
   const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
     cancelMicrosoftAuthAttempt();
@@ -577,21 +489,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       if (data.auth_url) window.location.href = data.auth_url;
       else setCliTestResult({ status: "failed", connector: "github", message: data.message || "GitHub OAuth not configured." });
     } catch (err) { setCliTestResult({ status: "failed", connector: "github", message: errorMessage(err) }); }
-  };
-
-  const handleGithubStatus = async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetch(`${APIM_BASE_URL}/connector/github/diagnose`, { method: "POST", headers: headers() });
-      const data = await res.json() as { status?: string; message?: string; stderr?: string; request_id?: string };
-      if (data.status === "success") {
-        setCliTestResult({ status: "success", connector: "github", message: data.message || "GitHub connected", request_id: data.request_id });
-        await fetchConnectors();
-      } else {
-        setCliTestResult({ status: "failed", connector: "github", message: data.message || `GitHub status: ${formatStatusLabel(data.status || "not_connected")}`, stderr: data.stderr, request_id: data.request_id });
-        await fetchConnectors();
-      }
-    } catch { /* ignore transient GitHub status errors */ }
   };
 
   const connectorDetail = (key: string) => {
@@ -615,9 +512,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           odooUsername={odooUsername}
           odooApiKey={odooApiKey}
           isConnecting={isConnecting}
-          isTesting={isTesting}
           onConnect={handleConnectOdoo}
-          onTest={handleTestOdoo}
           onDisconnect={handleDisconnectOdoo}
           onOdooUrlChange={setOdooUrl}
           onOdooDbChange={setOdooDb}
@@ -642,7 +537,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           isPolling={isPolling}
           activeDeviceCode={activeDeviceCode}
           onConnect={() => handleConnectMicrosoftNative(key)}
-          onCheckStatus={() => handleMicrosoftNativeStatus(key)}
           onDisconnect={() => handleMicrosoftNativeDisconnect(key)}
           onOpenDeviceLogin={openMicrosoftDeviceLogin}
         />
@@ -657,7 +551,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         statusFallback={statusFallback}
         hasStatusError={hasStatusError}
         onConnect={handleGithubOAuth}
-        onCheckStatus={handleGithubStatus}
       />
     );
 
@@ -676,8 +569,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         meta?.status,
         meta?.state?.account_status,
         meta?.state?.token_status,
-        meta?.state?.diagnostics_status,
-        meta?.state?.cli_status,
         meta?.metadata?.provider_username,
         meta?.metadata?.permission_summary,
       ].filter(Boolean).join(" ").toLowerCase();
@@ -687,18 +578,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const activeConnector = selectedConnector && availableConnectors.some((connector) => connector.key === selectedConnector)
     ? selectedConnector
     : null;
-  const filteredPlatformTools = (platformTools || []).filter((tool) => {
-    if (!normalizedConnectorSearch) return true;
-    const searchable = [
-      tool.name,
-      tool.display_name,
-      tool.description,
-      tool.target_system,
-      tool.status,
-      tool.version,
-    ].filter(Boolean).join(" ").toLowerCase();
-    return searchable.includes(normalizedConnectorSearch);
-  });
 
   return (
     <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
@@ -742,7 +621,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           <input
             value={connectorSearch}
             onChange={(e) => setConnectorSearch(e.target.value)}
-            placeholder="Search connectors and tools..."
+            placeholder="Search connectors..."
             className="w-full rounded-2xl border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-all focus:border-soft"
           />
         </div>
@@ -777,48 +656,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       </div>
         )}
       </div>
-      ) : null}
-
-      {platformToolsError ? (
-        <DetailCard>
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-muted">{platformToolsError}</p>
-            <GlassButton size="sm" onClick={fetchPlatformTools}>
-              <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </GlassButton>
-          </div>
-        </DetailCard>
-      ) : null}
-
-      {platformTools && filteredPlatformTools.length > 0 ? (
-        <div className="space-y-4">
-          <div>
-            <h3 className="font-bold text-base text-default">Platform Tools</h3>
-            <p className="text-sm text-muted mt-1">Built-in capabilities registered by the backend.</p>
-          </div>
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredPlatformTools.map((tool) => (
-              <div key={tool.id} className="text-left w-full p-5 rounded-2xl border border-default bg-surface">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="p-2.5 rounded-xl bg-surface border border-default">
-                    <ToolLogo toolName={tool.name} />
-                  </div>
-                  <StatusBadge status={tool.status} fallback="Unavailable" />
-                </div>
-                <h4 className="font-bold text-sm text-default truncate">{tool.display_name}</h4>
-                <p className="text-xs text-muted truncate mb-3">{tool.description || tool.target_system}</p>
-                <dl className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1.5 text-xs">
-                  <dt className="text-muted">Tool</dt>
-                  <dd className="text-default truncate">{tool.name}</dd>
-                  <dt className="text-muted">System</dt>
-                  <dd className="text-default truncate">{tool.target_system}</dd>
-                  <dt className="text-muted">Approval</dt>
-                  <dd className="text-default">{tool.requires_approval === "true" ? "Required" : "Not required"}</dd>
-                </dl>
-              </div>
-            ))}
-          </div>
-        </div>
       ) : null}
 
       {/* Detail Drawer */}

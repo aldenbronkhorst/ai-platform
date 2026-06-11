@@ -14,27 +14,15 @@ from app.core.database import get_db
 from app.core.security import api_key_auth
 from app.services.connected_account_state import (
     mark_delegated_account_disconnected,
-    record_delegated_diagnosis,
-    sync_delegated_account_from_token,
     upsert_delegated_account,
 )
-from app.services.connectors.microsoft_admin.azure_cli import (
-    _list_azure_subscriptions,
-    ensure_azure_cli_profile,
-    validate_azure_cli_profile,
-)
 from app.services.connectors.microsoft_admin.constants import (
-    AZURE_CLI_PROVIDER,
     AZURE_TOKEN_ENDPOINT,
     AZURE_V1_DEVICE_CODE_ENDPOINT,
     AZURE_V1_TOKEN_ENDPOINT,
     AZURE_V2_DEVICE_CODE_ENDPOINT,
-    EXCHANGE_ONLINE_PROVIDER,
-    MICROSOFT_GRAPH_BASE_URL,
-    MICROSOFT_GRAPH_PROVIDER,
     MICROSOFT_NATIVE_CONNECTOR_PROFILES,
     SHAREPOINT_PNP_PROVIDER,
-    TEAMS_ADMIN_PROVIDER,
     microsoft_native_app_name_for_provider,
     microsoft_native_client_id_for_provider,
     microsoft_native_device_scope_string,
@@ -54,14 +42,11 @@ from app.services.connectors.microsoft_admin.device_auth import (
     remember_device_auth_flow as _remember_device_auth_flow,
     update_device_auth_poll_interval as _update_device_auth_poll_interval,
 )
-from app.services.connectors.microsoft_admin.graph import _graph_error_details, _graph_response_data
 from app.services.connectors.microsoft_admin.tokens import (
     extract_microsoft_admin_username,
-    get_microsoft_admin_token,
-    microsoft_admin_token_client_error,
     _sharepoint_scope_for_url,
 )
-from app.services.token_storage import delete_token, retrieve_token, store_token
+from app.services.token_storage import delete_token, store_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/connector/microsoft-native", tags=["Connector"])
@@ -442,40 +427,6 @@ async def device_code_callback(
             )
 
 
-@router.get("/{provider}/status")
-async def microsoft_native_status(
-    provider: str,
-    auth: dict = Depends(api_key_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    provider_key = _provider_or_404(provider)
-    user_id = auth.get("user_id")
-    return await sync_delegated_account_from_token(db, provider_key, user_id, commit=True) if user_id else {"status": "not_connected"}
-
-
-@router.post("/{provider}/diagnose")
-async def microsoft_native_diagnose(
-    provider: str,
-    auth: dict = Depends(api_key_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    provider_key = _provider_or_404(provider)
-    user_id = auth.get("user_id")
-    result = await diagnose_microsoft_native_connection(provider_key, user_id)
-    if user_id:
-        await record_delegated_diagnosis(db, provider_key, user_id, result, commit=True)
-    return result
-
-
-@router.post("/{provider}/validate")
-async def microsoft_native_validate(
-    provider: str,
-    auth: dict = Depends(api_key_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    return await microsoft_native_diagnose(provider=provider, auth=auth, db=db)
-
-
 @router.post("/{provider}/disconnect")
 async def microsoft_native_disconnect(
     provider: str,
@@ -489,167 +440,3 @@ async def microsoft_native_disconnect(
         await delete_token(provider_key, user_id)
         await mark_delegated_account_disconnected(db, provider_key, user_id, commit=True)
     return {"status": "disconnected", "connector": provider_key}
-
-
-async def diagnose_microsoft_native_connection(provider: str, user_id: Any) -> dict[str, Any]:
-    provider_key = _provider_or_404(provider)
-    request_id = uuid.uuid4().hex[:16]
-    token_data = await retrieve_token(provider_key, user_id) if user_id else None
-    if not token_data or not token_data.get("access_token"):
-        return {
-            "status": "failed",
-            "connector": provider_key,
-            "request_id": request_id,
-            "message": f"{microsoft_native_label_for_provider(provider_key)} is not connected for this user.",
-        }
-    client_error = microsoft_admin_token_client_error({**token_data, "provider": provider_key})
-    if client_error:
-        return {
-            "status": "failed",
-            "connector": provider_key,
-            "request_id": request_id,
-            "error_type": "wrong_native_client",
-            "message": client_error,
-        }
-
-    if provider_key == AZURE_CLI_PROVIDER:
-        return await _diagnose_azure_cli(user_id, request_id)
-    if provider_key == MICROSOFT_GRAPH_PROVIDER:
-        return await _diagnose_graph(user_id, request_id)
-    if provider_key in {EXCHANGE_ONLINE_PROVIDER, TEAMS_ADMIN_PROVIDER, SHAREPOINT_PNP_PROVIDER}:
-        return await _diagnose_workload_token(provider_key, user_id, request_id, token_data)
-
-    return {
-        "status": "success",
-        "connector": provider_key,
-        "request_id": request_id,
-        "message": (
-            f"{microsoft_native_label_for_provider(provider_key)} has its own token. "
-            "Actual command access is still controlled by the signed-in user's Microsoft roles and workload permissions."
-        ),
-        "provider_username": token_data.get("username"),
-    }
-
-
-async def _diagnose_workload_token(provider_key: str, user_id: Any, request_id: str, token_data: dict[str, Any]) -> dict[str, Any]:
-    profile = microsoft_native_profile_for_provider(provider_key)
-    context: dict[str, Any] = {}
-    if provider_key == SHAREPOINT_PNP_PROVIDER:
-        site_url = str(token_data.get("site_url") or "").strip()
-        if not site_url:
-            return {
-                "status": "failed",
-                "connector": provider_key,
-                "request_id": request_id,
-                "message": "SharePoint/PnP is connected without a site URL. Reconnect it with a SharePoint site/admin URL.",
-                "error_type": "site_url_required",
-            }
-        context["site_url"] = site_url
-    token = await get_microsoft_admin_token(user_id, profile, **context)
-    if not token or not token.get("access_token") or token.get("refresh_error"):
-        return {
-            "status": "failed",
-            "connector": provider_key,
-            "request_id": request_id,
-            "message": token.get("refresh_error") if isinstance(token, dict) else f"{microsoft_native_label_for_provider(provider_key)} token is not available.",
-            "error_type": token.get("error_type") if isinstance(token, dict) else "not_connected",
-        }
-    return {
-        "status": "success",
-        "connector": provider_key,
-        "request_id": request_id,
-        "message": (
-            f"{microsoft_native_label_for_provider(provider_key)} token refreshed successfully. "
-            "Actual command access is still controlled by the signed-in user's Microsoft roles and workload permissions."
-        ),
-        "provider_username": token.get("username") or token_data.get("username"),
-    }
-
-
-async def _diagnose_azure_cli(user_id: Any, request_id: str) -> dict[str, Any]:
-    token = await get_microsoft_admin_token(user_id, "arm")
-    if not token or not token.get("access_token") or token.get("refresh_error"):
-        return {
-            "status": "failed",
-            "connector": AZURE_CLI_PROVIDER,
-            "request_id": request_id,
-            "message": token.get("refresh_error") if isinstance(token, dict) else "Azure CLI token is not available.",
-            "error_type": token.get("error_type") if isinstance(token, dict) else "not_connected",
-        }
-    subscriptions_result = await _list_azure_subscriptions(token["access_token"])
-    if not subscriptions_result.get("ok"):
-        return {
-            "status": "failed",
-            "connector": AZURE_CLI_PROVIDER,
-            "request_id": request_id,
-            "message": subscriptions_result.get("message", "Azure subscription discovery failed."),
-            "stderr": subscriptions_result.get("stderr", ""),
-        }
-    profile = await ensure_azure_cli_profile(user_id, token, subscriptions_result=subscriptions_result)
-    if not profile.get("ready"):
-        return {
-            "status": "failed",
-            "connector": AZURE_CLI_PROVIDER,
-            "request_id": request_id,
-            "message": profile.get("message") or "Azure CLI profile could not be prepared.",
-        }
-    validation = await validate_azure_cli_profile(user_id)
-    if not validation.get("ready"):
-        return {
-            "status": "failed",
-            "connector": AZURE_CLI_PROVIDER,
-            "request_id": request_id,
-            "message": validation.get("message") or "Azure CLI profile validation failed.",
-            "stderr": validation.get("stderr", ""),
-        }
-    subscriptions = subscriptions_result.get("subscriptions", [])
-    return {
-        "status": "success",
-        "connector": AZURE_CLI_PROVIDER,
-        "request_id": request_id,
-        "message": "Azure CLI is connected and the native az profile is ready.",
-        "subscriptions_count": len(subscriptions),
-        "subscriptions": [
-            {
-                "subscription_id": sub.get("subscriptionId"),
-                "display_name": sub.get("displayName"),
-                "state": sub.get("state"),
-            }
-            for sub in subscriptions[:10]
-        ],
-    }
-
-
-async def _diagnose_graph(user_id: Any, request_id: str) -> dict[str, Any]:
-    token = await get_microsoft_admin_token(user_id, "graph")
-    if not token or not token.get("access_token") or token.get("refresh_error"):
-        return {
-            "status": "failed",
-            "connector": MICROSOFT_GRAPH_PROVIDER,
-            "request_id": request_id,
-            "message": token.get("refresh_error") if isinstance(token, dict) else "Microsoft Graph token is not available.",
-            "error_type": token.get("error_type") if isinstance(token, dict) else "not_connected",
-        }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(
-            f"{MICROSOFT_GRAPH_BASE_URL.rstrip('/')}/v1.0/me?$select=id,displayName,userPrincipalName,mail",
-            headers={"Authorization": f"Bearer {token['access_token']}"},
-        )
-    graph_data = _graph_response_data(response)
-    error_type, graph_message = _graph_error_details(graph_data, response.status_code)
-    if response.status_code >= 400:
-        return {
-            "status": "failed",
-            "connector": MICROSOFT_GRAPH_PROVIDER,
-            "request_id": request_id,
-            "message": graph_message or "Microsoft Graph validation failed.",
-            "error_type": error_type or "graph_validation_failed",
-            "status_code": response.status_code,
-        }
-    return {
-        "status": "success",
-        "connector": MICROSOFT_GRAPH_PROVIDER,
-        "request_id": request_id,
-        "message": "Microsoft Graph is connected and /me validation succeeded.",
-        "graph_user": graph_data if isinstance(graph_data, dict) else {},
-    }

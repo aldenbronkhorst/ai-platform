@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update
@@ -998,26 +998,6 @@ def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, An
     payload = ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
     payload["attachments"] = attachments or []
     return payload
-
-
-@router.post("/sessions/{session_id}/messages", response_model=ChatMessageResponse)
-async def post_chat_message(
-    session_id: UUID,
-    req: ChatMessageCreate,
-    request: Request,
-    response: Response,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    """Posts a message to the chat session and executes the platform business assistant flow.
-
-    Returns a natural language response with technical logs safely hidden inside metadata_json.
-    On failure, returns a structured JSON error response and persists a failed assistant marker for audit/debugging.
-    """
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    response.headers["X-Request-ID"] = request_id
-    user_id = auth["user_id"]
-    return await _process_chat_turn(db, session_id, req, request_id, user_id)
 
 
 @router.post("/sessions/{session_id}/messages/stream")

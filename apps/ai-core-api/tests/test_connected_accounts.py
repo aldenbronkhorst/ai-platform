@@ -789,91 +789,6 @@ class TestConnectedAccountsFlow:
         assert result["error_type"] == "expired_token"
         assert "expired" in result["message"].lower()
 
-    @pytest.mark.asyncio
-    async def test_exchange_native_diagnose_refreshes_token_before_success(self, monkeypatch):
-        from app.routers import connector_microsoft_native as native
-        from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_PROVIDER
-
-        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
-        calls = []
-
-        async def fake_retrieve_token(provider, _user_id):
-            assert provider == EXCHANGE_ONLINE_PROVIDER
-            return {
-                "provider": EXCHANGE_ONLINE_PROVIDER,
-                "client_id": native.microsoft_native_client_id_for_provider(EXCHANGE_ONLINE_PROVIDER),
-                "access_token": "stale-access-token",
-                "refresh_token": "refresh-token",
-                "scope_profile": "exchange",
-                "username": "alden@example.com",
-            }
-
-        async def fake_get_token(_user_id, profile, **context):
-            calls.append((profile, context))
-            return {
-                "access_token": "fresh-access-token",
-                "scope_profile": profile,
-                "username": "alden@example.com",
-            }
-
-        monkeypatch.setattr(native, "retrieve_token", fake_retrieve_token)
-        monkeypatch.setattr(native, "get_microsoft_admin_token", fake_get_token)
-
-        result = await native.diagnose_microsoft_native_connection(EXCHANGE_ONLINE_PROVIDER, user_id)
-
-        assert result["status"] == "success"
-        assert result["connector"] == EXCHANGE_ONLINE_PROVIDER
-        assert calls == [("exchange", {})]
-
-    @pytest.mark.asyncio
-    async def test_record_partial_native_microsoft_diagnosis_keeps_tools_connected(self, monkeypatch):
-        from app.services.connected_account_state import record_delegated_diagnosis
-
-        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
-        account = AIConnectedAccount(
-            id=UUID("e4807f22-97c8-4778-87a2-160f56d25248"),
-            user_id=user_id,
-            provider="teams_admin",
-            provider_username="alden@example.com",
-            status="connected",
-        )
-
-        class Result:
-            def scalar_one_or_none(self):
-                return account
-
-        db = AsyncMock()
-        db.execute = AsyncMock(return_value=Result())
-        db.commit = AsyncMock()
-        db.refresh = AsyncMock()
-
-        async def fake_token_status(_provider, _user_id):
-            return {
-                "status": "connected",
-                "provider": "teams_admin",
-                "username": "alden@example.com",
-                "scope": "https://graph.microsoft.com/User.Read",
-            }
-
-        monkeypatch.setattr(
-            "app.services.connected_account_state._delegated_token_status",
-            fake_token_status,
-        )
-
-        message = "Teams Admin validation returned a warning but the native connector token is available."
-        await record_delegated_diagnosis(
-            db,
-            "teams_admin",
-            user_id,
-            {"status": "partial", "message": message},
-            commit=True,
-        )
-
-        assert account.status == "connected"
-        assert account.permission_summary == message
-        assert account.last_verified_at is not None
-        db.commit.assert_awaited_once()
-
     def test_get_connected_accounts_reports_split_native_microsoft_connector_state(self):
         async def fake_token_status(provider, _user_id):
             return {"status": "not_connected", "provider": provider}
@@ -962,24 +877,20 @@ class TestConnectedAccountsFlow:
         data = response.json()
         assert data["status"] == "not_connected"
 
-    @patch("app.routers.connected_accounts._retrieve_key_vault_secret")
-    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
-    def test_test_connection_not_found(self, mock_verify, mock_retrieve):
+    def test_test_connection_endpoint_is_removed(self):
         response = client.post(
             "/connected-accounts/odoo/test",
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
-    def test_rotate_credentials_not_found(self):
+    def test_rotate_credentials_endpoint_is_removed(self):
         response = client.post(
             "/connected-accounts/odoo/rotate",
             json={"odoo_api_key": "new-api-key"},
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
 
     def test_disconnect_not_found(self):
         response = client.post(
@@ -1490,77 +1401,6 @@ class TestSaveAsUnverified:
             assert saved_account.status == "error"
         finally:
             app.dependency_overrides.pop(get_db, None)
-
-    @patch("app.routers.connected_accounts._verify_odoo_credentials_via_connector")
-    @patch("app.routers.connected_accounts._store_key_vault_secret")
-    @patch("app.routers.connected_accounts._retrieve_key_vault_secret")
-    def test_verify_fail_still_allows_test_connection(self, mock_retrieve, mock_store, mock_verify):
-        """After a failed verify that saves as error, Test Connection should still work."""
-        from fastapi import HTTPException
-        from unittest.mock import AsyncMock, MagicMock
-        from uuid import UUID
-        from app.models.models import AIConnectedAccount
-
-        mock_store.return_value = None
-        mock_verify.side_effect = HTTPException(status_code=400, detail="Verification failed")
-        mock_retrieve.return_value = "my-key"
-
-        # Create a real account that the test endpoint can find
-        saved_account = AIConnectedAccount(
-            id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
-            user_id=UUID("e4807f22-97c8-4778-87a2-160f56d25247"),
-            provider="odoo",
-            provider_username="alden@example.com",
-            secret_reference="test-secret-ref",
-            status="error",
-            odoo_url="https://odoo.example.com",
-            odoo_db="prod_db",
-        )
-
-        mock_session = AsyncMock()
-        result_mock = AsyncMock()
-        result_mock.scalar_one_or_none = MagicMock(return_value=saved_account)
-        result_mock.scalars = lambda self=None: result_mock
-        result_mock.all = lambda self=None: []
-        mock_session.add = MagicMock()
-        mock_session.execute = AsyncMock(return_value=result_mock)
-
-        async def mock_get_db():
-            yield mock_session
-
-        from app.core.database import get_db
-        app.dependency_overrides[get_db] = mock_get_db
-        try:
-            # First connect (verification will fail, save as error)
-            response = client.post(
-                "/connected-accounts/odoo/connect",
-                json={
-                    "odoo_url": "https://odoo.example.com",
-                    "odoo_db": "prod_db",
-                    "odoo_username": "alden@example.com",
-                    "odoo_api_key": "my-key",
-                },
-                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-            )
-            assert response.status_code == 400
-
-            # Now test connection (verify succeeds this time)
-            mock_verify.reset_mock()
-            mock_verify.side_effect = None
-            mock_verify.return_value = None
-
-            test_resp = client.post(
-                "/connected-accounts/odoo/test",
-                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-            )
-            assert test_resp.status_code == 200
-            test_data = test_resp.json()
-            assert test_data["status"] == "connected"
-            assert test_data["odoo_url"] == "https://odoo.example.com"
-            assert test_data["odoo_db"] == "prod_db"
-        finally:
-            app.dependency_overrides.pop(get_db, None)
-
 
 # ── Production Mode Debug Bypass Tests ──
 
