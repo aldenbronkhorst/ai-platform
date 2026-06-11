@@ -467,6 +467,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     }
   }, []);
 
+  const cancelMicrosoftAuthAttempt = useCallback(() => {
+    clearMicrosoftPollTimer();
+    microsoftAuthAttemptRef.current += 1;
+    setMicrosoftDeviceCode(null);
+    setMicrosoftPollingConnector(null);
+  }, [clearMicrosoftPollTimer]);
+
   useEffect(() => () => clearMicrosoftPollTimer(), [clearMicrosoftPollTimer]);
 
   const fetchConnectors = useCallback(async () => {
@@ -620,7 +627,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectMicrosoftNative = async (connectorKey: string) => {
     if (!accessToken) return; setCliTestResult(null);
-    clearMicrosoftPollTimer();
+    cancelMicrosoftAuthAttempt();
     const attemptId = microsoftAuthAttemptRef.current + 1;
     microsoftAuthAttemptRef.current = attemptId;
     const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
@@ -746,12 +753,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
-    clearMicrosoftPollTimer();
-    microsoftAuthAttemptRef.current += 1;
+    cancelMicrosoftAuthAttempt();
     await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
-    setMicrosoftDeviceCode(null);
-    setMicrosoftPollingConnector(null);
     setCliTestResult({ status: "success", connector: connectorKey, message: "Disconnected" });
   };
 
@@ -1050,7 +1054,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
-          <button key={c.key} onClick={() => { setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); setMicrosoftDeviceCode(null); setMicrosoftPollingConnector(null); }}
+          <button key={c.key} onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); }}
             className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
@@ -1127,7 +1131,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {availableConnectors.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
-              <button onClick={() => { setSelectedConnector(null); setTestResult(null); setCliTestResult(null); setMicrosoftDeviceCode(null); setMicrosoftPollingConnector(null); }}
+              <button onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(null); setTestResult(null); setCliTestResult(null); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>

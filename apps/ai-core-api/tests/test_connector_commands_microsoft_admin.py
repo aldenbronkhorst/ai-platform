@@ -25,12 +25,17 @@ microsoft_admin_commands = SimpleNamespace(
     AZURE_CLI_ARM_TARGET=constants.AZURE_CLI_ARM_TARGET,
     AZURE_CLI_CLIENT_ID=constants.AZURE_CLI_CLIENT_ID,
     AZURE_ARM_SCOPE=constants.AZURE_ARM_SCOPE,
+    AZURE_V1_TOKEN_ENDPOINT=constants.AZURE_V1_TOKEN_ENDPOINT,
     EXCHANGE_ONLINE_SCOPE=constants.EXCHANGE_ONLINE_SCOPE,
+    EXCHANGE_ONLINE_RESOURCE=constants.EXCHANGE_ONLINE_RESOURCE,
     EXCHANGE_ONLINE_CLIENT_ID=constants.EXCHANGE_ONLINE_CLIENT_ID,
     MICROSOFT_GRAPH_SCOPE=constants.MICROSOFT_GRAPH_SCOPE,
     MICROSOFT_GRAPH_SCOPES=constants.MICROSOFT_GRAPH_SCOPES,
     MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME=constants.MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME,
     MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID=constants.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID,
+    TEAMS_TENANT_ADMIN_SCOPE=constants.TEAMS_TENANT_ADMIN_SCOPE,
+    TEAMS_TENANT_ADMIN_RESOURCE=constants.TEAMS_TENANT_ADMIN_RESOURCE,
+    TEAMS_ADMIN_CLIENT_ID=constants.TEAMS_ADMIN_CLIENT_ID,
     MS_AZURE_CLI_ALLOWED_BINARIES=constants.MS_AZURE_CLI_ALLOWED_BINARIES,
     MS_BICEP_ALLOWED_BINARIES=constants.MS_BICEP_ALLOWED_BINARIES,
     MS_POWERSHELL_ALLOWED_BINARIES=constants.MS_POWERSHELL_ALLOWED_BINARIES,
@@ -49,6 +54,8 @@ microsoft_admin_commands = SimpleNamespace(
     microsoft_admin_device_scope_string=constants.microsoft_admin_device_scope_string,
     microsoft_admin_scope_profile=constants.microsoft_admin_scope_profile,
     microsoft_admin_scope_summary=constants.microsoft_admin_scope_summary,
+    microsoft_native_oauth_flow_for_provider=constants.microsoft_native_oauth_flow_for_provider,
+    microsoft_native_resource_for_provider=constants.microsoft_native_resource_for_provider,
     run_ms_az_powershell_tool=powershell_az.run_ms_az_powershell_tool,
     run_ms_azure_cli_tool=azure_cli.run_ms_azure_cli_tool,
     run_ms_bicep_tool=bicep.run_ms_bicep_tool,
@@ -94,6 +101,14 @@ def test_microsoft_admin_device_scopes_are_single_resource_profiles():
     assert not set(microsoft_admin_commands.MICROSOFT_GRAPH_SCOPES).intersection(arm_scope)
     assert microsoft_admin_commands.EXCHANGE_ONLINE_SCOPE not in graph_scope
     assert "offline_access" in graph_scope
+
+
+def test_exchange_and_teams_native_login_match_workload_resource_flows():
+    assert microsoft_admin_commands.microsoft_native_oauth_flow_for_provider("exchange_online") == "v1_resource"
+    assert microsoft_admin_commands.microsoft_native_resource_for_provider("exchange_online") == microsoft_admin_commands.EXCHANGE_ONLINE_RESOURCE
+    assert microsoft_admin_commands.microsoft_native_oauth_flow_for_provider("teams_admin") == "v1_resource"
+    assert microsoft_admin_commands.microsoft_native_resource_for_provider("teams_admin") == microsoft_admin_commands.TEAMS_TENANT_ADMIN_RESOURCE
+    assert microsoft_admin_commands.TEAMS_TENANT_ADMIN_SCOPE.endswith("/user_impersonation")
 
 
 def test_sharepoint_profile_uses_target_site_scope():
@@ -862,6 +877,75 @@ async def test_scoped_token_refresh_uses_current_admin_client_and_preserves_prim
     stored = captured["stored"]
     assert stored["refresh_token"] == "primary-refresh"
     assert stored["delegated_tokens"]["graph"]["refresh_token"] == "new-graph-refresh"
+
+
+@pytest.mark.asyncio
+async def test_scoped_teams_token_refresh_uses_resource_endpoint(monkeypatch):
+    user_id = uuid.uuid4()
+    stored_token = {
+        "client_id": microsoft_admin_commands.TEAMS_ADMIN_CLIENT_ID,
+        "access_token": "old-teams-access",
+        "refresh_token": "teams-refresh",
+        "expires_on": int(time.time()) - 10,
+        "scope_profile": "teams",
+        "scope": microsoft_admin_commands.TEAMS_TENANT_ADMIN_RESOURCE,
+    }
+    captured: dict[str, object] = {}
+
+    async def fake_retrieve(provider, received_user_id):
+        assert provider == "teams_admin"
+        assert received_user_id == user_id
+        return stored_token
+
+    async def fake_store(provider, received_user_id, token_data):
+        assert provider == "teams_admin"
+        assert received_user_id == user_id
+        captured["stored"] = token_data
+        return True
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "token_type": "Bearer",
+                "access_token": "new-teams-access",
+                "refresh_token": "new-teams-refresh",
+                "resource": microsoft_admin_commands.TEAMS_TENANT_ADMIN_RESOURCE,
+                "expires_in": 3600,
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, data):
+            captured["url"] = url
+            captured["data"] = data
+            return FakeResponse()
+
+    monkeypatch.setattr(tokens, "retrieve_token", fake_retrieve)
+    monkeypatch.setattr(tokens, "store_token", fake_store)
+    monkeypatch.setattr(tokens.httpx, "AsyncClient", FakeClient)
+
+    result = await microsoft_admin_commands._get_fresh_microsoft_admin_token_for_scope(
+        user_id,
+        microsoft_admin_commands.TEAMS_TENANT_ADMIN_SCOPE,
+    )
+
+    assert result["access_token"] == "new-teams-access"
+    assert captured["url"] == microsoft_admin_commands.AZURE_V1_TOKEN_ENDPOINT
+    assert captured["data"]["resource"] == microsoft_admin_commands.TEAMS_TENANT_ADMIN_RESOURCE
+    assert captured["data"]["refresh_token"] == "teams-refresh"
+    assert "scope" not in captured["data"]
+    assert captured["stored"]["delegated_tokens"]["teams"]["resource"] == microsoft_admin_commands.TEAMS_TENANT_ADMIN_RESOURCE
 
 
 @pytest.mark.asyncio

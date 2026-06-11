@@ -15,6 +15,7 @@ from app.services.token_storage import retrieve_token, store_token
 from app.services.connectors.microsoft_admin.constants import (
     AZURE_ARM_SCOPE,
     AZURE_TOKEN_ENDPOINT,
+    AZURE_V1_TOKEN_ENDPOINT,
     EXCHANGE_ONLINE_SCOPE,
     MICROSOFT_ADMIN_REQUIRED_SCOPE_PROFILES,
     MICROSOFT_ADMIN_SCOPE_PROFILES,
@@ -22,8 +23,10 @@ from app.services.connectors.microsoft_admin.constants import (
     TEAMS_TENANT_ADMIN_SCOPE,
     microsoft_native_client_id_for_provider,
     microsoft_native_device_scope_string,
+    microsoft_native_oauth_flow_for_provider,
     microsoft_native_provider,
     microsoft_native_provider_for_profile,
+    microsoft_native_resource_for_provider,
     microsoft_admin_scope_label,
     microsoft_admin_scope_profile,
 )
@@ -163,18 +166,31 @@ async def _get_fresh_microsoft_admin_token_for_scope(
             f"{microsoft_admin_scope_label(scope_profile)} has no native public client configured in this environment.",
             "native_client_not_configured",
         )
-    scope_request = _microsoft_admin_scope_request(scope, scope_profile)
+    oauth_flow = microsoft_native_oauth_flow_for_provider(provider)
+    if oauth_flow == "v1_resource":
+        resource = microsoft_native_resource_for_provider(provider)
+        endpoint = AZURE_V1_TOKEN_ENDPOINT
+        refresh_payload = {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+            "resource": resource,
+        }
+    else:
+        scope_request = _microsoft_admin_scope_request(scope, scope_profile)
+        endpoint = AZURE_TOKEN_ENDPOINT
+        refresh_payload = {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "refresh_token": refresh_token,
+            "scope": scope_request,
+            "client_info": "1",
+        }
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                AZURE_TOKEN_ENDPOINT,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": client_id,
-                    "refresh_token": refresh_token,
-                    "scope": scope_request,
-                    "client_info": "1",
-                },
+                endpoint,
+                data=refresh_payload,
             )
         data = response.json()
         if response.status_code >= 400 or "access_token" not in data:
@@ -192,6 +208,7 @@ async def _get_fresh_microsoft_admin_token_for_scope(
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token", refresh_token),
             "scope": data.get("scope", scope),
+            "resource": data.get("resource", token_data.get("resource")),
             "id_token": data.get("id_token", token_data.get("id_token")),
             "id_token_claims": _microsoft_identity_claims({"id_token": data.get("id_token")}) or token_data.get("id_token_claims"),
             "client_info": data.get("client_info", token_data.get("client_info")),
@@ -206,6 +223,7 @@ async def _get_fresh_microsoft_admin_token_for_scope(
                 "access_token": scoped_token.get("access_token"),
                 "refresh_token": scoped_token.get("refresh_token", refresh_token),
                 "scope": scoped_token.get("scope"),
+                "resource": scoped_token.get("resource"),
                 "id_token": scoped_token.get("id_token"),
                 "id_token_claims": scoped_token.get("id_token_claims"),
                 "client_info": scoped_token.get("client_info"),

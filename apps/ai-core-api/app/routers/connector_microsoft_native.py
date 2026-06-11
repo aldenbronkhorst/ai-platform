@@ -24,22 +24,25 @@ from app.services.connectors.microsoft_admin.azure_cli import (
     validate_azure_cli_profile,
 )
 from app.services.connectors.microsoft_admin.constants import (
-    AZURE_AUTHORITY_HOST,
     AZURE_CLI_PROVIDER,
     AZURE_TOKEN_ENDPOINT,
+    AZURE_V1_DEVICE_CODE_ENDPOINT,
+    AZURE_V1_TOKEN_ENDPOINT,
+    AZURE_V2_DEVICE_CODE_ENDPOINT,
     EXCHANGE_ONLINE_PROVIDER,
     MICROSOFT_GRAPH_BASE_URL,
     MICROSOFT_GRAPH_PROVIDER,
     MICROSOFT_NATIVE_CONNECTOR_PROFILES,
     SHAREPOINT_PNP_PROVIDER,
     TEAMS_ADMIN_PROVIDER,
-    TENANT_ID,
     microsoft_native_app_name_for_provider,
     microsoft_native_client_id_for_provider,
     microsoft_native_device_scope_string,
     microsoft_native_label_for_provider,
+    microsoft_native_oauth_flow_for_provider,
     microsoft_native_profile_for_provider,
     microsoft_native_provider,
+    microsoft_native_resource_for_provider,
     microsoft_native_scope_values,
 )
 from app.services.connectors.microsoft_admin.graph import _graph_error_details, _graph_response_data
@@ -115,6 +118,30 @@ def _device_scope_for_request(provider: str, req: dict[str, Any] | None) -> tupl
     return f"{scope} openid profile offline_access", scope, site_url
 
 
+def _device_auth_for_request(provider: str, req: dict[str, Any] | None) -> tuple[str, str, str, str | None]:
+    """Return auth flow, OAuth value, human summary, and optional SharePoint site URL."""
+    if provider == SHAREPOINT_PNP_PROVIDER:
+        scope, summary, site_url = _device_scope_for_request(provider, req)
+        return "v2_scope", scope, summary, site_url
+
+    flow = microsoft_native_oauth_flow_for_provider(provider)
+    if flow == "v1_resource":
+        resource = microsoft_native_resource_for_provider(provider)
+        if not resource:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "status": "error",
+                    "error": "resource_not_configured",
+                    "message": f"{microsoft_native_label_for_provider(provider)} has no OAuth resource configured.",
+                },
+            )
+        return flow, resource, resource, None
+
+    scope, summary, site_url = _device_scope_for_request(provider, req)
+    return "v2_scope", scope, summary, site_url
+
+
 @router.post("/{provider}/device-code")
 async def start_device_code(
     provider: str,
@@ -130,12 +157,14 @@ async def start_device_code(
         return {**unsupported, "connector": provider_key, "request_id": request_id}
 
     client_id = microsoft_native_client_id_for_provider(provider_key)
-    scope_string, scope_summary, site_url = _device_scope_for_request(provider_key, req)
+    auth_flow, oauth_value, scope_summary, site_url = _device_auth_for_request(provider_key, req)
+    endpoint = AZURE_V1_DEVICE_CODE_ENDPOINT if auth_flow == "v1_resource" else AZURE_V2_DEVICE_CODE_ENDPOINT
+    payload = {"client_id": client_id, "resource": oauth_value} if auth_flow == "v1_resource" else {"client_id": client_id, "scope": oauth_value}
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"{AZURE_AUTHORITY_HOST.rstrip('/')}/{TENANT_ID}/oauth2/v2.0/devicecode",
-                data={"client_id": client_id, "scope": scope_string},
+                endpoint,
+                data=payload,
             )
         data = resp.json()
         if resp.status_code >= 400 or "error" in data:
@@ -155,21 +184,21 @@ async def start_device_code(
                 "request_id": request_id,
             }
         logger.info(
-            "Native Microsoft device-code ready provider=%s request_id=%s app=%s expires_in=%s interval=%s scope=%s",
+            "Native Microsoft device-code ready provider=%s request_id=%s app=%s expires_in=%s interval=%s",
             provider_key,
             request_id,
             microsoft_native_app_name_for_provider(provider_key),
             data.get("expires_in", 900),
             data.get("interval", 5),
-            scope_summary,
         )
+        verification_url = data.get("verification_uri") or data.get("verification_url") or "https://microsoft.com/devicelogin"
         return {
             "status": "device_code_ready",
             "connector": provider_key,
             "device_code": data["device_code"],
             "user_code": data["user_code"],
-            "verification_uri": data["verification_uri"],
-            "verification_url": data.get("verification_uri", "https://microsoft.com/devicelogin"),
+            "verification_uri": verification_url,
+            "verification_url": verification_url,
             "interval": data.get("interval", 5),
             "expires_in": data.get("expires_in", 900),
             "expires_at": int(time.time()) + int(data.get("expires_in") or 900),
@@ -179,6 +208,7 @@ async def start_device_code(
             "site_url": site_url,
             "client_id": client_id,
             "auth_app_name": microsoft_native_app_name_for_provider(provider_key),
+            "auth_flow": auth_flow,
             "request_id": request_id,
         }
     except Exception as exc:
@@ -212,18 +242,29 @@ async def device_code_callback(
         return {**unsupported, "connector": provider_key, "request_id": request_id}
 
     client_id = microsoft_native_client_id_for_provider(provider_key)
-    scope_string, scope_summary, site_url = _device_scope_for_request(provider_key, req)
+    auth_flow, oauth_value, scope_summary, site_url = _device_auth_for_request(provider_key, req)
+    if auth_flow == "v1_resource":
+        endpoint = AZURE_V1_TOKEN_ENDPOINT
+        token_payload_request = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id,
+            "code": device_code,
+            "resource": oauth_value,
+        }
+    else:
+        endpoint = AZURE_TOKEN_ENDPOINT
+        token_payload_request = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "client_id": client_id,
+            "device_code": device_code,
+            "scope": oauth_value,
+            "client_info": "1",
+        }
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                AZURE_TOKEN_ENDPOINT,
-                data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    "client_id": client_id,
-                    "device_code": device_code,
-                    "scope": scope_string,
-                    "client_info": "1",
-                },
+                endpoint,
+                data=token_payload_request,
             )
         data = resp.json()
         if "error" in data:
@@ -252,10 +293,12 @@ async def device_code_callback(
         token_payload = {
             "provider": provider_key,
             "client_id": client_id,
+            "auth_flow": auth_flow,
             "token_type": data.get("token_type"),
             "access_token": data.get("access_token"),
             "refresh_token": data.get("refresh_token"),
-            "scope": data.get("scope"),
+            "scope": data.get("scope") or scope_summary,
+            "resource": data.get("resource") or (oauth_value if auth_flow == "v1_resource" else None),
             "scope_profile": microsoft_native_profile_for_provider(provider_key),
             "id_token": data.get("id_token"),
             "client_info": data.get("client_info"),

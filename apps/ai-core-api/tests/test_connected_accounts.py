@@ -228,6 +228,121 @@ class TestConnectedAccountsFlow:
         assert result["interval"] == 7
 
     @pytest.mark.asyncio
+    async def test_exchange_native_device_code_uses_workload_resource_flow(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+        from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_RESOURCE
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {
+                    "device_code": "device-code",
+                    "user_code": "EXO123",
+                    "verification_url": "https://login.microsoft.com/device",
+                    "interval": 5,
+                    "expires_in": 900,
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, url, data):
+                captured["url"] = url
+                captured["data"] = data
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        result = await native.start_device_code(
+            "exchange_online",
+            req=None,
+            auth={"user_id": "e4807f22-97c8-4778-87a2-160f56d25247"},
+        )
+
+        assert result["status"] == "device_code_ready"
+        assert result["auth_flow"] == "v1_resource"
+        assert result["verification_uri"] == "https://login.microsoft.com/device"
+        assert result["verification_url"] == "https://login.microsoft.com/device"
+        assert captured["url"].endswith("/oauth2/devicecode")
+        assert captured["data"]["resource"] == EXCHANGE_ONLINE_RESOURCE
+        assert "scope" not in captured["data"]
+
+    @pytest.mark.asyncio
+    async def test_teams_native_device_callback_uses_v1_code_parameter(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+        from app.services.connectors.microsoft_admin.constants import TEAMS_TENANT_ADMIN_RESOURCE
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {
+                    "token_type": "Bearer",
+                    "access_token": "teams-access-token",
+                    "refresh_token": "teams-refresh-token",
+                    "resource": TEAMS_TENANT_ADMIN_RESOURCE,
+                    "expires_in": 3600,
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, url, data):
+                captured["url"] = url
+                captured["data"] = data
+                return FakeResponse()
+
+        async def fake_store_token(provider, user_id, token_payload):
+            captured["stored_provider"] = provider
+            captured["stored_user_id"] = user_id
+            captured["stored_token"] = token_payload
+            return True
+
+        async def fake_upsert(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(native, "store_token", fake_store_token)
+        monkeypatch.setattr(native, "upsert_delegated_account", fake_upsert)
+
+        result = await native.device_code_callback(
+            "teams_admin",
+            req={"device_code": "teams-device-code"},
+            auth={"user_id": UUID("e4807f22-97c8-4778-87a2-160f56d25247")},
+            db=AsyncMock(),
+        )
+
+        assert result["status"] == "connected"
+        assert captured["url"].endswith("/oauth2/token")
+        assert captured["data"]["code"] == "teams-device-code"
+        assert captured["data"]["resource"] == TEAMS_TENANT_ADMIN_RESOURCE
+        assert "scope" not in captured["data"]
+        assert "device_code" not in captured["data"]
+        assert captured["stored_token"]["auth_flow"] == "v1_resource"
+        assert captured["stored_token"]["resource"] == TEAMS_TENANT_ADMIN_RESOURCE
+
+    @pytest.mark.asyncio
     async def test_native_device_code_terminal_error_is_not_pending(self, monkeypatch):
         from app.routers import connector_microsoft_native as native
 
