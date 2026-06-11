@@ -80,8 +80,8 @@ def _is_real_db_session(db: Any) -> bool:
     return isinstance(db, AsyncSession)
 
 
-def _device_auth_key(user_id: Any) -> str:
-    return str(user_id)
+def _device_auth_key(user_id: Any, provider_key: str) -> str:
+    return f"{user_id}:{provider_key}"
 
 
 def _device_code_hash(device_code: str) -> str:
@@ -124,18 +124,26 @@ def _prune_device_auth_flows_locked(now: int) -> None:
 
 
 async def _prune_device_auth_sessions(db: AsyncSession) -> None:
-    await db.execute(delete(AIMicrosoftDeviceAuthSession).where(AIMicrosoftDeviceAuthSession.expires_at <= _utcnow()))
+    await db.execute(
+        delete(AIMicrosoftDeviceAuthSession)
+        .where(AIMicrosoftDeviceAuthSession.expires_at <= _utcnow())
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def _load_device_auth_flow(
     *,
     db: Any,
+    provider_key: str,
     user_id: Any,
     for_update: bool = False,
 ) -> tuple[dict[str, Any] | None, AIMicrosoftDeviceAuthSession | None]:
     if _is_real_db_session(db):
         await _prune_device_auth_sessions(db)
-        stmt = select(AIMicrosoftDeviceAuthSession).where(AIMicrosoftDeviceAuthSession.user_id == user_id)
+        stmt = select(AIMicrosoftDeviceAuthSession).where(
+            AIMicrosoftDeviceAuthSession.user_id == user_id,
+            AIMicrosoftDeviceAuthSession.provider == provider_key,
+        )
         if for_update:
             stmt = stmt.with_for_update()
         result = await db.execute(stmt)
@@ -145,7 +153,7 @@ async def _load_device_auth_flow(
     now = int(time.time())
     async with DEVICE_AUTH_LOCK:
         _prune_device_auth_flows_locked(now)
-        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id))
+        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id, provider_key))
     return (dict(flow), None) if flow else (None, None)
 
 
@@ -159,17 +167,17 @@ async def _remember_device_auth_flow(
     request_id: str,
     db: Any = None,
 ) -> str:
-    """Record the newest Microsoft device-code flow for a user.
+    """Record the newest Microsoft device-code flow for a user and connector.
 
-    Microsoft's manual device-code page is not a good place to run several
-    concurrent admin-tool sign-ins. Keeping one active flow per user lets the
-    API stop stale polling loops before they keep hammering token endpoints or
-    confuse the browser into reusing an older code.
+    Device-code polling is tracked per native Microsoft tool so Azure, Graph,
+    Exchange, Teams, and SharePoint sign-ins cannot overwrite each other.
+    Within one connector, the newest sign-in replaces older codes so stale
+    browser tabs stop polling before they hit Microsoft's token endpoint.
     """
     auth_session_id = uuid.uuid4().hex
     async with DEVICE_AUTH_LOCK:
         _prune_device_auth_flows_locked(int(time.time()))
-        DEVICE_AUTH_FLOWS[_device_auth_key(user_id)] = {
+        DEVICE_AUTH_FLOWS[_device_auth_key(user_id, provider_key)] = {
             "auth_session_id": auth_session_id,
             "provider": provider_key,
             "device_code_hash": _device_code_hash(device_code),
@@ -183,7 +191,10 @@ async def _remember_device_auth_flow(
         await _prune_device_auth_sessions(db)
         result = await db.execute(
             select(AIMicrosoftDeviceAuthSession)
-            .where(AIMicrosoftDeviceAuthSession.user_id == user_id)
+            .where(
+                AIMicrosoftDeviceAuthSession.user_id == user_id,
+                AIMicrosoftDeviceAuthSession.provider == provider_key,
+            )
             .with_for_update()
         )
         session = result.scalar_one_or_none()
@@ -213,7 +224,7 @@ async def _validate_device_auth_flow(
     db: Any = None,
 ) -> dict[str, Any]:
     """Return a stale/expired response when a callback is no longer current."""
-    flow, _ = await _load_device_auth_flow(db=db, user_id=user_id)
+    flow, _ = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id)
 
     if not flow:
         if auth_session_id:
@@ -302,7 +313,7 @@ async def _claim_device_auth_poll(
 
     now = time.time()
     if _is_real_db_session(db):
-        flow, session = await _load_device_auth_flow(db=db, user_id=user_id, for_update=True)
+        flow, session = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id, for_update=True)
         if not flow or not session:
             return validation
         supplied_session_id = str(auth_session_id or "").strip()
@@ -368,7 +379,7 @@ async def _claim_device_auth_poll(
         return {"ok": True, "auth_session_id": str(flow.get("auth_session_id") or auth_session_id or "")}
 
     async with DEVICE_AUTH_LOCK:
-        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id))
+        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id, provider_key))
         if not flow:
             return validation
         supplied_session_id = str(auth_session_id or "").strip()
@@ -441,7 +452,7 @@ async def _release_device_auth_poll(
     db: Any = None,
 ) -> None:
     if _is_real_db_session(db):
-        flow, session = await _load_device_auth_flow(db=db, user_id=user_id, for_update=True)
+        flow, session = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id, for_update=True)
         if not flow or not session:
             return
         supplied_session_id = str(auth_session_id or "").strip()
@@ -456,7 +467,7 @@ async def _release_device_auth_poll(
         return
 
     async with DEVICE_AUTH_LOCK:
-        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id))
+        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id, provider_key))
         if not flow:
             return
         supplied_session_id = str(auth_session_id or "").strip()
@@ -478,7 +489,7 @@ async def _update_device_auth_poll_interval(
     db: Any = None,
 ) -> None:
     if _is_real_db_session(db):
-        flow, session = await _load_device_auth_flow(db=db, user_id=user_id, for_update=True)
+        flow, session = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id, for_update=True)
         if not flow or not session:
             return
         supplied_session_id = str(auth_session_id or "").strip()
@@ -493,7 +504,7 @@ async def _update_device_auth_poll_interval(
         return
 
     async with DEVICE_AUTH_LOCK:
-        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id))
+        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id, provider_key))
         if not flow:
             return
         supplied_session_id = str(auth_session_id or "").strip()
@@ -513,7 +524,7 @@ async def _is_device_auth_flow_current(
     auth_session_id: str | None,
     db: Any = None,
 ) -> bool:
-    flow, _ = await _load_device_auth_flow(db=db, user_id=user_id)
+    flow, _ = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id)
     if not flow:
         return False
     supplied_session_id = str(auth_session_id or "").strip()
@@ -533,7 +544,7 @@ async def _clear_device_auth_flow(
     db: Any = None,
 ) -> None:
     if _is_real_db_session(db):
-        flow, session = await _load_device_auth_flow(db=db, user_id=user_id, for_update=True)
+        flow, session = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id, for_update=True)
         if not flow or not session:
             return
         supplied_session_id = str(auth_session_id or "").strip()
@@ -547,7 +558,7 @@ async def _clear_device_auth_flow(
         return
 
     async with DEVICE_AUTH_LOCK:
-        key = _device_auth_key(user_id)
+        key = _device_auth_key(user_id, provider_key)
         flow = DEVICE_AUTH_FLOWS.get(key)
         if not flow:
             return
@@ -562,14 +573,14 @@ async def _clear_device_auth_flow(
 
 async def _clear_device_auth_flow_for_provider(*, provider_key: str, user_id: Any, db: Any = None) -> None:
     if _is_real_db_session(db):
-        flow, session = await _load_device_auth_flow(db=db, user_id=user_id, for_update=True)
+        flow, session = await _load_device_auth_flow(db=db, provider_key=provider_key, user_id=user_id, for_update=True)
         if flow and session and str(flow.get("provider") or "") == provider_key:
             await db.delete(session)
             await db.commit()
         return
 
     async with DEVICE_AUTH_LOCK:
-        key = _device_auth_key(user_id)
+        key = _device_auth_key(user_id, provider_key)
         flow = DEVICE_AUTH_FLOWS.get(key)
         if flow and str(flow.get("provider") or "") == provider_key:
             DEVICE_AUTH_FLOWS.pop(key, None)
