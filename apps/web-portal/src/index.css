@@ -281,14 +281,23 @@
 .markdown-body p:last-child {
   margin-bottom: 0;
 }
-.markdown-body h2, .markdown-body h3, .markdown-body h4 {
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
   margin: 1em 0 0.4em;
   font-weight: 700;
   color: var(--color-text);
 }
+.markdown-body h1 { font-size: 1.25rem; }
 .markdown-body h2 { font-size: 1.15rem; }
 .markdown-body h3 { font-size: 1.05rem; }
 .markdown-body h4 { font-size: 0.95rem; }
+.markdown-body a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body a:hover {
+  opacity: 0.8;
+}
 .markdown-body ul, .markdown-body ol {
   margin: 0.4em 0;
   padding-left: 1.5em;

@@ -4,10 +4,9 @@ import uuid
 import os
 import time
 import jwt
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.config import get_settings
-from app.core.security import DEVELOPER_ROLES, api_key_auth, require_role
+from app.core.security import api_key_auth
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.key_vault import get_secret_value
@@ -18,7 +17,7 @@ from app.services.connected_account_state import (
     sync_delegated_account_from_token,
     upsert_delegated_account,
 )
-from app.services.connectors.github_cli import diagnose_github_connection, run_github_cli_command
+from app.services.connectors.github_cli import diagnose_github_connection
 
 router = APIRouter(prefix="/connector/github", tags=["Connector"])
 logger = logging.getLogger(__name__)
@@ -34,18 +33,6 @@ OAUTH_STATE_TTL_SECONDS = 10 * 60
 def _is_configured_value(value: str) -> bool:
     normalized = (value or "").strip().lower()
     return bool(normalized and not normalized.startswith("your-") and normalized not in {"placeholder", "changeme", "todo"})
-
-
-class GithubCliRequest(BaseModel):
-    command: str = Field(..., description="GitHub CLI command (gh, git, rg, jq)")
-    purpose: str = Field("", description="Purpose")
-    timeout: int = Field(60, description="Timeout", le=300)
-
-
-@router.post("/cli")
-async def github_cli(req: GithubCliRequest, auth: dict = Depends(require_role(list(DEVELOPER_ROLES)))):
-    """Execute a GitHub CLI command as the connected user."""
-    return await run_github_cli_command(req.command, auth.get("user_id"), timeout=req.timeout)
 
 
 async def _resolve_secret_config(env_value: str, secret_name: str) -> str:

@@ -3,7 +3,7 @@ import json
 import uuid
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.encoders import jsonable_encoder
@@ -29,6 +29,10 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ChatSessionCreate(BaseModel):
@@ -94,10 +98,10 @@ async def create_chat_session(
         user_id=user_id,
         title=title,
         status="active",
-        last_message_at=datetime.utcnow(),
+        last_message_at=_utcnow(),
         metadata_json={"title_source": title_source},
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
     )
     db.add(session)
     await db.commit()
@@ -167,9 +171,9 @@ async def update_chat_session(
     session.title = title
     metadata = dict(session.metadata_json or {})
     metadata["title_source"] = "manual"
-    metadata["title_updated_at"] = datetime.utcnow().isoformat()
+    metadata["title_updated_at"] = _utcnow().isoformat()
     session.metadata_json = metadata
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utcnow()
     await db.commit()
     await db.refresh(session)
     return session
@@ -194,7 +198,7 @@ async def delete_chat_session(
         raise HTTPException(status_code=404, detail="Chat session not found.")
     
     session.status = "archived"
-    session.updated_at = datetime.utcnow()
+    session.updated_at = _utcnow()
     await db.commit()
 
 
@@ -276,7 +280,7 @@ async def _last_assistant_message(db: AsyncSession, session_id: UUID) -> AIChatM
 def _adjust_memory_confidence(memory: AIMemory, feedback_kind: str) -> str:
     if feedback_kind == "worked":
         memory.success_count = (memory.success_count or 0) + 1
-        memory.last_confirmed_at = datetime.utcnow()
+        memory.last_confirmed_at = _utcnow()
         if memory.confidence == "low":
             memory.confidence = "medium"
         elif memory.confidence == "medium":
@@ -322,7 +326,7 @@ async def _apply_memory_feedback(
     audit_action = _adjust_memory_confidence(memory, feedback_kind)
     if audit_action == "memory_flagged_for_review":
         _add_memory_review_task(db, memory, content)
-    memory.updated_at = datetime.utcnow()
+    memory.updated_at = _utcnow()
 
     await AuditService(db).log_event(AIAuditEventCreate(
         action_type=audit_action,
@@ -364,7 +368,7 @@ def _new_chat_message(session_id: UUID, user_id: UUID, role: str, content: str, 
         user_id=user_id,
         role=role,
         content=content,
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
         **extra,
     )
 
@@ -389,7 +393,7 @@ def _session_metadata(session: AIChatSession) -> dict[str, Any]:
 def _set_session_title_source(session: AIChatSession, source: str) -> None:
     metadata = _session_metadata(session)
     metadata["title_source"] = source
-    metadata["title_updated_at"] = datetime.utcnow().isoformat()
+    metadata["title_updated_at"] = _utcnow().isoformat()
     session.metadata_json = metadata
 
 
@@ -583,8 +587,8 @@ async def _persist_failed_message(
 
 
 async def _commit_user_turn_start(db: AsyncSession, session: AIChatSession) -> None:
-    session.last_message_at = datetime.utcnow()
-    session.updated_at = datetime.utcnow()
+    session.last_message_at = _utcnow()
+    session.updated_at = _utcnow()
     await db.commit()
 
 
@@ -836,7 +840,7 @@ async def _record_memory_usage(
             mem_q = await db.execute(select(AIMemory).where(AIMemory.id == mem_id))
             memory = mem_q.scalar_one_or_none()
             if memory:
-                memory.last_used_at = datetime.utcnow()
+                memory.last_used_at = _utcnow()
             db.add(AIMemoryUsageEvent(
                 id=uuid.uuid4(),
                 memory_id=mem_id,
@@ -846,7 +850,7 @@ async def _record_memory_usage(
                 request_id=request_id,
                 used_in_context="true",
                 used_in_final_answer="true" if memory_ref["title"].lower() in assistant_msg.content.lower() else "false",
-                created_at=datetime.utcnow(),
+                created_at=_utcnow(),
             ))
         except Exception as exc:
             logger.warning("Failed to record memory usage event: %s", exc)
@@ -864,8 +868,8 @@ async def _persist_success(
 ) -> None:
     db.add(assistant_msg)
     await _record_memory_usage(db, context_data, assistant_msg, session_id, user_id, request_id)
-    session.last_message_at = datetime.utcnow()
-    session.updated_at = datetime.utcnow()
+    session.last_message_at = _utcnow()
+    session.updated_at = _utcnow()
     await db.commit()
     await db.refresh(assistant_msg)
 
@@ -998,7 +1002,9 @@ def _sse(event_type: str, payload: Any) -> str:
 
 
 def _stream_heartbeat_payload(request_id: str, started_at: datetime) -> dict[str, Any]:
-    elapsed_seconds = max(0, int((datetime.utcnow() - started_at).total_seconds()))
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    elapsed_seconds = max(0, int((_utcnow() - started_at).total_seconds()))
     return {"request_id": request_id, "elapsed_seconds": elapsed_seconds}
 
 
@@ -1039,7 +1045,7 @@ async def stream_chat_message(
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     user_id = auth["user_id"]
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    stream_started_at = datetime.utcnow()
+    stream_started_at = _utcnow()
 
     def collect_activity(event: dict[str, Any]) -> None:
         queue.put_nowait({"type": "activity", "payload": event})

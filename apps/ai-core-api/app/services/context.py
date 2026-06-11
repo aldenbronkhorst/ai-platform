@@ -3,7 +3,7 @@
 Respects connector availability so that tools and rules for disconnected systems
 are not injected as available capabilities.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,7 +40,7 @@ class ContextService:
         connected_systems: Optional[set[str]] = None,
     ) -> dict:
         connected_systems = connected_systems if connected_systems is not None else await self._get_connected_systems(user_id)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # ── Fetch relevant rules ──
         rules_query = select(AIRule).where(

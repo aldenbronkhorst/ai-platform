@@ -2,7 +2,7 @@
 import os
 import uuid
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 
 os.environ["DEBUG"] = "true"
 os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
@@ -59,8 +59,8 @@ class MockSession:
             if isinstance(obj, AIMemory):
                 if not obj.id:
                     obj.id = uuid.uuid4()
-                obj.created_at = datetime.utcnow()
-                obj.updated_at = datetime.utcnow()
+                obj.created_at = datetime.now(timezone.utc)
+                obj.updated_at = datetime.now(timezone.utc)
                 self.memories.append(obj)
 
     async def commit(self):
@@ -105,7 +105,7 @@ class TestMemoryCandidateService:
             user_id=uuid.uuid4(),
             role="user",
             content="Remember this: ABC customers need special attention",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         svc = MemoryCandidateService(mock_db)
         candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
@@ -125,7 +125,7 @@ class TestMemoryCandidateService:
             user_id=uuid.uuid4(),
             role="user",
             content="No, that's not dollars, it should be ZAR",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         svc = MemoryCandidateService(mock_db)
         candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
@@ -144,7 +144,7 @@ class TestMemoryCandidateService:
             user_id=uuid.uuid4(),
             role="user",
             content="Thanks, that worked! The downstairs printer setup is working now.",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         svc = MemoryCandidateService(mock_db)
         candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
@@ -164,7 +164,7 @@ class TestMemoryCandidateService:
             user_id=uuid.uuid4(),
             role="user",
             content="What is the weather today?",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         svc = MemoryCandidateService(mock_db)
         candidates = await svc.extract_from_messages([msg], user_id=uuid.uuid4())
@@ -183,8 +183,8 @@ class TestMemoryCandidateService:
             status="active",
             confidence="medium",
             risk_level="low",
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         mock_db.memories.append(existing)
 

@@ -65,16 +65,11 @@ class OdooOpsRunnerRequest(BaseModel):
     include_raw_lines: bool = False
     attachment_id: Optional[int] = None
     attachment_ids: Optional[list[int]] = None
-    purpose: Optional[str] = None
     content_fields: Optional[list[str]] = None
     max_content_chars: int = 5000
     operation: Optional[str] = None
     values: Optional[dict[str, Any]] = None
-    workflow_method: Optional[str] = None
-    target_type: Optional[str] = None
     record_id: Optional[int] = None
-    channel_id: Optional[int] = None
-    message_id: Optional[int] = None
     message_type: Optional[str] = None
     subtype_xmlid: Optional[str] = None
     partner_ids: Optional[list[int]] = None
@@ -82,7 +77,6 @@ class OdooOpsRunnerRequest(BaseModel):
     body: Optional[str] = None
     query: Optional[str] = None
     raw_html: bool = False
-    transport: Optional[str] = None
     method: Optional[str] = None
     args: Optional[list[Any]] = None
     kwargs: Optional[dict[str, Any]] = None

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { InteractionStatus } from "@azure/msal-browser";
 import { loginRequest } from "./authConfig";
 import { loginRequestWithAuthHint, readStoredAuthHint } from "./authSession";
@@ -6,9 +6,6 @@ import type { ChatAttachment, ChatSession, ChatMessage, AttachedFile } from "./t
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
 import { ChatView } from "./components/chat/ChatView";
-import { ConnectionsPage } from "./pages/ConnectionsPage";
-import { AuditPage } from "./pages/AuditPage";
-import { AdminPage } from "./pages/AdminPage";
 import type { ActiveTab } from "./types";
 import { APIM_BASE_URL, fetchWithTimeout } from "./hooks/useApi";
 import { usePortalAuth } from "./hooks/usePortalAuth";
@@ -32,6 +29,16 @@ import {
   uploadFailureFromResponse,
   writeCachedChatSessions,
 } from "./chat/runtime";
+
+const ConnectionsPage = lazy(() =>
+  import("./pages/ConnectionsPage").then(module => ({ default: module.ConnectionsPage }))
+);
+const AuditPage = lazy(() =>
+  import("./pages/AuditPage").then(module => ({ default: module.AuditPage }))
+);
+const AdminPage = lazy(() =>
+  import("./pages/AdminPage").then(module => ({ default: module.AdminPage }))
+);
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
@@ -62,6 +69,14 @@ function mergeChatMessages(persistedMessages: ChatMessage[], localMessages: Chat
 
 function removeRequestMessages(messages: ChatMessage[], requestId: string) {
   return messages.filter(message => messageRequestId(message) !== requestId);
+}
+
+function PageLoader() {
+  return (
+    <div className="flex min-h-[240px] items-center justify-center" aria-label="Loading page" role="status">
+      <div className="h-8 w-8 rounded-full border-2 border-muted border-t-default animate-spin" />
+    </div>
+  );
 }
 
 export default function App({ startupAuthError }: { startupAuthError: string | null }) {
@@ -782,14 +797,22 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
           />
         );
       case "connected-accounts":
-        return <ConnectionsPage accessToken={accessToken} />;
+        return (
+          <Suspense fallback={<PageLoader />}>
+            <ConnectionsPage accessToken={accessToken} />
+          </Suspense>
+        );
       case "audit":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Auditor"]) ? (
-          <AuditPage accessToken={accessToken} />
+          <Suspense fallback={<PageLoader />}>
+            <AuditPage accessToken={accessToken} />
+          </Suspense>
         ) : null;
       case "admin":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
-          <AdminPage accessToken={accessToken} />
+          <Suspense fallback={<PageLoader />}>
+            <AdminPage accessToken={accessToken} />
+          </Suspense>
         ) : null;
       default:
         return null;

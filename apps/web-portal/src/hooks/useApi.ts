@@ -2,7 +2,7 @@ export const APIM_BASE_URL =
   import.meta.env.VITE_APIM_BASE_URL ||
   "https://apim-ai-platform-prod-san-001.azure-api.net";
 
-export const READ_REQUEST_TIMEOUT_MS = 15_000;
+const READ_REQUEST_TIMEOUT_MS = 15_000;
 
 export function isAbortError(err: unknown) {
   return typeof err === "object" && err !== null && "name" in err
