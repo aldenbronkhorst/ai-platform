@@ -7,7 +7,6 @@ from typing import Any, Optional
 from uuid import UUID
 
 from app.services.key_vault import (
-    delete_secret,
     get_secret_value,
     key_vault_uri,
     recover_deleted_secret,
@@ -85,8 +84,34 @@ def _is_recoverable_deleted_secret_error(exc: Exception) -> bool:
     )
 
 
+def _is_secret_not_found_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    error_code = str(getattr(exc, "error_code", "") or "").lower()
+    return "secretnotfound" in text or "secretnotfound" in error_code
+
+
 def _has_value(value: Any) -> bool:
     return value is not None and value != "" and value != {}
+
+
+def _is_disconnected_marker(token_data: dict[str, Any]) -> bool:
+    return str(token_data.get("status") or "").lower() == "disconnected"
+
+
+def _has_token_material(token_data: dict[str, Any]) -> bool:
+    return any(
+        _has_value(token_data.get(key))
+        for key in ("access_token", "refresh_token", "delegated_tokens")
+    )
+
+
+def _disconnected_token_marker(provider: str, user_id: UUID) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "status": "disconnected",
+        "disconnected_at": int(time.time()),
+        "user_ref": user_id.hex[:12],
+    }
 
 
 def _microsoft_admin_delegated_tokens_for_storage(
@@ -212,28 +237,57 @@ async def retrieve_token(provider: str, user_id: UUID) -> Optional[dict[str, Any
         return None
     try:
         secret_value = await get_secret_value(_secret_name(provider, user_id))
-        return json.loads(secret_value)
+        token_data = json.loads(secret_value)
+        if not isinstance(token_data, dict) or _is_disconnected_marker(token_data):
+            return None
+        return token_data
     except Exception as e:
-        logger.warning("No %s token found for user %s: %s", provider, user_id.hex[:12], e)
+        if _is_secret_not_found_error(e):
+            logger.debug("No %s token found for user %s", provider, user_id.hex[:12])
+        else:
+            logger.warning("No %s token found for user %s: %s", provider, user_id.hex[:12], e)
         return None
 
 
 async def delete_token(provider: str, user_id: UUID) -> bool:
-    """Delete OAuth token from Key Vault (disconnect)."""
+    """Clear OAuth token material without soft-deleting the Key Vault secret name.
+
+    Production Key Vault has soft-delete and purge protection enabled. Deleting
+    the deterministic connector secret name leaves it recoverable for months
+    and blocks immediate reconnect with ObjectIsDeletedButRecoverable. Writing a
+    non-secret disconnected marker removes current credential material while
+    keeping the name reusable for the next sign-in.
+    """
     if not key_vault_uri():
         return False
+    secret_name = _secret_name(provider, user_id)
+    secret_value = json.dumps(_disconnected_token_marker(provider, user_id), separators=(",", ":"))
     try:
-        await delete_secret(_secret_name(provider, user_id))
-        logger.info("Deleted %s token for user %s", provider, user_id.hex[:12])
+        await set_secret_value(secret_name, secret_value)
+        logger.info("Cleared %s token for user %s", provider, user_id.hex[:12])
         return True
     except Exception as e:
-        logger.warning("Failed to delete %s token for user %s: %s", provider, user_id.hex[:12], e)
+        if _is_recoverable_deleted_secret_error(e):
+            try:
+                await recover_deleted_secret(secret_name)
+                await set_secret_value(secret_name, secret_value)
+                logger.info("Recovered and cleared %s token for user %s", provider, user_id.hex[:12])
+                return True
+            except Exception as recover_error:
+                logger.warning(
+                    "Failed to recover and clear %s token for user %s: %s",
+                    provider,
+                    user_id.hex[:12],
+                    recover_error,
+                )
+                return False
+        logger.warning("Failed to clear %s token for user %s: %s", provider, user_id.hex[:12], e)
         return False
 
 
 def token_status_from_data(provider: str, token: Optional[dict[str, Any]]) -> dict[str, Any]:
     """Return connection status metadata for an already-loaded token payload."""
-    if not token:
+    if not token or _is_disconnected_marker(token):
         return {"status": "not_connected", "provider": provider}
     if token.get("refresh_error") and not token.get("access_token"):
         return {
@@ -247,6 +301,8 @@ def token_status_from_data(provider: str, token: Optional[dict[str, Any]]) -> di
             "error": token.get("refresh_error"),
             "error_type": token.get("error_type"),
         }
+    if not _has_token_material(token):
+        return {"status": "not_connected", "provider": provider}
     expires_on = token.get("expires_on")
     try:
         expires_ts = int(expires_on) if expires_on else None

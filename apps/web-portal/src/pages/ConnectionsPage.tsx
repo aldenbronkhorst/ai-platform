@@ -479,7 +479,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts?include_token_state=true`, { headers: headers() });
+      const res = await fetchWithTimeout(`${APIM_BASE_URL}/connected-accounts`, { headers: headers() });
       if (res.ok) {
         const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
         const meta: Record<string, ConnectorMeta> = {};
