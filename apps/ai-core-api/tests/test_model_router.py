@@ -17,9 +17,6 @@ from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnec
 from app.services.model_router import (
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
-    _fallback_chat_title,
-    _canonical_tool_invocation,
-    _sanitize_chat_title,
     _tool_selection_message,
     _compact_tool_result_for_model,
     _append_tool_guidance,
@@ -27,6 +24,8 @@ from app.services.model_router import (
     _guard_connected_system_denial,
     _execute_tool_call_impl,
 )
+from app.services.chat_titles import _fallback_chat_title, _sanitize_chat_title
+from app.services.model_tool_calls import _canonical_tool_invocation
 from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
 
@@ -506,7 +505,7 @@ async def test_odoo_tool_credentials_fall_back_to_company_facts_for_legacy_accou
 
 @pytest.mark.asyncio
 async def test_generate_chat_title_falls_back_when_title_model_unavailable():
-    from app.services.model_router import generate_chat_title
+    from app.services.chat_titles import generate_chat_title
 
     title = await generate_chat_title([
         {"role": "user", "content": "what are all my azure resources and month to date costs"}
@@ -517,7 +516,7 @@ async def test_generate_chat_title_falls_back_when_title_model_unavailable():
 
 @pytest.mark.asyncio
 async def test_generate_chat_title_does_not_call_model():
-    from app.services.model_router import generate_chat_title
+    from app.services.chat_titles import generate_chat_title
 
     with patch("app.services.model_router._call_model", new=AsyncMock()) as call_model:
         title = await generate_chat_title([
@@ -1135,17 +1134,17 @@ class TestGreetingIdentity:
 
 class TestToolDefinitions:
     def test_build_tool_definitions_empty(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_tool_calls import _build_tool_definitions
         assert _build_tool_definitions([]) == []
 
     def test_build_tool_definitions_skips_missing_schema(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(name="odoo_ops_runner", display_name="Odoo Ops Runner",
                        description="Search Odoo", target_system="odoo", input_schema=None)
         assert _build_tool_definitions([tool]) == []
 
     def test_build_tool_definitions_valid(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
             name="odoo_ops_runner", display_name="Odoo Ops Runner",
             description="Run Odoo operations",
@@ -1159,7 +1158,8 @@ class TestToolDefinitions:
         assert "parameters" in defs[0]["function"]
 
     def test_odoo_tool_guidance_forbids_invented_links(self):
-        from app.services.model_router import _append_tool_guidance, _build_tool_definitions
+        from app.services.model_router import _append_tool_guidance
+        from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
             name="odoo_ops_runner",
             display_name="Odoo Ops Runner",
@@ -1177,7 +1177,7 @@ class TestToolDefinitions:
         assert "not a private Discuss direct message" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
             name="odoo.ops_runner", display_name="Odoo Ops Runner",
             description="Run Odoo operations",
@@ -1190,7 +1190,7 @@ class TestToolDefinitions:
         assert "." not in defs[0]["function"]["name"]
 
     def test_normalize_tool_name(self):
-        from app.services.model_router import _normalize_tool_name
+        from app.services.model_tool_calls import _normalize_tool_name
         assert _normalize_tool_name("odoo.ops_runner") == "odoo_ops_runner"
         assert _normalize_tool_name("odoo.attach_artifact") == "odoo_attach_artifact"
         assert _normalize_tool_name("already_normal") == "already_normal"
@@ -1198,7 +1198,7 @@ class TestToolDefinitions:
         assert len(_normalize_tool_name("a" * 100)) == 64
 
     def test_build_tool_definitions_strips_invalid_chars(self):
-        from app.services.model_router import _build_tool_definitions
+        from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
             name="odoo#attach@artifact!", display_name="Odoo Attach",
             description="Attach artifact",
@@ -1472,7 +1472,7 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
     def test_odoo_alias_execute_is_not_canonicalized(self):
-        from app.services.model_router import _canonical_tool_invocation
+        from app.services.model_tool_calls import _canonical_tool_invocation
 
         original_arguments = {
             "model": "mail.activity",
@@ -3066,7 +3066,7 @@ class TestToolExecution:
 
     def test_coerce_text_tool_call_from_json_envelope_block(self):
         """Some models emit the tool name and arguments as one JSON object inside the marker block."""
-        from app.services.model_router import _coerce_text_tool_calls
+        from app.services.model_tool_calls import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
             {
@@ -3098,7 +3098,7 @@ class TestToolExecution:
 
     def test_coerce_text_tool_call_ignores_cased_odoo_alias_without_mode(self):
         """Legacy Odoo aliases are ignored instead of being guessed into canonical calls."""
-        from app.services.model_router import _coerce_text_tool_calls
+        from app.services.model_tool_calls import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
             {
@@ -3123,7 +3123,7 @@ class TestToolExecution:
 
     def test_coerce_text_tool_call_converts_microsoft_graph_alias_with_full_url(self):
         """Production textual Microsoft Graph aliases must execute instead of becoming 502s."""
-        from app.services.model_router import _coerce_text_tool_calls
+        from app.services.model_tool_calls import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
             {
@@ -3156,7 +3156,7 @@ class TestToolExecution:
 
     def test_coerce_text_tool_call_from_xml_json_envelope_with_parameters(self):
         """The parser must handle XML-style tool_call blocks with parameters instead of arguments."""
-        from app.services.model_router import _coerce_text_tool_calls
+        from app.services.model_tool_calls import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
             {
@@ -3187,7 +3187,7 @@ class TestToolExecution:
 
     def test_coerce_text_tool_call_from_function_payload_with_string_arguments(self):
         """OpenAI-compatible function envelopes may nest a JSON string under function.arguments."""
-        from app.services.model_router import _coerce_text_tool_calls
+        from app.services.model_tool_calls import _coerce_text_tool_calls
 
         result = _coerce_text_tool_calls(
             {

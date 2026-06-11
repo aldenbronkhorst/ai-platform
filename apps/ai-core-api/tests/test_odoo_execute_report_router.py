@@ -304,7 +304,7 @@ class TestReportDiscovery:
     """Tests for consolidated report routing."""
 
     def test_only_odoo_ops_runner_is_canonical(self):
-        from app.services.model_router import _canonical_tool_invocation
+        from app.services.model_tool_calls import _canonical_tool_invocation
 
         assert _canonical_tool_invocation("odoo_ops_runner", {"mode": "report"}) == (
             "odoo_ops_runner",
@@ -430,7 +430,7 @@ class TestExecuteChatReportFallback:
 
     def test_pnl_uses_generic_report_tool(self):
         """P&L question must route through odoo_ops_runner, not a dedicated tool."""
-        from app.services.model_router import _canonical_tool_invocation
+        from app.services.model_tool_calls import _canonical_tool_invocation
 
         tool_name, arguments = _canonical_tool_invocation(
             "odoo_ops_runner",

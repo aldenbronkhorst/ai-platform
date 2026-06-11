@@ -412,7 +412,7 @@ async def _maybe_generate_session_title(
     if not _can_auto_title_session(session):
         return
 
-    from app.services.model_router import generate_chat_title
+    from app.services.chat_titles import generate_chat_title
 
     title = await generate_chat_title(
         [*messages, {"role": "assistant", "content": assistant_content}],
