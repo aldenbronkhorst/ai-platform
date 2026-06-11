@@ -1,6 +1,8 @@
 """Native Microsoft tool connectors: Azure CLI, Graph, Exchange, Teams, SharePoint."""
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -63,6 +65,129 @@ DEVICE_CODE_TERMINAL_ERRORS = {
     "bad_verification_code": "Microsoft rejected the sign-in code. Start a new sign-in and enter the newest code.",
     "expired_token": "The Microsoft sign-in code expired before authorization completed. Start a new sign-in.",
 }
+DEVICE_AUTH_FLOWS: dict[str, dict[str, Any]] = {}
+DEVICE_AUTH_LOCK = asyncio.Lock()
+
+
+def _device_auth_key(user_id: Any) -> str:
+    return str(user_id)
+
+
+def _device_code_hash(device_code: str) -> str:
+    return hashlib.sha256(device_code.encode("utf-8")).hexdigest()
+
+
+def _prune_device_auth_flows_locked(now: int) -> None:
+    expired_keys = [
+        key
+        for key, flow in DEVICE_AUTH_FLOWS.items()
+        if int(flow.get("expires_at") or 0) <= now
+    ]
+    for key in expired_keys:
+        DEVICE_AUTH_FLOWS.pop(key, None)
+
+
+async def _remember_device_auth_flow(
+    *,
+    provider_key: str,
+    user_id: Any,
+    device_code: str,
+    expires_at: int,
+    request_id: str,
+) -> str:
+    """Record the newest Microsoft device-code flow for a user.
+
+    Microsoft's manual device-code page is not a good place to run several
+    concurrent admin-tool sign-ins. Keeping one active flow per user lets the
+    API stop stale polling loops before they keep hammering token endpoints or
+    confuse the browser into reusing an older code.
+    """
+    auth_session_id = uuid.uuid4().hex
+    async with DEVICE_AUTH_LOCK:
+        _prune_device_auth_flows_locked(int(time.time()))
+        DEVICE_AUTH_FLOWS[_device_auth_key(user_id)] = {
+            "auth_session_id": auth_session_id,
+            "provider": provider_key,
+            "device_code_hash": _device_code_hash(device_code),
+            "expires_at": int(expires_at),
+            "request_id": request_id,
+        }
+    return auth_session_id
+
+
+async def _validate_device_auth_flow(
+    *,
+    provider_key: str,
+    user_id: Any,
+    device_code: str,
+    auth_session_id: str | None,
+    request_id: str,
+) -> dict[str, Any]:
+    """Return a stale/expired response when a callback is no longer current."""
+    now = int(time.time())
+    async with DEVICE_AUTH_LOCK:
+        _prune_device_auth_flows_locked(now)
+        flow = DEVICE_AUTH_FLOWS.get(_device_auth_key(user_id))
+
+    if not flow:
+        return {"ok": True, "auth_session_id": auth_session_id}
+
+    active_session_id = str(flow.get("auth_session_id") or "")
+    active_provider = str(flow.get("provider") or "")
+    active_hash = str(flow.get("device_code_hash") or "")
+    supplied_session_id = str(auth_session_id or "").strip()
+    same_session = (
+        active_provider == provider_key
+        and active_hash == _device_code_hash(device_code)
+        and (not supplied_session_id or supplied_session_id == active_session_id)
+    )
+    if same_session:
+        return {"ok": True, "auth_session_id": active_session_id}
+
+    logger.info(
+        "Native Microsoft stale device-code callback stopped provider=%s active_provider=%s request_id=%s active_request_id=%s",
+        provider_key,
+        active_provider,
+        request_id,
+        flow.get("request_id"),
+    )
+    return {
+        "ok": False,
+        "response": {
+            "status": "stale",
+            "connector": provider_key,
+            "error": "stale_device_code",
+            "error_type": "stale_device_code",
+            "message": (
+                "A newer Microsoft sign-in was started. This older device code has been stopped; "
+                "use the newest code shown in the connector panel."
+            ),
+            "request_id": request_id,
+            "active_auth_session_id": active_session_id,
+            "active_connector": active_provider,
+        },
+    }
+
+
+async def _clear_device_auth_flow(
+    *,
+    provider_key: str,
+    user_id: Any,
+    device_code: str,
+    auth_session_id: str | None,
+) -> None:
+    async with DEVICE_AUTH_LOCK:
+        key = _device_auth_key(user_id)
+        flow = DEVICE_AUTH_FLOWS.get(key)
+        if not flow:
+            return
+        supplied_session_id = str(auth_session_id or "").strip()
+        if (
+            str(flow.get("provider") or "") == provider_key
+            and str(flow.get("device_code_hash") or "") == _device_code_hash(device_code)
+            and (not supplied_session_id or supplied_session_id == str(flow.get("auth_session_id") or ""))
+        ):
+            DEVICE_AUTH_FLOWS.pop(key, None)
 
 
 def _provider_or_404(provider: str) -> str:
@@ -149,7 +274,9 @@ async def start_device_code(
     auth: dict = Depends(api_key_auth),
 ):
     """Start a device-code flow for one native Microsoft tool connector."""
-    _ = auth
+    user_id = auth.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing auth")
     provider_key = _provider_or_404(provider)
     unsupported = _connect_unsupported(provider_key)
     request_id = uuid.uuid4().hex[:16]
@@ -191,17 +318,26 @@ async def start_device_code(
             data.get("expires_in", 900),
             data.get("interval", 5),
         )
+        expires_at = int(time.time()) + int(data.get("expires_in") or 900)
+        auth_session_id = await _remember_device_auth_flow(
+            provider_key=provider_key,
+            user_id=user_id,
+            device_code=data["device_code"],
+            expires_at=expires_at,
+            request_id=request_id,
+        )
         verification_url = data.get("verification_uri") or data.get("verification_url") or "https://microsoft.com/devicelogin"
         return {
             "status": "device_code_ready",
             "connector": provider_key,
+            "auth_session_id": auth_session_id,
             "device_code": data["device_code"],
             "user_code": data["user_code"],
             "verification_uri": verification_url,
             "verification_url": verification_url,
             "interval": data.get("interval", 5),
             "expires_in": data.get("expires_in", 900),
-            "expires_at": int(time.time()) + int(data.get("expires_in") or 900),
+            "expires_at": expires_at,
             "scope_profile": microsoft_native_profile_for_provider(provider_key),
             "scope_label": microsoft_native_label_for_provider(provider_key),
             "scope_summary": scope_summary,
@@ -233,6 +369,7 @@ async def device_code_callback(
     provider_key = _provider_or_404(provider)
     user_id = auth.get("user_id")
     device_code = req.get("device_code", "")
+    auth_session_id = str(req.get("auth_session_id") or "").strip() or None
     if not device_code or not user_id:
         raise HTTPException(status_code=400, detail="Missing device_code or auth")
 
@@ -243,6 +380,16 @@ async def device_code_callback(
 
     client_id = microsoft_native_client_id_for_provider(provider_key)
     auth_flow, oauth_value, scope_summary, site_url = _device_auth_for_request(provider_key, req)
+    flow_state = await _validate_device_auth_flow(
+        provider_key=provider_key,
+        user_id=user_id,
+        device_code=device_code,
+        auth_session_id=auth_session_id,
+        request_id=request_id,
+    )
+    if not flow_state.get("ok"):
+        return flow_state["response"]
+    auth_session_id = flow_state.get("auth_session_id") or auth_session_id
     if auth_flow == "v1_resource":
         endpoint = AZURE_V1_TOKEN_ENDPOINT
         token_payload_request = {
@@ -280,9 +427,17 @@ async def device_code_callback(
                     data.get("error_description"),
                 )
             message = DEVICE_CODE_TERMINAL_ERRORS.get(error_code) or data.get("error_description") or error_code
+            if not is_pending:
+                await _clear_device_auth_flow(
+                    provider_key=provider_key,
+                    user_id=user_id,
+                    device_code=device_code,
+                    auth_session_id=auth_session_id,
+                )
             return {
                 "status": "pending" if is_pending else "error",
                 "connector": provider_key,
+                "auth_session_id": auth_session_id,
                 "error": data.get("error_description", error_code),
                 "error_type": error_code,
                 "message": message,
@@ -327,9 +482,16 @@ async def device_code_callback(
             permission_summary=f"{microsoft_native_label_for_provider(provider_key)} connected with its own native Microsoft sign-in.",
             commit=True,
         )
+        await _clear_device_auth_flow(
+            provider_key=provider_key,
+            user_id=user_id,
+            device_code=device_code,
+            auth_session_id=auth_session_id,
+        )
         return {
             "status": "connected",
             "connector": provider_key,
+            "auth_session_id": auth_session_id,
             "request_id": request_id,
             "scope_profile": token_payload["scope_profile"],
             "scope_label": microsoft_native_label_for_provider(provider_key),
