@@ -1,3 +1,4 @@
+import asyncio
 import os
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
@@ -255,6 +256,7 @@ class TestConnectedAccountsFlow:
             user_id=user_id,
             device_code="newest-device-code",
             expires_at=int(native.time.time()) + 900,
+            interval=5,
             request_id="newest-request",
         )
         monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
@@ -269,6 +271,298 @@ class TestConnectedAccountsFlow:
         assert result["status"] == "stale"
         assert result["error_type"] == "stale_device_code"
         assert result["active_connector"] == "microsoft_graph"
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_with_missing_session_does_not_poll_microsoft(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                raise AssertionError("missing auth_session_id flow must not poll Microsoft")
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        result = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "old-device-code", "auth_session_id": "missing-session"},
+            auth={"user_id": UUID("e4807f22-97c8-4778-87a2-160f56d25247")},
+            db=AsyncMock(),
+        )
+
+        assert result["status"] == "stale"
+        assert result["error_type"] == "stale_device_code"
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_does_not_store_token_after_disconnect(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        auth_session_id = await native._remember_device_auth_flow(
+            provider_key="microsoft_graph",
+            user_id=user_id,
+            device_code="device-code",
+            expires_at=int(native.time.time()) + 900,
+            interval=5,
+            request_id="started-request",
+        )
+        stored = False
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {
+                    "token_type": "Bearer",
+                    "access_token": "graph-access-token",
+                    "refresh_token": "graph-refresh-token",
+                    "scope": "User.Read",
+                    "expires_in": 3600,
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                await native._clear_device_auth_flow_for_provider(
+                    provider_key="microsoft_graph",
+                    user_id=user_id,
+                )
+                return FakeResponse()
+
+        async def fake_store_token(*_args, **_kwargs):
+            nonlocal stored
+            stored = True
+            return True
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(native, "store_token", fake_store_token)
+
+        result = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "device-code", "auth_session_id": auth_session_id},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        )
+
+        assert result["status"] == "stale"
+        assert result["error_type"] == "stale_device_code"
+        assert stored is False
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_gates_duplicate_polls(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        auth_session_id = await native._remember_device_auth_flow(
+            provider_key="microsoft_graph",
+            user_id=user_id,
+            device_code="device-code",
+            expires_at=int(native.time.time()) + 900,
+            interval=5,
+            request_id="started-request",
+        )
+        poll_count = 0
+
+        class FakeResponse:
+            status_code = 400
+            text = '{"error":"authorization_pending"}'
+
+            def json(self):
+                return {
+                    "error": "authorization_pending",
+                    "error_description": "Authorization is pending.",
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                nonlocal poll_count
+                poll_count += 1
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        first = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "device-code", "auth_session_id": auth_session_id},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        )
+        second = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "device-code", "auth_session_id": auth_session_id},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        )
+
+        assert first["status"] == "pending"
+        assert first["error_type"] == "authorization_pending"
+        assert second["status"] == "pending"
+        assert second["error_type"] == "poll_interval_not_elapsed"
+        assert poll_count == 1
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_blocks_overlapping_polls(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        auth_session_id = await native._remember_device_auth_flow(
+            provider_key="microsoft_graph",
+            user_id=user_id,
+            device_code="device-code",
+            expires_at=int(native.time.time()) + 900,
+            interval=5,
+            request_id="started-request",
+        )
+        first_poll_started = asyncio.Event()
+        finish_first_poll = asyncio.Event()
+        poll_count = 0
+
+        class FakeResponse:
+            status_code = 400
+            text = '{"error":"authorization_pending"}'
+
+            def json(self):
+                return {
+                    "error": "authorization_pending",
+                    "error_description": "Authorization is pending.",
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                nonlocal poll_count
+                poll_count += 1
+                first_poll_started.set()
+                await finish_first_poll.wait()
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        first_task = asyncio.create_task(native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "device-code", "auth_session_id": auth_session_id},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        ))
+        await first_poll_started.wait()
+        second = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "device-code", "auth_session_id": auth_session_id},
+            auth={"user_id": user_id},
+            db=AsyncMock(),
+        )
+        finish_first_poll.set()
+        first = await first_task
+
+        assert first["status"] == "pending"
+        assert first["error_type"] == "authorization_pending"
+        assert second["status"] == "pending"
+        assert second["error_type"] == "poll_in_flight"
+        assert poll_count == 1
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_callback_uses_shared_db_flow_when_memory_empty(self, monkeypatch):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from app.core.database import Base
+        from app.models.models import AIUser
+        from app.routers import connector_microsoft_native as native
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+        poll_count = 0
+
+        class FakeResponse:
+            status_code = 400
+            text = '{"error":"authorization_pending"}'
+
+            def json(self):
+                return {
+                    "error": "authorization_pending",
+                    "error_description": "Authorization is pending.",
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                nonlocal poll_count
+                poll_count += 1
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            async with SessionLocal() as db:
+                db.add(AIUser(
+                    id=user_id,
+                    email="alden@example.com",
+                    display_name="Alden",
+                    role="admin",
+                    is_active="true",
+                ))
+                await db.commit()
+                auth_session_id = await native._remember_device_auth_flow(
+                    provider_key="microsoft_graph",
+                    user_id=user_id,
+                    device_code="device-code",
+                    expires_at=int(native.time.time()) + 900,
+                    interval=5,
+                    request_id="started-request",
+                    db=db,
+                )
+                native.DEVICE_AUTH_FLOWS.clear()
+
+                result = await native.device_code_callback(
+                    "microsoft_graph",
+                    req={"device_code": "device-code", "auth_session_id": auth_session_id},
+                    auth={"user_id": user_id},
+                    db=db,
+                )
+
+            assert result["status"] == "pending"
+            assert result["error_type"] == "authorization_pending"
+            assert poll_count == 1
+        finally:
+            await engine.dispose()
 
     @pytest.mark.asyncio
     async def test_exchange_native_device_code_uses_workload_resource_flow(self, monkeypatch):
