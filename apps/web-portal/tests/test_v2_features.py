@@ -249,6 +249,22 @@ def test_microsoft_native_connectors_use_separate_native_sign_ins():
     assert 'connectorKey === "sharepoint_pnp"' in content
     assert "window.prompt" in content
     assert "site_url" in content
+    assert "openMicrosoftDeviceLogin(data.verification_url, authWindow)" in content
+    assert 'window.open(data.verification_url, "_blank")' not in content
+
+
+def test_microsoft_native_device_login_resets_microsoft_browser_session():
+    page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
+    with open(page_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "MICROSOFT_SESSION_RESET_URL" in content
+    assert "https://login.microsoftonline.com/common/oauth2/v2.0/logout" in content
+    assert "MICROSOFT_SESSION_RESET_DELAY_MS" in content
+    assert "openMicrosoftAuthWindow()" in content
+    assert "openMicrosoftDeviceLogin" in content
+    assert "targetWindow.location.href = MICROSOFT_SESSION_RESET_URL" in content
+    assert "targetWindow.location.href = targetUrl" in content
 
 
 def test_pending_activity_uses_result_keys_not_summary_object_keys():
