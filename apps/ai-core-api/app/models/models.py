@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric
+from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -52,9 +52,12 @@ class AIConnectedAccount(Base, AuditMixin):
 
 class AIMicrosoftDeviceAuthSession(Base, AuditMixin):
     __tablename__ = "ai_microsoft_device_auth_sessions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", name="uq_ms_device_auth_user_provider"),
+    )
 
     auth_session_id = Column(String(64), primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, unique=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
     provider = Column(String(50), nullable=False)
     device_code_hash = Column(String(64), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)

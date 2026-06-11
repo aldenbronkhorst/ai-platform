@@ -88,7 +88,7 @@ EXCHANGE_ONLINE_CLIENT_ID = os.environ.get(
 EXCHANGE_ONLINE_APP_DISPLAY_NAME = os.environ.get("EXCHANGE_ONLINE_APP_DISPLAY_NAME", "Exchange Online PowerShell")
 TEAMS_TENANT_ADMIN_SCOPE = os.environ.get(
     "TEAMS_TENANT_ADMIN_SCOPE",
-    "48ac35b8-9aa8-4d74-927d-1f4a14a0b239/user_impersonation",
+    "48ac35b8-9aa8-4d74-927d-1f4a14a0b239/.default",
 )
 TEAMS_TENANT_ADMIN_RESOURCE = os.environ.get(
     "TEAMS_TENANT_ADMIN_RESOURCE",
@@ -128,8 +128,6 @@ MICROSOFT_NATIVE_CONNECTOR_PROFILES = {
         "auth_app_name": EXCHANGE_ONLINE_APP_DISPLAY_NAME,
         "client_id": EXCHANGE_ONLINE_CLIENT_ID,
         "scopes": EXCHANGE_ONLINE_SCOPES,
-        "oauth_flow": "v1_resource",
-        "resource": EXCHANGE_ONLINE_RESOURCE,
         "required": False,
     },
     TEAMS_ADMIN_PROVIDER: {
@@ -138,8 +136,6 @@ MICROSOFT_NATIVE_CONNECTOR_PROFILES = {
         "auth_app_name": TEAMS_ADMIN_APP_DISPLAY_NAME,
         "client_id": TEAMS_ADMIN_CLIENT_ID,
         "scopes": (TEAMS_TENANT_ADMIN_SCOPE,),
-        "oauth_flow": "v1_resource",
-        "resource": TEAMS_TENANT_ADMIN_RESOURCE,
         "required": False,
     },
     SHAREPOINT_PNP_PROVIDER: {

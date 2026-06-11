@@ -565,9 +565,80 @@ class TestConnectedAccountsFlow:
             await engine.dispose()
 
     @pytest.mark.asyncio
-    async def test_exchange_native_device_code_uses_workload_resource_flow(self, monkeypatch):
+    async def test_native_device_code_sessions_are_scoped_by_provider_in_db(self):
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from app.core.database import Base
+        from app.models.models import AIMicrosoftDeviceAuthSession, AIUser
         from app.routers import connector_microsoft_native as native
-        from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_RESOURCE
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
+
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            async with SessionLocal() as db:
+                db.add(AIUser(
+                    id=user_id,
+                    email="alden@example.com",
+                    display_name="Alden",
+                    role="admin",
+                    is_active="true",
+                ))
+                await db.commit()
+
+                graph_session_id = await native._remember_device_auth_flow(
+                    provider_key="microsoft_graph",
+                    user_id=user_id,
+                    device_code="graph-device-code",
+                    expires_at=int(native.time.time()) + 900,
+                    interval=5,
+                    request_id="graph-request",
+                    db=db,
+                )
+                exchange_session_id = await native._remember_device_auth_flow(
+                    provider_key="exchange_online",
+                    user_id=user_id,
+                    device_code="exchange-device-code",
+                    expires_at=int(native.time.time()) + 900,
+                    interval=5,
+                    request_id="exchange-request",
+                    db=db,
+                )
+                native.DEVICE_AUTH_FLOWS.clear()
+
+                rows = (await db.execute(select(AIMicrosoftDeviceAuthSession))).scalars().all()
+                assert {row.provider for row in rows} == {"microsoft_graph", "exchange_online"}
+
+                graph_validation = await native._validate_device_auth_flow(
+                    provider_key="microsoft_graph",
+                    user_id=user_id,
+                    device_code="graph-device-code",
+                    auth_session_id=graph_session_id,
+                    request_id="graph-callback",
+                    db=db,
+                )
+                exchange_validation = await native._validate_device_auth_flow(
+                    provider_key="exchange_online",
+                    user_id=user_id,
+                    device_code="exchange-device-code",
+                    auth_session_id=exchange_session_id,
+                    request_id="exchange-callback",
+                    db=db,
+                )
+
+            assert graph_validation["ok"] is True
+            assert exchange_validation["ok"] is True
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_exchange_native_device_code_uses_workload_scope_flow(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+        from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_SCOPE
 
         captured = {}
 
@@ -608,17 +679,17 @@ class TestConnectedAccountsFlow:
         )
 
         assert result["status"] == "device_code_ready"
-        assert result["auth_flow"] == "v1_resource"
+        assert result["auth_flow"] == "v2_scope"
         assert result["verification_uri"] == "https://login.microsoft.com/device"
         assert result["verification_url"] == "https://login.microsoft.com/device"
-        assert captured["url"].endswith("/oauth2/devicecode")
-        assert captured["data"]["resource"] == EXCHANGE_ONLINE_RESOURCE
-        assert "scope" not in captured["data"]
+        assert captured["url"].endswith("/oauth2/v2.0/devicecode")
+        assert captured["data"]["scope"] == f"{EXCHANGE_ONLINE_SCOPE} openid profile offline_access"
+        assert "resource" not in captured["data"]
 
     @pytest.mark.asyncio
-    async def test_teams_native_device_callback_uses_v1_code_parameter(self, monkeypatch):
+    async def test_teams_native_device_callback_uses_workload_scope_flow(self, monkeypatch):
         from app.routers import connector_microsoft_native as native
-        from app.services.connectors.microsoft_admin.constants import TEAMS_TENANT_ADMIN_RESOURCE
+        from app.services.connectors.microsoft_admin.constants import TEAMS_TENANT_ADMIN_SCOPE
 
         captured = {}
 
@@ -631,7 +702,7 @@ class TestConnectedAccountsFlow:
                     "token_type": "Bearer",
                     "access_token": "teams-access-token",
                     "refresh_token": "teams-refresh-token",
-                    "resource": TEAMS_TENANT_ADMIN_RESOURCE,
+                    "scope": TEAMS_TENANT_ADMIN_SCOPE,
                     "expires_in": 3600,
                 }
 
@@ -671,13 +742,13 @@ class TestConnectedAccountsFlow:
         )
 
         assert result["status"] == "connected"
-        assert captured["url"].endswith("/oauth2/token")
-        assert captured["data"]["code"] == "teams-device-code"
-        assert captured["data"]["resource"] == TEAMS_TENANT_ADMIN_RESOURCE
-        assert "scope" not in captured["data"]
-        assert "device_code" not in captured["data"]
-        assert captured["stored_token"]["auth_flow"] == "v1_resource"
-        assert captured["stored_token"]["resource"] == TEAMS_TENANT_ADMIN_RESOURCE
+        assert captured["url"].endswith("/oauth2/v2.0/token")
+        assert captured["data"]["device_code"] == "teams-device-code"
+        assert captured["data"]["scope"] == f"{TEAMS_TENANT_ADMIN_SCOPE} openid profile offline_access"
+        assert "resource" not in captured["data"]
+        assert "code" not in captured["data"]
+        assert captured["stored_token"]["auth_flow"] == "v2_scope"
+        assert captured["stored_token"]["scope"] == TEAMS_TENANT_ADMIN_SCOPE
 
     @pytest.mark.asyncio
     async def test_native_device_code_terminal_error_is_not_pending(self, monkeypatch):
