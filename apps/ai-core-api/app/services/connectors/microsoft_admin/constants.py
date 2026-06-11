@@ -10,14 +10,6 @@ EXCHANGE_ONLINE_PROVIDER = "exchange_online"
 TEAMS_ADMIN_PROVIDER = "teams_admin"
 SHAREPOINT_PNP_PROVIDER = "sharepoint_pnp"
 
-MICROSOFT_NATIVE_CONNECTOR_PROVIDERS = (
-    AZURE_CLI_PROVIDER,
-    MICROSOFT_GRAPH_PROVIDER,
-    EXCHANGE_ONLINE_PROVIDER,
-    TEAMS_ADMIN_PROVIDER,
-    SHAREPOINT_PNP_PROVIDER,
-)
-
 def _scope_values_from_env(env_name: str, default_values: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.environ.get(env_name, "").strip()
     if not raw:

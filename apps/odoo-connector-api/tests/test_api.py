@@ -26,6 +26,10 @@ def ops_payload(mode: str, **values):
 
 
 class TestHealth:
+    def test_root_endpoint_is_not_public(self):
+        response = client.get("/")
+        assert response.status_code == 404
+
     def test_health(self):
         response = client.get("/health")
         assert response.status_code == 200

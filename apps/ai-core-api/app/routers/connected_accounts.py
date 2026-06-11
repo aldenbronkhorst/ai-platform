@@ -47,20 +47,6 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ── Connection Trace Infrastructure ──
-
-CONNECTOR_STAGES = [
-    "frontend_submit",
-    "ai_core_received",
-    "ai_core_verify_payload",
-    "connector_received",
-    "odoo_client_connect",
-    "odoo_rpc_result",
-    "key_vault_store",
-    "db_save",
-]
-
-
 def _generate_connection_attempt_id() -> str:
     return f"odoo_conn_{uuid.uuid4().hex[:16]}"
 

@@ -160,8 +160,3 @@ async def generic_exception_handler(request: Request, exc: Exception):
             "correlation_id": getattr(request.state, "correlation_id", None),
         },
     )
-
-
-@app.get("/")
-async def root():
-    return {"app": settings.app_name, "version": settings.app_version}
