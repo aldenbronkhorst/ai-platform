@@ -643,6 +643,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (connectorKey === "sharepoint_pnp") {
       const siteUrl = window.prompt("Enter the SharePoint site or admin URL for this PnP connector");
       if (!siteUrl?.trim()) {
+        setMicrosoftStartingConnector(null);
         setCliTestResult({ status: "failed", connector: connectorKey, message: "SharePoint / PnP sign-in requires a SharePoint site or admin URL." });
         return;
       }

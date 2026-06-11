@@ -50,6 +50,20 @@ class AIConnectedAccount(Base, AuditMixin):
     odoo_currency_symbol = Column(String(10), nullable=True)
 
 
+class AIMicrosoftDeviceAuthSession(Base, AuditMixin):
+    __tablename__ = "ai_microsoft_device_auth_sessions"
+
+    auth_session_id = Column(String(64), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, unique=True, index=True)
+    provider = Column(String(50), nullable=False)
+    device_code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    poll_interval = Column(Integer, default=5, nullable=False)
+    last_poll_at = Column(DateTime(timezone=True), nullable=True)
+    poll_in_flight_until = Column(DateTime(timezone=True), nullable=True)
+    request_id = Column(String(64), nullable=True)
+
+
 class AICompanyFact(Base, AuditMixin):
     __tablename__ = "ai_company_facts"
 
