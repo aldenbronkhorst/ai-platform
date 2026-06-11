@@ -15,6 +15,7 @@ os.environ["ODOO_DB"] = "company-default-db"
 from app.main import app
 from app.core.database import get_db
 from app.models.models import AIConnectedAccount
+from app.services.connectors.microsoft_admin import device_auth
 
 # Mock DB dependency completely
 async def mock_get_db():
@@ -39,11 +40,9 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def clear_microsoft_native_device_auth_flows():
-    from app.routers import connector_microsoft_native as native
-
-    native.DEVICE_AUTH_FLOWS.clear()
+    device_auth.DEVICE_AUTH_FLOWS.clear()
     yield
-    native.DEVICE_AUTH_FLOWS.clear()
+    device_auth.DEVICE_AUTH_FLOWS.clear()
 
 
 class TestConnectedAccountsFlow:
@@ -251,7 +250,7 @@ class TestConnectedAccountsFlow:
             async def __aenter__(self):
                 raise AssertionError("stale device codes must not poll Microsoft")
 
-        await native._remember_device_auth_flow(
+        await device_auth.remember_device_auth_flow(
             provider_key="microsoft_graph",
             user_id=user_id,
             device_code="newest-device-code",
@@ -300,7 +299,7 @@ class TestConnectedAccountsFlow:
         from app.routers import connector_microsoft_native as native
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
-        auth_session_id = await native._remember_device_auth_flow(
+        auth_session_id = await device_auth.remember_device_auth_flow(
             provider_key="microsoft_graph",
             user_id=user_id,
             device_code="device-code",
@@ -334,7 +333,7 @@ class TestConnectedAccountsFlow:
                 return None
 
             async def post(self, *_args, **_kwargs):
-                await native._clear_device_auth_flow_for_provider(
+                await device_auth.clear_device_auth_flow_for_provider(
                     provider_key="microsoft_graph",
                     user_id=user_id,
                 )
@@ -364,7 +363,7 @@ class TestConnectedAccountsFlow:
         from app.routers import connector_microsoft_native as native
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
-        auth_session_id = await native._remember_device_auth_flow(
+        auth_session_id = await device_auth.remember_device_auth_flow(
             provider_key="microsoft_graph",
             user_id=user_id,
             device_code="device-code",
@@ -425,7 +424,7 @@ class TestConnectedAccountsFlow:
         from app.routers import connector_microsoft_native as native
 
         user_id = UUID("e4807f22-97c8-4778-87a2-160f56d25247")
-        auth_session_id = await native._remember_device_auth_flow(
+        auth_session_id = await device_auth.remember_device_auth_flow(
             provider_key="microsoft_graph",
             user_id=user_id,
             device_code="device-code",
@@ -540,7 +539,7 @@ class TestConnectedAccountsFlow:
                     is_active="true",
                 ))
                 await db.commit()
-                auth_session_id = await native._remember_device_auth_flow(
+                auth_session_id = await device_auth.remember_device_auth_flow(
                     provider_key="microsoft_graph",
                     user_id=user_id,
                     device_code="device-code",
@@ -549,7 +548,7 @@ class TestConnectedAccountsFlow:
                     request_id="started-request",
                     db=db,
                 )
-                native.DEVICE_AUTH_FLOWS.clear()
+                device_auth.DEVICE_AUTH_FLOWS.clear()
 
                 result = await native.device_code_callback(
                     "microsoft_graph",
@@ -590,7 +589,7 @@ class TestConnectedAccountsFlow:
                 ))
                 await db.commit()
 
-                graph_session_id = await native._remember_device_auth_flow(
+                graph_session_id = await device_auth.remember_device_auth_flow(
                     provider_key="microsoft_graph",
                     user_id=user_id,
                     device_code="graph-device-code",
@@ -599,7 +598,7 @@ class TestConnectedAccountsFlow:
                     request_id="graph-request",
                     db=db,
                 )
-                exchange_session_id = await native._remember_device_auth_flow(
+                exchange_session_id = await device_auth.remember_device_auth_flow(
                     provider_key="exchange_online",
                     user_id=user_id,
                     device_code="exchange-device-code",
@@ -608,12 +607,12 @@ class TestConnectedAccountsFlow:
                     request_id="exchange-request",
                     db=db,
                 )
-                native.DEVICE_AUTH_FLOWS.clear()
+                device_auth.DEVICE_AUTH_FLOWS.clear()
 
                 rows = (await db.execute(select(AIMicrosoftDeviceAuthSession))).scalars().all()
                 assert {row.provider for row in rows} == {"microsoft_graph", "exchange_online"}
 
-                graph_validation = await native._validate_device_auth_flow(
+                graph_validation = await device_auth.validate_device_auth_flow(
                     provider_key="microsoft_graph",
                     user_id=user_id,
                     device_code="graph-device-code",
@@ -621,7 +620,7 @@ class TestConnectedAccountsFlow:
                     request_id="graph-callback",
                     db=db,
                 )
-                exchange_validation = await native._validate_device_auth_flow(
+                exchange_validation = await device_auth.validate_device_auth_flow(
                     provider_key="exchange_online",
                     user_id=user_id,
                     device_code="exchange-device-code",
