@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.routers import health, artifact, tool, connected_accounts, chat, connector_microsoft_native, connector_github, voice
+from app.routers import health, artifact, connected_accounts, chat, connector_microsoft_native, connector_github, voice
 
 settings = get_settings()
 docs_enabled = settings.app_env != "production"
@@ -32,18 +32,8 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(artifact.router)
-app.include_router(tool.router)
 app.include_router(connected_accounts.router)
 app.include_router(chat.router)
 app.include_router(connector_microsoft_native.router)
 app.include_router(connector_github.router)
 app.include_router(voice.router)
-
-
-@app.get("/")
-async def root():
-    return {
-        "name": "AI Platform Core API",
-        "version": "0.1.0",
-        "docs": "/docs",
-    }

@@ -11,7 +11,7 @@ class TestMemoryFeedbackAndTracking:
     @patch("app.services.model_router.execute_chat")
     async def test_chat_tracking_on_message(self, mock_execute_chat):
         # Verify memory usage event is recorded when chat message processes
-        from app.routers.chat import post_chat_message, ChatMessageCreate
+        from app.routers.chat import _process_chat_turn, ChatMessageCreate
         from app.models.models import AIChatSession
 
         db = MockSession(has_config=False)
@@ -61,18 +61,8 @@ class TestMemoryFeedbackAndTracking:
         }
 
         req = ChatMessageCreate(content="how to print?")
-        request_mock = MagicMock()
-        request_mock.headers = {}
-        response_mock = MagicMock()
 
-        msg_res = await post_chat_message(
-            session_id=session_id,
-            req=req,
-            request=request_mock,
-            response=response_mock,
-            db=db,
-            auth={"user_id": user_uuid}
-        )
+        msg_res = await _process_chat_turn(db, session_id, req, str(uuid4()), user_uuid)
 
         assert msg_res.content == "Use Printer-01 for printing downstairs."
 

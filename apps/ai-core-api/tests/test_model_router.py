@@ -15,7 +15,6 @@ from app.main import app
 from app.core.database import get_db
 from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory
 from app.services.model_router import (
-    ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
     _tool_selection_message,
     _compact_tool_result_for_model,
@@ -974,7 +973,7 @@ def _cleanup_global_state():
 # ── Chat Endpoint Tests ──
 
 class TestChatWithModelRouter:
-    def test_chat_returns_friendly_error_when_no_route(self):
+    def test_legacy_non_stream_chat_endpoint_is_removed(self):
         app.dependency_overrides[get_db] = mock_get_db_empty
         client = TestClient(app)
         response = client.post(
@@ -982,10 +981,7 @@ class TestChatWithModelRouter:
             json={"content": "hello"},
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
-        assert response.status_code in (200, 404)
-        if response.status_code == 200:
-            data = response.json()
-            assert "not configured" in data.get("content", "").lower() or ROUTE_NOT_CONFIGURED_MESSAGE in data.get("content", "")
+        assert response.status_code == 405
 
 
 # ── Greeting Identity Tests ──
@@ -1290,78 +1286,6 @@ class TestProviderErrorHandling:
 
         assert "authentication" in str(exc_info.value)
         assert "Unauthorized" not in str(exc_info.value)
-
-    @pytest.mark.asyncio
-    async def test_chat_endpoint_returns_friendly_quota_error(self):
-        """The post_chat_message endpoint must return a user-friendly message
-        when the provider returns a quota error — NOT the raw provider text."""
-        import app.services.model_router as mr_module
-        from app.models.models import AIChatSession
-
-        async def mock_get_db_with_session():
-            """Yield a MockSession whose first execute call returns a real
-            AIChatSession (instead of an AIRoute) so chat.py's session check
-            and .title access work correctly."""
-            session = AIChatSession(
-                id=uuid.uuid4(),
-                user_id="e4807f22-97c8-4778-87a2-160f56d25247",
-                title="New Chat",
-                status="active",
-                last_message_at=datetime.now(timezone.utc),
-            )
-            # Wrap the MockSession to return a real AIChatSession for the
-            # initial session-lookup query, and fall back to the configured
-            # mock behavior for everything else.
-            class ChatSessionAwareMock:
-                def __init__(self):
-                    self.added = []
-
-                async def execute(self, stmt, *args, **kwargs):
-                    stmt_str = str(stmt)
-                    result = AsyncMock()
-                    if "ai_chat_sessions" in stmt_str:
-                        result.scalar_one_or_none = lambda: session
-                    else:
-                        result.scalar_one_or_none = lambda: None
-                        result.scalars = lambda: AsyncMock(all=lambda: [])
-                    return result
-
-                async def flush(self): pass
-                async def commit(self): pass
-                async def close(self): pass
-                async def refresh(self, obj): pass
-                def add(self, obj): self.added.append(obj)
-
-            yield ChatSessionAwareMock()
-
-        async def mock_execute_quota_error(*args, **kwargs):
-            raise mr_module.ProviderCallError(
-                "The AI service is temporarily unavailable because the model "
-                "quota or rate limit has been reached. "
-                "Please try again shortly, or contact support if this continues.",
-                "Microsoft Foundry",
-                "Kimi K2.6",
-            )
-
-        with patch.object(mr_module, 'execute_chat', mock_execute_quota_error):
-            app.dependency_overrides[get_db] = mock_get_db_with_session
-            client = TestClient(app)
-            response = client.post(
-                "/chat/sessions/00000000-0000-0000-0000-000000000001/messages",
-                json={"content": "what's the latest bill?"},
-                headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-            )
-            assert response.status_code == 502
-            data = response.json()
-            # The error detail must be the friendly message, not the raw error
-            detail = data.get("detail") or {}
-            if isinstance(detail, str):
-                assert "quota or rate limit" in detail
-                assert "Rate limit exceeded" not in detail
-            else:
-                assert "quota or rate limit" in detail.get("error_message", "")
-                assert "Rate limit exceeded" not in detail.get("error_message", "")
-
 
 class TestToolExecution:
     def test_core_router_has_no_deterministic_odoo_report_detector(self):
@@ -3118,7 +3042,7 @@ class TestSecurity:
     def test_no_api_key_in_response(self):
         app.dependency_overrides[get_db] = mock_get_db_empty
         client = TestClient(app)
-        response = client.get("/tools", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
+        response = client.get("/health", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
         body = response.text
         assert "api-key" not in body.lower()
         assert "apikey" not in body.lower()
@@ -3133,4 +3057,4 @@ class TestSecurity:
             json={"content": "test"},
             headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
         )
-        assert response.status_code in (200, 404)
+        assert response.status_code == 405

@@ -16,6 +16,14 @@ class TestHealth:
         assert data["status"] == "healthy"
         assert data["version"] == "0.1.0"
 
+    def test_root_metadata_is_not_public_api(self, client):
+        response = client.get("/")
+        assert response.status_code == 404
+
+    def test_dependency_health_is_not_public_api(self, client):
+        response = client.get("/health/dependencies")
+        assert response.status_code == 404
+
     @pytest.mark.asyncio
     async def test_readiness_payload_uses_shallow_dependency_checks_by_default(self, monkeypatch):
         from app.routers import health
@@ -60,10 +68,9 @@ class TestTools:
         })
         assert response.status_code == 404
 
-    def test_list_tools(self, client):
+    def test_list_tools_is_not_public_api(self, client):
         response = client.get("/tools")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
+        assert response.status_code == 404
 
 
 class TestContext:
@@ -93,6 +100,16 @@ class TestConnectedAccounts:
     def test_github_cli_execution_is_tool_only_not_public_api(self, client):
         response = client.post("/connector/github/cli", json={"command": "gh repo list"})
         assert response.status_code == 404
+
+    def test_github_status_and_diagnose_are_not_public_api(self, client):
+        assert client.get("/connector/github/status").status_code == 404
+        assert client.post("/connector/github/diagnose").status_code == 404
+
+    def test_microsoft_native_status_and_diagnose_are_not_public_api(self, client):
+        provider = "microsoft_graph"
+        assert client.get(f"/connector/microsoft-native/{provider}/status").status_code == 404
+        assert client.post(f"/connector/microsoft-native/{provider}/diagnose").status_code == 404
+        assert client.post(f"/connector/microsoft-native/{provider}/validate").status_code == 404
 
 
 class TestMemorySurface:

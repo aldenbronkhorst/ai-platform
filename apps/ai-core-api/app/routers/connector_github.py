@@ -13,8 +13,6 @@ from app.services.key_vault import get_secret_value
 from app.services.token_storage import store_token, delete_token
 from app.services.connected_account_state import (
     mark_delegated_account_disconnected,
-    record_delegated_diagnosis,
-    sync_delegated_account_from_token,
     upsert_delegated_account,
 )
 from app.services.connectors.github_cli import diagnose_github_connection
@@ -175,29 +173,6 @@ async def github_oauth_callback(
         return {"status": "connected", "request_id": request_id}
     except Exception as e:
         return {"status": "error", "error": str(e), "request_id": request_id}
-
-
-@router.get("/status")
-async def github_status(
-    auth: dict = Depends(api_key_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    """Check GitHub connection status for the current user."""
-    user_id = auth.get("user_id")
-    return await sync_delegated_account_from_token(db, "github", user_id, commit=True) if user_id else {"status": "not_connected"}
-
-
-@router.post("/diagnose")
-async def github_diagnose(
-    auth: dict = Depends(api_key_auth),
-    db: AsyncSession = Depends(get_db),
-):
-    """Validate the stored GitHub delegated token without running gh."""
-    user_id = auth.get("user_id")
-    result = await diagnose_github_connection(user_id)
-    if user_id:
-        await record_delegated_diagnosis(db, "github", user_id, result, commit=True)
-    return result
 
 
 @router.post("/disconnect")
