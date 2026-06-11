@@ -54,6 +54,13 @@ from app.services.token_storage import delete_token, retrieve_token, store_token
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/connector/microsoft-native", tags=["Connector"])
 
+DEVICE_CODE_PENDING_ERRORS = {"authorization_pending", "slow_down"}
+DEVICE_CODE_TERMINAL_ERRORS = {
+    "authorization_declined": "Microsoft sign-in was declined.",
+    "bad_verification_code": "Microsoft rejected the sign-in code. Start a new sign-in and enter the newest code.",
+    "expired_token": "The Microsoft sign-in code expired before authorization completed. Start a new sign-in.",
+}
+
 
 def _provider_or_404(provider: str) -> str:
     normalized = microsoft_native_provider(provider)
@@ -132,12 +139,30 @@ async def start_device_code(
             )
         data = resp.json()
         if resp.status_code >= 400 or "error" in data:
+            logger.warning(
+                "Native Microsoft device-code start rejected provider=%s request_id=%s status=%s error=%s description=%s",
+                provider_key,
+                request_id,
+                resp.status_code,
+                data.get("error"),
+                data.get("error_description"),
+            )
             return {
                 "status": "error",
                 "connector": provider_key,
                 "error": data.get("error_description") or data.get("error") or resp.text[:500],
+                "error_type": data.get("error") or "device_code_start_failed",
                 "request_id": request_id,
             }
+        logger.info(
+            "Native Microsoft device-code ready provider=%s request_id=%s app=%s expires_in=%s interval=%s scope=%s",
+            provider_key,
+            request_id,
+            microsoft_native_app_name_for_provider(provider_key),
+            data.get("expires_in", 900),
+            data.get("interval", 5),
+            scope_summary,
+        )
         return {
             "status": "device_code_ready",
             "connector": provider_key,
@@ -147,6 +172,7 @@ async def start_device_code(
             "verification_url": data.get("verification_uri", "https://microsoft.com/devicelogin"),
             "interval": data.get("interval", 5),
             "expires_in": data.get("expires_in", 900),
+            "expires_at": int(time.time()) + int(data.get("expires_in") or 900),
             "scope_profile": microsoft_native_profile_for_provider(provider_key),
             "scope_label": microsoft_native_label_for_provider(provider_key),
             "scope_summary": scope_summary,
@@ -201,12 +227,25 @@ async def device_code_callback(
             )
         data = resp.json()
         if "error" in data:
-            pending_errors = {"authorization_pending", "slow_down"}
+            error_code = str(data.get("error") or "token_exchange_failed")
+            is_pending = error_code in DEVICE_CODE_PENDING_ERRORS
+            if not is_pending:
+                logger.warning(
+                    "Native Microsoft device-code token exchange rejected provider=%s request_id=%s status=%s error=%s description=%s",
+                    provider_key,
+                    request_id,
+                    resp.status_code,
+                    data.get("error"),
+                    data.get("error_description"),
+                )
+            message = DEVICE_CODE_TERMINAL_ERRORS.get(error_code) or data.get("error_description") or error_code
             return {
-                "status": "pending" if data["error"] in pending_errors else "error",
+                "status": "pending" if is_pending else "error",
                 "connector": provider_key,
-                "error": data.get("error_description", data["error"]),
-                "interval": 10 if data["error"] == "slow_down" else None,
+                "error": data.get("error_description", error_code),
+                "error_type": error_code,
+                "message": message,
+                "interval": 10 if error_code == "slow_down" else None,
                 "request_id": request_id,
             }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import {
   Plug, RefreshCw, CheckCircle2,
@@ -113,6 +113,9 @@ interface MicrosoftNativeDeviceCode {
   auth_app_name?: string;
   client_id?: string;
   interval?: number;
+  expires_in?: number;
+  expires_at?: number;
+  request_id?: string;
 }
 
 interface MicrosoftAuthCallbackResult {
@@ -120,10 +123,12 @@ interface MicrosoftAuthCallbackResult {
   overall_status?: string;
   connector?: string;
   error?: string;
+  error_type?: string;
   message?: string;
   interval?: number;
   scope_label?: string;
   auth_app_name?: string;
+  request_id?: string;
 }
 
 type ApiRecord = Record<string, unknown>;
@@ -150,6 +155,10 @@ function formatOptionalStatus(status?: string | null) {
 
 function formatDateTime(value?: string | null) {
   return value ? new Date(value).toLocaleString() : "—";
+}
+
+function currentTimeMs() {
+  return new Date().getTime();
 }
 
 type StatusTone = "success" | "danger" | "warning" | "neutral";
@@ -443,11 +452,22 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [connectorSearch, setConnectorSearch] = useState("");
   const [platformTools, setPlatformTools] = useState<PlatformTool[] | null>(null);
   const [platformToolsError, setPlatformToolsError] = useState<string | null>(null);
+  const microsoftAuthAttemptRef = useRef(0);
+  const microsoftPollTimerRef = useRef<number | null>(null);
 
   const headers = useCallback(() => ({
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
   }), [accessToken]);
+
+  const clearMicrosoftPollTimer = useCallback(() => {
+    if (microsoftPollTimerRef.current !== null) {
+      window.clearTimeout(microsoftPollTimerRef.current);
+      microsoftPollTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearMicrosoftPollTimer(), [clearMicrosoftPollTimer]);
 
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
@@ -600,6 +620,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectMicrosoftNative = async (connectorKey: string) => {
     if (!accessToken) return; setCliTestResult(null);
+    clearMicrosoftPollTimer();
+    const attemptId = microsoftAuthAttemptRef.current + 1;
+    microsoftAuthAttemptRef.current = attemptId;
     const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
     const connectPayload: Record<string, string> = {};
     if (connectorKey === "sharepoint_pnp") {
@@ -621,15 +644,30 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setMicrosoftDeviceCode({ ...data, connectorKey });
         setMicrosoftPollingConnector(connectorKey);
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
+        const expiresAtMs = data.expires_at ? data.expires_at * 1000 : currentTimeMs() + (data.expires_in || 900) * 1000;
         setCliTestResult({ status: "pending", connector: connectorKey, message: `Sign in to ${displayName}${authApp}. This stores only the ${displayName} connector token.` });
         window.open(data.verification_url, "_blank");
         const poll = async () => {
+          if (microsoftAuthAttemptRef.current !== attemptId) return;
+          if (currentTimeMs() >= expiresAtMs) {
+            setMicrosoftPollingConnector(null);
+            setMicrosoftDeviceCode(null);
+            setCliTestResult({
+              status: "failed",
+              connector: connectorKey,
+              message: `The Microsoft sign-in code for ${displayName} expired before Microsoft completed authorization. Start a new sign-in and enter the newest code.`,
+              request_id: data.request_id,
+            });
+            void fetchConnectors();
+            return;
+          }
           try {
             const pr = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
               method: "POST", headers: headers(),
               body: JSON.stringify({ device_code: data.device_code, site_url: data.site_url || connectPayload.site_url }),
             });
             const pd = await pr.json() as MicrosoftAuthCallbackResult;
+            if (microsoftAuthAttemptRef.current !== attemptId) return;
             if (pd.status === "connected") {
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
@@ -637,24 +675,54 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                 status: "success",
                 connector: connectorKey,
                 message: pd.message || `${displayName} connected.`,
+                request_id: pd.request_id,
               });
               void fetchConnectors();
             } else if (pd.status === "pending") {
-              setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
+              const remainingSeconds = Math.max(0, Math.ceil((expiresAtMs - currentTimeMs()) / 1000));
+              setCliTestResult({
+                status: "pending",
+                connector: connectorKey,
+                message: `Waiting for Microsoft to complete ${displayName} sign-in. Code expires in ${remainingSeconds}s.`,
+                request_id: pd.request_id || data.request_id,
+              });
+              microsoftPollTimerRef.current = window.setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else {
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
-              setCliTestResult({ status: "failed", connector: connectorKey, message: pd.message || pd.error || "Auth failed" });
+              setCliTestResult({
+                status: "failed",
+                connector: connectorKey,
+                message: pd.message || pd.error || `${displayName} authentication failed.`,
+                stderr: pd.error_type,
+                request_id: pd.request_id,
+              });
               void fetchConnectors();
             }
-          } catch { setMicrosoftPollingConnector(null); setMicrosoftDeviceCode(null); }
+          } catch (err) {
+            if (microsoftAuthAttemptRef.current !== attemptId) return;
+            setMicrosoftPollingConnector(null);
+            setMicrosoftDeviceCode(null);
+            setCliTestResult({
+              status: "failed",
+              connector: connectorKey,
+              message: `Could not check Microsoft sign-in status for ${displayName}: ${errorMessage(err)}`,
+              request_id: data.request_id,
+            });
+            void fetchConnectors();
+          }
         };
-        setTimeout(poll, (data.interval || 5) * 1000);
+        microsoftPollTimerRef.current = window.setTimeout(poll, (data.interval || 5) * 1000);
       } else {
         setMicrosoftDeviceCode(null);
-        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow" });
+        setMicrosoftPollingConnector(null);
+        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow", request_id: data.request_id });
       }
-    } catch (err) { setMicrosoftDeviceCode(null); setCliTestResult({ status: "failed", connector: connectorKey, message: errorMessage(err) }); }
+    } catch (err) {
+      setMicrosoftPollingConnector(null);
+      setMicrosoftDeviceCode(null);
+      setCliTestResult({ status: "failed", connector: connectorKey, message: errorMessage(err) });
+    }
   };
 
   const handleMicrosoftNativeStatus = async (connectorKey: string) => {
@@ -678,6 +746,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
+    clearMicrosoftPollTimer();
+    microsoftAuthAttemptRef.current += 1;
     await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
     setMicrosoftDeviceCode(null);
