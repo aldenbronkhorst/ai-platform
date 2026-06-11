@@ -88,8 +88,8 @@ def test_portal_html_metatags():
 
 
 def test_chat_upload_snapshots_file_list_before_reset():
-    app_path = os.path.join(SRC_DIR, "App.tsx")
-    with open(app_path, "r", encoding="utf-8") as f:
+    chat_controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
+    with open(chat_controller_path, "r", encoding="utf-8") as f:
         content = f.read()
 
     snapshot = "const files = Array.from(e.target.files || []);"
@@ -102,26 +102,26 @@ def test_chat_upload_snapshots_file_list_before_reset():
 
 
 def test_chat_session_refresh_preserves_active_local_session():
-    app_path = os.path.join(SRC_DIR, "App.tsx")
+    chat_controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
     runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
-    with open(app_path, "r", encoding="utf-8") as f:
-        app_content = f.read()
+    with open(chat_controller_path, "r", encoding="utf-8") as f:
+        chat_controller_content = f.read()
     with open(runtime_path, "r", encoding="utf-8") as f:
         runtime_content = f.read()
 
-    assert "mergeFetchedChatSessions" in app_content
+    assert "mergeFetchedChatSessions" in chat_controller_content
     assert "export function mergeFetchedChatSessions" in runtime_content
     assert "if (activeSessionId && !byId.has(activeSessionId))" in runtime_content
-    assert "return prev;" in app_content
+    assert "return prev;" in chat_controller_content
 
 
 def test_voice_uses_server_transcription_without_browser_speech_recognition():
     hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
-    app_path = os.path.join(SRC_DIR, "App.tsx")
+    chat_controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
     with open(hook_path, "r", encoding="utf-8") as f:
         hook_content = f.read()
-    with open(app_path, "r", encoding="utf-8") as f:
-        app_content = f.read()
+    with open(chat_controller_path, "r", encoding="utf-8") as f:
+        chat_controller_content = f.read()
 
     assert "AudioContext" in hook_content
     assert "getUserMedia" in hook_content
@@ -133,9 +133,9 @@ def test_voice_uses_server_transcription_without_browser_speech_recognition():
     assert "recognitionRef" not in hook_content
     assert "trimAndNormalizeAudio" in hook_content
     assert "downsampleAudio" in hook_content
-    assert "/voice/transcribe" in app_content
-    assert "FormData" in app_content
-    assert "Authorization: `Bearer ${accessToken}`" in app_content
+    assert "/voice/transcribe" in chat_controller_content
+    assert "FormData" in chat_controller_content
+    assert "Authorization: `Bearer ${accessToken}`" in chat_controller_content
 
 
 def test_voice_records_wav_then_submits_transcript():
