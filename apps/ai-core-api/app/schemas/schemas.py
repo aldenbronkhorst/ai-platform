@@ -27,48 +27,6 @@ class AIUserResponse(BaseModel):
     created_at: datetime
 
 
-class AITaskCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    priority: str = "medium"
-    owner_user_id: Optional[UUID] = None
-    department: Optional[str] = None
-    linked_system: Optional[str] = None
-    linked_model: Optional[str] = None
-    linked_record_id: Optional[str] = None
-    due_at: Optional[datetime] = None
-    next_review_at: Optional[datetime] = None
-
-
-class AITaskResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    title: str
-    description: Optional[str]
-    status: str
-    priority: str
-    owner_user_id: Optional[UUID]
-    department: Optional[str]
-    linked_system: Optional[str]
-    linked_model: Optional[str]
-    linked_record_id: Optional[str]
-    next_review_at: Optional[datetime]
-    due_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
-    closed_at: Optional[datetime]
-
-
-class AITaskUpdate(BaseModel):
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    title: Optional[str] = None
-    description: Optional[str] = None
-    next_review_at: Optional[datetime] = None
-    due_at: Optional[datetime] = None
-    current_step: Optional[str] = None
-
-
 class AIArtifactCreate(BaseModel):
     job_id: Optional[UUID] = None
     artifact_type: str

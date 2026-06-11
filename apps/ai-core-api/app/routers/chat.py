@@ -892,20 +892,6 @@ async def _enqueue_or_extract_memories(
     assistant_msg: AIChatMessage,
 ) -> None:
     try:
-        from app.services.service_bus import send_message_async, QUEUE_MEMORY_EXTRACTION
-        sent = await send_message_async(QUEUE_MEMORY_EXTRACTION, {
-            "message_type": "memory_extraction",
-            "conversation_id": str(session_id),
-            "user_id": str(user_id),
-        })
-        if not sent:
-            raise RuntimeError("Service Bus not configured")
-        logger.info("Enqueued memory extraction | session=%s", session_id)
-        return
-    except Exception:
-        pass
-
-    try:
         from app.services.memory import MemoryCandidateService
         memory_svc = MemoryCandidateService(db)
         candidates = await memory_svc.extract_from_messages(messages=[user_msg, assistant_msg], user_id=user_id)

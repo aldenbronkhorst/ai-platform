@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from app.core.security import api_key_auth
 from app.services.speech_transcription import (
     SpeechTranscriptionConfigError,
+    SpeechTranscriptionNoSpeechError,
     SpeechTranscriptionService,
     SpeechTranscriptionUpstreamError,
 )
@@ -77,6 +78,14 @@ async def transcribe_voice_input(
                 "error_type": "voice_transcription_failed",
                 "error_message": str(exc),
                 "upstream_status": exc.status_code,
+            },
+        ) from exc
+    except SpeechTranscriptionNoSpeechError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error_type": "no_speech_detected",
+                "error_message": str(exc),
             },
         ) from exc
 

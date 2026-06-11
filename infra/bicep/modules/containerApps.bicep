@@ -43,9 +43,6 @@ param keyVaultUri string
 @description('Storage account name')
 param storageAccountName string
 
-@description('Service Bus namespace')
-param serviceBusNamespace string
-
 @description('Infrastructure subnet ID for Container Apps VNet integration')
 param containerAppsInfrastructureSubnetId string
 
@@ -70,7 +67,6 @@ param microsoftAdminAppDisplayName string = 'AI Platform Microsoft Admin'
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
 var odooConnectorAppName = 'ca-odoo-connector-${environment}-${regionCode}-${instance}'
-var workerAppName = 'ca-ai-worker-${environment}'
 var containerImage = '${acrLoginServer}/ai-core-api:${apiImageTag}'
 var odooConnectorImage = '${acrLoginServer}/odoo-connector-api:${odooConnectorImageTag}'
 
@@ -153,7 +149,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
             { name: 'AZURE_CLIENT_ID', value: apiManagedIdentityClientId }
             { name: 'STORAGE_ACCOUNT_NAME', value: storageAccountName }
-            { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
             { name: 'ENVIRONMENT', value: environment }
             { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
             { name: 'VERSION', value: apiImageTag }
@@ -299,101 +294,6 @@ resource odooConnectorApp 'Microsoft.App/containerApps@2024-03-01' = {
               type: 'http'
               metadata: {
                 concurrentRequests: '50'
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-}
-
-resource containerAppWorker 'Microsoft.App/containerApps@2024-03-01' = {
-  name: workerAppName
-  location: location
-  tags: tags
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${apiManagedIdentityResourceId}': {}
-    }
-  }
-  properties: {
-    managedEnvironmentId: containerAppsEnvironment.id
-    configuration: {
-      ingress: null
-      registries: [
-        {
-          server: acrLoginServer
-          identity: apiManagedIdentityResourceId
-        }
-      ]
-      secrets: [
-        {
-          name: 'keyvault-dsn'
-          keyVaultUrl: '${keyVaultUri}secrets/postgres-admin-password'
-          identity: apiManagedIdentityResourceId
-        }
-        {
-          name: 'api-key'
-          keyVaultUrl: '${keyVaultUri}secrets/api-key'
-          identity: apiManagedIdentityResourceId
-        }
-        {
-          name: 'odoo-connector-api-key'
-          keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
-          identity: apiManagedIdentityResourceId
-        }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'memory-worker'
-          image: containerImage
-          command: [
-            './scripts/startup_worker.sh'
-          ]
-          env: [
-            { name: 'POSTGRES_HOST', value: postgresHost }
-            { name: 'POSTGRES_DB', value: postgresDatabaseName }
-            { name: 'POSTGRES_USER', value: postgresAdminUsername }
-            { name: 'POSTGRES_PASSWORD', secretRef: 'keyvault-dsn' }
-            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
-            { name: 'AZURE_CLIENT_ID', value: apiManagedIdentityClientId }
-            { name: 'STORAGE_ACCOUNT_NAME', value: storageAccountName }
-            { name: 'AZURE_SERVICE_BUS_NAMESPACE', value: serviceBusNamespace }
-            { name: 'ENVIRONMENT', value: environment }
-            { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
-            { name: 'VERSION', value: apiImageTag }
-            { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
-            { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
-            { name: 'KEY_VAULT_URI', value: keyVaultUri }
-            { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
-            { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
-            { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
-          ]
-          resources: {
-            cpu: json('0.5')
-            memory: '1.0Gi'
-          }
-        }
-      ]
-      scale: {
-        minReplicas: 0
-        maxReplicas: 2
-        rules: [
-          {
-            name: 'queue-rule'
-            custom: {
-              type: 'azure-servicebus'
-#disable-next-line BCP037
-              identity: apiManagedIdentityResourceId
-              metadata: {
-                queueName: 'ai-jobs'
-                messageCount: '1'
-                namespace: serviceBusNamespace
               }
             }
           }

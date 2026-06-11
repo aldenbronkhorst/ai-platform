@@ -1,75 +1,58 @@
 # AI Platform
 
-Azure-native AI Platform for Lots Lots More.
+Cloud-hosted AI workspace for Lots Lots More.
 
-## Repository Structure
+The product goal is simple: users sign in with Microsoft, connect their own
+business accounts, and use chat to instruct the AI to work through those
+connectors. It should feel closer to a cloud Codex-style operator than a set of
+separate admin tools.
 
+## Current Components
+
+- `apps/web-portal` - React web app for chat, connector setup, and admin review.
+- `apps/ai-core-api` - FastAPI orchestration API for auth, chat, memory, tools,
+  artifacts, audit, and connector routing.
+- `apps/odoo-connector-api` - Internal Odoo execution service.
+- `infra/bicep` - Azure infrastructure for the deployed app.
+
+## Core Runtime
+
+- Microsoft Entra sign-in for users.
+- Per-user connector credentials stored in Azure Key Vault.
+- Chat sessions and platform state stored in PostgreSQL.
+- Uploaded chat files stored in Azure Blob Storage.
+- Odoo, GitHub, and Microsoft admin connectors exposed as model tools.
+- Memory extraction/review runs inside the API path for now.
+
+## Deliberately Not In Scope Right Now
+
+- Separate task tracker product.
+- Separate document vault product.
+- Editable AI model/provider configuration UI.
+- Service Bus worker queues.
+- Durable Functions automation workflows.
+- Azure AI Search knowledge indexing.
+
+Those can come back when there is a concrete workflow that justifies the extra
+runtime and operational surface.
+
+## Development
+
+```bash
+npm --workspace apps/web-portal run dev
 ```
-.
-├── apps/
-│   └── ai-core-api/          # FastAPI core API
-├── infra/
-│   ├── bicep/                # Infrastructure as Code (Bicep)
-│   │   ├── main.bicep
-│   │   └── modules/
-│   └── scripts/              # Setup and utility scripts
-├── runners/                  # Container app job runner images
-├── packages/                 # Shared libraries
-├── docs/                     # Documentation
-├── schemas/                  # OpenAPI, DB, and event schemas
-├── tests/                    # Integration and E2E tests
-└── .github/workflows/        # GitHub Actions CI/CD
+
+Backend tests:
+
+```bash
+cd apps/ai-core-api
+pytest
 ```
 
-## Quick Start
+Portal build:
 
-### Prerequisites
-
-- Azure CLI
-- GitHub CLI (`gh`)
-- Docker
-
-### Setup
-
-1. **Clone the repository**
-
-2. **Run OIDC setup script** (one-time):
-   ```bash
-   bash infra/scripts/setup-github-oidc.sh "lots-ai-platform/ai-platform" dev
-   ```
-   Add the output secrets to your GitHub repository settings.
-
-3. **Deploy infrastructure**:
-   Infrastructure deploys automatically via GitHub Actions on push to `main`, or manually via workflow dispatch.
-
-4. **Deploy API**:
-   API builds and deploys automatically on changes to `apps/ai-core-api/`.
-
-## Architecture
-
-- **Azure API Management**: Public gateway
-- **Azure Container Apps**: AI Core API runtime
-- **Azure PostgreSQL Flexible Server**: Structured data
-- **Azure Blob Storage**: Artifacts, OCR, reports
-- **Azure Key Vault**: Secrets and credentials
-- **Azure Service Bus**: Work queues
-- **Azure Durable Functions**: Workflows and automations
-- **Azure AI Search**: Knowledge retrieval
-- **Application Insights**: Monitoring and logging
-
-## Environments
-
-| Environment | Resource Group | Status |
-|-------------|---------------|--------|
-| dev | `rg-aiplatform-dev` | Active |
-| prod | `rg-aiplatform-prod` | Planned |
-
-## Tags
-
-All Azure resources are tagged with:
-
-- `project=ai-platform`
-- `environment=dev|prod`
-- `owner=alden`
-- `managed-by=iac`
-- `cost-center=ai-platform`
+```bash
+cd apps/web-portal
+npm ci --workspaces=false
+npm run build --workspaces=false
+```

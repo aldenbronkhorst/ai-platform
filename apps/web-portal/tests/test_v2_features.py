@@ -115,7 +115,7 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "return prev;" in app_content
 
 
-def test_voice_uses_recording_fallback_when_browser_recognition_has_no_text():
+def test_voice_uses_server_transcription_without_browser_speech_recognition():
     hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
     app_path = os.path.join(SRC_DIR, "App.tsx")
     with open(hook_path, "r", encoding="utf-8") as f:
@@ -123,35 +123,32 @@ def test_voice_uses_recording_fallback_when_browser_recognition_has_no_text():
     with open(app_path, "r", encoding="utf-8") as f:
         app_content = f.read()
 
-    assert "SpeechRecognition" in hook_content
     assert "AudioContext" in hook_content
     assert "getUserMedia" in hook_content
     assert "transcribeAudio" in hook_content
     assert "audio/wav" in hook_content
-    assert "finalTranscriptEmittedRef" in hook_content
-    assert "hasFinalTranscriptEmitted()" in hook_content
-    assert "recognition.start()" in hook_content
-    assert "recognitionRef.current?.stop()" in hook_content
+    assert "window.SpeechRecognition" not in hook_content
+    assert "webkitSpeechRecognition" not in hook_content
+    assert "recognition.start()" not in hook_content
+    assert "recognitionRef" not in hook_content
+    assert "trimAndNormalizeAudio" in hook_content
+    assert "downsampleAudio" in hook_content
     assert "/voice/transcribe" in app_content
     assert "FormData" in app_content
     assert "Authorization: `Bearer ${accessToken}`" in app_content
 
 
-def test_voice_commits_final_results_and_tracks_interim_text():
+def test_voice_records_wav_then_submits_transcript():
     hook_path = os.path.join(SRC_DIR, "hooks", "useSpeechRecognition.ts")
     with open(hook_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "const startIndex = Math.max(0, event.resultIndex || 0);" in content
-    assert "committedResultIndexesRef.current.add(i)" in content
-    assert "spokenTranscriptRef" in content
-    assert "emittedTranscriptRef" in content
-    assert "const pending = pendingTranscript();" in content
-    assert "markTranscriptEmitted(pending)" in content
-    assert "restartTimerRef" in content
-    assert "if (shouldListenRef.current)" in content
-    assert "startRecognition();" in content
-    assert "return { voiceState, toggleVoice, interimTranscript }" in content
+    assert "navigator.mediaDevices.getUserMedia" in content
+    assert "createScriptProcessor" in content
+    assert "audioChunksRef.current.push" in content
+    assert "encodeWav(processedSamples, TARGET_SAMPLE_RATE)" in content
+    assert "onTranscriptRef.current(transcript)" in content
+    assert "return { voiceState, toggleVoice, interimTranscript: \"\" }" in content
 
 
 def test_voice_interim_text_is_visible_in_composer():
@@ -249,6 +246,22 @@ def test_microsoft_native_connectors_use_separate_native_sign_ins():
     assert 'connectorKey === "sharepoint_pnp"' in content
     assert "window.prompt" in content
     assert "site_url" in content
+    assert "openMicrosoftDeviceLogin(data.verification_url, authWindow)" in content
+    assert 'window.open(data.verification_url, "_blank")' not in content
+
+
+def test_microsoft_native_device_login_resets_microsoft_browser_session():
+    page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
+    with open(page_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "MICROSOFT_SESSION_RESET_URL" in content
+    assert "https://login.microsoftonline.com/common/oauth2/v2.0/logout" in content
+    assert "MICROSOFT_SESSION_RESET_DELAY_MS" in content
+    assert "openMicrosoftAuthWindow()" in content
+    assert "openMicrosoftDeviceLogin" in content
+    assert "targetWindow.location.href = MICROSOFT_SESSION_RESET_URL" in content
+    assert "targetWindow.location.href = targetUrl" in content
 
 
 def test_pending_activity_uses_result_keys_not_summary_object_keys():

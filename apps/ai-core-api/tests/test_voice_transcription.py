@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.speech_transcription import (
     SpeechTranscriptionConfigError,
+    SpeechTranscriptionNoSpeechError,
     SpeechTranscriptionService,
     _clean_stt_endpoint,
     _extract_transcript,
@@ -90,6 +91,22 @@ async def test_speech_transcription_service_requires_endpoint_and_key(monkeypatc
 
     with pytest.raises(SpeechTranscriptionConfigError):
         await SpeechTranscriptionService().transcribe(b"audio", "voice.wav", "audio/wav")
+
+
+@pytest.mark.asyncio
+async def test_speech_transcription_service_reports_no_speech(monkeypatch):
+    service = SpeechTranscriptionService()
+
+    monkeypatch.setenv("AZURE_SPEECH_STT_ENDPOINT", "https://southafricanorth.stt.speech.microsoft.com")
+    monkeypatch.setenv("AZURE_SPEECH_KEY", "speech-key")
+
+    async def fake_post(endpoint, key, audio_bytes, language):
+        return {"RecognitionStatus": "InitialSilenceTimeout"}
+
+    monkeypatch.setattr(service, "_post_short_audio_transcription", fake_post)
+
+    with pytest.raises(SpeechTranscriptionNoSpeechError):
+        await service.transcribe(b"audio", "voice.wav", "audio/wav")
 
 
 def test_voice_transcribe_rejects_non_audio_upload():

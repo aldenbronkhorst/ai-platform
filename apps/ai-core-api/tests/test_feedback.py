@@ -158,15 +158,14 @@ class TestMemoryFeedbackAndTracking:
         request_mock.headers = {}
         response_mock = MagicMock()
 
-        with patch("app.services.service_bus.send_message_async", new=AsyncMock(return_value=True)):
-            msg_res = await post_chat_message(
-                session_id=session_id,
-                req=req,
-                request=request_mock,
-                response=response_mock,
-                db=db,
-                auth={"user_id": user_uuid}
-            )
+        msg_res = await post_chat_message(
+            session_id=session_id,
+            req=req,
+            request=request_mock,
+            response=response_mock,
+            db=db,
+            auth={"user_id": user_uuid}
+        )
 
         assert msg_res.content == "Use Printer-01 for printing downstairs."
 

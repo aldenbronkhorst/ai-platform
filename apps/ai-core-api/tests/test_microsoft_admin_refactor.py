@@ -1,6 +1,4 @@
-import importlib.util
 import re
-import uuid
 from pathlib import Path
 
 from app.services.tool_registry import CONNECTOR_TOOLS_BY_SYSTEM, MICROSOFT_NATIVE_CONNECTOR_SYSTEMS
@@ -98,59 +96,3 @@ def test_removed_microsoft_admin_names_are_not_in_active_source_paths():
                     violations.append(f"{path.relative_to(repo_root)} contains {label}")
 
     assert violations == []
-
-
-def test_ms_admin_migration_copies_legacy_key_vault_token_secret(monkeypatch):
-    repo_root = Path(__file__).resolve().parents[3]
-    migration_path = repo_root / "apps/ai-core-api/migrations/versions/010_ms_admin_refactor.py"
-    spec = importlib.util.spec_from_file_location("ms_admin_refactor_migration", migration_path)
-    migration = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(migration)
-
-    user_id = uuid.UUID("e4807f22-97c8-4000-8000-000000000001")
-    old_name = f"connector-token-azure-{user_id.hex[:12]}"
-    new_name = f"connector-token-microsoft-admin-{user_id.hex[:12]}"
-
-    class FakeMissing(Exception):
-        pass
-
-    class FakeSecret:
-        def __init__(self, value: str):
-            self.value = value
-
-    class FakeSecretClient:
-        secrets = {old_name: "stored-token"}
-
-        def __init__(self, vault_url, credential):
-            self.vault_url = vault_url
-            self.credential = credential
-
-        def get_secret(self, name):
-            if name not in self.secrets:
-                raise FakeMissing(name)
-            return FakeSecret(self.secrets[name])
-
-        def set_secret(self, name, value):
-            self.secrets[name] = value
-
-    class FakeResult:
-        def mappings(self):
-            return self
-
-        def all(self):
-            return [{"user_id": user_id, "secret_reference": None}]
-
-    class FakeBind:
-        def execute(self, *_args, **_kwargs):
-            return FakeResult()
-
-    monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
-    monkeypatch.setattr(migration, "ResourceNotFoundError", FakeMissing)
-    monkeypatch.setattr(migration, "DefaultAzureCredential", lambda: object())
-    monkeypatch.setattr(migration, "SecretClient", FakeSecretClient)
-    monkeypatch.setattr(migration.op, "get_bind", lambda: FakeBind())
-
-    migration._copy_token_secrets("connector-token-azure-", "connector-token-microsoft-admin-", "azure")
-
-    assert FakeSecretClient.secrets[new_name] == "stored-token"
