@@ -173,48 +173,14 @@ MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS = {
 GRAPH_AUTO_PAGE_MAX_PAGES = 20
 GRAPH_AUTO_PAGE_MAX_ITEMS = 1000
 
-def microsoft_admin_arm_device_scope_string() -> str:
-    return microsoft_admin_device_scope_string("arm")
-
-
 def microsoft_admin_scope_profile(profile: str | None) -> str:
     normalized = str(profile or MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE).strip().lower()
     return normalized if normalized in MICROSOFT_ADMIN_SCOPE_PROFILES else MICROSOFT_ADMIN_PRIMARY_SCOPE_PROFILE
 
 
-def microsoft_admin_scope_values(profile: str | None = None) -> list[str]:
-    scope_profile = microsoft_admin_scope_profile(profile)
-    return list(MICROSOFT_ADMIN_SCOPE_PROFILES[scope_profile])
-
-
-def microsoft_admin_client_id_for_scope_profile(profile: str | None = None) -> str:
-    return microsoft_native_client_id_for_provider(microsoft_native_provider_for_profile(profile))
-
-
-def microsoft_admin_app_name_for_scope_profile(profile: str | None = None) -> str:
-    return microsoft_native_app_name_for_provider(microsoft_native_provider_for_profile(profile))
-
-
 def microsoft_admin_scope_label(profile: str | None = None) -> str:
     scope_profile = microsoft_admin_scope_profile(profile)
     return MICROSOFT_ADMIN_SCOPE_PROFILE_LABELS[scope_profile]
-
-
-def microsoft_admin_scope_summary(profile: str | None = None) -> str:
-    scope_profile = microsoft_admin_scope_profile(profile)
-    if scope_profile == "sharepoint":
-        return f"{microsoft_admin_scope_label(scope_profile)}: target SharePoint site .default"
-    scope_names = [
-        value.rsplit("/", 1)[-1]
-        for value in microsoft_admin_scope_values(scope_profile)
-    ]
-    return f"{microsoft_admin_scope_label(scope_profile)}: {', '.join(scope_names)}"
-
-
-def microsoft_admin_device_scope_string(profile: str | None = None) -> str:
-    """Return a single-resource device-code scope string for a native connector profile."""
-    scope_profile = microsoft_admin_scope_profile(profile)
-    return " ".join([*microsoft_admin_scope_values(scope_profile), "openid", "profile", "offline_access"])
 
 
 def microsoft_native_provider(provider: str | None) -> str:

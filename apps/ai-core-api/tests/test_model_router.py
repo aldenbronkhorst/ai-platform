@@ -13,7 +13,7 @@ os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
-from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory, AICompanyFact
+from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory
 from app.services.model_router import (
     ROUTE_NOT_CONFIGURED_MESSAGE,
     CANONICAL_SYSTEM_PROMPT,
@@ -402,7 +402,7 @@ class MockSession:
                 return self
 
             def all(self):
-                if "ai_tools" in stmt_str or "ai_company_facts" in stmt_str or "ai_memories" in stmt_str:
+                if "ai_tools" in stmt_str or "ai_memories" in stmt_str:
                     return []
                 return self._accounts
 
@@ -447,7 +447,7 @@ async def mock_get_db_with_connector(connected_type="odoo"):
 
 
 @pytest.mark.asyncio
-async def test_odoo_tool_credentials_fall_back_to_company_facts_for_legacy_accounts():
+async def test_odoo_tool_credentials_require_saved_connection_details():
     from app.services.model_router import _resolve_odoo_credentials_for_tool
 
     user_id = uuid.uuid4()
@@ -461,46 +461,26 @@ async def test_odoo_tool_credentials_fall_back_to_company_facts_for_legacy_accou
         odoo_url=None,
         odoo_db=None,
     )
-    facts = [
-        AICompanyFact(key="odoo_url", value="https://legacy.odoo.com"),
-        AICompanyFact(key="odoo_db", value="legacy-db"),
-    ]
 
     class FakeResult:
-        def __init__(self, scalar=None, items=None):
+        def __init__(self, scalar=None):
             self._scalar = scalar
-            self._items = items or []
 
         def scalar_one_or_none(self):
             return self._scalar
-
-        def scalars(self):
-            return self
-
-        def all(self):
-            return self._items
 
     class FakeSession:
         async def execute(self, stmt, *args, **kwargs):
             stmt_text = str(stmt).lower()
             if "ai_connected_accounts" in stmt_text:
                 return FakeResult(scalar=account)
-            if "ai_company_facts" in stmt_text:
-                return FakeResult(items=facts)
             return FakeResult()
 
     with patch("app.services.model_router.key_vault_uri", return_value="https://vault.example.com"), patch(
         "app.services.model_router.get_secret_value", new=AsyncMock(return_value="api-key")
     ):
-        credentials = await _resolve_odoo_credentials_for_tool(FakeSession(), user_id)
-
-    assert credentials == {
-        "url": "https://legacy.odoo.com",
-        "db": "legacy-db",
-        "username": "odoo@example.com",
-        "api_key": "api-key",
-        "transport": "auto",
-    }
+        with pytest.raises(RuntimeError, match="missing its saved URL or database"):
+            await _resolve_odoo_credentials_for_tool(FakeSession(), user_id)
 
 
 @pytest.mark.asyncio
@@ -983,84 +963,6 @@ class TestSeedIdempotent:
         from scripts.seed_providers import CANONICAL_SYSTEM_PROMPT
         from app.services.model_router import CANONICAL_SYSTEM_PROMPT as ROUTER_PROMPT
         assert CANONICAL_SYSTEM_PROMPT == ROUTER_PROMPT
-
-
-# ── Context Service Tests (connector-aware filtering) ──
-
-class TestContextServiceFiltering:
-    @pytest.mark.asyncio
-    async def test_context_service_no_longer_returns_business_rules(self):
-        from app.services.context import ContextService
-        from app.schemas.schemas import ContextRequest
-
-        db = MockSession(has_config=False, connected_accounts=[])
-        svc = ContextService(db)
-        req = ContextRequest()
-        result = await svc.get_context(req, user_id=uuid.uuid4())
-        assert "rules" not in result
-
-    @pytest.mark.asyncio
-    async def test_odoo_facts_excluded_when_disconnected(self):
-        """Company facts with key starting with 'odoo_' should be excluded
-        when Odoo is not connected."""
-        from app.services.context import ContextService
-        from app.schemas.schemas import ContextRequest
-
-        db = MockSession(has_config=False, connected_accounts=[])
-        svc = ContextService(db)
-        req = ContextRequest()
-        result = await svc.get_context(req, user_id=uuid.uuid4())
-        assert "facts" in result
-        assert "tools" in result
-
-    @pytest.mark.asyncio
-    async def test_odoo_tools_excluded_when_disconnected(self):
-        """Tools for target_system='odoo' should be excluded when Odoo is
-        not connected and the request doesn't specify odoo systems."""
-        from app.services.context import ContextService
-        from app.schemas.schemas import ContextRequest
-
-        db = MockSession(has_config=False, connected_accounts=[])
-        svc = ContextService(db)
-        req = ContextRequest()
-        result = await svc.get_context(req, user_id=uuid.uuid4())
-        assert "tools" in result
-
-    @pytest.mark.asyncio
-    async def test_odoo_tools_included_when_connected(self):
-        """Tools for target_system='odoo' should be included when Odoo is
-        connected for the user."""
-        from app.services.context import ContextService
-        from app.schemas.schemas import ContextRequest
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=False, connected_accounts=[account])
-        svc = ContextService(db)
-        req = ContextRequest()
-        result = await svc.get_context(req, user_id=uuid.uuid4())
-        assert "tools" in result
-
-    @pytest.mark.asyncio
-    async def test_connected_account_status_used_by_context(self):
-        """The context service should use connected account status to filter."""
-        from app.services.context import ContextService
-
-        db = MockSession(has_config=False, connected_accounts=[])
-        svc = ContextService(db)
-        systems = await svc._get_connected_systems(uuid.uuid4())
-        assert systems == set()
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db2 = MockSession(has_config=False, connected_accounts=[account])
-        svc2 = ContextService(db2)
-        systems2 = await svc2._get_connected_systems(uuid.uuid4())
-        assert "odoo" in systems2
 
 
 @pytest.fixture(autouse=True)

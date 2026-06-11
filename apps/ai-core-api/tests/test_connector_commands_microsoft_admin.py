@@ -45,12 +45,10 @@ microsoft_admin_commands = SimpleNamespace(
     ensure_azure_cli_profile=azure_cli.ensure_azure_cli_profile,
     extract_microsoft_admin_username=tokens.extract_microsoft_admin_username,
     httpx=tokens.httpx,
-    microsoft_admin_app_name_for_scope_profile=constants.microsoft_admin_app_name_for_scope_profile,
-    microsoft_admin_arm_device_scope_string=constants.microsoft_admin_arm_device_scope_string,
-    microsoft_admin_client_id_for_scope_profile=constants.microsoft_admin_client_id_for_scope_profile,
-    microsoft_admin_device_scope_string=constants.microsoft_admin_device_scope_string,
     microsoft_admin_scope_profile=constants.microsoft_admin_scope_profile,
-    microsoft_admin_scope_summary=constants.microsoft_admin_scope_summary,
+    microsoft_native_app_name_for_provider=constants.microsoft_native_app_name_for_provider,
+    microsoft_native_client_id_for_provider=constants.microsoft_native_client_id_for_provider,
+    microsoft_native_device_scope_string=constants.microsoft_native_device_scope_string,
     microsoft_native_oauth_flow_for_provider=constants.microsoft_native_oauth_flow_for_provider,
     microsoft_native_resource_for_provider=constants.microsoft_native_resource_for_provider,
     microsoft_native_scope_values=constants.microsoft_native_scope_values,
@@ -73,7 +71,7 @@ def _jwt(claims: dict) -> str:
 
 
 def test_microsoft_admin_arm_device_scope_matches_msal_device_auth_shape():
-    scopes = microsoft_admin_commands.microsoft_admin_arm_device_scope_string().split()
+    scopes = microsoft_admin_commands.microsoft_native_device_scope_string("azure_cli").split()
 
     assert microsoft_admin_commands.AZURE_ARM_SCOPE in scopes
     assert "openid" in scopes
@@ -85,9 +83,9 @@ def test_microsoft_admin_device_scopes_are_single_resource_profiles():
     assert microsoft_admin_commands.microsoft_admin_scope_profile("graph") == "graph"
     assert microsoft_admin_commands.microsoft_admin_scope_profile("unknown") == "graph"
 
-    arm_scope = microsoft_admin_commands.microsoft_admin_device_scope_string("arm").split()
-    graph_scope = microsoft_admin_commands.microsoft_admin_device_scope_string("graph").split()
-    exchange_scope = microsoft_admin_commands.microsoft_admin_device_scope_string("exchange").split()
+    arm_scope = microsoft_admin_commands.microsoft_native_device_scope_string("azure_cli").split()
+    graph_scope = microsoft_admin_commands.microsoft_native_device_scope_string("microsoft_graph").split()
+    exchange_scope = microsoft_admin_commands.microsoft_native_device_scope_string("exchange_online").split()
 
     assert microsoft_admin_commands.AZURE_ARM_SCOPE in arm_scope
     assert "https://graph.microsoft.com/User.ReadWrite.All" in graph_scope
@@ -114,15 +112,14 @@ def test_sharepoint_profile_uses_target_site_scope():
     assert microsoft_admin_commands._microsoft_admin_scope_request(scope, "sharepoint") == (
         "https://tenant.sharepoint.com/.default openid profile offline_access"
     )
-    assert "target SharePoint site" in microsoft_admin_commands.microsoft_admin_scope_summary("sharepoint")
 
 
 def test_microsoft_native_client_id_is_profile_specific():
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("arm") == microsoft_admin_commands.AZURE_CLI_CLIENT_ID
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID
-    assert microsoft_admin_commands.microsoft_admin_client_id_for_scope_profile("exchange") == microsoft_admin_commands.EXCHANGE_ONLINE_CLIENT_ID
-    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("arm") == "Microsoft Azure CLI"
-    assert microsoft_admin_commands.microsoft_admin_app_name_for_scope_profile("graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME
+    assert microsoft_admin_commands.microsoft_native_client_id_for_provider("azure_cli") == microsoft_admin_commands.AZURE_CLI_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_native_client_id_for_provider("microsoft_graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_native_client_id_for_provider("exchange_online") == microsoft_admin_commands.EXCHANGE_ONLINE_CLIENT_ID
+    assert microsoft_admin_commands.microsoft_native_app_name_for_provider("azure_cli") == "Microsoft Azure CLI"
+    assert microsoft_admin_commands.microsoft_native_app_name_for_provider("microsoft_graph") == microsoft_admin_commands.MICROSOFT_GRAPH_POWERSHELL_APP_DISPLAY_NAME
 
 
 def test_extract_microsoft_admin_username_does_not_use_old_fake_fallback():
@@ -157,7 +154,7 @@ def test_write_azure_cli_files_creates_account_matching_profile_username(tmp_pat
         "refresh_token": "refresh-token",
         "id_token": _jwt(claims),
         "client_info": _base64url_json({"uid": "uid-value", "utid": microsoft_admin_commands.TENANT_ID}),
-        "scope": microsoft_admin_commands.microsoft_admin_arm_device_scope_string(),
+        "scope": microsoft_admin_commands.microsoft_native_device_scope_string("azure_cli"),
         "expires_in": 3600,
         "expires_on": int(time.time()) + 3600,
         "username": user_name,
@@ -203,7 +200,7 @@ def test_write_azure_cli_files_adds_native_azure_cli_cache_entry(tmp_path):
         "token_type": "Bearer",
         "access_token": _jwt(claims),
         "refresh_token": "refresh-token",
-        "scope": microsoft_admin_commands.microsoft_admin_arm_device_scope_string(),
+        "scope": microsoft_admin_commands.microsoft_native_device_scope_string("azure_cli"),
         "expires_in": 3600,
         "expires_on": int(time.time()) + 3600,
         "username": user_name,
@@ -236,7 +233,7 @@ def test_write_azure_cli_files_synthesizes_account_metadata_from_access_token(tm
         "token_type": "Bearer",
         "access_token": _jwt(claims),
         "refresh_token": "refresh-token",
-        "scope": microsoft_admin_commands.microsoft_admin_arm_device_scope_string(),
+        "scope": microsoft_admin_commands.microsoft_native_device_scope_string("azure_cli"),
         "expires_in": 3600,
         "expires_on": int(time.time()) + 3600,
         "username": user_name,
