@@ -185,6 +185,89 @@ class TestConnectedAccountsFlow:
         assert site_url == "https://tenant.sharepoint.com/sites/example"
 
     @pytest.mark.asyncio
+    async def test_native_device_code_start_returns_expiry_timestamp(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        class FakeResponse:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {
+                    "device_code": "device-code",
+                    "user_code": "ABC123DEF",
+                    "verification_uri": "https://login.microsoft.com/device",
+                    "interval": 7,
+                    "expires_in": 600,
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+        monkeypatch.setattr(native.time, "time", lambda: 1_800_000_000)
+
+        result = await native.start_device_code(
+            "microsoft_graph",
+            req=None,
+            auth={"user_id": "e4807f22-97c8-4778-87a2-160f56d25247"},
+        )
+
+        assert result["status"] == "device_code_ready"
+        assert result["expires_at"] == 1_800_000_600
+        assert result["interval"] == 7
+
+    @pytest.mark.asyncio
+    async def test_native_device_code_terminal_error_is_not_pending(self, monkeypatch):
+        from app.routers import connector_microsoft_native as native
+
+        class FakeResponse:
+            status_code = 400
+            text = '{"error":"expired_token"}'
+
+            def json(self):
+                return {
+                    "error": "expired_token",
+                    "error_description": "AADSTS70019: The code has expired.",
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        monkeypatch.setattr(native.httpx, "AsyncClient", FakeClient)
+
+        result = await native.device_code_callback(
+            "microsoft_graph",
+            req={"device_code": "expired-device-code"},
+            auth={"user_id": UUID("e4807f22-97c8-4778-87a2-160f56d25247")},
+            db=AsyncMock(),
+        )
+
+        assert result["status"] == "error"
+        assert result["error_type"] == "expired_token"
+        assert "expired" in result["message"].lower()
+
+    @pytest.mark.asyncio
     async def test_exchange_native_diagnose_refreshes_token_before_success(self, monkeypatch):
         from app.routers import connector_microsoft_native as native
         from app.services.connectors.microsoft_admin.constants import EXCHANGE_ONLINE_PROVIDER
