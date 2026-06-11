@@ -185,7 +185,7 @@ class TestChatTitleOwnership:
 class TestChatAttachments:
     def test_chat_message_payload_includes_attachments(self):
         import uuid
-        from datetime import datetime
+        from datetime import datetime, timezone
         from app.models.models import AIChatMessage
         from app.routers.chat import _chat_message_payload
 
@@ -197,7 +197,7 @@ class TestChatAttachments:
             user_id=user_id,
             role="user",
             content="Please inspect this.",
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         attachment_id = uuid.uuid4()
 
@@ -278,10 +278,10 @@ class TestChatAttachments:
 
 class TestChatStreaming:
     def test_stream_heartbeat_payload_reports_elapsed_seconds(self):
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from app.routers.chat import STREAM_HEARTBEAT_SECONDS, _stream_heartbeat_payload
 
-        started_at = datetime.utcnow() - timedelta(seconds=STREAM_HEARTBEAT_SECONDS + 3)
+        started_at = datetime.now(timezone.utc) - timedelta(seconds=STREAM_HEARTBEAT_SECONDS + 3)
 
         payload = _stream_heartbeat_payload("req-heartbeat", started_at)
 

@@ -4,7 +4,7 @@ import uuid
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 os.environ["DEBUG"] = "true"
@@ -93,7 +93,7 @@ def test_fallback_chat_title_uses_first_user_request():
         {"role": "assistant", "content": "I will check Azure."},
     ])
 
-    assert title == "Azure Resource Inventory"
+    assert title == "Azure Active Resources"
 
 
 def test_fallback_chat_title_preserves_business_terms():
@@ -109,7 +109,7 @@ def test_fallback_chat_title_drops_question_scaffolding_and_standalone_counts():
         {"role": "user", "content": "there are 2 gerhard employees in my odoo?"},
     ])
 
-    assert title == "Gerhard Employee Duplicates"
+    assert title == "Gerhard Employees Odoo"
 
 
 def test_fallback_chat_title_corrects_typos_and_uses_subject():
@@ -117,16 +117,16 @@ def test_fallback_chat_title_corrects_typos_and_uses_subject():
         {"role": "user", "content": "create a microsoft uerer for employe gerhard in odoo"},
     ])
 
-    assert title == "Create Microsoft User for Gerhard"
+    assert title == "Create Microsoft User Employee Gerhard Odoo"
 
 
-def test_fallback_chat_title_uses_context_for_followup_subject():
+def test_fallback_chat_title_uses_latest_user_message_only():
     title = _fallback_chat_title([
         {"role": "user", "content": "whats costing so much"},
         {"role": "assistant", "content": "Azure Cost Management returned a daily cost table."},
     ])
 
-    assert title == "Azure Cost Breakdown"
+    assert title == "Costing So Much"
 
 
 def test_fallback_chat_title_normalizes_error_typos():
@@ -134,7 +134,7 @@ def test_fallback_chat_title_normalizes_error_typos():
         {"role": "user", "content": "halllucinations and now claims it cannot acess azure"},
     ])
 
-    assert title == "Azure Access Hallucination"
+    assert title == "Hallucinations Claims Cannot Access Azure"
 
 
 def test_fallback_chat_title_does_not_preserve_raw_misspellings():
@@ -142,7 +142,7 @@ def test_fallback_chat_title_does_not_preserve_raw_misspellings():
         {"role": "user", "content": "faliours during thinking in the connecotrs"},
     ])
 
-    assert title == "Thinking Error Investigation"
+    assert title == "Failures During Thinking Connectors"
     assert "Faliours" not in title
     assert "Connecotrs" not in title
 
@@ -512,7 +512,7 @@ async def test_generate_chat_title_falls_back_when_title_model_unavailable():
         {"role": "user", "content": "what are all my azure resources and month to date costs"}
     ])
 
-    assert title == "Azure Resources and Costs"
+    assert title == "Azure Resources Month Date Costs"
 
 
 @pytest.mark.asyncio
@@ -524,7 +524,7 @@ async def test_generate_chat_title_does_not_call_model():
             {"role": "user", "content": "there are 2 gerhard employees in my odoo?"}
         ])
 
-    assert title == "Gerhard Employee Duplicates"
+    assert title == "Gerhard Employees Odoo"
     assert call_model.await_count == 0
 
 
@@ -1408,7 +1408,7 @@ class TestProviderErrorHandling:
                 user_id="e4807f22-97c8-4778-87a2-160f56d25247",
                 title="New Chat",
                 status="active",
-                last_message_at=datetime.utcnow(),
+                last_message_at=datetime.now(timezone.utc),
             )
             # Wrap the MockSession to return a real AIChatSession for the
             # initial session-lookup query, and fall back to the configured

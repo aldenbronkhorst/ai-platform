@@ -4,7 +4,7 @@ Supports the Memory Agent lifecycle: list, create, update, approve, archive, and
 retrieve relevant memories for context injection.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -13,14 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role, require_auth_role
-from app.models.models import AIMemory, AIChatMessage, AIMemoryUsageEvent, AITask
-from app.schemas.schemas import AIMemoryCreate, AIMemoryUpdate, AIMemoryResponse, MemoryCandidate, MemoryFeedbackRequest
+from app.models.models import AIMemory, AIMemoryUsageEvent, AITask
+from app.schemas.schemas import AIMemoryCreate, AIMemoryUpdate, AIMemoryResponse, MemoryFeedbackRequest
 from app.services.audit import AuditService
 from app.schemas.schemas import AIAuditEventCreate
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/memories", tags=["memories"])
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _can_read_memory(auth: dict, memory: AIMemory) -> bool:
@@ -177,7 +181,7 @@ async def update_memory(
         memory.priority = req.priority
         changed.append("priority")
 
-    memory.updated_at = datetime.utcnow()
+    memory.updated_at = _utcnow()
 
     audit_svc = AuditService(db)
     await audit_svc.log_event(AIAuditEventCreate(
@@ -213,8 +217,8 @@ async def approve_memory(
     previous_status = memory.status
     memory.status = "active"
     memory.approved_by_user_id = user_id
-    memory.last_confirmed_at = datetime.utcnow()
-    memory.updated_at = datetime.utcnow()
+    memory.last_confirmed_at = _utcnow()
+    memory.updated_at = _utcnow()
 
     audit_svc = AuditService(db)
     await audit_svc.log_event(AIAuditEventCreate(
@@ -248,7 +252,7 @@ async def archive_memory(
 
     user_id = auth.get("user_id")
     memory.status = "archived"
-    memory.updated_at = datetime.utcnow()
+    memory.updated_at = _utcnow()
 
     audit_svc = AuditService(db)
     await audit_svc.log_event(AIAuditEventCreate(
@@ -262,66 +266,6 @@ async def archive_memory(
     ))
     await db.commit()
     logger.info("Memory archived | id=%s title=%s", memory.id, memory.title)
-
-
-@router.post("/extract", response_model=List[MemoryCandidate])
-async def extract_memory_candidates(
-    conversation_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
-):
-    """Extract memory candidates from a completed conversation."""
-    user_id = auth.get("user_id")
-    result = await db.execute(
-        select(AIChatMessage).where(
-            AIChatMessage.chat_session_id == conversation_id,
-            AIChatMessage.user_id == user_id,
-        ).order_by(AIChatMessage.created_at.asc())
-    )
-    messages = result.scalars().all()
-
-    from app.services.memory import MemoryCandidateService
-    svc = MemoryCandidateService(db)
-    candidates = await svc.extract_from_messages(messages=messages, user_id=user_id)
-
-    logger.info(
-        "Memory candidates extracted | conversation=%s count=%d user_id=%s",
-        conversation_id, len(candidates), user_id,
-    )
-    return candidates
-
-
-@router.post("/save-candidate", response_model=AIMemoryResponse, status_code=status.HTTP_201_CREATED)
-async def save_memory_candidate(
-    candidate: MemoryCandidate,
-    conversation_id: Optional[UUID] = Query(None),
-    message_id: Optional[UUID] = Query(None),
-    db: AsyncSession = Depends(get_db),
-    auth=Depends(api_key_auth),
-):
-    """Save a memory candidate directly. Frontend calls this when user clicks Save."""
-    user_id = auth.get("user_id")
-
-    from app.services.memory import MemoryCandidateService
-    svc = MemoryCandidateService(db)
-
-    # Check duplicate
-    is_dup = await svc.check_duplicate(candidate)
-    if is_dup:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A similar active memory already exists. Edit the existing one instead.",
-        )
-
-    memory = await svc.save_candidate(
-        candidate=candidate,
-        user_id=user_id,
-        conversation_id=conversation_id,
-        message_id=message_id,
-    )
-    await db.commit()
-    await db.refresh(memory)
-    return memory
 
 
 @router.post("/review", status_code=status.HTTP_200_OK)
@@ -390,7 +334,7 @@ async def _upsert_memory_usage_event(
         user_id=user_id,
         feedback_type=feedback_type,
         feedback_value=req.comment,
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     ))
 
 
@@ -415,7 +359,7 @@ def _feedback_requires_review(memory: AIMemory, feedback_type: str) -> bool:
 def _apply_memory_feedback(memory: AIMemory, feedback_type: str) -> tuple[str, bool]:
     if feedback_type in {"helpful", "worked"}:
         memory.success_count = (memory.success_count or 0) + 1
-        memory.last_confirmed_at = datetime.utcnow()
+        memory.last_confirmed_at = _utcnow()
         return _increase_memory_confidence(memory), False
 
     if feedback_type in {"wrong", "outdated", "do_not_use", "needs_review"}:
@@ -489,7 +433,7 @@ async def record_memory_feedback(
 
     await _upsert_memory_usage_event(db, memory_id=memory_id, req=req, user_id=user_id, feedback_type=f_type)
     audit_action, create_review_task = _apply_memory_feedback(memory, f_type)
-    memory.updated_at = datetime.utcnow()
+    memory.updated_at = _utcnow()
 
     if create_review_task:
         _add_memory_review_task(db, memory, f_type, req.comment)

@@ -97,7 +97,7 @@ class AIRule(Base, AuditMixin):
     priority = Column(Integer, default=100, nullable=False)
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
     approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    effective_from = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    effective_from = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     effective_to = Column(DateTime(timezone=True), nullable=True)
     supersedes_rule_id = Column(UUID(as_uuid=True), ForeignKey("ai_rules.id"), nullable=True)
     version = Column(Integer, default=1, nullable=False)
@@ -184,7 +184,7 @@ class AIAuditEvent(Base):
     __tablename__ = "ai_audit_events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     actor_type = Column(String(20), default="user", nullable=False)  # user, service, system
     actor_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
     identity_mode = Column(String(30), default="user-delegated", nullable=False)
@@ -209,7 +209,7 @@ class AIChatSession(Base, AuditMixin):
     user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     status = Column(String(20), default="active", nullable=False)  # active, archived, deleted
-    last_message_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    last_message_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     metadata_json = Column(JSON, nullable=True)
 
 
@@ -315,7 +315,7 @@ class AIUsageLog(Base):
     __tablename__ = "ai_usage_logs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    timestamp = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
     request_id = Column(String(100), nullable=True, index=True)
     trace_id = Column(String(100), nullable=True, index=True)
     provider_id = Column(UUID(as_uuid=True), ForeignKey("ai_providers.id"), nullable=True)
@@ -346,7 +346,7 @@ class AIMemoryUsageEvent(Base):
     used_in_final_answer = Column(String(10), default="true", nullable=False)  # "true" or "false"
     feedback_type = Column(String(50), nullable=True)  # helpful, wrong, outdated, not_relevant, do_not_use, etc.
     feedback_value = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class AITrace(Base):
@@ -371,7 +371,7 @@ class AITrace(Base):
     error_type = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
 
 class AITraceSpan(Base):
@@ -392,4 +392,4 @@ class AITraceSpan(Base):
     error_type = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)

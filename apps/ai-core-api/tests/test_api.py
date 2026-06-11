@@ -37,17 +37,9 @@ class TestHealth:
 
 
 class TestAudit:
-    def test_create_audit_event(self, client):
-        response = client.post("/audit", json={
-            "action_type": "test",
-            "target_system": "ai-platform",
-            "input_summary": "Test audit event",
-            "risk_level": "low",
-            "status": "success"
-        })
-        assert response.status_code == 201
-        data = response.json()
-        assert data["action_type"] == "test"
+    def test_audit_events_are_read_only(self, client):
+        response = client.post("/audit", json={"action_type": "test"})
+        assert response.status_code == 405
 
     def test_list_audit_events(self, client):
         response = client.get("/audit")
@@ -56,16 +48,14 @@ class TestAudit:
 
 
 class TestTools:
-    def test_register_tool(self, client):
+    def test_tools_are_seeded_not_registered_at_runtime(self, client):
         response = client.post("/tools/register", json={
             "name": "test.tool",
             "display_name": "Test Tool",
             "target_system": "ai-platform",
             "description": "A test tool"
         })
-        assert response.status_code == 201
-        data = response.json()
-        assert data["name"] == "test.tool"
+        assert response.status_code == 404
 
     def test_list_tools(self, client):
         response = client.get("/tools")
@@ -74,17 +64,45 @@ class TestTools:
 
 
 class TestContext:
-    def test_get_context(self, client):
+    def test_context_is_internal_not_public_api(self, client):
         response = client.post("/context", json={
             "task": "Test task",
             "systems": ["odoo"],
             "limit": 5
         })
-        assert response.status_code == 200
-        data = response.json()
-        assert "rules" in data
-        assert "facts" in data
-        assert "tools" in data
+        assert response.status_code == 404
+
+
+class TestRules:
+    def test_rules_are_read_only(self, client):
+        response = client.post("/rules", json={
+            "title": "Temporary rule",
+            "body": "Do not create rules through the public API.",
+        })
+        assert response.status_code == 405
+
+
+class TestConnectedAccounts:
+    def test_connector_debug_endpoint_is_not_public_api(self, client):
+        response = client.get("/connected-accounts/debug/connector")
+        assert response.status_code == 404
+
+    def test_github_cli_execution_is_tool_only_not_public_api(self, client):
+        response = client.post("/connector/github/cli", json={"command": "gh repo list"})
+        assert response.status_code == 404
+
+
+class TestMemorySurface:
+    def test_memory_candidates_are_extracted_inline_not_public_api(self, client):
+        response = client.post("/memories/extract")
+        assert response.status_code == 405
+
+    def test_memory_candidates_are_saved_inline_not_public_api(self, client):
+        response = client.post("/memories/save-candidate", json={
+            "type": "general_note",
+            "title": "Temporary memory",
+        })
+        assert response.status_code == 405
 
 
 class TestArtifacts:

@@ -1563,33 +1563,6 @@ class TestSaveAsUnverified:
             app.dependency_overrides.pop(get_db, None)
 
 
-# ── Protected Debug Endpoint Tests ──
-
-class TestProtectedDebugEndpoint:
-    """The /debug/connector endpoint must require auth."""
-
-    def test_debug_requires_auth_in_production(self, monkeypatch):
-        """Debug connector must return 401 without auth when production mode prevents bypass."""
-        monkeypatch.setenv("APP_ENV", "production")
-        monkeypatch.setenv("DEBUG", "false")
-        from app.core.config import get_settings
-        get_settings.cache_clear()
-
-        response = client.get("/connected-accounts/debug/connector")
-        assert response.status_code == 401
-
-        get_settings.cache_clear()
-
-    def test_debug_allows_authenticated_admin(self):
-        """Debug connector must allow access when properly authenticated as admin."""
-        # In test env with DEBUG=true, anonymous gets admin via debug bypass
-        response = client.get(
-            "/connected-accounts/debug/connector",
-            headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-        )
-        assert response.status_code == 200
-
-
 # ── Production Mode Debug Bypass Tests ──
 
 class TestProductionDebugBypass:

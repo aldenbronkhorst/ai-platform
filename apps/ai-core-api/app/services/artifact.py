@@ -176,7 +176,7 @@ class ArtifactService:
 
     async def generate_sas_url(self, container: str, blob_name: str) -> str:
         """Generate a short-lived read-only URL for the blob."""
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
         from azure.storage.blob import generate_blob_sas, BlobSasPermissions
 
         account_name = self.settings.storage_account_name
@@ -190,8 +190,8 @@ class ArtifactService:
             )
             user_delegation_key = await asyncio.to_thread(
                 blob_service.get_user_delegation_key,
-                key_start_time=datetime.utcnow(),
-                key_expiry_time=datetime.utcnow() + timedelta(minutes=15),
+                key_start_time=datetime.now(timezone.utc),
+                key_expiry_time=datetime.now(timezone.utc) + timedelta(minutes=15),
             )
             sas_token = generate_blob_sas(
                 account_name=account_name,
@@ -199,7 +199,7 @@ class ArtifactService:
                 blob_name=blob_name,
                 user_delegation_key=user_delegation_key,
                 permission=BlobSasPermissions(read=True),
-                expiry=datetime.utcnow() + timedelta(minutes=15),
+                expiry=datetime.now(timezone.utc) + timedelta(minutes=15),
             )
             return f"{blob_url}?{sas_token}"
         except Exception as exc:

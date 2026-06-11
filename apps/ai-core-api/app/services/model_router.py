@@ -63,8 +63,6 @@ AZURE_RESOURCE_INVENTORY_TERMS = {
 }
 AZURE_RESOURCE_READ_TERMS = {"access", "active", "list", "show", "see", "inventory"}
 CHAT_TITLE_MAX_CHARS = 70
-CHAT_TITLE_SOURCE_MESSAGES = 6
-CHAT_TITLE_SOURCE_CHARS = 900
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -73,14 +71,6 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
         "Do not tell users to run local native-tool logins; report connector auth/profile failures as platform issues. "
         "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
     ),
-}
-CHAT_TITLE_FILLER_WORDS = {
-    "a", "all", "an", "and", "are", "as", "at", "be", "been", "being", "can", "could",
-    "check", "current", "did", "do", "does", "double", "for", "from", "get", "give", "go", "how", "i", "if",
-    "in", "is", "it", "list", "me", "my", "now", "of", "on", "or", "our", "please",
-    "show", "so", "tell", "that", "the", "there", "this", "though", "to", "today", "tomorrow", "us", "was",
-    "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
-    "yesterday",
 }
 CHAT_TITLE_CANONICAL_WORDS = {
     "ai": "AI",
@@ -104,48 +94,21 @@ CHAT_TITLE_CANONICAL_WORDS = {
     "teams": "Teams",
     "ui": "UI",
 }
-CHAT_TITLE_TYPO_CORRECTIONS = {
-    "acess": "access",
-    "acessed": "accessed",
-    "adress": "address",
-    "atrochus": "atrocious",
-    "caost": "cost",
-    "caosts": "costs",
-    "chnage": "change",
-    "chnages": "changes",
-    "combibne": "combine",
-    "connecotrs": "connectors",
-    "converstaion": "conversation",
-    "converstaions": "conversations",
-    "employe": "employee",
-    "emplopyee": "employee",
-    "emplopyees": "employees",
-    "emplyee": "employee",
-    "erros": "errors",
-    "exchnage": "exchange",
-    "exhancge": "exchange",
-    "faliour": "failure",
-    "faliours": "failures",
-    "gerhardd": "gerhard",
-    "halllucination": "hallucination",
-    "halllucinations": "hallucinations",
-    "idnetfy": "identify",
-    "odne": "done",
-    "ood": "odoo",
-    "oodo": "odoo",
-    "repsonse": "response",
-    "repsonses": "responses",
-    "recepit": "receipt",
-    "reciept": "receipt",
-    "rgerads": "regards",
-    "uerer": "user",
-    "usre": "user",
+CHAT_TITLE_STOPWORDS = {
+    "a", "all", "an", "and", "are", "as", "at", "be", "can", "check", "could",
+    "did", "do", "does", "for", "from", "get", "give", "how", "i", "if", "in",
+    "is", "it", "list", "me", "my", "now", "of", "on", "or", "our", "please",
+    "show", "tell", "that", "the", "there", "this", "to", "today", "us", "was",
+    "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
 }
-CHAT_TITLE_PERSON_STOPWORDS = CHAT_TITLE_FILLER_WORDS | {
-    "access", "account", "activity", "admin", "attachment", "attachments", "azure", "billing",
-    "breakdown", "chat", "connector", "connectors", "cost", "costing", "costs", "employee",
-    "employees", "error", "errors", "exchange", "github", "intune", "microsoft", "odoo",
-    "pdf", "po", "receipt", "resources", "teams", "title", "user", "voice",
+CHAT_TITLE_WORD_REPLACEMENTS = {
+    "acess": "access",
+    "employe": "employee",
+    "faliours": "failures",
+    "halllucinations": "hallucinations",
+    "connecotrs": "connectors",
+    "uerer": "user",
+    "whats": "what",
 }
 TEXT_TOOL_CALL_RE = re.compile(
     r"<\|?tool_call_begin\|?>\s*(?P<name>.*?)\s*"
@@ -1446,13 +1409,13 @@ def _sanitize_chat_title(title: Any) -> str | None:
 
 
 def _title_word(token: str) -> str:
-    corrected = CHAT_TITLE_TYPO_CORRECTIONS.get(token.lower(), token)
-    canonical = CHAT_TITLE_CANONICAL_WORDS.get(corrected.lower())
+    normalized = CHAT_TITLE_WORD_REPLACEMENTS.get(token.lower(), token)
+    canonical = CHAT_TITLE_CANONICAL_WORDS.get(normalized.lower())
     if canonical:
         return canonical
-    if corrected.isupper() and len(corrected) <= 6:
-        return corrected
-    return corrected[:1].upper() + corrected[1:].lower()
+    if normalized.isupper() and len(normalized) <= 6:
+        return normalized
+    return normalized[:1].upper() + normalized[1:].lower()
 
 
 def _normalize_title_text(text: str) -> str:
@@ -1460,12 +1423,6 @@ def _normalize_title_text(text: str) -> str:
     text = re.sub(r"https?://\S+", " ", text)
     text = text.replace("&", " and ")
     text = re.sub(r"[_*`~#>\[\]{}()]", " ", text)
-
-    def replace_token(match: re.Match[str]) -> str:
-        token = match.group(0)
-        return CHAT_TITLE_TYPO_CORRECTIONS.get(token.lower(), token)
-
-    text = re.sub(r"[A-Za-z][A-Za-z0-9'-]*", replace_token, text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -1483,164 +1440,23 @@ def _first_user_title_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _title_context_text(messages: list[dict[str, Any]]) -> str:
-    excerpts: list[str] = []
-    for message in messages[:CHAT_TITLE_SOURCE_MESSAGES]:
-        if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
-            continue
-        text = _normalize_title_text(str(message.get("content") or ""))
-        if text:
-            excerpts.append(_truncate_tool_text(text, CHAT_TITLE_SOURCE_CHARS))
-    return " ".join(excerpts)
-
-
-def _has_title_pattern(text: str, pattern: str) -> bool:
-    return bool(re.search(pattern, text, re.IGNORECASE))
-
-
-def _extract_title_po_number(text: str) -> str | None:
-    match = re.search(r"\bPO[-\s]?(\d{4})[-\s]?(\d{4,6})\b", text, re.IGNORECASE)
-    if not match:
-        return None
-    return f"PO-{match.group(1)}-{match.group(2)}"
-
-
-def _extract_title_person(text: str) -> str | None:
-    tokens = _title_tokens(text)
-    if not tokens:
-        return None
-
-    lowered = [token.lower() for token in tokens]
-    employee_markers = {"employee", "employees", "user", "for"}
-    for index, lower in enumerate(lowered):
-        if lower not in employee_markers:
-            continue
-        nearby = list(range(index + 1, min(len(tokens), index + 4)))
-        nearby.extend(range(max(0, index - 3), index))
-        for candidate_index in nearby:
-            candidate = tokens[candidate_index]
-            candidate_lower = candidate.lower()
-            if candidate_lower not in CHAT_TITLE_PERSON_STOPWORDS and candidate.isalpha() and len(candidate) > 2:
-                return _title_word(candidate)
-
-    for index, candidate in enumerate(tokens):
-        candidate_lower = candidate.lower()
-        if index == 0 or candidate_lower in CHAT_TITLE_PERSON_STOPWORDS:
-            continue
-        if candidate[:1].isupper() and candidate.isalpha() and len(candidate) > 2:
-            return _title_word(candidate)
-    return None
-
-
-def _semantic_chat_title(first_user_text: str, context_text: str) -> str | None:
-    first_lower = first_user_text.lower()
-    context_lower = context_text.lower()
-    combined = f"{first_lower} {context_lower}".strip()
-    po_number = _extract_title_po_number(context_text)
-    person = _extract_title_person(first_user_text) or _extract_title_person(context_text)
-
-    if _has_title_pattern(combined, r"\b(chat\s+)?title|naming|name\s+of\s+chat\b"):
-        return "Chat Title Generation"
-
-    if _has_title_pattern(combined, r"\bhallucination|hallucinations|made\s+up|lied\b"):
-        if _has_title_pattern(combined, r"\bazure|access\b"):
-            return "Azure Access Hallucination"
-        return "Chat Response Hallucinations"
-
-    if _has_title_pattern(combined, r"\bthinking\b") and _has_title_pattern(combined, r"\berror|errors|failure|failures|failed\b"):
-        if _has_title_pattern(combined, r"\bodoo\b"):
-            return "Odoo Thinking Errors"
-        if _has_title_pattern(combined, r"\bazure|microsoft|ms admin\b"):
-            return "Microsoft Connector Thinking Errors"
-        return "Thinking Error Investigation"
-
-    if _has_title_pattern(combined, r"\b(?:voice|microphone|mic|dictation|speech)\b"):
-        return "Voice Dictation Issue"
-
-    if _has_title_pattern(combined, r"\battachment|attachments|upload|uploads\b"):
-        if _has_title_pattern(combined, r"\bpdf\b"):
-            return "PDF Attachment Upload"
-        return "Attachment Upload Issue"
-
-    if _has_title_pattern(combined, r"\bpdf\b") and _has_title_pattern(combined, r"\bextract|read|ocr|document\b"):
-        return "PDF Text Extraction"
-
-    if _has_title_pattern(combined, r"\biphone|phone|mobile\b") and _has_title_pattern(combined, r"\bsign\s*in|login|microsoft\b"):
-        return "iPhone Microsoft Sign-In"
-
-    if po_number:
-        if _has_title_pattern(combined, r"\breceipt|received|stock|valuation|avco|adjust"):
-            return f"{po_number} Receipt Review"
-        if _has_title_pattern(combined, r"\bmessage|activity|done|chatter\b"):
-            return f"{po_number} Activity Follow-Up"
-        return f"{po_number} Review"
-
-    if (
-        _has_title_pattern(combined, r"\bduplicate|combine|merge\b")
-        or _has_title_pattern(combined, r"\bthere\s+are\s+(?:2|two)\b.*\bemployees\b")
-    ) and _has_title_pattern(combined, r"\bemployee|employees\b"):
-        return f"{person} Employee Duplicates" if person else "Duplicate Employee Review"
-
-    if _has_title_pattern(combined, r"\b(create|add|make|new)\b") and _has_title_pattern(combined, r"\bmicrosoft|entra|azure\s+ad|m365\b") and _has_title_pattern(combined, r"\buser|account\b"):
-        return f"Create Microsoft User for {person}" if person else "Create Microsoft User"
-
-    if _has_title_pattern(combined, r"\bodoo\b") and _has_title_pattern(combined, r"\btimeline|activity|activities\b") and person:
-        return f"{person} Odoo Timeline"
-
-    if _has_title_pattern(combined, r"\bodoo\b") and _has_title_pattern(combined, r"\bemployee|employees\b"):
-        return f"{person} Odoo Employees" if person else "Odoo Employee Review"
-
-    if _has_title_pattern(combined, r"\bexchange\b"):
-        return "Exchange Admin Setup" if _has_title_pattern(combined, r"\bconnector|admin|powershell\b") else "Exchange Admin"
-
-    if _has_title_pattern(combined, r"\bintune\b"):
-        return "Intune Admin"
-
-    if _has_title_pattern(combined, r"\bazure|cost management|billing\b") and _has_title_pattern(combined, r"\bcost|costs|costing|spend|billing\b"):
-        if _has_title_pattern(first_lower, r"\bcosting\s+so\s+much|what'?s\s+costing|breakdown|why\b"):
-            return "Azure Cost Breakdown"
-        if _has_title_pattern(combined, r"\bresource|resources\b") and _has_title_pattern(combined, r"\bcost|costs|spend\b"):
-            return "Azure Resources and Costs"
-        if _has_title_pattern(combined, r"\bmonth\s+to\s+date|mtd|this\s+month|current\s+month\b"):
-            return "Azure Month-To-Date Costs"
-        return "Azure Costs"
-
-    if _has_title_pattern(combined, r"\bazure\b") and _has_title_pattern(combined, r"\bresource|resources\b"):
-        return "Azure Resource Inventory"
-
-    if _has_title_pattern(combined, r"\bconnector|connectors|tool|tools\b"):
-        if _has_title_pattern(combined, r"\bmicrosoft|azure|ms admin\b"):
-            return "Microsoft Connectors"
-        if _has_title_pattern(combined, r"\bodoo\b"):
-            return "Odoo Connector Errors" if _has_title_pattern(combined, r"\berror|failed|failure\b") else "Odoo Connector"
-        return "Connector Configuration"
-
-    return None
-
-
 def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
     """Create a concise local title when the title model is unavailable."""
     first_user_text = _first_user_title_text(messages)
     if not first_user_text:
         return None
 
-    context_text = _title_context_text(messages) or first_user_text
-    semantic_title = _semantic_chat_title(first_user_text, context_text)
-    if semantic_title:
-        return _sanitize_chat_title(semantic_title)
-
     tokens = _title_tokens(first_user_text)
     useful: list[str] = []
     seen: set[str] = set()
     for token in tokens:
-        lower = token.lower()
-        if lower in CHAT_TITLE_FILLER_WORDS or token.isdigit():
+        lower = CHAT_TITLE_WORD_REPLACEMENTS.get(token.lower(), token.lower())
+        if lower in CHAT_TITLE_STOPWORDS or token.isdigit() or lower in seen:
             continue
-        corrected_lower = CHAT_TITLE_TYPO_CORRECTIONS.get(lower, lower)
-        if corrected_lower in seen:
-            continue
-        seen.add(corrected_lower)
-        useful.append(CHAT_TITLE_TYPO_CORRECTIONS.get(lower, token))
+        seen.add(lower)
+        useful.append(token)
+        if len(useful) >= 6:
+            break
 
     selected = useful[:6] or tokens[:6]
     title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))

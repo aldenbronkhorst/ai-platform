@@ -55,17 +55,6 @@ class AIArtifactResponse(BaseModel):
     created_at: datetime
 
 
-class AIToolCreate(BaseModel):
-    name: str
-    display_name: str
-    description: Optional[str] = None
-    target_system: str
-    input_schema: Optional[dict] = None
-    output_schema: Optional[dict] = None
-    version: str = "1.0.0"
-    requires_approval: str = "false"
-
-
 class AIToolResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -134,16 +123,6 @@ class AIRuleResponse(BaseModel):
     effective_from: datetime
     effective_to: Optional[datetime]
     version: int
-
-
-class AICompanyFactResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    key: str
-    value: str
-    category: Optional[str]
-    source: Optional[str]
-    confidence: str
 
 
 class ContextRequest(BaseModel):
@@ -226,12 +205,6 @@ class MemoryCandidate(BaseModel):
     confidence: str = "medium"
     risk_level: str = "low"
     save_mode: str = "auto"  # auto, confirm, admin_approval
-
-
-class ContextResponse(BaseModel):
-    rules: List[AIRuleResponse]
-    facts: List[AICompanyFactResponse]
-    tools: List[AIToolResponse]
 
 
 class MemoryFeedbackRequest(BaseModel):

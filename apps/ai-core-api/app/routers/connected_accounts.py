@@ -5,8 +5,7 @@ import logging
 import httpx
 import uuid
 import re
-import socket
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -42,6 +41,10 @@ DNS_FAILURE_PHRASES = [
     "no address associated with hostname",
     "no such host is known",
 ]
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # ── Connection Trace Infrastructure ──
@@ -140,79 +143,6 @@ class ConnectErrorDetail(BaseModel):
     request_id: str = ""
     connection_attempt_id: str = ""
     trace: Optional[dict] = None
-
-
-@router.get("/debug/connector")
-async def debug_connector_connectivity(
-    auth: dict = Depends(require_role(["AIPlatform.Admin"])),
-):
-    """Debug endpoint to test DNS resolution and connectivity to Odoo Connector.
-    Requires admin-level authentication."""
-    results = {
-        "odoo_connector_url": ODOO_CONNECTOR_URL,
-        "odoo_connector_key_configured": bool(ODOO_CONNECTOR_KEY),
-        "dns_resolution": None,
-        "http_connectivity": None,
-        "environment_vars": {
-            "ODOO_CONNECTOR_URL": ODOO_CONNECTOR_URL,
-            "ODOO_CONNECTOR_API_KEY": "***" if ODOO_CONNECTOR_KEY else None,
-        }
-    }
-
-    if not ODOO_CONNECTOR_URL:
-        results["error"] = "ODOO_CONNECTOR_URL is not configured"
-        return results
-
-    # Test DNS resolution
-    try:
-        parsed = urlparse(ODOO_CONNECTOR_URL)
-        hostname = parsed.hostname
-        if hostname:
-            ip_addresses = socket.getaddrinfo(hostname, None)
-            results["dns_resolution"] = {
-                "hostname": hostname,
-                "resolved": True,
-                "ip_addresses": list(set([addr[4][0] for addr in ip_addresses]))
-            }
-        else:
-            results["dns_resolution"] = {"error": "Could not parse hostname from URL"}
-    except socket.gaierror as e:
-        results["dns_resolution"] = {
-            "resolved": False,
-            "error": f"DNS resolution failed: {str(e)}"
-        }
-    except Exception as e:
-        results["dns_resolution"] = {
-            "error": f"Unexpected error during DNS resolution: {str(e)}"
-        }
-
-    # Test HTTP connectivity
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            health_url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/health"
-            response = await client.get(health_url)
-            results["http_connectivity"] = {
-                "url": health_url,
-                "status_code": response.status_code,
-                "reachable": response.status_code == 200,
-                "response_time_ms": response.elapsed.total_seconds() * 1000
-            }
-    except httpx.ConnectError as e:
-        results["http_connectivity"] = {
-            "reachable": False,
-            "error": f"Connection failed: {str(e)}"
-        }
-    except httpx.TimeoutException as e:
-        results["http_connectivity"] = {
-            "reachable": False,
-            "error": f"Connection timeout: {str(e)}"
-        }
-    except Exception as e:
-        results["http_connectivity"] = {
-            "error": f"Unexpected error during HTTP connectivity test: {str(e)}"
-        }
-
-    return results
 
 
 def _normalize_odoo_url(raw: str) -> str:
@@ -865,7 +795,7 @@ def _upsert_odoo_account(
     verified: bool,
     company_meta: dict,
 ) -> AIConnectedAccount:
-    now = datetime.utcnow()
+    now = _utcnow()
     if existing_account:
         return _update_odoo_account(
             existing_account,
@@ -1201,7 +1131,7 @@ async def test_odoo_connection(
             api_key=api_key
         )
         account.status = "connected"
-        account.last_verified_at = datetime.utcnow()
+        account.last_verified_at = _utcnow()
 
         # Refresh company metadata
         company_meta = await _fetch_odoo_company_metadata(
@@ -1219,7 +1149,7 @@ async def test_odoo_connection(
         test_status = "error"
         account.status = "error"
         # We still update verified/last verified timestamp to reflect test run
-        account.updated_at = datetime.utcnow()
+        account.updated_at = _utcnow()
 
     await db.commit()
     await db.refresh(account)
@@ -1298,8 +1228,8 @@ async def rotate_odoo_credentials(
     # Update metadata and point to the new secret
     account.secret_reference = new_secret_name
     account.status = "connected"
-    account.last_verified_at = datetime.utcnow()
-    account.updated_at = datetime.utcnow()
+    account.last_verified_at = _utcnow()
+    account.updated_at = _utcnow()
     account.disconnected_at = None
 
     await db.commit()
@@ -1355,8 +1285,8 @@ async def disconnect_odoo(
     account.provider_display_name = None
     account.permission_summary = None
     account.last_verified_at = None
-    account.disconnected_at = datetime.utcnow()
-    account.updated_at = datetime.utcnow()
+    account.disconnected_at = _utcnow()
+    account.updated_at = _utcnow()
     account.odoo_url = None
     account.odoo_db = None
     account.odoo_company_id = None
