@@ -870,23 +870,6 @@ def _normalize_mutation_values(client: OdooClient, req: OdooOpsRunnerRequest) ->
     return normalized
 
 
-def _create_record(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
-    result = client.call_with_transport(req.model, "create", args=[_normalize_mutation_values(client, req)], kwargs={})
-    return result, [int(result)] if isinstance(result, int) else []
-
-
-def _write_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
-    if not req.ids:
-        raise HTTPException(status_code=400, detail={"error": "write requires ids"})
-    return client.call_with_transport(req.model, "write", args=[req.ids, _normalize_mutation_values(client, req)], kwargs={}), req.ids
-
-
-def _delete_records(client: OdooClient, req: OdooOpsRunnerRequest) -> tuple[Any, list[int]]:
-    if not req.ids:
-        raise HTTPException(status_code=400, detail={"error": "delete requires ids"})
-    return client.call_with_transport(req.model, "unlink", args=[req.ids], kwargs={}), req.ids
-
-
 def _verify_mutation(client: OdooClient, req: OdooOpsRunnerRequest, operation: str, affected_ids: list[int]) -> Any:
     if not affected_ids or operation == "delete":
         return None
@@ -899,11 +882,18 @@ def _verify_mutation(client: OdooClient, req: OdooOpsRunnerRequest, operation: s
 def _run_mutation(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     operation = req.operation
     if operation == "create":
-        result, affected_ids = _create_record(client, req)
+        result = client.call_with_transport(req.model, "create", args=[_normalize_mutation_values(client, req)], kwargs={})
+        affected_ids = [int(result)] if isinstance(result, int) and not isinstance(result, bool) else []
     elif operation == "write":
-        result, affected_ids = _write_records(client, req)
+        if not req.ids:
+            raise HTTPException(status_code=400, detail={"error": "write requires ids"})
+        result = client.call_with_transport(req.model, "write", args=[req.ids, _normalize_mutation_values(client, req)], kwargs={})
+        affected_ids = req.ids
     elif operation == "delete":
-        result, affected_ids = _delete_records(client, req)
+        if not req.ids:
+            raise HTTPException(status_code=400, detail={"error": "delete requires ids"})
+        result = client.call_with_transport(req.model, "unlink", args=[req.ids], kwargs={})
+        affected_ids = req.ids
     else:
         raise HTTPException(status_code=400, detail={"error": f"unknown mutation operation: {req.operation}"})
     response = {
