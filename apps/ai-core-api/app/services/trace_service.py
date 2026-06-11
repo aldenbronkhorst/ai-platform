@@ -238,7 +238,6 @@ def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, 
             "connected_systems": data.get("connected_systems") if isinstance(data.get("connected_systems"), list) else [],
             "tools": data.get("tools") if isinstance(data.get("tools"), list) else [],
             "tool_count": data.get("tool_count"),
-            "facts_injected": data.get("facts_injected"),
             "memories_injected": data.get("memories_injected"),
         }
     if span_type == "provider_call":

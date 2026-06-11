@@ -13,13 +13,11 @@ import httpx
 
 from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool,
-    AIMemory, AIArtifact, AICompanyFact,
+    AIMemory, AIArtifact,
 )
 from app.services.foundry_client import FoundryClient
-from app.services.context import ContextService
 from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
-from app.schemas.schemas import ContextRequest
 from app.services.model_tool_calls import (
     _build_tool_definitions,
     _canonicalize_tool_call,
@@ -136,7 +134,6 @@ DATE_LIKE_RE = re.compile(r"\b\d{1,4}([/-]\d{1,2}){1,2}\b|\b\d{1,2}(st|nd|rd|th)
 @dataclass
 class InjectedContext:
     system_prompt: str
-    facts: list[Any] = field(default_factory=list)
     memories: list[Any] = field(default_factory=list)
     currency_source: str = "none"
     currency_text: str | None = None
@@ -572,11 +569,6 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
 
     odoo_url = (account.odoo_url or "").strip()
     odoo_db = (account.odoo_db or "").strip()
-    if not odoo_url or not odoo_db:
-        result = await db.execute(select(AICompanyFact).where(AICompanyFact.key.in_(("odoo_url", "odoo_db"))))
-        facts = {fact.key: fact.value for fact in result.scalars().all()}
-        odoo_url = odoo_url or (facts.get("odoo_url") or os.environ.get("ODOO_URL", "")).strip()
-        odoo_db = odoo_db or (facts.get("odoo_db") or os.environ.get("ODOO_DB", "")).strip()
     if not odoo_url or not odoo_db:
         raise RuntimeError("Odoo connected account is missing its saved URL or database")
 
@@ -1870,40 +1862,6 @@ async def _select_tools_for_model(
     return tools, tool_definitions, _append_tool_guidance(system_prompt, tools, tool_definitions)
 
 
-async def _connected_systems_for_context(db: AsyncSession, user_id: Optional[UUID]) -> set[str]:
-    if not user_id:
-        return set()
-    acct_result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-        )
-    )
-    return {acct.provider for acct in acct_result.scalars().all()}
-
-
-async def _company_facts_context(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    connected_systems: Optional[set[str]] = None,
-) -> tuple[str, list[Any]]:
-    connected_systems = connected_systems if connected_systems is not None else await _connected_systems_for_context(db, user_id)
-    context = await ContextService(db).get_context(
-        ContextRequest(
-            task="general_chat",
-            systems=list(connected_systems) if connected_systems else None,
-            limit=50,
-        ),
-        user_id=user_id,
-        connected_systems=connected_systems,
-    )
-    facts = context.get("facts", [])
-    if not facts:
-        return "", []
-    facts_text = "\n".join(f"- {fact.key}: {fact.value}" for fact in facts)
-    return f"## Company Facts\n{facts_text}", facts
-
-
 async def _odoo_currency_context(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1970,13 +1928,6 @@ async def _inject_context_sections(
     snapshot: Optional[ConnectedAccountsSnapshot] = None,
 ) -> InjectedContext:
     injected = InjectedContext(system_prompt=system_prompt)
-    connected_systems = snapshot.connected_systems if snapshot else None
-
-    try:
-        section, injected.facts = await _company_facts_context(db, user_id, connected_systems)
-        injected.system_prompt = _append_context_section(injected.system_prompt, section)
-    except Exception as exc:
-        logger.warning("Failed to inject company facts: %s", exc)
 
     try:
         section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id, snapshot)
@@ -1991,8 +1942,7 @@ async def _inject_context_sections(
         logger.warning("Failed to inject memories: %s", exc)
 
     logger.info(
-        "Context injected | facts=%d memories=%d user_id=%s currency=%s",
-        len(injected.facts),
+        "Context injected | memories=%d user_id=%s currency=%s",
         len(injected.memories),
         user_id,
         injected.currency_text or "none",
@@ -2566,7 +2516,6 @@ def _raise_if_provider_failed(
 
 def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any], primary_model: AIModel) -> dict[str, Any]:
     return {
-        "facts_injected": [{"key": fact.key, "value": fact.value} for fact in injected.facts],
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
         "currency_source": injected.currency_source,
         "current_date": _platform_now().date().isoformat(),
@@ -2698,7 +2647,6 @@ async def execute_chat(
                     "connected_systems": sorted(connected_accounts.connected_systems),
                     "tools": [tool.name for tool in tools],
                     "tool_count": len(tools),
-                    "facts_injected": len(injected.facts),
                     "memories_injected": len(injected.memories),
                     "system_prompt_chars": len(injected.system_prompt or ""),
                     "full_message_count": len(full_messages),

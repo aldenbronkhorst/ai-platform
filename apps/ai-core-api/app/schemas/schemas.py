@@ -1,30 +1,7 @@
 from datetime import datetime
-from typing import Optional, List, Any
+from typing import Optional, Any
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
-
-
-class HealthResponse(BaseModel):
-    status: str
-    version: str
-    dependencies: dict
-
-
-class AIUserCreate(BaseModel):
-    email: str
-    display_name: Optional[str] = None
-    role: str = "user"
-    department: Optional[str] = None
-
-
-class AIUserResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    email: str
-    display_name: Optional[str]
-    role: str
-    department: Optional[str]
-    created_at: datetime
 
 
 class AIArtifactCreate(BaseModel):
@@ -84,17 +61,6 @@ class AIAuditEventCreate(BaseModel):
     risk_level: str = "low"
     status: str = "success"
     cost_estimate: Optional[float] = None
-
-
-class ContextRequest(BaseModel):
-    task: Optional[str] = None
-    systems: Optional[List[str]] = None
-    record_model: Optional[str] = None
-    supplier: Optional[str] = None
-    customer: Optional[str] = None
-    department: Optional[str] = None
-    workflow: Optional[str] = None
-    limit: int = 10
 
 
 class MemoryCandidate(BaseModel):

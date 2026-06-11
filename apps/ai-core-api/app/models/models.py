@@ -67,42 +67,11 @@ class AIMicrosoftDeviceAuthSession(Base, AuditMixin):
     request_id = Column(String(64), nullable=True)
 
 
-class AICompanyFact(Base, AuditMixin):
-    __tablename__ = "ai_company_facts"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    key = Column(String(255), unique=True, nullable=False, index=True)
-    value = Column(Text, nullable=False)
-    category = Column(String(100), nullable=True)
-    source = Column(String(255), nullable=True)
-    confidence = Column(String(20), default="high", nullable=False)
-    effective_from = Column(DateTime(timezone=True), nullable=True)
-    effective_to = Column(DateTime(timezone=True), nullable=True)
-    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-
-
-class AIJob(Base, AuditMixin):
-    __tablename__ = "ai_jobs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    workflow_type = Column(String(100), nullable=True)
-    title = Column(String(500), nullable=False)
-    status = Column(String(20), default="pending", nullable=False)  # pending, running, completed, failed, cancelled
-    requested_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
-    identity_mode = Column(String(30), default="user-delegated", nullable=False)  # user-delegated, service-account
-    linked_system = Column(String(50), nullable=True)
-    linked_model = Column(String(100), nullable=True)
-    linked_record_id = Column(String(100), nullable=True)
-    current_step = Column(String(100), nullable=True)
-    summary = Column(Text, nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-
 class AIArtifact(Base, AuditMixin):
     __tablename__ = "ai_artifacts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("ai_jobs.id"), nullable=True, index=True)
+    job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     artifact_type = Column(String(50), nullable=False)  # ocr, report, raw-export, debug, intermediate, final
     filename = Column(String(500), nullable=False)
     mime_type = Column(String(100), nullable=False)
@@ -149,7 +118,7 @@ class AIAuditEvent(Base):
     target_system = Column(String(50), nullable=True)
     target_model = Column(String(100), nullable=True)
     target_record_id = Column(String(100), nullable=True)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("ai_jobs.id"), nullable=True, index=True)
+    job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     input_summary = Column(Text, nullable=True)
     output_summary = Column(Text, nullable=True)
     risk_level = Column(String(20), default="low", nullable=False)  # low, medium, high, critical
