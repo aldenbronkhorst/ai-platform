@@ -249,7 +249,6 @@ def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, 
             "rules_injected": data.get("rules_injected"),
             "facts_injected": data.get("facts_injected"),
             "memories_injected": data.get("memories_injected"),
-            "subtasks_injected": data.get("subtasks_injected"),
         }
     if span_type == "provider_call":
         response = data.get("response") if isinstance(data.get("response"), dict) else {}

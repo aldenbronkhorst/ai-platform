@@ -1,9 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
-  FileText,
   Plug,
-  ClipboardList,
   Plus,
   X,
   Check,
@@ -13,7 +11,6 @@ import {
   ChevronDown,
   Pencil,
   ShieldAlert,
-  Settings,
   LogOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -94,8 +91,6 @@ export function SidebarPanel({
   }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
 
   const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
-    { tab: "tasks", icon: ClipboardList, label: "Tasks Tracker" },
-    { tab: "artifacts", icon: FileText, label: "Documents Vault" },
     { tab: "connected-accounts", icon: Plug, label: "Connectors" },
   ];
 
@@ -304,16 +299,6 @@ export function SidebarPanel({
                     Audit Logs
                   </button>
                 )}
-                <button
-                  onClick={() => {
-                    onTabChange("settings");
-                    onToggleProfileMenu();
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-muted hover-text-default hover-bg-surface rounded-xl text-left transition-all"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  System Settings
-                </button>
                 <div className="border-t border-default my-1" />
               </>
             )}

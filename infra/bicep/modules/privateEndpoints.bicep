@@ -12,7 +12,6 @@ param subnetName string = 'private-endpoints'
 
 param keyVaultId string
 param storageAccountId string
-param serviceBusNamespaceId string
 param postgresServerId string
 
 var namePrefix = '${workload}-${environment}-${regionCode}-${instance}'
@@ -39,12 +38,6 @@ resource privateDnsBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   tags: tags
 }
 
-resource privateDnsServiceBus 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.servicebus.windows.net'
-  location: 'global'
-  tags: tags
-}
-
 resource privateDnsPostgres 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   name: 'privatelink.postgres.database.azure.com'
   location: 'global'
@@ -65,18 +58,6 @@ resource privateDnsKeyVaultLink 'Microsoft.Network/privateDnsZones/virtualNetwor
 
 resource privateDnsBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   parent: privateDnsBlob
-  name: '${namePrefix}-vnet-link'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: vnet.id
-    }
-  }
-}
-
-resource privateDnsServiceBusLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: privateDnsServiceBus
   name: '${namePrefix}-vnet-link'
   location: 'global'
   properties: {
@@ -163,41 +144,6 @@ resource privateEndpointStorageBlobDns 'Microsoft.Network/privateEndpoints/priva
         name: 'storageblob'
         properties: {
           privateDnsZoneId: privateDnsBlob.id
-        }
-      }
-    ]
-  }
-}
-
-resource privateEndpointServiceBus 'Microsoft.Network/privateEndpoints@2023-11-01' = {
-  name: 'pe-${namePrefix}-sb'
-  location: location
-  tags: tags
-  properties: {
-    subnet: {
-      id: subnet.id
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'servicebus'
-        properties: {
-          privateLinkServiceId: serviceBusNamespaceId
-          groupIds: ['namespace']
-        }
-      }
-    ]
-  }
-}
-
-resource privateEndpointServiceBusDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
-  parent: privateEndpointServiceBus
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'servicebus'
-        properties: {
-          privateDnsZoneId: privateDnsServiceBus.id
         }
       }
     ]

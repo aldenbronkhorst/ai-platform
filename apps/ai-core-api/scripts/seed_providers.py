@@ -63,13 +63,11 @@ MODELS_TO_SEED = [
             "latency_tier": "low",
             "quality_tier": "standard",
             "is_default_for_memory": True,
-            "enabled_for_tasks": [
+            "enabled_for_routes": [
                 "simple_chat",
                 "memory_extraction",
                 "classification",
-                "formatting",
-                "subtask_extraction",
-                "background_worker"
+                "formatting"
             ]
         }
     },
@@ -89,11 +87,10 @@ MODELS_TO_SEED = [
             "latency_tier": "medium",
             "quality_tier": "advanced",
             "disabled_reason": "Qwen Max requires Alibaba Cloud DashScope provider integration and is not available as a standard Azure AI Services deployment in the current environment.",
-            "enabled_for_tasks": [
+            "enabled_for_routes": [
                 "general_chat",
                 "fallback",
                 "reasoning",
-                "subtask_reasoning",
                 "reviewer_fallback"
             ]
         }

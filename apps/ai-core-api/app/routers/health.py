@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
-from azure.servicebus.management import ServiceBusAdministrationClient
 
 from app.core.database import get_db
 from app.core.config import get_settings
@@ -27,7 +26,6 @@ async def health_check():
             "postgresql": _configured("POSTGRES_HOST"),
             "key_vault": _configured("KEY_VAULT_URI"),
             "blob_storage": _configured("STORAGE_ACCOUNT_NAME"),
-            "service_bus": _configured("AZURE_SERVICE_BUS_NAMESPACE", "SERVICE_BUS_NAMESPACE"),
         },
     }
 
@@ -77,13 +75,6 @@ async def _dependency_health_payload(db: AsyncSession, deep: bool = False):
         status_info["dependencies"]["blob_storage"] = await _check_blob_storage(storage_name, deep=deep)
     else:
         status_info["dependencies"]["blob_storage"] = "not_configured"
-
-    sb_namespace = os.environ.get("AZURE_SERVICE_BUS_NAMESPACE") or os.environ.get("SERVICE_BUS_NAMESPACE")
-    if sb_namespace:
-        queue_name = os.environ.get("AZURE_SERVICE_BUS_QUEUE_NAME", "ai-jobs")
-        status_info["dependencies"]["service_bus"] = await _check_service_bus(sb_namespace, queue_name, deep=deep)
-    else:
-        status_info["dependencies"]["service_bus"] = "not_configured"
 
     config_issues = _startup_config_issues()
     if config_issues:
@@ -146,21 +137,6 @@ async def _check_blob_storage(storage_name: str, deep: bool = False) -> str:
         next(blob_client.list_containers(), None)
 
     return await _run_dependency_check("Blob storage", check, deep=deep)
-
-
-async def _check_service_bus(sb_namespace: str, queue_name: str, deep: bool = False) -> str:
-    def check():
-        credential = DefaultAzureCredential()
-        client = ServiceBusAdministrationClient(
-            fully_qualified_namespace=f"{sb_namespace}.servicebus.windows.net",
-            credential=credential,
-        )
-        try:
-            client.get_queue_runtime_properties(queue_name)
-        finally:
-            client.close()
-
-    return await _run_dependency_check("Service Bus", check, deep=deep)
 
 
 def _validate_startup_config() -> list:

@@ -31,6 +31,12 @@ class SpeechTranscriptionUpstreamError(RuntimeError):
         self.body = body
 
 
+class SpeechTranscriptionNoSpeechError(RuntimeError):
+    def __init__(self, message: str, body: Any = None):
+        super().__init__(message)
+        self.body = body
+
+
 @dataclass
 class SpeechTranscriptionResult:
     transcript: str
@@ -170,8 +176,7 @@ class SpeechTranscriptionService:
         if not transcript:
             status_text = body.get("RecognitionStatus")
             suffix = f" ({status_text})" if status_text else ""
-            raise SpeechTranscriptionUpstreamError(
-                502,
+            raise SpeechTranscriptionNoSpeechError(
                 f"Azure Speech returned no transcript{suffix}.",
                 body,
             )

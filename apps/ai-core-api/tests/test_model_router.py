@@ -1073,33 +1073,6 @@ def _cleanup_global_state():
     app.dependency_overrides.clear()
 
 
-# ── AI Config API Tests ──
-
-class TestAIConfigAPI:
-    def test_summary_empty_by_default(self):
-        app.dependency_overrides[get_db] = mock_get_db_empty
-        client = TestClient(app)
-        response = client.get("/ai-config/summary", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
-        assert response.status_code == 200
-        data = response.json()
-        assert data["providers"] == []
-        assert data["models"] == []
-        assert data["routes"] == []
-
-    def test_provider_list_endpoint(self):
-        app.dependency_overrides[get_db] = mock_get_db_empty
-        client = TestClient(app)
-        response = client.get("/ai-config/providers", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
-        assert response.status_code == 200
-
-    def test_usage_logs_empty(self):
-        app.dependency_overrides[get_db] = mock_get_db_empty
-        client = TestClient(app)
-        response = client.get("/ai-config/usage", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
-        assert response.status_code == 200
-        assert response.json() == []
-
-
 # ── Chat Endpoint Tests ──
 
 class TestChatWithModelRouter:
@@ -3246,7 +3219,7 @@ class TestSecurity:
     def test_no_api_key_in_response(self):
         app.dependency_overrides[get_db] = mock_get_db_empty
         client = TestClient(app)
-        response = client.get("/ai-config/summary", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
+        response = client.get("/tools", headers={"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"})
         body = response.text
         assert "api-key" not in body.lower()
         assert "apikey" not in body.lower()

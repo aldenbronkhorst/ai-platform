@@ -7,10 +7,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./components/auth/LoginPage";
 import { ChatView } from "./components/chat/ChatView";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
-import { TasksPage } from "./pages/TasksPage";
-import { DocumentsPage } from "./pages/DocumentsPage";
 import { AuditPage } from "./pages/AuditPage";
-import { AiConfigView } from "./AiConfigView";
 import { AdminPage } from "./pages/AdminPage";
 import type { ActiveTab } from "./types";
 import { APIM_BASE_URL, fetchWithTimeout } from "./hooks/useApi";
@@ -784,10 +781,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             onEditResend={handleEditResend}
           />
         );
-      case "tasks":
-        return <TasksPage accessToken={accessToken} />;
-      case "artifacts":
-        return <DocumentsPage accessToken={accessToken} />;
       case "connected-accounts":
         return <ConnectionsPage accessToken={accessToken} />;
       case "audit":
@@ -797,10 +790,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
       case "admin":
         return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
           <AdminPage accessToken={accessToken} />
-        ) : null;
-      case "settings":
-        return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
-          <AiConfigView accessToken={accessToken} activeUser={activeUser} />
         ) : null;
       default:
         return null;

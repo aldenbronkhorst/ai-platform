@@ -14,6 +14,9 @@ const KV_ERROR_PHRASES = [
   "forbiddenbyrbac", "setsecret/action", "key vault secrets officer",
   "rbac", "authorization failed", "authorizationfailed",
 ];
+const MICROSOFT_DEVICE_LOGIN_URL = "https://microsoft.com/devicelogin";
+const MICROSOFT_SESSION_RESET_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/logout";
+const MICROSOFT_SESSION_RESET_DELAY_MS = 1800;
 
 interface ConnectorDef {
   key: string;
@@ -163,6 +166,50 @@ function formatDateTime(value?: string | null) {
 
 function currentTimeMs() {
   return new Date().getTime();
+}
+
+function openMicrosoftAuthWindow(): Window | null {
+  const authWindow = window.open("", "_blank", "width=540,height=760");
+  if (!authWindow) return null;
+  try {
+    authWindow.opener = null;
+    authWindow.document.title = "Microsoft Sign-In";
+    authWindow.document.body.style.margin = "0";
+    authWindow.document.body.style.fontFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+    authWindow.document.body.style.background = "#101010";
+    authWindow.document.body.style.color = "#f4f4f5";
+    authWindow.document.body.innerHTML = `
+      <main style="min-height:100vh;display:grid;place-items:center;padding:32px;text-align:center;">
+        <div>
+          <h1 style="font-size:18px;margin:0 0 8px;">Preparing Microsoft sign-in</h1>
+          <p style="font-size:14px;line-height:1.5;margin:0;color:#a1a1aa;">Keep this window open.</p>
+        </div>
+      </main>
+    `;
+  } catch {
+    // Some browsers restrict about:blank writes. Navigation below still works.
+  }
+  return authWindow;
+}
+
+function openMicrosoftDeviceLogin(verificationUrl?: string, authWindow?: Window | null) {
+  const targetUrl = verificationUrl || MICROSOFT_DEVICE_LOGIN_URL;
+  const targetWindow = authWindow || openMicrosoftAuthWindow();
+  if (!targetWindow) {
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+    return;
+  }
+  targetWindow.location.href = MICROSOFT_SESSION_RESET_URL;
+  window.setTimeout(() => {
+    if (!targetWindow.closed) targetWindow.location.href = targetUrl;
+  }, MICROSOFT_SESSION_RESET_DELAY_MS);
+}
+
+function closeMicrosoftAuthWindow(authWindow?: Window | null) {
+  if (!authWindow) return;
+  try {
+    if (!authWindow.closed) authWindow.close();
+  } catch { /* ignore browsers that block closing the popup */ }
 }
 
 type StatusTone = "success" | "danger" | "warning" | "neutral";
@@ -649,6 +696,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       }
       connectPayload.site_url = siteUrl.trim();
     }
+    const authWindow = openMicrosoftAuthWindow();
     try {
       const res = await fetch(`${APIM_BASE_URL}/connector/microsoft-native/${connectorKey}/device-code`, {
         method: "POST",
@@ -663,7 +711,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
         const expiresAtMs = data.expires_at ? data.expires_at * 1000 : currentTimeMs() + (data.expires_in || 900) * 1000;
         setCliTestResult({ status: "pending", connector: connectorKey, message: `Sign in to ${displayName}${authApp}. This stores only the ${displayName} connector token.` });
-        window.open(data.verification_url, "_blank");
+        openMicrosoftDeviceLogin(data.verification_url, authWindow);
         const poll = async () => {
           if (microsoftAuthAttemptRef.current !== attemptId) return;
           if (currentTimeMs() >= expiresAtMs) {
@@ -747,12 +795,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         };
         microsoftPollTimerRef.current = window.setTimeout(poll, (data.interval || 5) * 1000);
       } else {
+        closeMicrosoftAuthWindow(authWindow);
         setMicrosoftStartingConnector(null);
         setMicrosoftDeviceCode(null);
         setMicrosoftPollingConnector(null);
         setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow", request_id: data.request_id });
       }
     } catch (err) {
+      closeMicrosoftAuthWindow(authWindow);
       setMicrosoftStartingConnector(null);
       setMicrosoftPollingConnector(null);
       setMicrosoftDeviceCode(null);
@@ -948,7 +998,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   </p>
                 </div>
                 <ActionGroup>
-                  <GlassButton size="sm" onClick={() => window.open(activeDeviceCode.verification_url, "_blank", "noopener,noreferrer")}>
+                  <GlassButton size="sm" onClick={() => openMicrosoftDeviceLogin(activeDeviceCode.verification_url)}>
                     Open Microsoft Sign-In
                   </GlassButton>
                 </ActionGroup>

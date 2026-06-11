@@ -13,11 +13,8 @@ export function MainHeader({
 }: MainHeaderProps) {
   const tabLabels: Record<ActiveTab, string> = {
     chat: "Chat",
-    tasks: "Tasks",
-    artifacts: "Documents",
     "connected-accounts": "Connectors",
     audit: "Audit Logs",
-    settings: "Settings",
     admin: "Admin",
   };
 

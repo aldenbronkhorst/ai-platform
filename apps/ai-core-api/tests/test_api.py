@@ -26,7 +26,6 @@ class TestHealth:
 
         monkeypatch.setenv("KEY_VAULT_URI", "https://vault.example")
         monkeypatch.setenv("STORAGE_ACCOUNT_NAME", "storageexample")
-        monkeypatch.setenv("AZURE_SERVICE_BUS_NAMESPACE", "sb-example")
         monkeypatch.setattr(health, "_startup_config_issues", lambda: [])
 
         payload = await health._dependency_health_payload(Db(), deep=False)
@@ -35,25 +34,6 @@ class TestHealth:
         assert payload["dependencies"]["postgresql"] == "reachable"
         assert payload["dependencies"]["key_vault"] == "configured"
         assert payload["dependencies"]["blob_storage"] == "configured"
-        assert payload["dependencies"]["service_bus"] == "configured"
-
-
-class TestTasks:
-    def test_create_task(self, client):
-        response = client.post("/tasks", json={
-            "title": "Test Task",
-            "description": "A test task",
-            "priority": "high"
-        })
-        assert response.status_code == 201
-        data = response.json()
-        assert data["title"] == "Test Task"
-        assert data["status"] == "open"
-
-    def test_list_tasks(self, client):
-        response = client.get("/tasks")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
 
 
 class TestAudit:

@@ -29,7 +29,7 @@ from app.services.tool_registry import (
 
 logger = logging.getLogger(__name__)
 
-ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure a model in Settings \u2192 AI Configuration."
+ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to check the seeded model routes."
 RATE_LIMIT_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded"}
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
@@ -189,7 +189,7 @@ LARGE_TEXT_TOOL_KEYS = {
 CANONICAL_SYSTEM_PROMPT = (
     "You are the AI Platform for Lots Lots More. "
     "You help employees work across company knowledge, workflows, documents, "
-    "tasks, connected accounts, and business systems. "
+    "connected accounts, and business systems. "
     "You are not tied to one system. "
     "You may use connected tools such as Odoo, GitHub, Azure CLI, Microsoft Graph, Exchange Online, Teams Admin, SharePoint/PnP, and documents "
     "only when they are available, authorised, and relevant. "
@@ -232,7 +232,6 @@ class InjectedContext:
     rules: list[Any] = field(default_factory=list)
     facts: list[Any] = field(default_factory=list)
     memories: list[Any] = field(default_factory=list)
-    subtasks: list[dict[str, Any]] = field(default_factory=list)
     currency_source: str = "none"
     currency_text: str | None = None
 
@@ -2607,21 +2606,6 @@ async def _memory_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[st
     return "## Learned from Past Interactions\n" + "\n".join(blocks), memories
 
 
-async def _subtask_context(messages: list, db: AsyncSession) -> tuple[str, list[dict[str, Any]]]:
-    user_query = _last_user_message(messages)
-    if not user_query:
-        return "", []
-    is_reconciliation = any(kw in user_query.lower() for kw in ["compare", "reconcile", "reconciliation", "credit note", "pdf"])
-    if not is_reconciliation:
-        return "", []
-
-    from app.services.task_graph import TaskGraphExecutor
-
-    subtasks = await TaskGraphExecutor().execute_all(user_query, db=db)
-    summary = [f"- Subtask '{task['name']}' ({task['status']}): Result={task['result']}" for task in subtasks]
-    return "## Ephemeral Sub-Agent / Task Worker Results\n" + "\n".join(summary), subtasks
-
-
 def _append_context_section(system_prompt: str, section: str) -> str:
     return system_prompt.rstrip() + "\n\n" + section if section else system_prompt
 
@@ -2654,18 +2638,11 @@ async def _inject_context_sections(
     except Exception as exc:
         logger.warning("Failed to inject memories: %s", exc)
 
-    try:
-        section, injected.subtasks = await _subtask_context(messages, db)
-        injected.system_prompt = _append_context_section(injected.system_prompt, section)
-    except Exception as exc:
-        logger.warning("Failed to execute Task Graph nodes: %s", exc)
-
     logger.info(
-        "Context injected | rules=%d facts=%d memories=%d subtasks=%d user_id=%s currency=%s",
+        "Context injected | rules=%d facts=%d memories=%d user_id=%s currency=%s",
         len(injected.rules),
         len(injected.facts),
         len(injected.memories),
-        len(injected.subtasks),
         user_id,
         injected.currency_text or "none",
     )
@@ -3242,7 +3219,6 @@ def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: 
         "facts_injected": [{"key": fact.key, "value": fact.value} for fact in injected.facts],
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
         "currency_source": injected.currency_source,
-        "subtasks": injected.subtasks,
         "current_date": _platform_now().date().isoformat(),
         "model_routing": {
             "primary_model": primary_model.display_name,
@@ -3385,7 +3361,6 @@ async def execute_chat(
                     "rules_injected": len(injected.rules),
                     "facts_injected": len(injected.facts),
                     "memories_injected": len(injected.memories),
-                    "subtasks_injected": len(injected.subtasks),
                     "system_prompt_chars": len(injected.system_prompt or ""),
                     "full_message_count": len(full_messages),
                     "temperature": temperature,
