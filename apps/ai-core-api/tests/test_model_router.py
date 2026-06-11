@@ -431,19 +431,6 @@ class MockSession:
 async def mock_get_db_empty():
     yield MockSession(has_config=False)
 
-async def mock_get_db_configured():
-    yield MockSession(has_config=True)
-
-async def mock_get_db_with_connector(connected_type="odoo"):
-    account = AIConnectedAccount(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        provider=connected_type,
-        provider_username=f"test@{connected_type}.com",
-        status="connected",
-    )
-    yield MockSession(has_config=True, connected_accounts=[account])
-
 
 @pytest.mark.asyncio
 async def test_odoo_tool_credentials_require_saved_connection_details():
