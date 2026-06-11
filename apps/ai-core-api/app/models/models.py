@@ -81,51 +81,6 @@ class AICompanyFact(Base, AuditMixin):
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
 
 
-class AIRule(Base, AuditMixin):
-    __tablename__ = "ai_rules"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    title = Column(String(500), nullable=False)
-    body = Column(Text, nullable=False)
-    scope_type = Column(String(50), nullable=True)  # global, department, workflow, supplier, customer
-    scope_value = Column(String(255), nullable=True)
-    department = Column(String(100), nullable=True)
-    workflow = Column(String(100), nullable=True)
-    supplier = Column(String(255), nullable=True)
-    customer = Column(String(255), nullable=True)
-    status = Column(String(20), default="active", nullable=False)
-    priority = Column(Integer, default=100, nullable=False)
-    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    approved_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    effective_from = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    effective_to = Column(DateTime(timezone=True), nullable=True)
-    supersedes_rule_id = Column(UUID(as_uuid=True), ForeignKey("ai_rules.id"), nullable=True)
-    version = Column(Integer, default=1, nullable=False)
-
-
-class AITask(Base, AuditMixin):
-    __tablename__ = "ai_tasks"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    title = Column(String(500), nullable=False)
-    description = Column(Text, nullable=True)
-    status = Column(String(20), default="open", nullable=False)  # open, in_progress, done, cancelled
-    priority = Column(String(20), default="medium", nullable=False)  # low, medium, high, critical
-    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True, index=True)
-    department = Column(String(100), nullable=True)
-    linked_system = Column(String(50), nullable=True)  # odoo, github, microsoft_admin, etc.
-    linked_model = Column(String(100), nullable=True)
-    linked_record_id = Column(String(100), nullable=True)
-    created_from_conversation_id = Column(String(255), nullable=True)
-    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=True)
-    next_review_at = Column(DateTime(timezone=True), nullable=True)
-    due_at = Column(DateTime(timezone=True), nullable=True)
-    completion_check_type = Column(String(50), nullable=True)
-    completion_check_payload = Column(JSON, nullable=True)
-    last_checked_at = Column(DateTime(timezone=True), nullable=True)
-    closed_at = Column(DateTime(timezone=True), nullable=True)
-
-
 class AIJob(Base, AuditMixin):
     __tablename__ = "ai_jobs"
 

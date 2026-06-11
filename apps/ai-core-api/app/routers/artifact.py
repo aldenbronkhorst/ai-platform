@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.security import AUDIT_ROLES, DEVELOPER_ROLES, api_key_auth, has_role
+from app.core.security import api_key_auth
 from app.services.artifact import ArtifactService
 from app.services.audit import AuditService
 from app.schemas.schemas import AIArtifactCreate, AIArtifactResponse, AIAuditEventCreate
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 def _can_read_artifact(auth: dict, artifact) -> bool:
     user_id = auth.get("user_id")
-    return artifact.created_by_user_id == user_id or has_role(auth, DEVELOPER_ROLES | AUDIT_ROLES)
+    return artifact.created_by_user_id == user_id or "AIPlatform.Admin" in set(auth.get("roles", []))
 
 
 @router.post("", response_model=AIArtifactResponse, status_code=status.HTTP_201_CREATED)

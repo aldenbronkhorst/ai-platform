@@ -10,7 +10,6 @@ import {
   User,
   ChevronDown,
   Pencil,
-  ShieldAlert,
   LogOut,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -32,7 +31,6 @@ interface SidebarPanelProps {
   onToggleCollapse: (collapsed: boolean) => void;
   onToggleProfileMenu: () => void;
   onSignOut: () => void;
-  hasRole: (roles: string[]) => boolean;
 }
 
 export function SidebarPanel({
@@ -51,7 +49,6 @@ export function SidebarPanel({
   onToggleCollapse,
   onToggleProfileMenu,
   onSignOut,
-  hasRole,
 }: SidebarPanelProps) {
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const profileButtonRef = useRef<HTMLButtonElement>(null);
@@ -93,10 +90,6 @@ export function SidebarPanel({
   const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
     { tab: "connected-accounts", icon: Plug, label: "Connectors" },
   ];
-
-  if (hasRole(["AIPlatform.Admin", "AIPlatform.Developer"])) {
-    navItems.push({ tab: "admin", icon: ShieldAlert, label: "Admin" });
-  }
 
   const startEditing = (e: ReactMouseEvent, session: ChatSession) => {
     e.stopPropagation();

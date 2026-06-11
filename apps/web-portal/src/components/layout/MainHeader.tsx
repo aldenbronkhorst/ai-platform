@@ -14,7 +14,6 @@ export function MainHeader({
   const tabLabels: Record<ActiveTab, string> = {
     chat: "Chat",
     "connected-accounts": "Connectors",
-    admin: "Admin",
   };
 
   const label = tabLabels[activeTab] || activeTab;

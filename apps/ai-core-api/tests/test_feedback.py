@@ -2,104 +2,11 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from uuid import uuid4
 
-from app.models.models import AIMemory, AIMemoryUsageEvent, AITask
-from app.schemas.schemas import MemoryFeedbackRequest
-from app.routers.memory import record_memory_feedback
+from app.models.models import AIMemoryUsageEvent
 from tests.test_model_router import MockSession
 
 
 class TestMemoryFeedbackAndTracking:
-    @pytest.mark.asyncio
-    async def test_manual_feedback_worked(self):
-        db = MockSession(has_config=False)
-        db.refresh = AsyncMock()
-        user_id = uuid4()
-
-        # Create active low confidence memory
-        memory = AIMemory(
-            id=uuid4(),
-            title="Downstairs Printer",
-            body="Use Printer-01",
-            status="active",
-            confidence="low",
-            success_count=0,
-            failure_count=0,
-            created_by_user_id=user_id,
-        )
-
-        class QueryResult:
-            @property
-            def scalars(self):
-                return lambda: MagicMock(first=lambda: None)
-            def scalar_one_or_none(self):
-                return memory
-
-        db.execute = AsyncMock(return_value=QueryResult())
-        db.add = MagicMock()
-
-        # Call REST handler directly
-        req = MemoryFeedbackRequest(feedback_type="worked", comment="Yes it worked!")
-        auth_data = {"user_id": user_id}
-        updated_mem = await record_memory_feedback(
-            memory_id=memory.id,
-            req=req,
-            db=db,
-            auth=auth_data
-        )
-
-        assert updated_mem.success_count == 1
-        assert updated_mem.confidence == "medium"  # Raised confidence
-        assert updated_mem.last_confirmed_at is not None
-        assert db.add.call_count >= 1  # Created AIMemoryUsageEvent and logged audit
-
-    @pytest.mark.asyncio
-    async def test_manual_feedback_wrong_repeated(self):
-        db = MockSession(has_config=False)
-        db.refresh = AsyncMock()
-        user_id = uuid4()
-
-        # Create active medium confidence memory with 3 prior failures
-        memory = AIMemory(
-            id=uuid4(),
-            title="Office Passcode",
-            body="Code 456",
-            status="active",
-            confidence="medium",
-            success_count=5,
-            failure_count=3,
-            created_by_user_id=user_id,
-        )
-
-        class QueryResult:
-            @property
-            def scalars(self):
-                return lambda: MagicMock(first=lambda: None)
-            def scalar_one_or_none(self):
-                return memory
-
-        db.execute = AsyncMock(return_value=QueryResult())
-        db.add = MagicMock()
-
-        # Submit "wrong" feedback
-        req = MemoryFeedbackRequest(feedback_type="wrong", comment="No, it failed.")
-        auth_data = {"user_id": user_id}
-        updated_mem = await record_memory_feedback(
-            memory_id=memory.id,
-            req=req,
-            db=db,
-            auth=auth_data
-        )
-
-        # failure_count becomes 4 (> 3) -> Status set to needs_review and AITask created
-        assert updated_mem.failure_count == 4
-        assert updated_mem.confidence == "low"  # Lowered confidence
-        assert updated_mem.status == "needs_review"
-
-        added_items = [arg[0] for arg, kw in db.add.call_args_list]
-        task_item = [x for x in added_items if isinstance(x, AITask)][0]
-        assert task_item.priority == "high"
-        assert str(memory.id) in task_item.description
-
     @pytest.mark.asyncio
     @patch("app.services.model_router.execute_chat")
     async def test_chat_tracking_on_message(self, mock_execute_chat):

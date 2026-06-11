@@ -97,36 +97,6 @@ class ContextRequest(BaseModel):
     limit: int = 10
 
 
-class AIMemoryResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: UUID
-    type: str
-    title: str
-    summary: Optional[str]
-    body: Optional[str]
-    scope_type: Optional[str]
-    scope_value: Optional[str]
-    entities_json: Optional[Any]
-    source_type: Optional[str]
-    source_id: Optional[str]
-    conversation_id: Optional[UUID]
-    message_id: Optional[UUID]
-    confidence: str
-    risk_level: str
-    status: str
-    priority: int
-    success_count: int
-    failure_count: int
-    last_used_at: Optional[datetime]
-    last_confirmed_at: Optional[datetime]
-    version: int
-    created_by_user_id: Optional[UUID]
-    approved_by_user_id: Optional[UUID]
-    metadata_json: Optional[Any]
-    created_at: datetime
-    updated_at: datetime
-
-
 class MemoryCandidate(BaseModel):
     type: str
     title: str
@@ -137,10 +107,4 @@ class MemoryCandidate(BaseModel):
     entities_json: Optional[Any] = None
     confidence: str = "medium"
     risk_level: str = "low"
-    save_mode: str = "auto"  # auto, confirm, admin_approval
-
-
-class MemoryFeedbackRequest(BaseModel):
-    feedback_type: str  # helpful, worked, wrong, outdated, not_relevant, do_not_use, needs_review
-    comment: Optional[str] = None
-    chat_message_id: Optional[UUID] = None
+    save_mode: str = "auto"  # auto or confirm

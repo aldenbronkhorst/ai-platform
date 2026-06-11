@@ -96,16 +96,16 @@ class TestConnectedAccounts:
 
 
 class TestMemorySurface:
-    def test_memory_candidates_are_extracted_inline_not_public_api(self, client):
+    def test_memory_candidates_are_not_public_api(self, client):
         response = client.post("/memories/extract")
-        assert response.status_code == 405
+        assert response.status_code == 404
 
-    def test_memory_candidates_are_saved_inline_not_public_api(self, client):
+    def test_memory_save_candidates_are_not_public_api(self, client):
         response = client.post("/memories/save-candidate", json={
             "type": "general_note",
             "title": "Temporary memory",
         })
-        assert response.status_code == 405
+        assert response.status_code == 404
 
 
 class TestArtifacts:

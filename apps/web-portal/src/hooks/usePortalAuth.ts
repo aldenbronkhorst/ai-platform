@@ -137,7 +137,7 @@ export function usePortalAuth() {
     setLocalMockUser({
       email: "alden@lotslotsmore.com",
       displayName: "Alden Bronkhorst (Local Mock)",
-      roles: ["AIPlatform.Admin", "AIPlatform.User", "AIPlatform.Developer", "AIPlatform.Auditor"],
+      roles: ["AIPlatform.Admin", "AIPlatform.User"],
     });
     setLocalMockAuthenticated(true);
   }, []);
