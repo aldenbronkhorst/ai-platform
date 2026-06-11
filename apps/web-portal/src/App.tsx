@@ -13,9 +13,6 @@ import { usePortalAuth } from "./hooks/usePortalAuth";
 const ConnectionsPage = lazy(() =>
   import("./pages/ConnectionsPage").then(module => ({ default: module.ConnectionsPage }))
 );
-const AdminPage = lazy(() =>
-  import("./pages/AdminPage").then(module => ({ default: module.AdminPage }))
-);
 
 function PageLoader() {
   return (
@@ -108,12 +105,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     closeMobileSidebar();
   };
 
-  const hasRole = (allowedRoles: string[]) => {
-    if (!activeUser) return false;
-    if (activeUser.roles.includes("AIPlatform.Admin")) return true;
-    return activeUser.roles.some(r => allowedRoles.includes(r));
-  };
-
   if (inProgress !== InteractionStatus.None) {
     return (
       <div className="flex h-screen bg-canvas text-default items-center justify-center">
@@ -186,12 +177,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
             <ConnectionsPage accessToken={accessToken} />
           </Suspense>
         );
-      case "admin":
-        return hasRole(["AIPlatform.Admin", "AIPlatform.Developer"]) ? (
-          <Suspense fallback={<PageLoader />}>
-            <AdminPage accessToken={accessToken} />
-          </Suspense>
-        ) : null;
       default:
         return null;
     }
@@ -231,7 +216,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         }}
         onToggleProfileMenu={() => setIsProfileMenuOpen(!isProfileMenuOpen)}
         onSignOut={signOut}
-        hasRole={hasRole}
       >
         {renderContent()}
       </AppShell>

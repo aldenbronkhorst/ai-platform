@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.security import api_key_auth
 from app.core.database import AsyncSessionLocal, get_db
 from app.models.models import (
-    AIArtifact, AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AITask, AIUsageLog,
+    AIArtifact, AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AIUsageLog,
 )
 from app.services.artifact import ArtifactService
 from app.services.audit import AuditService
@@ -298,18 +298,6 @@ def _adjust_memory_confidence(memory: AIMemory, feedback_kind: str) -> str:
     return "memory_confidence_decreased"
 
 
-def _add_memory_review_task(db: AsyncSession, memory: AIMemory, content: str) -> None:
-    db.add(AITask(
-        id=uuid.uuid4(),
-        title=f"Flagged by Natural Language: {memory.title}",
-        description=f"Memory (id={memory.id}) has been flagged as 'wrong' via natural language feedback: '{content}'.",
-        status="open",
-        priority="high",
-        linked_model="ai_memories",
-        linked_record_id=str(memory.id),
-    ))
-
-
 async def _apply_memory_feedback(
     db: AsyncSession,
     memory_id: UUID,
@@ -324,8 +312,6 @@ async def _apply_memory_feedback(
 
     old_confidence = memory.confidence
     audit_action = _adjust_memory_confidence(memory, feedback_kind)
-    if audit_action == "memory_flagged_for_review":
-        _add_memory_review_task(db, memory, content)
     memory.updated_at = _utcnow()
 
     await AuditService(db).log_event(AIAuditEventCreate(

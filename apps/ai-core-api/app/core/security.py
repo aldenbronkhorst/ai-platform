@@ -14,10 +14,6 @@ from app.models.models import AIUser
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
 
-DEVELOPER_ROLES = {"AIPlatform.Admin", "AIPlatform.Developer"}
-AUDIT_ROLES = {"AIPlatform.Admin", "AIPlatform.Auditor"}
-AUTOMATION_ROLES = {"AIPlatform.Admin", "AIPlatform.Developer", "AIPlatform.AutomationAdmin"}
-
 # Microsoft Entra JWKS URL for the specific tenant
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "03af606c-d85a-48ff-ad4b-a5a8895a6d98")
 CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208")
@@ -70,7 +66,7 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
         return {
             "user_id": db_user.id,
             "email": db_user.email,
-            "roles": ["AIPlatform.Admin", "AIPlatform.User", "AIPlatform.Developer", "AIPlatform.Auditor"],
+            "roles": ["AIPlatform.Admin", "AIPlatform.User"],
             "mode": "local-mock"
         }
 
@@ -215,30 +211,3 @@ async def api_key_auth(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Missing or invalid authentication credentials (use Bearer JWT)."
     )
-
-
-def require_role(allowed_roles: list[str]):
-    """FastAPI dependency to enforce role-based access control (RBAC)."""
-    def dependency(auth: dict = Depends(api_key_auth)):
-        user_roles = auth.get("roles", [])
-        # Admin bypasses role checks
-        if "AIPlatform.Admin" in user_roles:
-            return auth
-            
-        if not any(role in user_roles for role in allowed_roles):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied. Insufficient permissions/roles."
-            )
-        return auth
-    return dependency
-
-
-def has_role(auth: dict, allowed_roles: set[str] | list[str]) -> bool:
-    user_roles = set(auth.get("roles", []))
-    return "AIPlatform.Admin" in user_roles or bool(user_roles.intersection(set(allowed_roles)))
-
-
-def require_auth_role(auth: dict, allowed_roles: set[str] | list[str], detail: str = "Access denied.") -> None:
-    if not has_role(auth, allowed_roles):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

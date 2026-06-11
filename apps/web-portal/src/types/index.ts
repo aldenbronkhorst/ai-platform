@@ -45,22 +45,4 @@ export interface AttachedFile {
 
 export type VoiceState = "idle" | "listening" | "processing" | "unsupported" | "denied";
 
-export interface AIMemory {
-  id: string;
-  type: string;
-  title: string;
-  summary: string | null;
-  body: string | null;
-  scope_type: string | null;
-  scope_value: string | null;
-  confidence: string;
-  risk_level: string;
-  status: string;
-  priority: number;
-  conversation_id: string | null;
-  created_by_user_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export type ActiveTab = "chat" | "connected-accounts" | "admin";
+export type ActiveTab = "chat" | "connected-accounts";

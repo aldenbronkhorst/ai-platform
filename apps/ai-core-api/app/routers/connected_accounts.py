@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from urllib.parse import urlparse
 
-from app.core.security import api_key_auth, require_role
+from app.core.security import api_key_auth
 from app.core.database import get_db
 from app.models.models import AIConnectedAccount
 from app.services.audit import AuditService

@@ -20,7 +20,6 @@ interface AppShellProps {
   onToggleCollapse: (collapsed: boolean) => void;
   onToggleProfileMenu: () => void;
   onSignOut: () => void;
-  hasRole: (roles: string[]) => boolean;
 }
 
 export function AppShell({
@@ -40,7 +39,6 @@ export function AppShell({
   onToggleCollapse,
   onToggleProfileMenu,
   onSignOut,
-  hasRole,
 }: AppShellProps) {
   return (
     <div className="fixed inset-0 flex h-[100dvh] w-screen bg-canvas text-default antialiased overflow-hidden overscroll-none">
@@ -61,7 +59,6 @@ export function AppShell({
           onToggleCollapse={onToggleCollapse}
           onToggleProfileMenu={onToggleProfileMenu}
           onSignOut={onSignOut}
-          hasRole={hasRole}
         />
 
         <main className="flex-1 h-full min-h-0 flex flex-col overflow-hidden min-w-0">

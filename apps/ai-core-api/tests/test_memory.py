@@ -271,10 +271,9 @@ class TestMemoryCandidateService:
 # ── Memory endpoint tests ──
 
 class TestMemoryEndpoints:
-    def test_list_memories_empty(self, client):
+    def test_list_memories_is_not_public_api(self, client):
         res = client.get("/memories")
-        assert res.status_code == 200
-        assert res.json() == []
+        assert res.status_code == 404
 
     def test_create_memory_is_not_public_api(self, client):
         res = client.post("/memories", json={
@@ -284,45 +283,19 @@ class TestMemoryEndpoints:
             "risk_level": "low",
             "status": "draft",
         })
-        assert res.status_code == 405
-
-    def test_approve_memory(self, client, mock_db):
-        memory = seed_memory(
-            mock_db,
-            type="procedure",
-            title="Approval test",
-            body="Should be approved",
-            risk_level="medium",
-        )
-
-        res = client.post(f"/memories/{memory.id}/approve")
-        assert res.status_code == 200
-        assert res.json()["status"] == "active"
-
-    def test_archive_memory(self, client, mock_db):
-        memory = seed_memory(mock_db, title="Archive test")
-
-        res = client.delete(f"/memories/{memory.id}")
-        assert res.status_code == 204
+        assert res.status_code == 404
 
     def test_update_memory_is_not_public_api(self, client):
         res = client.patch(f"/memories/{uuid.uuid4()}", json={
             "title": "Updated title",
             "body": "Updated body",
         })
-        assert res.status_code == 405
+        assert res.status_code == 404
 
-    def test_get_nonexistent_memory(self, client):
+    def test_get_memory_is_not_public_api(self, client):
         res = client.get(f"/memories/{uuid.uuid4()}")
         assert res.status_code == 404
 
-    def test_filter_memories_by_type(self, client, mock_db):
-        seed_memory(mock_db, type="procedure", title="P1")
-        seed_memory(mock_db, type="customer_note", title="C1")
-
+    def test_filter_memories_is_not_public_api(self, client):
         res = client.get("/memories?type=procedure")
-        assert res.status_code == 200
-        data = res.json()
-        # Filter parameter is passed; mock returns all memories (SQL parsing not implemented)
-        assert len(data) >= 1
-        assert any(m["type"] == "procedure" for m in data)
+        assert res.status_code == 404
