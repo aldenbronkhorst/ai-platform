@@ -252,17 +252,16 @@ def test_microsoft_native_connectors_use_separate_native_sign_ins():
     assert 'window.open(data.verification_url, "_blank")' not in content
 
 
-def test_microsoft_native_device_login_resets_microsoft_browser_session():
+def test_microsoft_native_device_login_uses_verification_url_directly():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "MICROSOFT_SESSION_RESET_URL" in content
-    assert "https://login.microsoftonline.com/common/oauth2/v2.0/logout" in content
-    assert "MICROSOFT_SESSION_RESET_DELAY_MS" in content
+    assert "MICROSOFT_SESSION_RESET_URL" not in content
+    assert "https://login.microsoftonline.com/common/oauth2/v2.0/logout" not in content
+    assert "MICROSOFT_SESSION_RESET_DELAY_MS" not in content
     assert "openMicrosoftAuthWindow()" in content
     assert "openMicrosoftDeviceLogin" in content
-    assert "targetWindow.location.href = MICROSOFT_SESSION_RESET_URL" in content
     assert "targetWindow.location.href = targetUrl" in content
 
 
