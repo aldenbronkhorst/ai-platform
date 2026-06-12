@@ -32,8 +32,6 @@ const KV_ERROR_PHRASES = [
   "rbac", "authorization failed", "authorizationfailed",
 ];
 const MICROSOFT_DEVICE_LOGIN_URL = "https://microsoft.com/devicelogin";
-const MICROSOFT_SESSION_RESET_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/logout";
-const MICROSOFT_SESSION_RESET_DELAY_MS = 1800;
 
 interface ConnectionTestResult {
   success: boolean;
@@ -123,10 +121,7 @@ function openMicrosoftDeviceLogin(verificationUrl?: string, authWindow?: Window 
     window.open(targetUrl, "_blank", "noopener,noreferrer");
     return;
   }
-  targetWindow.location.href = MICROSOFT_SESSION_RESET_URL;
-  window.setTimeout(() => {
-    if (!targetWindow.closed) targetWindow.location.href = targetUrl;
-  }, MICROSOFT_SESSION_RESET_DELAY_MS);
+  targetWindow.location.href = targetUrl;
 }
 
 function closeMicrosoftAuthWindow(authWindow?: Window | null) {
@@ -371,6 +366,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         const poll = async () => {
           if (microsoftAuthAttemptRef.current !== attemptId) return;
           if (currentTimeMs() >= expiresAtMs) {
+            closeMicrosoftAuthWindow(authWindow);
             setMicrosoftPollingConnector(null);
             setMicrosoftDeviceCode(null);
             setCliTestResult({
@@ -394,6 +390,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             const pd = await pr.json() as MicrosoftAuthCallbackResult;
             if (microsoftAuthAttemptRef.current !== attemptId) return;
             if (pd.status === "connected") {
+              closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
               setCliTestResult({
@@ -413,6 +410,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               });
               microsoftPollTimerRef.current = window.setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else if (pd.status === "stale") {
+              closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
               setCliTestResult({
@@ -424,6 +422,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               });
               void fetchConnectors();
             } else {
+              closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
               setCliTestResult({
@@ -437,6 +436,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             }
           } catch (err) {
             if (microsoftAuthAttemptRef.current !== attemptId) return;
+            closeMicrosoftAuthWindow(authWindow);
             setMicrosoftStartingConnector(null);
             setMicrosoftPollingConnector(null);
             setMicrosoftDeviceCode(null);
