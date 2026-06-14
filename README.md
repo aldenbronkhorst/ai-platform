@@ -23,19 +23,17 @@ separate admin tools.
 - Uploaded chat files stored in Azure Blob Storage.
 - Odoo, GitHub, and Microsoft admin connectors exposed as model tools.
 - Memory extraction/review runs inside the API path for now.
-- Direct model providers: Kimi is the primary chat model provider and DeepSeek
-  is the fallback provider. Production expects Key Vault secrets named
-  `model-provider-kimi-api-key` and `model-provider-deepseek-api-key`, or local
-  environment variables `KIMI_API_KEY`/`MOONSHOT_API_KEY` and `DEEPSEEK_API_KEY`.
-- Admins can manage OpenAI-compatible model providers from the portal's
-  AI Providers page. API keys are written to Key Vault and are never returned to
-  the browser after saving.
+- Direct OpenAI-compatible model providers are configured from the portal's
+  AI Providers page. A provider stores the API endpoint and key; models are then
+  fetched from the provider where supported and enabled individually for chat.
+  API keys are written to Key Vault and are never returned to the browser after
+  saving.
 
 ## Deliberately Not In Scope Right Now
 
 - Separate task tracker product.
 - Separate document vault product.
-- Editable AI model/provider configuration UI.
+- Separate model marketplace or billing product.
 - Service Bus worker queues.
 - Durable Functions automation workflows.
 - Azure AI Search knowledge indexing.

@@ -29,17 +29,17 @@ class TestOdooExecuteReportRouter:
         model = AIModel(
             id=route.primary_model_id,
             provider_id=uuid4(),
-            display_name="Kimi K2.6",
-            model_name="kimi-k2.6",
-            deployment_name="kimi-k2.6",
+            display_name="Provider Chat",
+            model_name="provider-chat-latest",
+            deployment_name="provider-chat-latest",
             supports_tools="true",
             enabled="true"
         )
         provider = AIProvider(
             id=model.provider_id,
-            name="Kimi",
+            name="ProviderOne",
             provider_type="openai_compatible",
-            base_url="https://api.moonshot.ai/v1",
+            base_url="https://provider-one.example/v1",
             enabled="true"
         )
         account = AIConnectedAccount(

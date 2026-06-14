@@ -30,7 +30,7 @@ from app.services.tool_registry import (
 
 logger = logging.getLogger(__name__)
 
-ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to check the seeded model routes."
+ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure AI Providers."
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5

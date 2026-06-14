@@ -5,6 +5,29 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+def _create_provider(client: TestClient, name: str, base_url: str = "https://provider.example/v1") -> dict:
+    response = client.post("/model-providers", json={
+        "name": name,
+        "base_url": base_url,
+    })
+    assert response.status_code == 201
+    provider = next(item for item in response.json()["providers"] if item["name"] == name)
+    return provider
+
+
+def _add_model(client: TestClient, provider_id: str, model_name: str, display_name: str = "Chat Model") -> dict:
+    response = client.post(f"/model-providers/{provider_id}/models", json={
+        "model_name": model_name,
+        "display_name": display_name,
+        "supports_tools": True,
+        "supports_json_schema": False,
+        "context_window": 128000,
+    })
+    assert response.status_code == 200
+    provider = next(item for item in response.json()["providers"] if item["id"] == provider_id)
+    return next(item for item in provider["models"] if item["model_name"] == model_name)
+
+
 def test_model_provider_upsert_stores_key_in_key_vault_and_hides_value(monkeypatch):
     stored: dict[str, str] = {}
 
@@ -19,26 +42,66 @@ def test_model_provider_upsert_stores_key_in_key_vault_and_hides_value(monkeypat
     monkeypatch.setattr("app.routers.model_providers.get_secret_value", fake_get_secret)
 
     client = TestClient(app)
+    provider_name = f"Provider Test {uuid.uuid4()}"
     response = client.post("/model-providers", json={
-        "name": f"Kimi Test {uuid.uuid4()}",
-        "base_url": "https://api.moonshot.ai/v1",
-        "model_name": "kimi-k2.6",
-        "display_name": "Kimi K2.6",
+        "name": provider_name,
+        "base_url": "https://provider.example/v1",
         "api_key": "secret-value",
-        "supports_tools": True,
-        "context_window": 262144,
     })
 
     assert response.status_code == 201
     payload = response.json()
     assert stored
     assert list(stored.values()) == ["secret-value"]
-    encoded = str(payload)
-    assert "secret-value" not in encoded
-    provider = payload["providers"][0]
+    assert "secret-value" not in str(payload)
+
+    provider = next(item for item in payload["providers"] if item["name"] == provider_name)
     assert provider["api_key_status"] == "saved"
     assert provider["provider_type"] == "openai_compatible"
-    assert provider["models"][0]["model_name"] == "kimi-k2.6"
+    assert provider["models"] == []
+
+
+def test_model_provider_model_upsert_adds_model_under_provider(monkeypatch):
+    monkeypatch.setattr("app.routers.model_providers.key_vault_uri", lambda: "")
+
+    client = TestClient(app)
+    provider = _create_provider(client, f"Model Parent {uuid.uuid4()}")
+    model = _add_model(client, provider["id"], "provider-chat-latest", "Provider Chat Latest")
+
+    assert model["display_name"] == "Provider Chat Latest"
+    assert model["model_name"] == "provider-chat-latest"
+    assert model["deployment_name"] == "provider-chat-latest"
+    assert model["supports_tools"] == "true"
+
+
+def test_model_provider_discovery_returns_provider_models(monkeypatch):
+    monkeypatch.setattr("app.routers.model_providers.key_vault_uri", lambda: "")
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        from app.routers.model_providers import DiscoveredModel
+
+        assert base_url == "https://provider.example/v1"
+        assert api_key is None
+        return [
+            DiscoveredModel(
+                id="provider-chat-latest",
+                display_name="Provider Chat Latest",
+                context_window=128000,
+                supports_tools=True,
+                supports_json_schema=False,
+            )
+        ]
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    provider = _create_provider(client, f"Discovery Parent {uuid.uuid4()}")
+    response = client.post("/model-providers/discover", json={"provider_id": provider["id"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["models"][0]["id"] == "provider-chat-latest"
 
 
 def test_model_provider_route_selects_primary_and_fallback(monkeypatch):
@@ -46,45 +109,26 @@ def test_model_provider_route_selects_primary_and_fallback(monkeypatch):
 
     client = TestClient(app)
     suffix = str(uuid.uuid4())
-    first = client.post("/model-providers", json={
-        "name": f"Primary {suffix}",
-        "base_url": "https://primary.example/v1",
-        "model_name": "primary-model",
-        "display_name": "Primary Model",
-    })
-    second = client.post("/model-providers", json={
-        "name": f"Fallback {suffix}",
-        "base_url": "https://fallback.example/v1",
-        "model_name": "fallback-model",
-        "display_name": "Fallback Model",
-    })
-
-    assert first.status_code == 201
-    assert second.status_code == 201
-    def model_id_for(payload: dict, name: str) -> str:
-        provider = next(item for item in payload["providers"] if item["name"] == name)
-        return provider["models"][0]["id"]
-
-    primary_name = f"Primary {suffix}"
-    fallback_name = f"Fallback {suffix}"
-    first_model_id = model_id_for(first.json(), primary_name)
-    second_model_id = model_id_for(second.json(), fallback_name)
+    first_provider = _create_provider(client, f"Primary {suffix}", "https://primary.example/v1")
+    second_provider = _create_provider(client, f"Fallback {suffix}", "https://fallback.example/v1")
+    first_model = _add_model(client, first_provider["id"], "primary-model", "Primary Model")
+    second_model = _add_model(client, second_provider["id"], "fallback-model", "Fallback Model")
 
     response = client.patch("/model-providers/route", json={
-        "primary_model_id": first_model_id,
-        "fallback_model_id": second_model_id,
+        "primary_model_id": first_model["id"],
+        "fallback_model_id": second_model["id"],
     })
 
     assert response.status_code == 200
     route = response.json()["route"]
-    assert route["primary_model_id"] == first_model_id
-    assert route["fallback_model_id"] == second_model_id
+    assert route["primary_model_id"] == first_model["id"]
+    assert route["fallback_model_id"] == second_model["id"]
 
 
 def test_model_provider_test_uses_openai_compatible_client(monkeypatch):
     async def fake_chat_completion(self, messages, temperature=0.3, max_tokens=2000, model_override=None, tools=None):
-        assert self.base_url == "https://api.deepseek.com"
-        assert self.deployment_name == "deepseek-v4-flash"
+        assert self.base_url == "https://provider.example/v1"
+        assert self.deployment_name == "provider-chat-latest"
         assert self.api_key == "test-key"
         return {"error": False, "content": "OK"}
 
@@ -95,9 +139,9 @@ def test_model_provider_test_uses_openai_compatible_client(monkeypatch):
 
     client = TestClient(app)
     response = client.post("/model-providers/test", json={
-        "name": "DeepSeek",
-        "base_url": "https://api.deepseek.com",
-        "model_name": "deepseek-v4-flash",
+        "name": "Provider",
+        "base_url": "https://provider.example/v1",
+        "model_name": "provider-chat-latest",
         "api_key": "test-key",
     })
 

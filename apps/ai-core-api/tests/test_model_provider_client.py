@@ -13,7 +13,7 @@ async def test_openai_compatible_client_uses_bearer_auth_and_chat_completions(mo
 
         def json(self):
             return {
-                "model": "kimi-k2.6",
+                "model": "provider-chat-latest",
                 "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
             }
@@ -37,8 +37,8 @@ async def test_openai_compatible_client_uses_bearer_auth_and_chat_completions(mo
     monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
 
     client = ModelProviderClient(
-        base_url="https://api.moonshot.ai/v1",
-        deployment_name="kimi-k2.6",
+        base_url="https://provider-one.example/v1",
+        deployment_name="provider-chat-latest",
         api_key="test-key",
         request_options={"extra_body": {"thinking": {"type": "disabled"}}},
     )
@@ -49,9 +49,9 @@ async def test_openai_compatible_client_uses_bearer_auth_and_chat_completions(mo
         max_tokens=2000,
     )
 
-    assert captured["url"] == "https://api.moonshot.ai/v1/chat/completions"
+    assert captured["url"] == "https://provider-one.example/v1/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["json"]["model"] == "kimi-k2.6"
+    assert captured["json"]["model"] == "provider-chat-latest"
     assert captured["json"]["thinking"] == {"type": "disabled"}
     assert result["content"] == "ok"
     assert result["total_tokens"] == 3
