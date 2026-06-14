@@ -53,9 +53,16 @@ class RouteResponse(BaseModel):
     fallback_model_id: UUID | None = None
 
 
+class ModelSyncResponse(BaseModel):
+    success: bool
+    message: str
+    model_count: int = 0
+
+
 class ProviderListResponse(BaseModel):
     providers: list[ProviderResponse]
     route: RouteResponse | None = None
+    sync: ModelSyncResponse | None = None
 
 
 class ProviderUpsertRequest(BaseModel):
@@ -71,19 +78,8 @@ class ProviderUpsertRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
-class ModelUpsertRequest(BaseModel):
-    model_id: UUID | None = None
-    model_name: str = Field(..., min_length=1, max_length=255)
-    display_name: str | None = Field(None, max_length=255)
+class ModelToggleRequest(BaseModel):
     enabled: bool = True
-    supports_tools: bool = True
-    supports_json_schema: bool = False
-    context_window: int | None = Field(None, ge=1, le=10_000_000)
-
-    @field_validator("model_name", "display_name", mode="before")
-    @classmethod
-    def strip_model_text(cls, value: str | None) -> str | None:
-        return value.strip() if isinstance(value, str) else value
 
 
 class RouteUpdateRequest(BaseModel):
@@ -120,23 +116,6 @@ class DiscoveredModel(BaseModel):
     supports_json_schema: bool | None = None
 
 
-class ModelDiscoveryRequest(BaseModel):
-    provider_id: UUID | None = None
-    base_url: str | None = None
-    api_key: str | None = None
-
-    @field_validator("base_url", mode="before")
-    @classmethod
-    def strip_base_url(cls, value: str | None) -> str | None:
-        return value.strip() if isinstance(value, str) else value
-
-
-class ModelDiscoveryResponse(BaseModel):
-    success: bool
-    message: str
-    models: list[DiscoveredModel] = []
-
-
 def _is_admin(auth: dict[str, Any]) -> bool:
     roles = {str(role).lower() for role in auth.get("roles") or []}
     return (
@@ -170,6 +149,50 @@ def _display_name_for_model(model_id: str) -> str:
     if "/" in clean:
         clean = clean.rsplit("/", 1)[-1]
     return clean or model_id
+
+
+def _chat_model_sort_key(model: AIModel) -> tuple[int, str]:
+    name = (model.model_name or model.display_name or "").lower()
+    score = 0
+    if "auto" in name:
+        score += 60
+    if "chat" in name:
+        score += 30
+    if "latest" in name:
+        score += 20
+    if "instruct" in name:
+        score += 10
+    if any(marker in name for marker in ("vision", "audio", "embedding", "rerank")):
+        score -= 80
+    if "code" in name:
+        score -= 20
+
+    version_matches = re.findall(r"(?:^|[-_.])(?:v|k)?(\d+(?:\.\d+)*)(?![\dk])", name)
+    for raw_version in version_matches:
+        try:
+            version_value = float(raw_version)
+        except ValueError:
+            continue
+        if version_value < 20:
+            score += int(version_value * 10)
+    return (-score, name)
+
+
+def _request_options_for_model(model_id: str) -> dict[str, Any]:
+    lower_model = model_id.lower()
+    if lower_model.startswith("kimi-k"):
+        return {"request_options": {"extra_body": {"temperature": 1}}}
+    return {}
+
+
+def _merge_config_json(current: Any, patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current) if isinstance(current, dict) else {}
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_config_json(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _models_url(base_url: str) -> str:
@@ -256,7 +279,7 @@ async def _api_key_status(provider: AIProvider) -> str:
         return "error"
 
 
-async def _provider_payload(db: AsyncSession) -> ProviderListResponse:
+async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = None) -> ProviderListResponse:
     provider_result = await db.execute(
         select(AIProvider).where(AIProvider.provider_type == OPENAI_COMPATIBLE).order_by(AIProvider.name)
     )
@@ -290,6 +313,7 @@ async def _provider_payload(db: AsyncSession) -> ProviderListResponse:
             primary_model_id=route.primary_model_id if route else None,
             fallback_model_id=getattr(route, "fallback_model_id", None) if route else None,
         ) if route else None,
+        sync=sync,
     )
 
 
@@ -323,44 +347,98 @@ async def _save_provider_secret(provider: AIProvider, api_key: str | None) -> No
     await set_secret_value(provider.secret_reference, api_key)
 
 
-async def _upsert_model(db: AsyncSession, provider: AIProvider, req: ModelUpsertRequest) -> AIModel:
-    model = await _get_model(db, req.model_id) if req.model_id else None
-    if model and model.provider_id != provider.id:
-        raise HTTPException(status_code=400, detail="Model does not belong to this provider.")
-    if not model:
-        existing_model = await db.execute(
-            select(AIModel).where(AIModel.provider_id == provider.id, AIModel.model_name == req.model_name)
+async def _enabled_chat_models(db: AsyncSession) -> list[AIModel]:
+    result = await db.execute(
+        select(AIModel)
+        .join(AIProvider, AIProvider.id == AIModel.provider_id)
+        .where(
+            AIModel.enabled == "true",
+            AIProvider.enabled == "true",
+            AIProvider.provider_type == OPENAI_COMPATIBLE,
         )
-        model = existing_model.scalar_one_or_none()
+        .order_by(AIProvider.name, AIModel.display_name)
+    )
+    return sorted(result.scalars().all(), key=_chat_model_sort_key)
 
-    display_name = req.display_name or _display_name_for_model(req.model_name)
-    if not model:
-        model = AIModel(
+
+async def _reconcile_chat_route(db: AsyncSession) -> None:
+    await db.flush()
+    models = await _enabled_chat_models(db)
+    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
+    route = route_result.scalar_one_or_none()
+
+    if not models:
+        if route:
+            route.enabled = "false"
+            route.fallback_model_id = None
+        return
+
+    enabled_ids = {model.id for model in models}
+    primary = route.primary_model_id if route and route.primary_model_id in enabled_ids else models[0].id
+    fallback = None
+    if route and route.fallback_model_id in enabled_ids and route.fallback_model_id != primary:
+        fallback = route.fallback_model_id
+    else:
+        fallback_model = next((model for model in models if model.id != primary), None)
+        fallback = fallback_model.id if fallback_model else None
+
+    if not route:
+        route = AIRoute(
             id=uuid.uuid4(),
-            provider_id=provider.id,
-            display_name=display_name,
-            model_name=req.model_name,
-            deployment_name=req.model_name,
-            model_family=provider.name,
-            model_version=req.model_name,
-            enabled=_bool_string(req.enabled),
-            config_json={},
+            task_type=CHAT_ROUTE,
+            primary_model_id=primary,
+            temperature=0.3,
+            max_tokens=2000,
+            system_prompt=CANONICAL_SYSTEM_PROMPT,
+            enabled="true",
         )
-        db.add(model)
+        db.add(route)
 
-    model.provider_id = provider.id
-    model.display_name = display_name
-    model.model_name = req.model_name
-    model.deployment_name = req.model_name
-    model.model_family = provider.name
-    model.model_version = req.model_name
-    model.supports_tools = _bool_string(req.supports_tools)
-    model.supports_json_schema = _bool_string(req.supports_json_schema)
-    model.context_window = req.context_window
-    model.enabled = _bool_string(req.enabled)
-    if not isinstance(model.config_json, dict):
-        model.config_json = {}
-    return model
+    route.primary_model_id = primary
+    route.fallback_model_id = fallback
+    route.enabled = "true"
+
+
+async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key: str) -> int:
+    discovered_models = await _fetch_available_models(provider.base_url, api_key)
+    if not discovered_models:
+        raise RuntimeError("No models were returned by this provider.")
+
+    existing_result = await db.execute(select(AIModel).where(AIModel.provider_id == provider.id))
+    existing_by_name = {model.model_name: model for model in existing_result.scalars().all()}
+
+    for discovered in discovered_models:
+        model = existing_by_name.get(discovered.id)
+        display_name = discovered.display_name or _display_name_for_model(discovered.id)
+        supports_tools = discovered.supports_tools if discovered.supports_tools is not None else True
+        supports_json_schema = discovered.supports_json_schema if discovered.supports_json_schema is not None else False
+
+        if not model:
+            model = AIModel(
+                id=uuid.uuid4(),
+                provider_id=provider.id,
+                display_name=display_name,
+                model_name=discovered.id,
+                deployment_name=discovered.id,
+                model_family=provider.name,
+                model_version=discovered.id,
+                enabled="true",
+                config_json={},
+            )
+            db.add(model)
+
+        model.provider_id = provider.id
+        model.display_name = display_name
+        model.model_name = discovered.id
+        model.deployment_name = discovered.id
+        model.model_family = provider.name
+        model.model_version = discovered.id
+        model.supports_tools = _bool_string(supports_tools)
+        model.supports_json_schema = _bool_string(supports_json_schema)
+        model.context_window = discovered.context_window
+        model.config_json = _merge_config_json(model.config_json, _request_options_for_model(discovered.id))
+
+    return len(discovered_models)
 
 
 @router.get("", response_model=ProviderListResponse)
@@ -409,47 +487,47 @@ async def upsert_model_provider(
     await _save_provider_secret(provider, req.api_key)
     await db.flush()
 
+    sync_result: ModelSyncResponse | None = None
+    api_key = req.api_key or await _stored_api_key(provider)
+    if provider.enabled == "true" and api_key:
+        try:
+            model_count = await _sync_provider_models(db, provider, api_key)
+            sync_result = ModelSyncResponse(
+                success=True,
+                message=f"Synced {model_count} models.",
+                model_count=model_count,
+            )
+        except Exception as exc:
+            sync_result = ModelSyncResponse(
+                success=False,
+                message=f"Provider saved, but model sync failed: {exc}",
+            )
+    elif provider.enabled == "true":
+        sync_result = ModelSyncResponse(
+            success=False,
+            message="Provider saved. Add an API key to sync models.",
+        )
+
+    await _reconcile_chat_route(db)
     await db.commit()
-    return await _provider_payload(db)
+    return await _provider_payload(db, sync_result)
 
 
-@router.post("/discover", response_model=ModelDiscoveryResponse)
-async def discover_model_provider_models(
-    req: ModelDiscoveryRequest,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    _require_admin(auth)
-    base_url = (req.base_url or "").rstrip("/")
-    api_key = req.api_key or ""
-
-    if req.provider_id:
-        provider = await _get_provider(db, req.provider_id)
-        base_url = provider.base_url
-        api_key = api_key or await _stored_api_key(provider)
-
-    if not base_url:
-        raise HTTPException(status_code=400, detail="Provider endpoint is required.")
-
-    try:
-        models = await _fetch_available_models(base_url, api_key or None)
-    except Exception as exc:
-        return ModelDiscoveryResponse(success=False, message=str(exc), models=[])
-    if not models:
-        return ModelDiscoveryResponse(success=False, message="No models were returned by this provider.", models=[])
-    return ModelDiscoveryResponse(success=True, message=f"Found {len(models)} models.", models=models)
-
-
-@router.post("/{provider_id}/models", response_model=ProviderListResponse)
-async def upsert_provider_model(
+@router.patch("/{provider_id}/models/{model_id}", response_model=ProviderListResponse)
+async def toggle_provider_model(
     provider_id: UUID,
-    req: ModelUpsertRequest,
+    model_id: UUID,
+    req: ModelToggleRequest,
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
     _require_admin(auth)
     provider = await _get_provider(db, provider_id)
-    await _upsert_model(db, provider, req)
+    model = await _get_model(db, model_id)
+    if model.provider_id != provider.id:
+        raise HTTPException(status_code=400, detail="Model does not belong to this provider.")
+    model.enabled = _bool_string(req.enabled)
+    await _reconcile_chat_route(db)
     await db.commit()
     return await _provider_payload(db)
 
