@@ -23,7 +23,7 @@ def test_production_build_cleanliness():
             content = f.read()
             
             # 1. No dev diagnostics by default in production
-            assert "Security Diagnostics" not in content or "VITE_SHOW_AUTH_DIAGNOSTICS=true" not in content
+            assert "Security Diagnostics" not in content
             
             # 2. No mock login code in production
             assert "Local Mock Sign In" not in content
