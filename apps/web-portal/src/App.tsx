@@ -13,6 +13,9 @@ import { usePortalAuth } from "./hooks/usePortalAuth";
 const ConnectionsPage = lazy(() =>
   import("./pages/ConnectionsPage").then(module => ({ default: module.ConnectionsPage }))
 );
+const AIProvidersPage = lazy(() =>
+  import("./pages/AIProvidersPage").then(module => ({ default: module.AIProvidersPage }))
+);
 
 function PageLoader() {
   return (
@@ -171,6 +174,12 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
         return (
           <Suspense fallback={<PageLoader />}>
             <ConnectionsPage accessToken={accessToken} />
+          </Suspense>
+        );
+      case "ai-providers":
+        return (
+          <Suspense fallback={<PageLoader />}>
+            <AIProvidersPage accessToken={accessToken} />
           </Suspense>
         );
       default:

@@ -13,8 +13,8 @@ from tests.test_model_router import MockSession
 
 class TestOdooExecuteReportRouter:
     @pytest.mark.asyncio
-    @patch("app.services.model_router.build_foundry_client")
-    async def test_execute_chat_calls_generic_report_tool(self, mock_build_foundry_cls):
+    @patch("app.services.model_router.build_model_client")
+    async def test_execute_chat_calls_generic_report_tool(self, mock_build_model_client):
         db = MockSession(has_config=False)
         
         route = AIRoute(
@@ -30,16 +30,16 @@ class TestOdooExecuteReportRouter:
             id=route.primary_model_id,
             provider_id=uuid4(),
             display_name="Kimi K2.6",
-            model_name="Kimi-K2.6",
-            deployment_name="kimi-k2-6",
+            model_name="kimi-k2.6",
+            deployment_name="kimi-k2.6",
             supports_tools="true",
             enabled="true"
         )
         provider = AIProvider(
             id=model.provider_id,
-            name="Prov",
-            provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com",
+            name="Kimi",
+            provider_type="openai_compatible",
+            base_url="https://api.moonshot.ai/v1",
             enabled="true"
         )
         account = AIConnectedAccount(
@@ -114,7 +114,7 @@ class TestOdooExecuteReportRouter:
             }
         ])
         mock_client.chat_completion = mock_chat_completion
-        mock_build_foundry_cls.return_value = mock_client
+        mock_build_model_client.return_value = mock_client
 
         mock_http_response = MagicMock()
         mock_http_response.status_code = 200

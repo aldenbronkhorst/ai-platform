@@ -44,4 +44,4 @@ export interface AttachedFile {
 
 export type VoiceState = "idle" | "listening" | "processing" | "unsupported" | "denied";
 
-export type ActiveTab = "chat" | "connected-accounts";
+export type ActiveTab = "chat" | "connected-accounts" | "ai-providers";

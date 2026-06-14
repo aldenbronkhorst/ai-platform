@@ -102,6 +102,7 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
             "user_id": db_user.id,
             "email": db_user.email,
             "roles": roles,
+            "db_role": db_user.role,
             "mode": "entra-jwt"
         }
 
@@ -165,7 +166,13 @@ async def api_key_auth(
             )
             db.add(db_user)
             await db.commit()
-        return {"user_id": fallback_user_id, "email": "api-key@internal", "roles": ["AIPlatform.User"], "mode": "api-key"}
+        return {
+            "user_id": fallback_user_id,
+            "email": "api-key@internal",
+            "roles": ["AIPlatform.User"],
+            "db_role": existing_user.role if existing_user else "user",
+            "mode": "api-key",
+        }
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

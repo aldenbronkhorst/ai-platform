@@ -1,12 +1,8 @@
-import asyncio
 import time
 import re
-import httpx
 from typing import Optional, Any
-from azure.identity import DefaultAzureCredential
 
-AZURE_AI_INFERENCE_API_VERSION = "2024-05-01-preview"
-COGNITIVE_SERVICES_SCOPE = "https://cognitiveservices.azure.com/.default"
+import httpx
 
 
 QUOTA_RATE_LIMIT_PATTERNS = [
@@ -42,35 +38,68 @@ def _classify_error(status_code: int, message: str) -> str:
     return "unknown"
 
 
-class FoundryClient:
+def _error_detail(body: Any, fallback: str) -> str:
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("type") or fallback)
+        if isinstance(error, str):
+            return error
+        message = body.get("message")
+        if message:
+            return str(message)
+    return fallback
+
+
+def _chat_completions_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    return f"{normalized}/chat/completions"
+
+
+class ModelProviderClient:
     def __init__(
         self,
         base_url: str,
         deployment_name: str,
         api_key: Optional[str] = None,
-        use_managed_identity: bool = True,
+        request_options: Optional[dict[str, Any]] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.deployment_name = deployment_name
         self.api_key = api_key
-        self.use_managed_identity = use_managed_identity
-        self._credential: Optional[DefaultAzureCredential] = None
+        self.request_options = request_options or {}
 
     async def _get_headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
         if self.api_key:
-            return {
-                "Content-Type": "application/json",
-                "api-key": self.api_key,
-            }
-        if self.use_managed_identity:
-            if not self._credential:
-                self._credential = DefaultAzureCredential()
-            token = await asyncio.to_thread(self._credential.get_token, COGNITIVE_SERVICES_SCOPE)
-            return {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token.token}",
-            }
-        return {"Content-Type": "application/json"}
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _payload(
+        self,
+        messages: list,
+        temperature: float,
+        max_tokens: int,
+        model_override: Optional[str],
+        tools: Optional[list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model_override or self.deployment_name,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        extra_body = self.request_options.get("extra_body")
+        if isinstance(extra_body, dict):
+            payload.update(extra_body)
+
+        without_parameters = self.request_options.get("omit_parameters") or []
+        for parameter in without_parameters:
+            payload.pop(str(parameter), None)
+        return payload
 
     async def chat_completion(
         self,
@@ -80,16 +109,9 @@ class FoundryClient:
         model_override: Optional[str] = None,
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> dict:
-        url = f"{self.base_url}/models/chat/completions?api-version={AZURE_AI_INFERENCE_API_VERSION}"
-        model = model_override or self.deployment_name
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if tools:
-            payload["tools"] = tools
+        url = _chat_completions_url(self.base_url)
+        payload = self._payload(messages, temperature, max_tokens, model_override, tools)
+        model = str(payload.get("model") or model_override or self.deployment_name)
 
         start = time.monotonic()
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -100,14 +122,12 @@ class FoundryClient:
             raw_text = response.text
             try:
                 body = response.json()
-                detail = body.get("error", {}).get("message", raw_text)
             except Exception:
                 body = {}
-                detail = raw_text
-            error_type = _classify_error(response.status_code, detail)
+            detail = _error_detail(body, raw_text)
             return {
                 "error": True,
-                "error_type": error_type,
+                "error_type": _classify_error(response.status_code, detail),
                 "status_code": response.status_code,
                 "message": detail,
                 "raw_response": raw_text,
@@ -119,7 +139,7 @@ class FoundryClient:
         msg = choice.get("message", {})
         usage = body.get("usage", {})
 
-        result = {
+        return {
             "error": False,
             "content": msg.get("content", ""),
             "finish_reason": choice.get("finish_reason", ""),
@@ -131,4 +151,3 @@ class FoundryClient:
             "model": body.get("model", model),
             "raw_response": body,
         }
-        return result

@@ -30,7 +30,7 @@ MICROSOFT_TOOL_INTENT_KEYWORDS = {
     "ms_azure_cli": {
         "azure", "az", "resource group", "resource groups", "subscription", "subscriptions",
         "container app", "container apps", "revision", "revisions", "key vault", "storage",
-        "blob", "service bus", "queue", "queues", "azure search", "foundry", "apim",
+        "blob", "service bus", "queue", "queues", "azure search", "apim",
         "api management", "managed identity", "rbac", "role assignment", "vnet", "network",
         "dns", "keda", "cost", "costs", "billing", "spend", "resources",
     },
@@ -72,7 +72,7 @@ SYSTEM_INTENT_KEYWORDS = {
         "azure", "az", "resource group", "resource groups", "subscription",
         "subscriptions", "tenant", "container app", "container apps", "revision",
         "revisions", "key vault", "storage",
-        "blob", "service bus", "queue", "queues", "azure search", "foundry",
+        "blob", "service bus", "queue", "queues", "azure search",
         "apim", "api management", "managed identity",
         "rbac", "role assignment", "vnet", "network", "dns", "keda",
         "bicep", "cost", "costs", "billing", "spend",
