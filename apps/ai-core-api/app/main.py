@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
-from app.routers import health, artifact, connected_accounts, chat, connector_microsoft_native, connector_github, voice
+from app.routers import (
+    health, artifact, connected_accounts, chat, connector_microsoft_native,
+    connector_github, voice, model_providers,
+)
 
 settings = get_settings()
 docs_enabled = settings.app_env != "production"
@@ -37,3 +40,4 @@ app.include_router(chat.router)
 app.include_router(connector_microsoft_native.router)
 app.include_router(connector_github.router)
 app.include_router(voice.router)
+app.include_router(model_providers.router)

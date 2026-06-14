@@ -339,14 +339,14 @@ class MockSession:
         self.added = []
         if has_config:
             self._provider = AIProvider(
-                id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-                base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+                id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
+                base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
                 secret_reference="mock-key", enabled="true",
             )
             self._model = AIModel(
                 id=uuid.uuid4(), provider_id=self._provider.id, display_name="Kimi K2.6",
-                model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-                model_family="Kimi", model_version="2026-04-20",
+                model_name="kimi-k2.6", deployment_name="kimi-k2.6",
+                model_family="Kimi", model_version="K2.6",
                 supports_tools="true", supports_json_schema="false",
                 context_window=262144, enabled="true",
             )
@@ -543,7 +543,7 @@ class TestConnectorContext:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(
                 chat_completion=AsyncMock(return_value={
                     "content": "Hello! I am the AI Platform.",
@@ -581,7 +581,7 @@ class TestConnectorContext:
             'app.services.model_router._platform_now',
             new=lambda now=None: fixed_now,
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion))
         ):
             result = await execute_chat(db, [{"role": "user", "content": "what is today?"}], user_id=uuid.uuid4())
@@ -649,7 +649,7 @@ class TestConnectorContext:
             'app.services.connected_account_state.token_status',
             new=AsyncMock(side_effect=fake_token_status),
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion))
         ):
             result = await execute_chat(
@@ -678,14 +678,14 @@ class TestConnectorContext:
 
         # Real model objects for get_enabled_route
         provider = AIProvider(
-            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
+            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
             id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-            model_family="Kimi", model_version="2026-04-20",
+            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
+            model_family="Kimi", model_version="K2.6",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -743,7 +743,7 @@ class TestConnectorContext:
             'app.services.model_router.get_enabled_route',
             new=mock_get_enabled_route,
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(
                 chat_completion=AsyncMock(return_value={
                     "content": "Here is your answer with memories considered.",
@@ -770,14 +770,14 @@ class TestConnectorContext:
         db = MockSession(has_config=False)
 
         provider = AIProvider(
-            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
+            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
             id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-            model_family="Kimi", model_version="2026-04-20",
+            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
+            model_family="Kimi", model_version="K2.6",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -798,7 +798,7 @@ class TestConnectorContext:
             'app.services.model_router.get_enabled_route',
             new=mock_get_enabled_route,
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(
                 chat_completion=AsyncMock(return_value={
                     "content": "OK",
@@ -820,8 +820,10 @@ class TestSeedIdempotent:
     async def test_seed_creates_provider(self):
         """Seed creates provider when none exists."""
         from scripts.seed_providers import PROVIDERS_TO_SEED, MODELS_TO_SEED, ROUTES_TO_SEED, CANONICAL_SYSTEM_PROMPT
-        assert PROVIDERS_TO_SEED[0]["name"] == "Microsoft Foundry"
-        assert MODELS_TO_SEED[0]["model_name"] == "Kimi-K2.6"
+        assert PROVIDERS_TO_SEED[0]["name"] == "Kimi"
+        assert PROVIDERS_TO_SEED[1]["name"] == "DeepSeek"
+        assert MODELS_TO_SEED[0]["model_name"] == "kimi-k2.6"
+        assert ROUTES_TO_SEED[0]["fallback_model_name"] == "deepseek-v4-flash"
         assert ROUTES_TO_SEED[0]["task_type"] == "general_chat"
         assert ROUTES_TO_SEED[0]["system_prompt"] == CANONICAL_SYSTEM_PROMPT
 
@@ -987,14 +989,14 @@ class TestProviderErrorHandling:
         broken multi-query support."""
         from app.models.models import AIProvider, AIModel, AIRoute
         provider = AIProvider(
-            id=uuid.uuid4(), name="Microsoft Foundry", provider_type="azure_foundry",
-            base_url="https://mock.services.ai.azure.com", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
+            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
             id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="Kimi-K2.6", deployment_name="kimi-k2-6-general-chat",
-            model_family="Kimi", model_version="2026-04-20",
+            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
+            model_family="Kimi", model_version="K2.6",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -1023,7 +1025,7 @@ class TestProviderErrorHandling:
             'app.services.model_router.get_enabled_route',
             new=mock_get_enabled_route,
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(
                 chat_completion=AsyncMock(return_value=chat_completion_return)
             ))
@@ -1052,6 +1054,71 @@ class TestProviderErrorHandling:
         assert "model" in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_execute_chat_falls_back_to_deepseek_on_primary_rate_limit(self):
+        from app.services.model_router import execute_chat
+
+        db = MockSession(has_config=True)
+        fallback_provider = AIProvider(
+            id=uuid.uuid4(),
+            name="DeepSeek",
+            provider_type="openai_compatible",
+            base_url="https://api.deepseek.com",
+            auth_type="key_vault_secret",
+            secret_reference="mock-deepseek-key",
+            enabled="true",
+        )
+        fallback_model = AIModel(
+            id=uuid.uuid4(),
+            provider_id=fallback_provider.id,
+            display_name="DeepSeek V4 Flash",
+            model_name="deepseek-v4-flash",
+            deployment_name="deepseek-v4-flash",
+            model_family="DeepSeek",
+            model_version="V4 Flash",
+            supports_tools="true",
+            supports_json_schema="true",
+            context_window=1000000,
+            enabled="true",
+        )
+        primary_client = AsyncMock(
+            chat_completion=AsyncMock(return_value={
+                "error": True,
+                "error_type": "rate_limit_exceeded",
+                "status_code": 429,
+                "message": "Rate limit exceeded",
+                "latency_ms": 12,
+            })
+        )
+        fallback_client = AsyncMock(
+            chat_completion=AsyncMock(return_value={
+                "error": False,
+                "content": "Fallback answer",
+                "finish_reason": "stop",
+                "tool_calls": None,
+                "prompt_tokens": 8,
+                "completion_tokens": 3,
+                "total_tokens": 11,
+                "latency_ms": 20,
+                "model": "deepseek-v4-flash",
+                "raw_response": {},
+            })
+        )
+
+        with patch(
+            "app.services.model_router.build_model_client",
+            new=AsyncMock(side_effect=[primary_client, fallback_client]),
+        ), patch(
+            "app.services.model_router._get_route_fallback",
+            new=AsyncMock(return_value=(fallback_model, fallback_provider)),
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
+
+        assert result["content"] == "Fallback answer"
+        assert result["model_provider"] == "DeepSeek"
+        assert result["model_name"] == "DeepSeek V4 Flash"
+        assert result["context"]["model"]["routing_reason"] == "primary_failed_fallback"
+
+    @pytest.mark.asyncio
     async def test_execute_chat_records_trace_payloads_and_usage_correlation(self):
         from app.services.model_router import execute_chat
         from app.services.trace_service import TraceService
@@ -1076,7 +1143,7 @@ class TestProviderErrorHandling:
         )
 
         with patch(
-            "app.services.model_router.build_foundry_client",
+            "app.services.model_router.build_model_client",
             new=AsyncMock(return_value=client),
         ):
             result = await execute_chat(
@@ -1711,7 +1778,7 @@ class TestToolExecution:
             'app.services.model_router._execute_tool_call',
             new=mock_execute_tool,
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion)),
         ):
             result = await execute_chat(
@@ -1891,7 +1958,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -1976,7 +2043,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -2073,7 +2140,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -2174,7 +2241,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -2262,7 +2329,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -2354,7 +2421,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
@@ -2451,7 +2518,7 @@ class TestToolExecution:
         ), patch.object(
             type(db), 'flush'
         ), patch(
-            'app.services.model_router.build_foundry_client',
+            'app.services.model_router.build_model_client',
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',

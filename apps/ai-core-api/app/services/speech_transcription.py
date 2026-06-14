@@ -10,10 +10,7 @@ from app.services.key_vault import get_secret_value, key_vault_uri
 
 DEFAULT_SPEECH_REGION = os.environ.get("AZURE_SPEECH_REGION", "southafricanorth")
 DEFAULT_SPEECH_LANGUAGE = os.environ.get("AZURE_SPEECH_LANGUAGE", "en-ZA")
-DEFAULT_KEY_SECRET_NAMES = (
-    "azure-speech-key",
-    "model-provider-foundry-primary-key",
-)
+DEFAULT_KEY_SECRET_NAMES = ("azure-speech-key",)
 SUPPORTED_WAV_CONTENT_TYPES = {
     "audio/wav",
     "audio/x-wav",
@@ -161,7 +158,7 @@ class SpeechTranscriptionService:
         if not stt_endpoint or not key:
             raise SpeechTranscriptionConfigError(
                 "Azure Speech transcription is not configured. Set AZURE_SPEECH_REGION/AZURE_SPEECH_STT_ENDPOINT "
-                "and AZURE_SPEECH_KEY, or provide the model-provider Foundry key in Key Vault."
+                "and AZURE_SPEECH_KEY, or provide the azure-speech-key secret in Key Vault."
             )
 
         start = time.monotonic()

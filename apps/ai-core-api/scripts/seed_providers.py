@@ -12,31 +12,64 @@ from app.services.model_router import CANONICAL_SYSTEM_PROMPT
 
 PROVIDERS_TO_SEED = [
     {
-        "name": "Microsoft Foundry",
-        "provider_type": "azure_foundry",
-        "base_url": "https://fnd-ai-platform-prod-san-001.services.ai.azure.com",
+        "name": "Kimi",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.moonshot.ai/v1",
         "auth_type": "key_vault_secret",
-        "secret_reference": "model-provider-foundry-primary-key",
+        "secret_reference": "model-provider-kimi-api-key",
+        "capabilities": {"api_key_env_vars": ["KIMI_API_KEY", "MOONSHOT_API_KEY"]},
+        "enabled": "true",
+    },
+    {
+        "name": "DeepSeek",
+        "provider_type": "openai_compatible",
+        "base_url": "https://api.deepseek.com",
+        "auth_type": "key_vault_secret",
+        "secret_reference": "model-provider-deepseek-api-key",
+        "capabilities": {"api_key_env_vars": ["DEEPSEEK_API_KEY"]},
         "enabled": "true",
     }
 ]
 
 MODELS_TO_SEED = [
     {
-        "provider_name": "Microsoft Foundry",
+        "provider_name": "Kimi",
         "display_name": "Kimi K2.6",
-        "model_name": "Kimi-K2.6",
-        "deployment_name": "kimi-k2-6-general-chat",
+        "model_name": "kimi-k2.6",
+        "deployment_name": "kimi-k2.6",
         "model_family": "Kimi",
-        "model_version": "2026-04-20",
+        "model_version": "K2.6",
         "supports_tools": "true",
         "supports_json_schema": "false",
         "context_window": 262144,
         "enabled": "true",
         "config_json": {
-            "cost_tier": "medium",
+            "cost_tier": "low",
             "latency_tier": "medium",
             "quality_tier": "advanced",
+            "request_options": {
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
+        }
+    },
+    {
+        "provider_name": "DeepSeek",
+        "display_name": "DeepSeek V4 Flash",
+        "model_name": "deepseek-v4-flash",
+        "deployment_name": "deepseek-v4-flash",
+        "model_family": "DeepSeek",
+        "model_version": "V4 Flash",
+        "supports_tools": "true",
+        "supports_json_schema": "true",
+        "context_window": 1000000,
+        "enabled": "true",
+        "config_json": {
+            "cost_tier": "low",
+            "latency_tier": "fast",
+            "quality_tier": "advanced",
+            "request_options": {
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
         }
     }
 ]
@@ -44,7 +77,8 @@ MODELS_TO_SEED = [
 ROUTES_TO_SEED = [
     {
         "task_type": "general_chat",
-        "primary_model_name": "Kimi-K2.6",
+        "primary_model_name": "kimi-k2.6",
+        "fallback_model_name": "deepseek-v4-flash",
         "temperature": 0.3,
         "max_tokens": 2000,
         "system_prompt": CANONICAL_SYSTEM_PROMPT,
@@ -64,7 +98,7 @@ async def seed():
             provider = existing_prov.scalar_one_or_none()
             if provider:
                 changed = []
-                for field in ("base_url", "provider_type", "auth_type", "enabled", "secret_reference"):
+                for field in ("base_url", "provider_type", "auth_type", "enabled", "secret_reference", "capabilities"):
                     new_val = p_data[field]
                     if getattr(provider, field) != new_val:
                         setattr(provider, field, new_val)
@@ -124,6 +158,7 @@ async def seed():
             route = existing_route.scalar_one_or_none()
 
             prim_model = model_name_map.get(r_data["primary_model_name"])
+            fallback_model = model_name_map.get(r_data.get("fallback_model_name"))
 
             if route:
                 changed = []
@@ -135,6 +170,9 @@ async def seed():
                 if prim_model and route.primary_model_id != prim_model.id:
                     route.primary_model_id = prim_model.id
                     changed.append("primary_model_id")
+                if fallback_model and route.fallback_model_id != fallback_model.id:
+                    route.fallback_model_id = fallback_model.id
+                    changed.append("fallback_model_id")
                 
                 if changed:
                     print(f"Route '{route.task_type}' updated fields: {', '.join(changed)}")
@@ -145,6 +183,7 @@ async def seed():
                     id=uuid.uuid4(),
                     task_type=r_data["task_type"],
                     primary_model_id=prim_model.id if prim_model else None,
+                    fallback_model_id=fallback_model.id if fallback_model else None,
                     temperature=r_data["temperature"],
                     max_tokens=r_data["max_tokens"],
                     system_prompt=r_data["system_prompt"],

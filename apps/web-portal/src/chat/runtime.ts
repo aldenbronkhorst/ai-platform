@@ -5,7 +5,7 @@ export const CHAT_REQUEST_TIMEOUT_MS = 180_000;
 
 const CHAT_SESSIONS_CACHE_PREFIX = "ai-platform.chatSessions.";
 const CONNECTOR_PROGRESS_HINTS = [
-  { label: "Azure", keywords: ["azure", "subscription", "resource group", "container app", "key vault", "foundry"] },
+  { label: "Azure", keywords: ["azure", "subscription", "resource group", "container app", "key vault"] },
   { label: "GitHub", keywords: ["github", "repo", "pull request", "commit", "branch", "workflow", "actions"] },
   { label: "Odoo", keywords: ["odoo", "invoice", "credit note", "customer", "sale order", "profit and loss", "turnover"] },
 ];

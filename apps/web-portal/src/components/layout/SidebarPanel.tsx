@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import {
   Plug,
+  BrainCircuit,
   Plus,
   X,
   Check,
@@ -89,6 +90,7 @@ export function SidebarPanel({
 
   const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
     { tab: "connected-accounts", icon: Plug, label: "Connectors" },
+    { tab: "ai-providers", icon: BrainCircuit, label: "AI Providers" },
   ];
 
   const startEditing = (e: ReactMouseEvent, session: ChatSession) => {

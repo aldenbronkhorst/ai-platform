@@ -15,7 +15,7 @@ from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool,
     AIMemory, AIArtifact,
 )
-from app.services.foundry_client import FoundryClient
+from app.services.model_provider_client import ModelProviderClient
 from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.services.model_tool_calls import (
@@ -41,6 +41,7 @@ MAX_ODOO_RECORD_CONTEXT_CHARS = 20000
 MAX_ODOO_RECORD_CONTEXT_ITEMS = 25
 TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
 TOOL_ERROR_SUMMARY_LIMIT = 8
+MODEL_FALLBACK_ERROR_TYPES = {"rate_limit_exceeded", "quota_exceeded", "server_error", "model_not_found"}
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -139,7 +140,7 @@ class ModelCallState:
     result: dict[str, Any]
     used_model: AIModel
     used_provider: AIProvider
-    client: FoundryClient
+    client: ModelProviderClient
     stats: ModelCallStats
 
 
@@ -231,8 +232,37 @@ async def get_enabled_route(db: AsyncSession, task_type: str = "general_chat") -
     return route, model, provider
 
 
+async def _get_enabled_model_provider(db: AsyncSession, model_id: UUID) -> tuple[AIModel, AIProvider]:
+    model_result = await db.execute(
+        select(AIModel).where(AIModel.id == model_id, AIModel.enabled == "true")
+    )
+    model = model_result.scalar_one_or_none()
+    if not model:
+        raise RouteNotFoundError("fallback_model")
+
+    provider_result = await db.execute(
+        select(AIProvider).where(AIProvider.id == model.provider_id, AIProvider.enabled == "true")
+    )
+    provider = provider_result.scalar_one_or_none()
+    if not provider:
+        raise RouteNotFoundError("fallback_model")
+
+    return model, provider
+
+
+async def _get_route_fallback(db: AsyncSession, route: AIRoute) -> tuple[AIModel, AIProvider] | None:
+    fallback_model_id = getattr(route, "fallback_model_id", None)
+    if not fallback_model_id:
+        return None
+    try:
+        return await _get_enabled_model_provider(db, fallback_model_id)
+    except RouteNotFoundError:
+        logger.warning("Configured fallback model is unavailable route=%s fallback_model_id=%s", route.task_type, fallback_model_id)
+        return None
+
+
 async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
-    """Try Key Vault secret first, then env var, then fall back to hard-coded."""
+    """Resolve a provider API key from Key Vault first, then environment."""
     if provider.auth_type == "key_vault_secret" and provider.secret_reference:
         try:
             secret_value = await get_secret_value(provider.secret_reference)
@@ -240,22 +270,28 @@ async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
                 return secret_value
         except Exception as exc:
             logger.warning("Failed to fetch KV secret %s: %s", provider.secret_reference, exc)
-    # Fallback: check environment variable
-    env_key = provider.name.upper().replace(" ", "_") + "_API_KEY"
-    env_val = os.environ.get(env_key)
-    if env_val:
-        return env_val
+    env_keys = [
+        provider.name.upper().replace(" ", "_").replace("-", "_") + "_API_KEY",
+    ]
+    capabilities = provider.capabilities if isinstance(provider.capabilities, dict) else {}
+    configured_env_keys = capabilities.get("api_key_env_vars")
+    if isinstance(configured_env_keys, list):
+        env_keys.extend(str(key) for key in configured_env_keys)
+    for env_key in env_keys:
+        env_val = os.environ.get(env_key)
+        if env_val:
+            return env_val
     return None
 
 
-async def build_foundry_client(provider: AIProvider, model: AIModel) -> FoundryClient:
+async def build_model_client(provider: AIProvider, model: AIModel) -> ModelProviderClient:
     api_key = await _resolve_api_key(provider)
-    use_mi = provider.auth_type == "managed_identity"
-    return FoundryClient(
+    config = model.config_json if isinstance(model.config_json, dict) else {}
+    return ModelProviderClient(
         base_url=provider.base_url,
         deployment_name=model.deployment_name,
         api_key=api_key,
-        use_managed_identity=use_mi and not api_key,
+        request_options=config.get("request_options") if isinstance(config.get("request_options"), dict) else None,
     )
 
 
@@ -1135,8 +1171,8 @@ async def _select_route_model_provider(
     db: AsyncSession,
     task_type: str,
 ) -> tuple[AIRoute, AIModel, AIProvider, dict[str, Any]]:
-    route, model, provider = await get_enabled_route(db, "general_chat")
-    return route, model, provider, {"reason": "single_general_chat_route", "requested_task_type": task_type}
+    route, model, provider = await get_enabled_route(db, task_type)
+    return route, model, provider, {"reason": "configured_route", "requested_task_type": task_type}
 
 
 def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definitions: list[dict[str, Any]]) -> str:
@@ -1412,8 +1448,8 @@ async def _call_model(
     tool_definitions: list[dict[str, Any]],
     trace_svc: Any = None,
     attempt_reason: str = "primary",
-    client: Optional[FoundryClient] = None,
-) -> tuple[dict[str, Any], FoundryClient]:
+    client: Optional[ModelProviderClient] = None,
+) -> tuple[dict[str, Any], ModelProviderClient]:
     span_id = None
     if trace_svc:
         span_id = trace_svc.start_span(
@@ -1448,7 +1484,7 @@ async def _call_model(
         )
     try:
         if client is None:
-            client = await build_foundry_client(provider, model)
+            client = await build_model_client(provider, model)
         result = await client.chat_completion(
             messages=messages,
             temperature=temperature,
@@ -1495,6 +1531,60 @@ async def _run_model_once(
     )
     stats.add_result(result)
     return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
+
+
+def _should_try_model_fallback(result: dict[str, Any]) -> bool:
+    return bool(result.get("error")) and str(result.get("error_type") or "") in MODEL_FALLBACK_ERROR_TYPES
+
+
+async def _maybe_run_fallback_model(
+    db: AsyncSession,
+    route: AIRoute,
+    state: ModelCallState,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    tool_definitions: list[dict[str, Any]],
+    trace_svc: Any = None,
+    policy: Optional[dict[str, Any]] = None,
+) -> ModelCallState:
+    if not _should_try_model_fallback(state.result):
+        return state
+
+    fallback = await _get_route_fallback(db, route)
+    if not fallback:
+        return state
+
+    fallback_model, fallback_provider = fallback
+    primary_error_type = str(state.result.get("error_type") or "unknown")
+    logger.warning(
+        "Primary model failed; trying fallback route=%s primary_model=%s primary_provider=%s "
+        "fallback_model=%s fallback_provider=%s error_type=%s",
+        route.task_type,
+        state.used_model.display_name,
+        state.used_provider.name,
+        fallback_model.display_name,
+        fallback_provider.name,
+        primary_error_type,
+    )
+    fallback_state = await _run_model_once(
+        fallback_model,
+        fallback_provider,
+        messages,
+        temperature,
+        max_tokens,
+        tool_definitions,
+        trace_svc=trace_svc,
+    )
+    if policy is not None:
+        policy["reason"] = "primary_failed_fallback" if not fallback_state.result.get("error") else "primary_and_fallback_failed"
+        policy["primary_error_type"] = primary_error_type
+        policy["primary_model"] = state.used_model.display_name
+        policy["primary_provider"] = state.used_provider.name
+    fallback_state.stats.prompt_tokens += state.stats.prompt_tokens
+    fallback_state.stats.completion_tokens += state.stats.completion_tokens
+    fallback_state.stats.latency_ms += state.stats.latency_ms
+    return fallback_state
 
 
 async def _run_tool_loop(
@@ -1659,8 +1749,9 @@ def _raise_if_provider_failed(
         chat_session_id,
         tools_enabled,
     )
+    failed_model_display = state.used_model.display_name or primary_model.display_name
     raise ProviderCallError(
-        _provider_error_message(state.result, primary_model.display_name),
+        _provider_error_message(state.result, failed_model_display),
         state.used_provider.name,
         state.used_model.display_name,
     )
@@ -1754,6 +1845,17 @@ async def execute_chat(
     state = await _run_model_once(
         model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
         trace_svc=trace_svc,
+    )
+    state = await _maybe_run_fallback_model(
+        db,
+        route,
+        state,
+        full_messages,
+        temperature,
+        max_tokens,
+        tool_definitions,
+        trace_svc=trace_svc,
+        policy=policy,
     )
     tool_results: list[dict[str, Any]] = []
     tool_results.extend(await _run_tool_loop(

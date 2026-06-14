@@ -47,7 +47,7 @@ class TestMemoryFeedbackAndTracking:
         mem_id = uuid4()
         mock_execute_chat.return_value = {
             "content": "Use Printer-01 for printing downstairs.",
-            "model_provider": "Microsoft Foundry",
+            "model_provider": "Kimi",
             "model_name": "Kimi K2.6",
             "latency_ms": 100,
             "prompt_tokens": 5,
