@@ -1,7 +1,7 @@
 """Add route fallback model.
 
 Revision ID: 003_route_fallback
-Revises: 002_ms_device_auth
+Revises: 014_ms_device_auth_provider
 Create Date: 2026-06-14
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "003_route_fallback"
-down_revision: Union[str, None] = "002_ms_device_auth"
+down_revision: Union[str, None] = "014_ms_device_auth_provider"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
