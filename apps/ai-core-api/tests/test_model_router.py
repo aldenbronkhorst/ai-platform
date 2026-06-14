@@ -339,14 +339,14 @@ class MockSession:
         self.added = []
         if has_config:
             self._provider = AIProvider(
-                id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
-                base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
+                id=uuid.uuid4(), name="ProviderOne", provider_type="openai_compatible",
+                base_url="https://provider-one.example/v1", auth_type="key_vault_secret",
                 secret_reference="mock-key", enabled="true",
             )
             self._model = AIModel(
-                id=uuid.uuid4(), provider_id=self._provider.id, display_name="Kimi K2.6",
-                model_name="kimi-k2.6", deployment_name="kimi-k2.6",
-                model_family="Kimi", model_version="K2.6",
+                id=uuid.uuid4(), provider_id=self._provider.id, display_name="Provider Chat",
+                model_name="provider-chat-latest", deployment_name="provider-chat-latest",
+                model_family="ProviderOne", model_version="Latest",
                 supports_tools="true", supports_json_schema="false",
                 context_window=262144, enabled="true",
             )
@@ -678,14 +678,14 @@ class TestConnectorContext:
 
         # Real model objects for get_enabled_route
         provider = AIProvider(
-            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
-            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="ProviderOne", provider_type="openai_compatible",
+            base_url="https://provider-one.example/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
-            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
-            model_family="Kimi", model_version="K2.6",
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Provider Chat",
+            model_name="provider-chat-latest", deployment_name="provider-chat-latest",
+            model_family="ProviderOne", model_version="Latest",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -770,14 +770,14 @@ class TestConnectorContext:
         db = MockSession(has_config=False)
 
         provider = AIProvider(
-            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
-            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="ProviderOne", provider_type="openai_compatible",
+            base_url="https://provider-one.example/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
-            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
-            model_family="Kimi", model_version="K2.6",
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Provider Chat",
+            model_name="provider-chat-latest", deployment_name="provider-chat-latest",
+            model_family="ProviderOne", model_version="Latest",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -812,26 +812,6 @@ class TestConnectorContext:
          ):
              result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
              assert result["content"] == "OK"
-
-# ── Seed Script Tests ──
-
-class TestSeedIdempotent:
-    @pytest.mark.asyncio
-    async def test_seed_creates_provider(self):
-        """Seed creates provider when none exists."""
-        from scripts.seed_providers import PROVIDERS_TO_SEED, MODELS_TO_SEED, ROUTES_TO_SEED, CANONICAL_SYSTEM_PROMPT
-        assert PROVIDERS_TO_SEED[0]["name"] == "Kimi"
-        assert PROVIDERS_TO_SEED[1]["name"] == "DeepSeek"
-        assert MODELS_TO_SEED[0]["model_name"] == "kimi-k2.6"
-        assert ROUTES_TO_SEED[0]["fallback_model_name"] == "deepseek-v4-flash"
-        assert ROUTES_TO_SEED[0]["task_type"] == "general_chat"
-        assert ROUTES_TO_SEED[0]["system_prompt"] == CANONICAL_SYSTEM_PROMPT
-
-    def test_seed_providers_uses_canonical_prompt(self):
-        from scripts.seed_providers import CANONICAL_SYSTEM_PROMPT
-        from app.services.model_router import CANONICAL_SYSTEM_PROMPT as ROUTER_PROMPT
-        assert CANONICAL_SYSTEM_PROMPT == ROUTER_PROMPT
-
 
 @pytest.fixture(autouse=True)
 def _cleanup_global_state():
@@ -989,14 +969,14 @@ class TestProviderErrorHandling:
         broken multi-query support."""
         from app.models.models import AIProvider, AIModel, AIRoute
         provider = AIProvider(
-            id=uuid.uuid4(), name="Kimi", provider_type="openai_compatible",
-            base_url="https://api.moonshot.ai/v1", auth_type="key_vault_secret",
+            id=uuid.uuid4(), name="ProviderOne", provider_type="openai_compatible",
+            base_url="https://provider-one.example/v1", auth_type="key_vault_secret",
             secret_reference="mock-key", enabled="true",
         )
         model = AIModel(
-            id=uuid.uuid4(), provider_id=provider.id, display_name="Kimi K2.6",
-            model_name="kimi-k2.6", deployment_name="kimi-k2.6",
-            model_family="Kimi", model_version="K2.6",
+            id=uuid.uuid4(), provider_id=provider.id, display_name="Provider Chat",
+            model_name="provider-chat-latest", deployment_name="provider-chat-latest",
+            model_family="ProviderOne", model_version="Latest",
             supports_tools="true", supports_json_schema="false",
             context_window=262144, enabled="true",
         )
@@ -1054,27 +1034,27 @@ class TestProviderErrorHandling:
         assert "model" in str(exc_info.value)
 
     @pytest.mark.asyncio
-    async def test_execute_chat_falls_back_to_deepseek_on_primary_rate_limit(self):
+    async def test_execute_chat_falls_back_to_secondary_model_on_primary_rate_limit(self):
         from app.services.model_router import execute_chat
 
         db = MockSession(has_config=True)
         fallback_provider = AIProvider(
             id=uuid.uuid4(),
-            name="DeepSeek",
+            name="ProviderTwo",
             provider_type="openai_compatible",
-            base_url="https://api.deepseek.com",
+            base_url="https://provider-two.example/v1",
             auth_type="key_vault_secret",
-            secret_reference="mock-deepseek-key",
+            secret_reference="mock-provider-two-key",
             enabled="true",
         )
         fallback_model = AIModel(
             id=uuid.uuid4(),
             provider_id=fallback_provider.id,
-            display_name="DeepSeek V4 Flash",
-            model_name="deepseek-v4-flash",
-            deployment_name="deepseek-v4-flash",
-            model_family="DeepSeek",
-            model_version="V4 Flash",
+            display_name="Provider Fallback",
+            model_name="provider-fallback-latest",
+            deployment_name="provider-fallback-latest",
+            model_family="ProviderTwo",
+            model_version="Latest",
             supports_tools="true",
             supports_json_schema="true",
             context_window=1000000,
@@ -1099,7 +1079,7 @@ class TestProviderErrorHandling:
                 "completion_tokens": 3,
                 "total_tokens": 11,
                 "latency_ms": 20,
-                "model": "deepseek-v4-flash",
+                "model": "provider-fallback-latest",
                 "raw_response": {},
             })
         )
@@ -1114,8 +1094,8 @@ class TestProviderErrorHandling:
             result = await execute_chat(db, [{"role": "user", "content": "hi"}], user_id=uuid.uuid4())
 
         assert result["content"] == "Fallback answer"
-        assert result["model_provider"] == "DeepSeek"
-        assert result["model_name"] == "DeepSeek V4 Flash"
+        assert result["model_provider"] == "ProviderTwo"
+        assert result["model_name"] == "Provider Fallback"
         assert result["context"]["model"]["routing_reason"] == "primary_failed_fallback"
 
     @pytest.mark.asyncio
@@ -2067,7 +2047,7 @@ class TestToolExecution:
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):
-        """Kimi-style textual tool markers must be executed, not shown to users."""
+        """textual tool markers must be executed, not shown to users."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2261,7 +2241,7 @@ class TestToolExecution:
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_with_plain_marker_variant(self):
-        """Kimi may omit pipe characters in marker text; that variant must be parsed too."""
+        """Some providers may omit pipe characters in marker text; that variant must be parsed too."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(

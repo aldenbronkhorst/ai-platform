@@ -3,6 +3,7 @@ import uuid
 from typing import Any
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
@@ -59,20 +60,29 @@ class ProviderListResponse(BaseModel):
 
 class ProviderUpsertRequest(BaseModel):
     provider_id: UUID | None = None
-    model_id: UUID | None = None
     name: str = Field(..., min_length=1, max_length=100)
     base_url: str = Field(..., min_length=1, max_length=500)
+    api_key: str | None = Field(None, max_length=4000)
+    enabled: bool = True
+
+    @field_validator("name", "base_url", mode="before")
+    @classmethod
+    def strip_text(cls, value: str | None) -> str | None:
+        return value.strip() if isinstance(value, str) else value
+
+
+class ModelUpsertRequest(BaseModel):
+    model_id: UUID | None = None
     model_name: str = Field(..., min_length=1, max_length=255)
     display_name: str | None = Field(None, max_length=255)
-    api_key: str | None = Field(None, max_length=4000)
     enabled: bool = True
     supports_tools: bool = True
     supports_json_schema: bool = False
     context_window: int | None = Field(None, ge=1, le=10_000_000)
 
-    @field_validator("name", "base_url", "model_name", "display_name", mode="before")
+    @field_validator("model_name", "display_name", mode="before")
     @classmethod
-    def strip_text(cls, value: str | None) -> str | None:
+    def strip_model_text(cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
 
 
@@ -100,6 +110,31 @@ class ProviderTestResponse(BaseModel):
     message: str
     provider: str | None = None
     model: str | None = None
+
+
+class DiscoveredModel(BaseModel):
+    id: str
+    display_name: str | None = None
+    context_window: int | None = None
+    supports_tools: bool | None = None
+    supports_json_schema: bool | None = None
+
+
+class ModelDiscoveryRequest(BaseModel):
+    provider_id: UUID | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def strip_base_url(cls, value: str | None) -> str | None:
+        return value.strip() if isinstance(value, str) else value
+
+
+class ModelDiscoveryResponse(BaseModel):
+    success: bool
+    message: str
+    models: list[DiscoveredModel] = []
 
 
 def _is_admin(auth: dict[str, Any]) -> bool:
@@ -130,16 +165,84 @@ def _bool_string(value: bool) -> str:
     return "true" if value else "false"
 
 
-def _model_config(provider_name: str, model_name: str, existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    config = dict(existing or {})
-    key = f"{provider_name} {model_name}".lower()
-    if "kimi" in key or "deepseek" in key:
-        request_options = dict(config.get("request_options") or {})
-        extra_body = dict(request_options.get("extra_body") or {})
-        extra_body.setdefault("thinking", {"type": "disabled"})
-        request_options["extra_body"] = extra_body
-        config["request_options"] = request_options
-    return config
+def _display_name_for_model(model_id: str) -> str:
+    clean = model_id.strip()
+    if "/" in clean:
+        clean = clean.rsplit("/", 1)[-1]
+    return clean or model_id
+
+
+def _models_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/models"
+
+
+def _model_context_window(data: dict[str, Any]) -> int | None:
+    for key in ("context_length", "context_window", "context_window_tokens", "max_context_length"):
+        value = data.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
+
+
+def _supported_parameters(data: dict[str, Any]) -> set[str]:
+    raw = data.get("supported_parameters")
+    if isinstance(raw, list):
+        return {str(item).lower() for item in raw}
+    return set()
+
+
+def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
+    raw_models = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(raw_models, list):
+        return []
+
+    discovered: list[DiscoveredModel] = []
+    seen: set[str] = set()
+    for item in raw_models:
+        if isinstance(item, str):
+            model_id = item
+            display_name = item
+            context_window = None
+            supports_tools = None
+            supports_json_schema = None
+        elif isinstance(item, dict):
+            model_id = str(item.get("id") or item.get("name") or "").strip()
+            if not model_id:
+                continue
+            display_name = str(item.get("name") or item.get("display_name") or _display_name_for_model(model_id))
+            context_window = _model_context_window(item)
+            parameters = _supported_parameters(item)
+            supports_tools = True if {"tools", "tool_choice"}.intersection(parameters) else None
+            supports_json_schema = True if "response_format" in parameters else None
+        else:
+            continue
+
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        discovered.append(
+            DiscoveredModel(
+                id=model_id,
+                display_name=display_name,
+                context_window=context_window,
+                supports_tools=supports_tools,
+                supports_json_schema=supports_json_schema,
+            )
+        )
+    return sorted(discovered, key=lambda model: model.id.lower())
+
+
+async def _fetch_available_models(base_url: str, api_key: str | None = None) -> list[DiscoveredModel]:
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(_models_url(base_url), headers=headers)
+    if response.status_code != 200:
+        raise RuntimeError(response.text[:500] or f"Provider returned HTTP {response.status_code}.")
+    return _parse_models_payload(response.json())
 
 
 async def _api_key_status(provider: AIProvider) -> str:
@@ -206,6 +309,60 @@ async def _get_model(db: AsyncSession, model_id: UUID) -> AIModel:
     return model
 
 
+async def _stored_api_key(provider: AIProvider) -> str:
+    if provider.secret_reference:
+        return await get_secret_value(provider.secret_reference)
+    return ""
+
+
+async def _save_provider_secret(provider: AIProvider, api_key: str | None) -> None:
+    if not api_key:
+        return
+    if not key_vault_uri():
+        raise HTTPException(status_code=400, detail="Key Vault is not configured.")
+    await set_secret_value(provider.secret_reference, api_key)
+
+
+async def _upsert_model(db: AsyncSession, provider: AIProvider, req: ModelUpsertRequest) -> AIModel:
+    model = await _get_model(db, req.model_id) if req.model_id else None
+    if model and model.provider_id != provider.id:
+        raise HTTPException(status_code=400, detail="Model does not belong to this provider.")
+    if not model:
+        existing_model = await db.execute(
+            select(AIModel).where(AIModel.provider_id == provider.id, AIModel.model_name == req.model_name)
+        )
+        model = existing_model.scalar_one_or_none()
+
+    display_name = req.display_name or _display_name_for_model(req.model_name)
+    if not model:
+        model = AIModel(
+            id=uuid.uuid4(),
+            provider_id=provider.id,
+            display_name=display_name,
+            model_name=req.model_name,
+            deployment_name=req.model_name,
+            model_family=provider.name,
+            model_version=req.model_name,
+            enabled=_bool_string(req.enabled),
+            config_json={},
+        )
+        db.add(model)
+
+    model.provider_id = provider.id
+    model.display_name = display_name
+    model.model_name = req.model_name
+    model.deployment_name = req.model_name
+    model.model_family = provider.name
+    model.model_version = req.model_name
+    model.supports_tools = _bool_string(req.supports_tools)
+    model.supports_json_schema = _bool_string(req.supports_json_schema)
+    model.context_window = req.context_window
+    model.enabled = _bool_string(req.enabled)
+    if not isinstance(model.config_json, dict):
+        model.config_json = {}
+    return model
+
+
 @router.get("", response_model=ProviderListResponse)
 async def list_model_providers(
     db: AsyncSession = Depends(get_db),
@@ -249,48 +406,50 @@ async def upsert_model_provider(
         if not provider.secret_reference:
             provider.secret_reference = _secret_name(req.name)
 
-    if req.api_key:
-        if not key_vault_uri():
-            raise HTTPException(status_code=400, detail="Key Vault is not configured.")
-        await set_secret_value(provider.secret_reference, req.api_key)
-
+    await _save_provider_secret(provider, req.api_key)
     await db.flush()
 
-    model = await _get_model(db, req.model_id) if req.model_id else None
-    if model and model.provider_id != provider.id:
-        raise HTTPException(status_code=400, detail="Model does not belong to this provider.")
-    if not model:
-        existing_model = await db.execute(
-            select(AIModel).where(AIModel.provider_id == provider.id, AIModel.model_name == req.model_name)
-        )
-        model = existing_model.scalar_one_or_none()
+    await db.commit()
+    return await _provider_payload(db)
 
-    display_name = req.display_name or req.model_name
-    if not model:
-        model = AIModel(
-            id=uuid.uuid4(),
-            provider_id=provider.id,
-            display_name=display_name,
-            model_name=req.model_name,
-            deployment_name=req.model_name,
-            model_family=req.name,
-            model_version=req.model_name,
-            enabled=_bool_string(req.enabled),
-        )
-        db.add(model)
 
-    model.provider_id = provider.id
-    model.display_name = display_name
-    model.model_name = req.model_name
-    model.deployment_name = req.model_name
-    model.model_family = req.name
-    model.model_version = req.model_name
-    model.supports_tools = _bool_string(req.supports_tools)
-    model.supports_json_schema = _bool_string(req.supports_json_schema)
-    model.context_window = req.context_window
-    model.enabled = _bool_string(req.enabled)
-    model.config_json = _model_config(req.name, req.model_name, model.config_json if isinstance(model.config_json, dict) else None)
+@router.post("/discover", response_model=ModelDiscoveryResponse)
+async def discover_model_provider_models(
+    req: ModelDiscoveryRequest,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    _require_admin(auth)
+    base_url = (req.base_url or "").rstrip("/")
+    api_key = req.api_key or ""
 
+    if req.provider_id:
+        provider = await _get_provider(db, req.provider_id)
+        base_url = provider.base_url
+        api_key = api_key or await _stored_api_key(provider)
+
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Provider endpoint is required.")
+
+    try:
+        models = await _fetch_available_models(base_url, api_key or None)
+    except Exception as exc:
+        return ModelDiscoveryResponse(success=False, message=str(exc), models=[])
+    if not models:
+        return ModelDiscoveryResponse(success=False, message="No models were returned by this provider.", models=[])
+    return ModelDiscoveryResponse(success=True, message=f"Found {len(models)} models.", models=models)
+
+
+@router.post("/{provider_id}/models", response_model=ProviderListResponse)
+async def upsert_provider_model(
+    provider_id: UUID,
+    req: ModelUpsertRequest,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    _require_admin(auth)
+    provider = await _get_provider(db, provider_id)
+    await _upsert_model(db, provider, req)
     await db.commit()
     return await _provider_payload(db)
 
@@ -347,8 +506,8 @@ async def test_model_provider(
         provider = await _get_provider(db, req.provider_id)
         provider_name = provider.name
         base_url = provider.base_url
-        if not api_key and provider.secret_reference:
-            api_key = await get_secret_value(provider.secret_reference)
+        if not api_key:
+            api_key = await _stored_api_key(provider)
     if req.model_id:
         model = await _get_model(db, req.model_id)
         model_name = model.deployment_name
