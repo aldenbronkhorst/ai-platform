@@ -40,8 +40,6 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 const msalInstance = new PublicClientApplication(msalConfig);
 
 msalInstance.initialize().then(async () => {
-  let startupAuthError: string | null = null;
-
   try {
     const redirectResponse = await msalInstance.handleRedirectPromise();
 
@@ -56,7 +54,6 @@ msalInstance.initialize().then(async () => {
       }
     }
   } catch (err: unknown) {
-    startupAuthError = err instanceof Error ? err.message : String(err);
     console.error("MSAL redirect processing failed:", err);
   }
 
@@ -75,7 +72,7 @@ msalInstance.initialize().then(async () => {
       <ErrorBoundary>
         <ThemeProvider>
           <MsalProvider instance={msalInstance}>
-            <App startupAuthError={startupAuthError} />
+            <App />
           </MsalProvider>
         </ThemeProvider>
       </ErrorBoundary>

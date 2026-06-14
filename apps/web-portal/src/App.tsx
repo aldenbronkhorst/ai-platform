@@ -25,10 +25,9 @@ function PageLoader() {
   );
 }
 
-export default function App({ startupAuthError }: { startupAuthError: string | null }) {
+export default function App() {
   const {
     accessToken,
-    accounts,
     activeUser,
     authError,
     inProgress,
@@ -41,7 +40,6 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
   const [isMobileViewport, setIsMobileViewport] = useState(mobileViewportMatches);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(mobileViewportMatches);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const hintedLoginRequest = useMemo(
     () => loginRequestWithAuthHint(loginRequest, readStoredAuthHint()),
     [],
@@ -121,14 +119,7 @@ export default function App({ startupAuthError }: { startupAuthError: string | n
     return (
       <LoginPage
         inProgress={inProgress}
-        authError={authError}
-        startupAuthError={startupAuthError}
-        showDiagnostics={showDiagnostics}
         onSignIn={() => instance.loginRedirect(hintedLoginRequest)}
-        onToggleDiagnostics={() => setShowDiagnostics(!showDiagnostics)}
-        instance={instance}
-        loginRequest={hintedLoginRequest}
-        accounts={accounts}
       />
     );
   }
