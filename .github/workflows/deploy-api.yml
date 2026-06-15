@@ -101,7 +101,7 @@ jobs:
           cd apps/ai-core-api
           pytest ../web-portal/tests/test_build_security.py ../web-portal/tests/test_v2_features.py -v
 
-  build-and-deploy:
+  build-and-deploy-api:
     runs-on: ubuntu-latest
     needs: [test-core, test-connector, test-portal]
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
@@ -205,6 +205,30 @@ jobs:
             --target-port 8000 \
             --transport auto \
             --allow-insecure false
+
+  deploy-portal:
+    runs-on: ubuntu-latest
+    needs: [test-portal, build-and-deploy-api]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(toJSON(github.event.commits), 'apps/web-portal/'))
+    environment: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Azure Login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set Environment Variables
+        id: env
+        run: |
+          RESOURCE_GROUP="rg-ai-platform-prod-san-001"
+          CONTAINER_APP="ca-ai-platform-api-prod-san-001"
+          CONTAINER_FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "api_url=https://${CONTAINER_FQDN}" >> $GITHUB_OUTPUT
 
       - name: Set up Node.js for Portal
         uses: actions/setup-node@v6
