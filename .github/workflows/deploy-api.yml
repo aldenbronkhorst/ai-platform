@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd ${{ env.API_PATH }}
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         run: |
@@ -61,7 +61,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd ${{ env.CONNECTOR_PATH }}
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run tests
         run: |
@@ -94,7 +94,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           cd apps/ai-core-api
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       - name: Run build security tests
         run: |
@@ -171,8 +171,6 @@ jobs:
             ${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            CACHEBUST=${{ github.sha }}
 
       - name: Build and Push Odoo Connector
         uses: docker/build-push-action@v7
@@ -183,8 +181,6 @@ jobs:
             ${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            CACHEBUST=${{ github.sha }}
 
       - name: Deploy AI Core API
         run: |

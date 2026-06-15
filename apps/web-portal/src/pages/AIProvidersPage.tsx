@@ -45,7 +45,6 @@ interface Provider {
 interface Route {
   task_type: string;
   primary_model_id?: string | null;
-  fallback_model_id?: string | null;
 }
 
 interface SyncInfo {
@@ -445,7 +444,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
   const [isRouteSaving, setIsRouteSaving] = useState(false);
   const [testingKey, setTestingKey] = useState<string | null>(null);
   const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
-  const [openModelPicker, setOpenModelPicker] = useState<"primary" | "fallback" | null>(null);
+  const [openModelPicker, setOpenModelPicker] = useState<"primary" | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [testResult, setTestResult] = useState<ProviderTestResponse | null>(null);
 
@@ -463,21 +462,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
   }, [enabledRows]);
 
   const primaryModelId = route?.primary_model_id || "";
-  const fallbackModelId = route?.fallback_model_id || "";
   const primaryModelExists = enabledRows.some(row => row.model.id === primaryModelId);
-  const fallbackModelExists = enabledRows.some(row => row.model.id === fallbackModelId);
-
-  const backupModelOptions = useMemo(() => {
-    return [
-      { value: "", label: "No backup" },
-      ...enabledRows
-        .filter(row => row.model.id !== primaryModelId)
-        .map(row => ({
-          value: row.model.id,
-          label: modelOptionLabel(row),
-        })),
-    ];
-  }, [enabledRows, primaryModelId]);
 
   const applyPayload = useCallback((payload: ProviderListResponse) => {
     setProviders(payload.providers);
@@ -679,7 +664,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
     }
   }, [accessToken, applyPayload]);
 
-  const updateChatRoute = useCallback(async (primaryId: string, fallbackId: string | null) => {
+  const updateChatRoute = useCallback(async (primaryId: string) => {
     if (!primaryId)
       return;
     setIsRouteSaving(true);
@@ -690,7 +675,6 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
         headers: authHeaders(accessToken, true),
         body: JSON.stringify({
           primary_model_id: primaryId,
-          fallback_model_id: fallbackId && fallbackId !== primaryId ? fallbackId : null,
         }),
       });
       if (!response.ok)
@@ -787,7 +771,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
           <div>
             <h3 className="text-sm font-extrabold text-default">Chat defaults</h3>
             <p className="mt-1 text-xs font-semibold text-muted">
-              Pick which enabled model chat should use first, plus an optional backup.
+              Pick which enabled model chat should use.
             </p>
           </div>
           <GlassButton size="sm" onClick={() => void testChatModel()} disabled={!primaryModelExists || Boolean(testingKey)}>
@@ -796,29 +780,17 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
           </GlassButton>
         </div>
 
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 max-w-2xl">
           <ModelPicker
             label="Default chat model"
-            hint="Used first for normal chat."
+            hint="Used for normal chat."
             value={primaryModelExists ? primaryModelId : ""}
             placeholder="No enabled models"
             options={chatModelOptions}
             isOpen={openModelPicker === "primary"}
             disabled={enabledRows.length === 0 || isRouteSaving}
             onOpenChange={(open) => setOpenModelPicker(open ? "primary" : null)}
-            onChange={(nextPrimaryId) => void updateChatRoute(nextPrimaryId, fallbackModelExists ? fallbackModelId : null)}
-          />
-
-          <ModelPicker
-            label="Backup model"
-            hint="Used only if the default model fails."
-            value={fallbackModelExists ? fallbackModelId : ""}
-            placeholder="No backup"
-            options={backupModelOptions}
-            isOpen={openModelPicker === "fallback"}
-            disabled={!primaryModelExists || enabledRows.length < 2 || isRouteSaving}
-            onOpenChange={(open) => setOpenModelPicker(open ? "fallback" : null)}
-            onChange={(nextFallbackId) => void updateChatRoute(primaryModelId, nextFallbackId || null)}
+            onChange={(nextPrimaryId) => void updateChatRoute(nextPrimaryId)}
           />
         </div>
       </GlassPanel>
@@ -849,8 +821,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
           {providers.map(provider => {
             const isExpanded = expandedProviderId === provider.id;
             const isProviderEnabled = boolValue(provider.enabled);
-            const routeUsesProvider = provider.models.some(model =>
-              model.id === route?.primary_model_id || model.id === route?.fallback_model_id);
+            const routeUsesProvider = provider.models.some(model => model.id === route?.primary_model_id);
             const providerEnabledModelCount = enabledModelCount(provider);
 
             return (
@@ -916,7 +887,6 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
                       <div className="divide-y divide-[var(--color-border)]">
                         {provider.models.map(model => {
                           const isPrimary = model.id === route?.primary_model_id;
-                          const isFallback = model.id === route?.fallback_model_id;
                           const modelEnabled = boolValue(model.enabled);
                           return (
                             <div key={model.id} className="ai-provider-model-row flex flex-col gap-3 bg-surface px-4 py-3">
@@ -924,7 +894,6 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
                                 <div className="flex flex-wrap items-center gap-2">
                                   <p className="truncate text-xs font-extrabold text-default">{modelDisplayName(model)}</p>
                                   {isPrimary ? <StatusPill tone="active">Default</StatusPill> : null}
-                                  {isFallback ? <StatusPill>Backup</StatusPill> : null}
                                   {!modelEnabled ? <StatusPill>Off</StatusPill> : null}
                                 </div>
                                 {model.model_name !== model.display_name ? (

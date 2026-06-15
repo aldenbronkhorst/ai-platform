@@ -51,6 +51,7 @@ Backend tests:
 
 ```bash
 cd apps/ai-core-api
+pip install -r requirements-dev.txt
 pytest
 ```
 

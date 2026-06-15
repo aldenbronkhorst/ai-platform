@@ -30,10 +30,6 @@ RUN pwsh -NoLogo -NoProfile -NonInteractive -Command "\
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-# ARG CACHEBUST added to invalidate Docker layer cache on each build
-# Use: docker build --build-arg CACHEBUST=$(git rev-parse HEAD) ...
-ARG CACHEBUST=1
 COPY . .
 
 # Run as non-root user
