@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import api_key_auth
-from app.models.models import AIModel, AIProvider, AIRoute, AIUsageLog
+from app.models.models import AIModel, AIProvider, AIRoute, AITrace, AIUsageLog
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.services.model_provider_client import ModelProviderClient
 from app.services.model_router import CANONICAL_SYSTEM_PROMPT
@@ -410,6 +410,7 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
     if not remaining_models:
         route_ids = [route.id for route in routes]
         await db.execute(update(AIUsageLog).where(AIUsageLog.route_id.in_(route_ids)).values(route_id=None))
+        await db.execute(update(AITrace).where(AITrace.route_id.in_(route_ids)).values(route_id=None))
         for route in routes:
             await db.delete(route)
         return
