@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, text, update
 
 from app.main import app
 from app.models.models import AIModel, AIProvider, AIRoute, AITrace
@@ -410,6 +410,73 @@ def test_model_provider_delete_clears_traces_before_removing_last_route(monkeypa
     assert _trace_route_id(trace_id) is None
 
 
+def test_route_reconcile_flushes_before_bulk_model_delete():
+    import asyncio
+
+    from app.routers.model_providers import OPENAI_COMPATIBLE, _reconcile_routes_before_model_delete
+
+    async def run_delete_flow() -> None:
+        async with TestingSessionLocal() as session:
+            await session.execute(text("PRAGMA foreign_keys=ON"))
+            suffix = uuid.uuid4()
+            old_provider = AIProvider(
+                id=uuid.uuid4(),
+                name=f"Flush Delete Old {suffix}",
+                provider_type=OPENAI_COMPATIBLE,
+                base_url="https://old-provider.example/v1",
+                enabled="true",
+            )
+            new_provider = AIProvider(
+                id=uuid.uuid4(),
+                name=f"Flush Delete New {suffix}",
+                provider_type=OPENAI_COMPATIBLE,
+                base_url="https://new-provider.example/v1",
+                enabled="true",
+            )
+            session.add_all([old_provider, new_provider])
+            await session.flush()
+
+            old_model = AIModel(
+                id=uuid.uuid4(),
+                provider_id=old_provider.id,
+                display_name="Old Model",
+                model_name="old-model",
+                deployment_name="old-model",
+                enabled="true",
+            )
+            new_model = AIModel(
+                id=uuid.uuid4(),
+                provider_id=new_provider.id,
+                display_name="New Model",
+                model_name="new-model",
+                deployment_name="new-model",
+                enabled="true",
+            )
+            session.add_all([old_model, new_model])
+            await session.flush()
+
+            task_type = f"flush-delete-{suffix}"
+            session.add(AIRoute(
+                id=uuid.uuid4(),
+                task_type=task_type,
+                primary_model_id=old_model.id,
+                temperature=Decimal("0.30"),
+                max_tokens=2000,
+                enabled="true",
+            ))
+            await session.commit()
+
+            await _reconcile_routes_before_model_delete(session, {old_model.id})
+            await session.execute(delete(AIModel).where(AIModel.provider_id == old_provider.id))
+            await session.commit()
+
+            route_result = await session.execute(select(AIRoute).where(AIRoute.task_type == task_type))
+            route = route_result.scalar_one()
+            assert route.primary_model_id == new_model.id
+
+    asyncio.run(run_delete_flow())
+
+
 def test_model_provider_test_uses_openai_compatible_client(monkeypatch):
     async def fake_chat_completion(self, messages, temperature=0.3, max_tokens=2000, model_override=None, tools=None):
         assert self.base_url == "https://provider.example/v1"
@@ -447,3 +514,4 @@ def test_model_provider_settings_require_admin():
 
     assert raised
     model_providers._require_admin({"roles": ["AIPlatform.Admin"], "mode": "entra-jwt"})
+    model_providers._require_admin({"roles": ["AIPlatform.User"], "mode": "api-key"})

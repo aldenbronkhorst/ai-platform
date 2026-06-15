@@ -117,7 +117,7 @@ class DiscoveredModel(BaseModel):
 def _is_admin(auth: dict[str, Any]) -> bool:
     roles = {str(role).lower() for role in auth.get("roles") or []}
     return (
-        auth.get("mode") == "test"
+        auth.get("mode") in {"test", "api-key"}
         or str(auth.get("db_role") or "").lower() == "admin"
         or "aiplatform.admin" in roles
         or "admin" in roles
@@ -413,6 +413,7 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
         await db.execute(update(AITrace).where(AITrace.route_id.in_(route_ids)).values(route_id=None))
         for route in routes:
             await db.delete(route)
+        await db.flush()
         return
 
     remaining_ids = {model.id for model in remaining_models}
@@ -427,6 +428,7 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
         route.primary_model_id = primary
         route.fallback_model_id = None
         route.enabled = "true"
+    await db.flush()
 
 
 async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key: str) -> int:
