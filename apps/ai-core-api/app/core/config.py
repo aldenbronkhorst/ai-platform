@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     document_extraction_max_chars: int = int(os.environ.get("DOCUMENT_EXTRACTION_MAX_CHARS", "500000"))
     attachment_preview_max_chars: int = int(os.environ.get("ATTACHMENT_PREVIEW_MAX_CHARS", "24000"))
 
-    # Auth (temporary — replace with Entra ID / JWT)
+    # Internal API key for service-to-service calls; user auth uses Entra JWT.
     api_key: str = os.environ.get("API_KEY", "")
 
     @field_validator("app_env", mode="before")

@@ -13,7 +13,7 @@ Current production shape:
 Architecture direction:
 - Keep the main workflow chat-first.
 - Keep connectors as tools, not separate products.
-- Keep model/provider setup in code and seeds for now, not editable UI.
+- Keep AI provider setup in the portal, with providers entered by the user and models discovered from the provider API.
 - Keep memory and review support, but avoid a standalone task tracker until it is needed.
 - Do not add queue workers, durable workflows, or search infrastructure without a concrete workflow that needs them.
 

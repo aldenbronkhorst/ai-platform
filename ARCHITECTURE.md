@@ -16,12 +16,12 @@ read, reason, and act through those connectors.
 - Blob Storage for uploaded chat attachments.
 - Internal Odoo connector service.
 - Application Insights/Log Analytics.
+- Editable AI provider setup for OpenAI-compatible providers, with models discovered from the provider API.
 
 ## Cut For Now
 
 - Standalone Tasks page/API.
 - Standalone Documents vault page.
-- Editable AI configuration UI/API.
 - Service Bus worker and unused queues.
 - Durable workflow/automation runtime.
 - Azure AI Search indexing.

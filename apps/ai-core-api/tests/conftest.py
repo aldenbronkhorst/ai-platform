@@ -7,7 +7,7 @@ os.environ["APP_ENV"] = "test"
 os.environ["DEBUG"] = "false"
 
 # Register UUID type support for SQLite DDL compiler (models use PostgreSQL UUID)
-def visit_uuid(self, _type_, **kw):
+def visit_uuid(self, _type_, **_kw):
     return "CHAR(36)"
 
 SQLiteTypeCompiler.visit_UUID = visit_uuid

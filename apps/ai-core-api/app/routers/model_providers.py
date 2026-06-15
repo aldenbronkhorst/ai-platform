@@ -6,7 +6,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -50,7 +50,6 @@ class ProviderResponse(BaseModel):
 class RouteResponse(BaseModel):
     task_type: str
     primary_model_id: UUID | None = None
-    fallback_model_id: UUID | None = None
 
 
 class ModelSyncResponse(BaseModel):
@@ -74,7 +73,7 @@ class ProviderUpsertRequest(BaseModel):
 
     @field_validator("name", "base_url", mode="before")
     @classmethod
-    def strip_text(cls, value: str | None) -> str | None:
+    def strip_text(_cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
 
 
@@ -84,7 +83,6 @@ class ModelToggleRequest(BaseModel):
 
 class RouteUpdateRequest(BaseModel):
     primary_model_id: UUID
-    fallback_model_id: UUID | None = None
 
 
 class ProviderTestRequest(BaseModel):
@@ -97,7 +95,7 @@ class ProviderTestRequest(BaseModel):
 
     @field_validator("name", "base_url", "model_name", mode="before")
     @classmethod
-    def strip_optional_text(cls, value: str | None) -> str | None:
+    def strip_optional_text(_cls, value: str | None) -> str | None:
         return value.strip() if isinstance(value, str) else value
 
 
@@ -294,7 +292,6 @@ async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = N
         route=RouteResponse(
             task_type=CHAT_ROUTE,
             primary_model_id=route.primary_model_id if route else None,
-            fallback_model_id=getattr(route, "fallback_model_id", None) if route else None,
         ) if route else None,
         sync=sync,
     )
@@ -375,12 +372,6 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
 
     enabled_ids = {model.id for model in models}
     primary = route.primary_model_id if route and route.primary_model_id in enabled_ids else models[0].id
-    fallback = None
-    if route and route.fallback_model_id in enabled_ids and route.fallback_model_id != primary:
-        fallback = route.fallback_model_id
-    else:
-        fallback_model = next((model for model in models if model.id != primary), None)
-        fallback = fallback_model.id if fallback_model else None
 
     if not route:
         route = AIRoute(
@@ -395,42 +386,46 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
         db.add(route)
 
     route.primary_model_id = primary
-    route.fallback_model_id = fallback
+    route.fallback_model_id = None
     route.enabled = "true"
 
 
-async def _reconcile_chat_route_before_model_delete(db: AsyncSession, deleted_model_ids: set[UUID]) -> None:
-    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
-    route = route_result.scalar_one_or_none()
-    if not route:
+async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_ids: set[UUID]) -> None:
+    if not deleted_model_ids:
         return
 
-    if route.primary_model_id not in deleted_model_ids and route.fallback_model_id not in deleted_model_ids:
+    route_result = await db.execute(
+        select(AIRoute).where(
+            or_(
+                AIRoute.primary_model_id.in_(deleted_model_ids),
+                AIRoute.fallback_model_id.in_(deleted_model_ids),
+            )
+        )
+    )
+    routes = list(route_result.scalars().all())
+    if not routes:
         return
 
     remaining_models = await _enabled_chat_models_excluding(db, deleted_model_ids)
     if not remaining_models:
-        await db.execute(update(AIUsageLog).where(AIUsageLog.route_id == route.id).values(route_id=None))
-        await db.delete(route)
+        route_ids = [route.id for route in routes]
+        await db.execute(update(AIUsageLog).where(AIUsageLog.route_id.in_(route_ids)).values(route_id=None))
+        for route in routes:
+            await db.delete(route)
         return
 
     remaining_ids = {model.id for model in remaining_models}
-    if route.primary_model_id in remaining_ids:
-        primary = route.primary_model_id
-    elif route.fallback_model_id in remaining_ids:
-        primary = route.fallback_model_id
-    else:
-        primary = remaining_models[0].id
-    fallback = None
-    if route.fallback_model_id in remaining_ids and route.fallback_model_id != primary:
-        fallback = route.fallback_model_id
-    else:
-        fallback_model = next((model for model in remaining_models if model.id != primary), None)
-        fallback = fallback_model.id if fallback_model else None
+    for route in routes:
+        if route.primary_model_id in remaining_ids:
+            primary = route.primary_model_id
+        elif route.fallback_model_id in remaining_ids:
+            primary = route.fallback_model_id
+        else:
+            primary = remaining_models[0].id
 
-    route.primary_model_id = primary
-    route.fallback_model_id = fallback
-    route.enabled = "true"
+        route.primary_model_id = primary
+        route.fallback_model_id = None
+        route.enabled = "true"
 
 
 async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key: str) -> int:
@@ -563,7 +558,7 @@ async def delete_model_provider(
     model_result = await db.execute(select(AIModel).where(AIModel.provider_id == provider.id))
     model_ids = {model.id for model in model_result.scalars().all()}
 
-    await _reconcile_chat_route_before_model_delete(db, model_ids)
+    await _reconcile_routes_before_model_delete(db, model_ids)
     if model_ids:
         await db.execute(update(AIUsageLog).where(AIUsageLog.model_id.in_(model_ids)).values(model_id=None))
     await db.execute(update(AIUsageLog).where(AIUsageLog.provider_id == provider.id).values(provider_id=None))
@@ -606,14 +601,8 @@ async def update_chat_route(
     auth: dict = Depends(api_key_auth),
 ):
     _require_admin(auth)
-    if req.fallback_model_id and req.fallback_model_id == req.primary_model_id:
-        raise HTTPException(status_code=400, detail="Primary and fallback must be different models.")
-
     primary = await _get_model(db, req.primary_model_id)
-    fallback = await _get_model(db, req.fallback_model_id) if req.fallback_model_id else None
     await _get_provider(db, primary.provider_id)
-    if fallback:
-        await _get_provider(db, fallback.provider_id)
 
     result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
     route = result.scalar_one_or_none()
@@ -629,7 +618,7 @@ async def update_chat_route(
         )
         db.add(route)
     route.primary_model_id = primary.id
-    route.fallback_model_id = fallback.id if fallback else None
+    route.fallback_model_id = None
     route.enabled = "true"
     await db.commit()
     return await _provider_payload(db)

@@ -1,7 +1,7 @@
 {
   "name": "AI Platform",
   "short_name": "AI Platform",
-  "description": "Secure operational portal for business operations, audits, and automation.",
+  "description": "Secure chat workspace for business operations and connected systems.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
