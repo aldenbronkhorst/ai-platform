@@ -557,7 +557,11 @@ async def delete_model_provider(
     auth: dict = Depends(api_key_auth),
 ):
     _require_admin(auth)
-    provider = await _get_provider(db, provider_id)
+    provider_result = await db.execute(select(AIProvider).where(AIProvider.id == provider_id))
+    provider = provider_result.scalar_one_or_none()
+    if not provider:
+        return await _provider_payload(db)
+
     model_result = await db.execute(select(AIModel).where(AIModel.provider_id == provider.id))
     model_ids = {model.id for model in model_result.scalars().all()}
 

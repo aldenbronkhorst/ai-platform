@@ -373,6 +373,20 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
     assert stored == {}
 
 
+def test_model_provider_delete_is_idempotent_for_stale_clients(monkeypatch):
+    _patch_key_vault(monkeypatch)
+    client = TestClient(app)
+    provider = _create_provider(client, f"Stale Delete {uuid.uuid4()}")
+
+    first_delete = client.delete(f"/model-providers/{provider['id']}")
+    assert first_delete.status_code == 200
+    assert all(item["id"] != provider["id"] for item in first_delete.json()["providers"])
+
+    second_delete = client.delete(f"/model-providers/{provider['id']}")
+    assert second_delete.status_code == 200
+    assert all(item["id"] != provider["id"] for item in second_delete.json()["providers"])
+
+
 def test_model_provider_delete_clears_traces_before_removing_last_route(monkeypatch):
     _patch_key_vault(monkeypatch)
 
