@@ -1,11 +1,12 @@
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.main import app
-from app.models.models import AIModel, AIRoute
+from app.models.models import AIModel, AIProvider, AIRoute, AITrace
 from tests.conftest import TestingSessionLocal
 
 
@@ -73,6 +74,68 @@ def _route_model_ids(task_type: str) -> tuple[str, str | None] | None:
             return str(route.primary_model_id), str(route.fallback_model_id) if route.fallback_model_id else None
 
     return asyncio.run(read_route())
+
+
+def _route_id(task_type: str) -> uuid.UUID | None:
+    import asyncio
+
+    async def read_route_id() -> uuid.UUID | None:
+        async with TestingSessionLocal() as session:
+            result = await session.execute(select(AIRoute).where(AIRoute.task_type == task_type))
+            route = result.scalar_one_or_none()
+            return route.id if route else None
+
+    return asyncio.run(read_route_id())
+
+
+def _add_trace_for_route(route_id: uuid.UUID) -> str:
+    import asyncio
+
+    trace_id = f"trace-{uuid.uuid4()}"
+
+    async def add_trace() -> None:
+        async with TestingSessionLocal() as session:
+            session.add(AITrace(
+                id=uuid.uuid4(),
+                trace_id=trace_id,
+                request_id=f"request-{uuid.uuid4()}",
+                operation_type="chat",
+                operation_name="chat",
+                status="success",
+                route_id=route_id,
+                started_at=datetime.now(timezone.utc),
+            ))
+            await session.commit()
+
+    asyncio.run(add_trace())
+    return trace_id
+
+
+def _trace_route_id(trace_id: str) -> uuid.UUID | None:
+    import asyncio
+
+    async def read_trace_route_id() -> uuid.UUID | None:
+        async with TestingSessionLocal() as session:
+            result = await session.execute(select(AITrace).where(AITrace.trace_id == trace_id))
+            trace = result.scalar_one_or_none()
+            return trace.route_id if trace else None
+
+    return asyncio.run(read_trace_route_id())
+
+
+def _disable_other_providers(provider_id: str) -> None:
+    import asyncio
+
+    async def disable_providers() -> None:
+        async with TestingSessionLocal() as session:
+            await session.execute(
+                update(AIProvider)
+                .where(AIProvider.id != uuid.UUID(provider_id))
+                .values(enabled="false")
+            )
+            await session.commit()
+
+    asyncio.run(disable_providers())
 
 
 def test_provider_model_helpers_pick_general_chat_models():
@@ -308,6 +371,43 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
         assert extra_route[0] not in deleted_model_ids
         assert extra_route[1] not in deleted_model_ids
     assert stored == {}
+
+
+def test_model_provider_delete_clears_traces_before_removing_last_route(monkeypatch):
+    _patch_key_vault(monkeypatch)
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        from app.routers.model_providers import DiscoveredModel
+
+        assert api_key == "secret-value"
+        return [DiscoveredModel(id="provider-chat-model", display_name="Provider Chat Model")]
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    provider_name = f"Trace Delete {uuid.uuid4()}"
+    response = client.post("/model-providers", json={
+        "name": provider_name,
+        "base_url": "https://trace-delete.example/v1",
+        "api_key": "secret-value",
+    })
+    assert response.status_code == 201
+    provider = next(item for item in response.json()["providers"] if item["name"] == provider_name)
+    model = provider["models"][0]
+    route_response = client.patch("/model-providers/route", json={
+        "primary_model_id": model["id"],
+    })
+    assert route_response.status_code == 200
+    _disable_other_providers(provider["id"])
+
+    chat_route_id = _route_id("general_chat")
+    assert chat_route_id is not None
+    trace_id = _add_trace_for_route(chat_route_id)
+
+    delete_response = client.delete(f"/model-providers/{provider['id']}")
+
+    assert delete_response.status_code == 200
+    assert _trace_route_id(trace_id) is None
 
 
 def test_model_provider_test_uses_openai_compatible_client(monkeypatch):
