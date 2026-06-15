@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, FormEvent, ReactNode } from "react";
 import {
   AlertCircle,
@@ -12,6 +12,7 @@ import {
   Save,
   SlidersHorizontal,
   TestTube2,
+  Trash2,
   X,
 } from "lucide-react";
 import { GlassButton } from "../components/ui/GlassButton";
@@ -369,11 +370,26 @@ function ModelPicker({
   onOpenChange: (open: boolean) => void;
   onChange: (value: string) => void;
 }) {
+  const pickerRef = useRef<HTMLDivElement | null>(null);
   const selected = options.find(option => option.value === value);
   const displayValue = selected?.label || placeholder;
 
+  useEffect(() => {
+    if (!isOpen)
+      return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!pickerRef.current || pickerRef.current.contains(event.target as Node))
+        return;
+      onOpenChange(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [isOpen, onOpenChange]);
+
   return (
-    <div className="relative space-y-1.5">
+    <div ref={pickerRef} className="relative space-y-1.5">
       <p className="text-[11px] font-bold uppercase tracking-wide text-muted">{label}</p>
       <button
         type="button"
@@ -424,6 +440,7 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
   const [providerForm, setProviderForm] = useState<ProviderFormState>(emptyProviderForm);
   const [isSavingProvider, setIsSavingProvider] = useState(false);
   const [savingProviderId, setSavingProviderId] = useState<string | null>(null);
+  const [deletingProviderId, setDeletingProviderId] = useState<string | null>(null);
   const [savingModelId, setSavingModelId] = useState<string | null>(null);
   const [isRouteSaving, setIsRouteSaving] = useState(false);
   const [testingKey, setTestingKey] = useState<string | null>(null);
@@ -604,6 +621,37 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
       setSavingProviderId(null);
     }
   }, [applyPayload, saveProviderPayload]);
+
+  const deleteProvider = useCallback(async (provider: Provider) => {
+    const confirmed = window.confirm(`Delete ${provider.name} and its synced models?`);
+    if (!confirmed)
+      return;
+
+    setDeletingProviderId(provider.id);
+    setNotice(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/model-providers/${provider.id}`, {
+        method: "DELETE",
+        headers: authHeaders(accessToken),
+      });
+      if (!response.ok)
+        throw new Error(await readApiError(response));
+      applyPayload(await response.json() as ProviderListResponse);
+      setExpandedProviderId(current => current === provider.id ? null : current);
+      setOpenModelPicker(null);
+      setNotice({
+        tone: "success",
+        text: "Provider deleted.",
+      });
+    } catch (err) {
+      setNotice({
+        tone: "danger",
+        text: err instanceof Error ? err.message : "Provider could not be deleted.",
+      });
+    } finally {
+      setDeletingProviderId(null);
+    }
+  }, [accessToken, applyPayload]);
 
   const toggleModel = useCallback(async (provider: Provider, model: ProviderModel, enabled: boolean) => {
     setSavingModelId(model.id);
@@ -838,6 +886,16 @@ export function AIProvidersPage({ accessToken }: { accessToken: string }) {
                     />
                     <IconButton label={`Edit ${provider.name}`} onClick={() => openEditProviderForm(provider)}>
                       <SlidersHorizontal className="h-3.5 w-3.5" />
+                    </IconButton>
+                    <IconButton
+                      label={`Delete ${provider.name}`}
+                      className="text-[var(--color-danger)] hover:text-[var(--color-danger)]"
+                      disabled={deletingProviderId === provider.id}
+                      onClick={() => void deleteProvider(provider)}
+                    >
+                      {deletingProviderId === provider.id
+                        ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        : <Trash2 className="h-3.5 w-3.5" />}
                     </IconButton>
                     <IconButton
                       label={`${isExpanded ? "Hide" : "View"} ${provider.name} models`}
