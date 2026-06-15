@@ -6,13 +6,13 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import api_key_auth
-from app.models.models import AIModel, AIProvider, AIRoute
-from app.services.key_vault import get_secret_value, key_vault_uri, set_secret_value
+from app.models.models import AIModel, AIProvider, AIRoute, AIUsageLog
+from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
 from app.services.model_provider_client import ModelProviderClient
 from app.services.model_router import CANONICAL_SYSTEM_PROMPT
 
@@ -176,23 +176,6 @@ def _chat_model_sort_key(model: AIModel) -> tuple[int, str]:
         if version_value < 20:
             score += int(version_value * 10)
     return (-score, name)
-
-
-def _request_options_for_model(model_id: str) -> dict[str, Any]:
-    lower_model = model_id.lower()
-    if lower_model.startswith("kimi-k"):
-        return {"request_options": {"extra_body": {"temperature": 1}}}
-    return {}
-
-
-def _merge_config_json(current: Any, patch: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(current) if isinstance(current, dict) else {}
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_config_json(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def _models_url(base_url: str) -> str:
@@ -361,6 +344,23 @@ async def _enabled_chat_models(db: AsyncSession) -> list[AIModel]:
     return sorted(result.scalars().all(), key=_chat_model_sort_key)
 
 
+async def _enabled_chat_models_excluding(db: AsyncSession, excluded_model_ids: set[UUID]) -> list[AIModel]:
+    conditions = [
+        AIModel.enabled == "true",
+        AIProvider.enabled == "true",
+        AIProvider.provider_type == OPENAI_COMPATIBLE,
+    ]
+    if excluded_model_ids:
+        conditions.append(~AIModel.id.in_(excluded_model_ids))
+    result = await db.execute(
+        select(AIModel)
+        .join(AIProvider, AIProvider.id == AIModel.provider_id)
+        .where(*conditions)
+        .order_by(AIProvider.name, AIModel.display_name)
+    )
+    return sorted(result.scalars().all(), key=_chat_model_sort_key)
+
+
 async def _reconcile_chat_route(db: AsyncSession) -> None:
     await db.flush()
     models = await _enabled_chat_models(db)
@@ -393,6 +393,40 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
             enabled="true",
         )
         db.add(route)
+
+    route.primary_model_id = primary
+    route.fallback_model_id = fallback
+    route.enabled = "true"
+
+
+async def _reconcile_chat_route_before_model_delete(db: AsyncSession, deleted_model_ids: set[UUID]) -> None:
+    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
+    route = route_result.scalar_one_or_none()
+    if not route:
+        return
+
+    if route.primary_model_id not in deleted_model_ids and route.fallback_model_id not in deleted_model_ids:
+        return
+
+    remaining_models = await _enabled_chat_models_excluding(db, deleted_model_ids)
+    if not remaining_models:
+        await db.execute(update(AIUsageLog).where(AIUsageLog.route_id == route.id).values(route_id=None))
+        await db.delete(route)
+        return
+
+    remaining_ids = {model.id for model in remaining_models}
+    if route.primary_model_id in remaining_ids:
+        primary = route.primary_model_id
+    elif route.fallback_model_id in remaining_ids:
+        primary = route.fallback_model_id
+    else:
+        primary = remaining_models[0].id
+    fallback = None
+    if route.fallback_model_id in remaining_ids and route.fallback_model_id != primary:
+        fallback = route.fallback_model_id
+    else:
+        fallback_model = next((model for model in remaining_models if model.id != primary), None)
+        fallback = fallback_model.id if fallback_model else None
 
     route.primary_model_id = primary
     route.fallback_model_id = fallback
@@ -436,7 +470,7 @@ async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key:
         model.supports_tools = _bool_string(supports_tools)
         model.supports_json_schema = _bool_string(supports_json_schema)
         model.context_window = discovered.context_window
-        model.config_json = _merge_config_json(model.config_json, _request_options_for_model(discovered.id))
+        model.config_json = model.config_json if isinstance(model.config_json, dict) else {}
 
     return len(discovered_models)
 
@@ -511,6 +545,39 @@ async def upsert_model_provider(
     await _reconcile_chat_route(db)
     await db.commit()
     return await _provider_payload(db, sync_result)
+
+
+@router.post("/discover", include_in_schema=False)
+async def removed_model_discovery_route():
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@router.delete("/{provider_id}", response_model=ProviderListResponse)
+async def delete_model_provider(
+    provider_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(api_key_auth),
+):
+    _require_admin(auth)
+    provider = await _get_provider(db, provider_id)
+    model_result = await db.execute(select(AIModel).where(AIModel.provider_id == provider.id))
+    model_ids = {model.id for model in model_result.scalars().all()}
+
+    await _reconcile_chat_route_before_model_delete(db, model_ids)
+    if model_ids:
+        await db.execute(update(AIUsageLog).where(AIUsageLog.model_id.in_(model_ids)).values(model_id=None))
+    await db.execute(update(AIUsageLog).where(AIUsageLog.provider_id == provider.id).values(provider_id=None))
+
+    if provider.secret_reference:
+        try:
+            await delete_secret(provider.secret_reference)
+        except Exception:
+            pass
+
+    await db.execute(delete(AIModel).where(AIModel.provider_id == provider.id))
+    await db.delete(provider)
+    await db.commit()
+    return await _provider_payload(db)
 
 
 @router.patch("/{provider_id}/models/{model_id}", response_model=ProviderListResponse)
