@@ -94,6 +94,25 @@ async def test_speech_transcription_service_requires_endpoint_and_key(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_speech_transcription_service_reports_key_vault_read_failure(monkeypatch):
+    monkeypatch.delenv("AZURE_SPEECH_KEY", raising=False)
+    monkeypatch.delenv("VOICE_TRANSCRIPTION_KEY", raising=False)
+    monkeypatch.setenv("AZURE_SPEECH_STT_ENDPOINT", "https://southafricanorth.stt.speech.microsoft.com")
+    monkeypatch.setattr("app.services.speech_transcription.key_vault_uri", lambda: "https://vault.example")
+
+    async def broken_get_secret(secret_name):
+        raise RuntimeError(f"{secret_name} permission denied")
+
+    monkeypatch.setattr("app.services.speech_transcription.get_secret_value", broken_get_secret)
+
+    with pytest.raises(SpeechTranscriptionConfigError) as exc:
+        await SpeechTranscriptionService().transcribe(b"audio", "voice.wav", "audio/wav")
+
+    assert "azure-speech-key" in str(exc.value)
+    assert "could not be read" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_speech_transcription_service_reports_no_speech(monkeypatch):
     service = SpeechTranscriptionService()
 

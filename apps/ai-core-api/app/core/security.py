@@ -23,11 +23,8 @@ ISSUERS = [
     f"https://sts.windows.net/{TENANT_ID}/"
 ]
 
-# PyJWKClient manages caching of public keys natively
-try:
-    jwk_client = jwt.PyJWKClient(JWKS_URL)
-except Exception:
-    jwk_client = None
+# PyJWKClient manages caching of public keys natively.
+jwk_client = jwt.PyJWKClient(JWKS_URL)
 
 
 async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
@@ -35,12 +32,6 @@ async def validate_entra_jwt(token: str, db: AsyncSession) -> dict:
 
     Resolves the matching database user based on email or Entra Object ID (oid).
     """
-    if not jwk_client:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="JWK client not initialized."
-        )
-
     try:
         signing_key = jwk_client.get_signing_key_from_jwt(token)
         # Verify token claims
@@ -137,28 +128,28 @@ async def api_key_auth(
 
     if settings.app_env == "test":
         try:
-            fallback_user_id = uuid.UUID(x_user_id) if x_user_id else uuid.UUID("00000000-0000-0000-0000-000000000001")
+            test_user_id = uuid.UUID(x_user_id) if x_user_id else uuid.UUID("00000000-0000-0000-0000-000000000001")
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid X-User-Id format. Must be a UUID."
             )
         return {
-            "user_id": fallback_user_id,
-            "email": f"test-{fallback_user_id}@local",
+            "user_id": test_user_id,
+            "email": f"test-{test_user_id}@local",
             "roles": ["AIPlatform.Admin", "AIPlatform.User"],
             "mode": "test",
         }
 
     if api_key and api_key == settings.api_key:
-        fallback_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        result = await db.execute(select(AIUser).where(AIUser.id == fallback_user_id))
+        api_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        result = await db.execute(select(AIUser).where(AIUser.id == api_user_id))
         existing_user = result.scalar_one_or_none()
         if not existing_user:
             db_user = AIUser(
-                id=fallback_user_id,
-                email=f"api-key-{fallback_user_id}@internal",
-                display_name=f"API User ({str(fallback_user_id)[:8]})",
+                id=api_user_id,
+                email=f"api-key-{api_user_id}@internal",
+                display_name=f"API User ({str(api_user_id)[:8]})",
                 role="user",
                 is_active="true",
                 created_at=datetime.now(timezone.utc),
@@ -167,7 +158,7 @@ async def api_key_auth(
             db.add(db_user)
             await db.commit()
         return {
-            "user_id": fallback_user_id,
+            "user_id": api_user_id,
             "email": "api-key@internal",
             "roles": ["AIPlatform.User"],
             "db_role": existing_user.role if existing_user else "user",

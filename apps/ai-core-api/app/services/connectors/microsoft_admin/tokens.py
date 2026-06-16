@@ -91,7 +91,7 @@ def _microsoft_admin_oauth_error_type(data: dict[str, Any]) -> str:
     return error or "token_refresh_failed"
 
 
-def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[str, Any], fallback: str) -> str:
+def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[str, Any], default_message: str) -> str:
     label = microsoft_admin_scope_label(scope_profile) if scope_profile else "requested Microsoft scope"
     error_type = _microsoft_admin_oauth_error_type(data)
     if scope_profile == "teams" and error_type in {"consent_required", "invalid_scope"}:
@@ -104,7 +104,7 @@ def _microsoft_admin_oauth_error_message(scope_profile: str | None, data: dict[s
             f"Tenant admin consent is required for {label}. "
             "Grant consent for that native Microsoft connector, then reconnect it."
         )
-    return data.get("error_description") or data.get("error") or fallback
+    return data.get("error_description") or data.get("error") or default_message
 
 async def _get_fresh_microsoft_admin_token_for_scope(
     user_id: Optional[UUID],

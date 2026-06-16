@@ -6,7 +6,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -367,7 +367,6 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
     if not models:
         if route:
             route.enabled = "false"
-            route.fallback_model_id = None
         return
 
     enabled_ids = {model.id for model in models}
@@ -386,7 +385,6 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
         db.add(route)
 
     route.primary_model_id = primary
-    route.fallback_model_id = None
     route.enabled = "true"
 
 
@@ -394,14 +392,7 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
     if not deleted_model_ids:
         return
 
-    route_result = await db.execute(
-        select(AIRoute).where(
-            or_(
-                AIRoute.primary_model_id.in_(deleted_model_ids),
-                AIRoute.fallback_model_id.in_(deleted_model_ids),
-            )
-        )
-    )
+    route_result = await db.execute(select(AIRoute).where(AIRoute.primary_model_id.in_(deleted_model_ids)))
     routes = list(route_result.scalars().all())
     if not routes:
         return
@@ -420,13 +411,10 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
     for route in routes:
         if route.primary_model_id in remaining_ids:
             primary = route.primary_model_id
-        elif route.fallback_model_id in remaining_ids:
-            primary = route.fallback_model_id
         else:
             primary = remaining_models[0].id
 
         route.primary_model_id = primary
-        route.fallback_model_id = None
         route.enabled = "true"
     await db.flush()
 
@@ -516,38 +504,29 @@ async def upsert_model_provider(
         if not provider.secret_reference:
             provider.secret_reference = _secret_name(req.name)
 
-    await _save_provider_secret(provider, req.api_key)
     await db.flush()
 
     sync_result: ModelSyncResponse | None = None
-    api_key = req.api_key or await _stored_api_key(provider)
-    if provider.enabled == "true" and api_key:
+    if provider.enabled == "true":
+        api_key = req.api_key or await _stored_api_key(provider)
+        if not api_key:
+            raise HTTPException(status_code=400, detail="API key is required to enable this provider.")
         try:
             model_count = await _sync_provider_models(db, provider, api_key)
-            sync_result = ModelSyncResponse(
-                success=True,
-                message=f"Synced {model_count} models.",
-                model_count=model_count,
-            )
         except Exception as exc:
-            sync_result = ModelSyncResponse(
-                success=False,
-                message=f"Provider saved, but model sync failed: {exc}",
-            )
-    elif provider.enabled == "true":
+            await db.rollback()
+            raise HTTPException(status_code=400, detail=f"Provider model sync failed: {exc}") from exc
         sync_result = ModelSyncResponse(
-            success=False,
-            message="Provider saved. Add an API key to sync models.",
+            success=True,
+            message=f"Synced {model_count} models.",
+            model_count=model_count,
         )
+
+    await _save_provider_secret(provider, req.api_key)
 
     await _reconcile_chat_route(db)
     await db.commit()
     return await _provider_payload(db, sync_result)
-
-
-@router.post("/discover", include_in_schema=False)
-async def removed_model_discovery_route():
-    raise HTTPException(status_code=404, detail="Not Found")
 
 
 @router.delete("/{provider_id}", response_model=ProviderListResponse)
@@ -571,10 +550,11 @@ async def delete_model_provider(
     await db.execute(update(AIUsageLog).where(AIUsageLog.provider_id == provider.id).values(provider_id=None))
 
     if provider.secret_reference:
-        try:
+        secret_status = await _api_key_status(provider)
+        if secret_status == "saved":
             await delete_secret(provider.secret_reference)
-        except Exception:
-            pass
+        elif secret_status in {"error", "vault_not_configured"}:
+            raise HTTPException(status_code=500, detail="Provider API key status could not be verified before deletion.")
 
     await db.execute(delete(AIModel).where(AIModel.provider_id == provider.id))
     await db.delete(provider)
@@ -625,7 +605,6 @@ async def update_chat_route(
         )
         db.add(route)
     route.primary_model_id = primary.id
-    route.fallback_model_id = None
     route.enabled = "true"
     await db.commit()
     return await _provider_payload(db)

@@ -53,7 +53,7 @@ param apiImageTag string = 'latest'
 @description('Odoo Connector container image tag')
 param odooConnectorImageTag string = 'latest'
 
-@description('Azure Document Intelligence endpoint for OCR fallback')
+@description('Azure Document Intelligence endpoint for OCR extraction')
 param documentIntelligenceEndpoint string = ''
 
 @description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')

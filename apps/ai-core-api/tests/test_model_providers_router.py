@@ -29,10 +29,16 @@ def _patch_key_vault(monkeypatch):
     return stored
 
 
-def _create_provider(client: TestClient, name: str, base_url: str = "https://provider.example/v1") -> dict:
+def _create_provider(
+    client: TestClient,
+    name: str,
+    base_url: str = "https://provider.example/v1",
+    enabled: bool = False,
+) -> dict:
     response = client.post("/model-providers", json={
         "name": name,
         "base_url": base_url,
+        "enabled": enabled,
     })
     assert response.status_code == 201
     provider = next(item for item in response.json()["providers"] if item["name"] == name)
@@ -43,7 +49,7 @@ def _model_ids(provider: dict) -> set[str]:
     return {model["model_name"] for model in provider["models"]}
 
 
-def _add_route(task_type: str, primary_model_id: str, fallback_model_id: str | None = None) -> None:
+def _add_route(task_type: str, primary_model_id: str) -> None:
     import asyncio
 
     async def add_route() -> None:
@@ -52,7 +58,6 @@ def _add_route(task_type: str, primary_model_id: str, fallback_model_id: str | N
                 id=uuid.uuid4(),
                 task_type=task_type,
                 primary_model_id=uuid.UUID(primary_model_id),
-                fallback_model_id=uuid.UUID(fallback_model_id) if fallback_model_id else None,
                 temperature=Decimal("0.30"),
                 max_tokens=2000,
                 enabled="true",
@@ -62,16 +67,16 @@ def _add_route(task_type: str, primary_model_id: str, fallback_model_id: str | N
     asyncio.run(add_route())
 
 
-def _route_model_ids(task_type: str) -> tuple[str, str | None] | None:
+def _route_model_id(task_type: str) -> str | None:
     import asyncio
 
-    async def read_route() -> tuple[str, str | None] | None:
+    async def read_route() -> str | None:
         async with TestingSessionLocal() as session:
             result = await session.execute(select(AIRoute).where(AIRoute.task_type == task_type))
             route = result.scalar_one_or_none()
             if not route:
                 return None
-            return str(route.primary_model_id), str(route.fallback_model_id) if route.fallback_model_id else None
+            return str(route.primary_model_id)
 
     return asyncio.run(read_route())
 
@@ -196,14 +201,51 @@ def test_model_provider_upsert_stores_key_and_syncs_models(monkeypatch):
     assert payload["route"]["primary_model_id"] in {model["id"] for model in provider["models"]}
 
 
-def test_model_provider_upsert_without_key_does_not_sync(monkeypatch):
+def test_model_provider_upsert_enabled_without_key_is_rejected(monkeypatch):
     monkeypatch.setattr("app.routers.model_providers.key_vault_uri", lambda: "")
 
     client = TestClient(app)
-    provider = _create_provider(client, f"No Key {uuid.uuid4()}")
+    response = client.post("/model-providers", json={
+        "name": f"No Key {uuid.uuid4()}",
+        "base_url": "https://provider.example/v1",
+        "enabled": True,
+    })
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "API key is required to enable this provider."
+
+
+def test_model_provider_upsert_disabled_without_key_does_not_sync(monkeypatch):
+    monkeypatch.setattr("app.routers.model_providers.key_vault_uri", lambda: "")
+
+    client = TestClient(app)
+    provider = _create_provider(client, f"No Key {uuid.uuid4()}", enabled=False)
 
     assert provider["api_key_status"] == "vault_not_configured"
     assert provider["models"] == []
+
+
+def test_model_provider_sync_failure_is_rejected_without_saving_secret(monkeypatch):
+    stored = _patch_key_vault(monkeypatch)
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        raise RuntimeError("provider rejected model discovery")
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    provider_name = f"Bad Sync {uuid.uuid4()}"
+    response = client.post("/model-providers", json={
+        "name": provider_name,
+        "base_url": "https://provider.example/v1",
+        "api_key": "secret-value",
+    })
+
+    assert response.status_code == 400
+    assert "Provider model sync failed" in response.json()["detail"]
+    assert stored == {}
+    list_response = client.get("/model-providers")
+    assert all(provider["name"] != provider_name for provider in list_response.json()["providers"])
 
 
 def test_model_provider_sync_preserves_model_switches(monkeypatch):
@@ -258,14 +300,16 @@ def test_manual_model_and_discovery_routes_are_removed(monkeypatch):
     monkeypatch.setattr("app.routers.model_providers.key_vault_uri", lambda: "")
 
     client = TestClient(app)
-    provider = _create_provider(client, f"Removed Manual {uuid.uuid4()}")
+    provider_id = str(uuid.uuid4())
 
-    discovery_response = client.post("/model-providers/discover", json={"provider_id": provider["id"]})
-    manual_model_response = client.post(f"/model-providers/{provider['id']}/models", json={
+    assert not any(getattr(route, "path", "") == "/model-providers/discover" for route in app.routes)
+
+    discovery_response = client.post("/model-providers/discover", json={"provider_id": provider_id})
+    manual_model_response = client.post(f"/model-providers/{provider_id}/models", json={
         "model_name": "manual-model",
     })
 
-    assert discovery_response.status_code == 404
+    assert discovery_response.status_code in {404, 405}
     assert manual_model_response.status_code == 404
 
 
@@ -300,7 +344,6 @@ def test_model_provider_route_selects_primary_model(monkeypatch):
     assert response.status_code == 200
     route = response.json()["route"]
     assert route["primary_model_id"] == first_model["id"]
-    assert "fallback_model_id" not in route
 
 
 def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
@@ -312,7 +355,7 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
         assert api_key == "secret-value"
         if "primary" in base_url:
             return [DiscoveredModel(id="primary-model", display_name="Primary Model")]
-        return [DiscoveredModel(id="fallback-model", display_name="Fallback Model")]
+        return [DiscoveredModel(id="replacement-model", display_name="Replacement Model")]
 
     monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
 
@@ -324,8 +367,8 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
         "api_key": "secret-value",
     })
     second_response = client.post("/model-providers", json={
-        "name": f"Delete Fallback {suffix}",
-        "base_url": "https://fallback.example/v1",
+        "name": f"Delete Replacement {suffix}",
+        "base_url": "https://replacement.example/v1",
         "api_key": "secret-value",
     })
     assert first_response.status_code == 201
@@ -333,7 +376,7 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
     assert len(stored) == 2
 
     first_provider = next(item for item in second_response.json()["providers"] if item["name"] == f"Delete Primary {suffix}")
-    second_provider = next(item for item in second_response.json()["providers"] if item["name"] == f"Delete Fallback {suffix}")
+    second_provider = next(item for item in second_response.json()["providers"] if item["name"] == f"Delete Replacement {suffix}")
     first_model = first_provider["models"][0]
     second_model = second_provider["models"][0]
     route_response = client.patch("/model-providers/route", json={
@@ -341,7 +384,7 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
     })
     assert route_response.status_code == 200
     extra_route_task = f"extra-delete-route-{suffix}"
-    _add_route(extra_route_task, first_model["id"], second_model["id"])
+    _add_route(extra_route_task, first_model["id"])
 
     delete_first_response = client.delete(f"/model-providers/{first_provider['id']}")
     assert delete_first_response.status_code == 200
@@ -349,11 +392,9 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
     assert all(provider["id"] != first_provider["id"] for provider in payload["providers"])
     assert all(model["id"] != first_model["id"] for provider in payload["providers"] for model in provider["models"])
     assert payload["route"]["primary_model_id"] != first_model["id"]
-    assert "fallback_model_id" not in payload["route"]
-    extra_route = _route_model_ids(extra_route_task)
+    extra_route = _route_model_id(extra_route_task)
     assert extra_route is not None
-    assert extra_route[0] == second_model["id"]
-    assert extra_route[1] is None
+    assert extra_route != first_model["id"]
     assert len(stored) == 1
 
     delete_second_response = client.delete(f"/model-providers/{second_provider['id']}")
@@ -364,19 +405,17 @@ def test_model_provider_delete_removes_models_and_reconciles_route(monkeypatch):
     if route:
         deleted_model_ids = {first_model["id"], second_model["id"]}
         assert route["primary_model_id"] not in deleted_model_ids
-        assert "fallback_model_id" not in route
-    extra_route = _route_model_ids(extra_route_task)
+    extra_route = _route_model_id(extra_route_task)
     if extra_route:
         deleted_model_ids = {first_model["id"], second_model["id"]}
-        assert extra_route[0] not in deleted_model_ids
-        assert extra_route[1] not in deleted_model_ids
+        assert extra_route not in deleted_model_ids
     assert stored == {}
 
 
 def test_model_provider_delete_is_idempotent_for_stale_clients(monkeypatch):
     _patch_key_vault(monkeypatch)
     client = TestClient(app)
-    provider = _create_provider(client, f"Stale Delete {uuid.uuid4()}")
+    provider = _create_provider(client, f"Stale Delete {uuid.uuid4()}", enabled=False)
 
     first_delete = client.delete(f"/model-providers/{provider['id']}")
     assert first_delete.status_code == 200

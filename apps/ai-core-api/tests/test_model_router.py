@@ -22,7 +22,7 @@ from app.services.model_router import (
     _guard_connected_system_denial,
     _execute_tool_call_impl,
 )
-from app.services.chat_titles import _fallback_chat_title, _sanitize_chat_title
+from app.services.chat_titles import _deterministic_chat_title, _sanitize_chat_title
 from app.services.model_tool_calls import _canonical_tool_invocation
 from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
@@ -84,8 +84,8 @@ def test_chat_title_sanitizer_returns_short_plain_title():
     assert _sanitize_chat_title("New Chat") is None
 
 
-def test_fallback_chat_title_uses_first_user_request():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_uses_first_user_request():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "can you check our azure and tell me all active resources"},
         {"role": "assistant", "content": "I will check Azure."},
     ])
@@ -93,32 +93,32 @@ def test_fallback_chat_title_uses_first_user_request():
     assert title == "Azure Active Resources"
 
 
-def test_fallback_chat_title_preserves_business_terms():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_preserves_business_terms():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "what did Penelope do today in Odoo, give me a timeline"},
     ])
 
     assert title == "Penelope Odoo Timeline"
 
 
-def test_fallback_chat_title_drops_question_scaffolding_and_standalone_counts():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_drops_question_scaffolding_and_standalone_counts():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "there are 2 gerhard employees in my odoo?"},
     ])
 
     assert title == "Gerhard Employees Odoo"
 
 
-def test_fallback_chat_title_corrects_typos_and_uses_subject():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_corrects_typos_and_uses_subject():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "create a microsoft uerer for employe gerhard in odoo"},
     ])
 
     assert title == "Create Microsoft User Employee Gerhard Odoo"
 
 
-def test_fallback_chat_title_uses_latest_user_message_only():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_uses_latest_user_message_only():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "whats costing so much"},
         {"role": "assistant", "content": "Azure Cost Management returned a daily cost table."},
     ])
@@ -126,16 +126,16 @@ def test_fallback_chat_title_uses_latest_user_message_only():
     assert title == "Costing So Much"
 
 
-def test_fallback_chat_title_normalizes_error_typos():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_normalizes_error_typos():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "halllucinations and now claims it cannot acess azure"},
     ])
 
     assert title == "Hallucinations Claims Cannot Access Azure"
 
 
-def test_fallback_chat_title_does_not_preserve_raw_misspellings():
-    title = _fallback_chat_title([
+def test_deterministic_chat_title_does_not_preserve_raw_misspellings():
+    title = _deterministic_chat_title([
         {"role": "user", "content": "faliours during thinking in the connecotrs"},
     ])
 
