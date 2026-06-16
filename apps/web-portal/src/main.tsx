@@ -44,7 +44,7 @@ if (import.meta.env.DEV && window.location.pathname === "/provider-preview") {
         <ErrorBoundary>
           <ThemeProvider>
             <div className="min-h-screen bg-canvas p-4 text-default sm:p-6">
-              <AIProvidersPage accessToken="" />
+              <AIProvidersPage accessToken="" previewMode />
             </div>
           </ThemeProvider>
         </ErrorBoundary>
