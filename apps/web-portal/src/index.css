@@ -379,22 +379,6 @@
   background-color: var(--color-bg-subtle);
 }
 
-@media (min-width: 640px) {
-  .ai-provider-model-row {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-}
-
-@media (min-width: 1024px) {
-  .ai-provider-list-row {
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-  }
-}
-
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass-panel, .glass-composer, .glass-btn {
     background: var(--color-surface);
