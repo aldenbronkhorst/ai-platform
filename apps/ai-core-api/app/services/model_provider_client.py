@@ -38,17 +38,17 @@ def _classify_error(status_code: int, message: str) -> str:
     return "unknown"
 
 
-def _error_detail(body: Any, fallback: str) -> str:
+def _error_detail(body: Any, default_detail: str) -> str:
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict):
-            return str(error.get("message") or error.get("type") or fallback)
+            return str(error.get("message") or error.get("type") or default_detail)
         if isinstance(error, str):
             return error
         message = body.get("message")
         if message:
             return str(message)
-    return fallback
+    return default_detail
 
 
 def _chat_completions_url(base_url: str) -> str:

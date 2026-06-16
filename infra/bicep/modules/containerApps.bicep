@@ -55,7 +55,7 @@ param postgresDatabaseName string
 @description('PostgreSQL admin username')
 param postgresAdminUsername string
 
-@description('Azure Document Intelligence endpoint for OCR fallback')
+@description('Azure Document Intelligence endpoint for OCR extraction')
 param documentIntelligenceEndpoint string = ''
 
 @description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')

@@ -231,27 +231,17 @@ async def get_enabled_route(db: AsyncSession, task_type: str = "general_chat") -
     return route, model, provider
 
 
-async def _resolve_api_key(provider: AIProvider) -> Optional[str]:
-    """Resolve a provider API key from Key Vault first, then environment."""
-    if provider.auth_type == "key_vault_secret" and provider.secret_reference:
-        try:
-            secret_value = await get_secret_value(provider.secret_reference)
-            if secret_value:
-                return secret_value
-        except Exception as exc:
-            logger.warning("Failed to fetch KV secret %s: %s", provider.secret_reference, exc)
-    env_keys = [
-        provider.name.upper().replace(" ", "_").replace("-", "_") + "_API_KEY",
-    ]
-    capabilities = provider.capabilities if isinstance(provider.capabilities, dict) else {}
-    configured_env_keys = capabilities.get("api_key_env_vars")
-    if isinstance(configured_env_keys, list):
-        env_keys.extend(str(key) for key in configured_env_keys)
-    for env_key in env_keys:
-        env_val = os.environ.get(env_key)
-        if env_val:
-            return env_val
-    return None
+async def _resolve_api_key(provider: AIProvider) -> str:
+    """Resolve a provider API key from the configured provider secret."""
+    if provider.auth_type != "key_vault_secret" or not provider.secret_reference:
+        raise RuntimeError(f"Provider {provider.name} does not have a configured API key secret.")
+    try:
+        secret_value = await get_secret_value(provider.secret_reference)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read API key secret for provider {provider.name}: {exc}") from exc
+    if not secret_value:
+        raise RuntimeError(f"API key secret for provider {provider.name} is empty.")
+    return secret_value
 
 
 async def build_model_client(provider: AIProvider, model: AIModel) -> ModelProviderClient:
@@ -346,17 +336,17 @@ MICROSOFT_TOOL_PROVIDER_BY_NAME = {
     "ms_teams_powershell": "teams_admin",
     "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
 }
-def _connector_error_payload(raw_detail: Any, fallback_text: str = "") -> dict[str, Any]:
+def _connector_error_payload(raw_detail: Any, default_message: str = "") -> dict[str, Any]:
     detail = raw_detail.get("detail") if isinstance(raw_detail, dict) and "detail" in raw_detail else raw_detail
     if not isinstance(detail, dict):
-        message = str(detail or fallback_text or "Connector returned an error.")
+        message = str(detail or default_message or "Connector returned an error.")
         return {
             "error_type": "connector_http_error",
             "message": _truncate_tool_text(message, 1200),
         }
 
     error_type = str(detail.get("error_type") or detail.get("error") or "connector_error")
-    raw_message = detail.get("message") or detail.get("detail") or fallback_text or error_type
+    raw_message = detail.get("message") or detail.get("detail") or default_message or error_type
     message = json.dumps(raw_message, ensure_ascii=False, default=str) if isinstance(raw_message, (dict, list)) else str(raw_message)
 
     safe: dict[str, Any] = {

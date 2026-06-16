@@ -125,27 +125,20 @@ jobs:
 
           resolve_container_app() {
             local preferred_name="$1"
-            local fallback_name="${2:-}"
 
             if az containerapp show --name "$preferred_name" --resource-group "$RESOURCE_GROUP" --query "name" -o tsv >/dev/null 2>&1; then
               echo "$preferred_name"
               return 0
             fi
 
-            if [ -n "$fallback_name" ] && az containerapp show --name "$fallback_name" --resource-group "$RESOURCE_GROUP" --query "name" -o tsv >/dev/null 2>&1; then
-              echo "$fallback_name"
-              return 0
-            fi
-
-            echo "No deployed Container App found for $preferred_name${fallback_name:+ or $fallback_name}" >&2
+            echo "No deployed Container App found for $preferred_name" >&2
             return 1
           }
 
           CONTAINER_APP=$(resolve_container_app "ca-ai-platform-api-prod-san-001")
-          CONNECTOR_APP=$(resolve_container_app "ca-odoo-connector-prod-san-001" "ca-ai-platform-odoo-connector-prod-san-001")
+          CONNECTOR_APP=$(resolve_container_app "ca-odoo-connector-prod-san-001")
           CONTAINER_FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
           CONNECTOR_FQDN=$(az containerapp show --name "$CONNECTOR_APP" --resource-group "$RESOURCE_GROUP" --query "properties.configuration.ingress.fqdn" -o tsv)
-          DOCUMENT_INTELLIGENCE_ENDPOINT=$(az cognitiveservices account show --name "fnd-ai-platform-prod-san-001" --resource-group "$RESOURCE_GROUP" --query "properties.endpoint" -o tsv 2>/dev/null || true)
 
           echo "resource_group=${RESOURCE_GROUP}" >> $GITHUB_OUTPUT
           echo "acr_name=${ACR_NAME}" >> $GITHUB_OUTPUT
@@ -153,7 +146,6 @@ jobs:
           echo "connector_app=${CONNECTOR_APP}" >> $GITHUB_OUTPUT
           echo "api_url=https://${CONTAINER_FQDN}" >> $GITHUB_OUTPUT
           echo "connector_url=https://${CONNECTOR_FQDN}" >> $GITHUB_OUTPUT
-          echo "document_intelligence_endpoint=${DOCUMENT_INTELLIGENCE_ENDPOINT}" >> $GITHUB_OUTPUT
 
       - name: ACR Login
         run: |
@@ -189,8 +181,11 @@ jobs:
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
             --set-env-vars \
-              ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }} \
-              AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT=${{ steps.env.outputs.document_intelligence_endpoint }}
+              ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
+          az containerapp revision set-mode \
+            --name ${{ steps.env.outputs.container_app }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --mode single
 
       - name: Deploy Odoo Connector
         run: |
@@ -198,6 +193,10 @@ jobs:
             --name ${{ steps.env.outputs.connector_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/odoo-connector-api:${{ github.sha }}"
+          az containerapp revision set-mode \
+            --name ${{ steps.env.outputs.connector_app }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --mode single
           az containerapp ingress enable \
             --name ${{ steps.env.outputs.connector_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \

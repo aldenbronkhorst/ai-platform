@@ -47,12 +47,12 @@ def effective_delegated_status(account: Optional[AIConnectedAccount], token_stat
     return "connected"
 
 
-def _token_username(token_data: dict[str, Any], fallback: str) -> str:
+def _token_username(token_data: dict[str, Any], default_username: str) -> str:
     return (
         token_data.get("username")
         or token_data.get("login")
         or token_data.get("provider_username")
-        or fallback
+        or default_username
     )
 
 

@@ -106,8 +106,10 @@ class SpeechTranscriptionService:
         for secret_name in DEFAULT_KEY_SECRET_NAMES:
             try:
                 secret_value = await get_secret_value(secret_name)
-            except Exception:
-                secret_value = ""
+            except Exception as exc:
+                raise SpeechTranscriptionConfigError(
+                    f"Azure Speech Key Vault secret '{secret_name}' could not be read."
+                ) from exc
             if secret_value:
                 return secret_value
         return ""

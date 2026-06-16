@@ -92,7 +92,7 @@ def _first_user_title_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
+def _deterministic_chat_title(messages: list[dict[str, Any]]) -> str | None:
     """Create a concise local title from the first user message."""
     first_user_text = _first_user_title_text(messages)
     if not first_user_text:
@@ -118,4 +118,4 @@ def _fallback_chat_title(messages: list[dict[str, Any]]) -> str | None:
 
 
 async def generate_chat_title(messages: list[dict[str, Any]]) -> str | None:
-    return _fallback_chat_title(messages)
+    return _deterministic_chat_title(messages)

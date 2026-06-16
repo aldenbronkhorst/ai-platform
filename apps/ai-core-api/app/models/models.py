@@ -171,7 +171,6 @@ class AIRoute(Base, AuditMixin):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_type = Column(String(100), unique=True, nullable=False, index=True)
     primary_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=False)
-    fallback_model_id = Column(UUID(as_uuid=True), ForeignKey("ai_models.id"), nullable=True)
     temperature = Column(Numeric(4, 2), default=0.3, nullable=False)
     max_tokens = Column(Integer, default=2000, nullable=False)
     system_prompt = Column(Text, nullable=True)

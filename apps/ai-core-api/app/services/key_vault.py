@@ -52,7 +52,7 @@ async def recover_deleted_secret(secret_name: str, vault_url: Optional[str] = No
 async def delete_secret(secret_name: str, vault_url: Optional[str] = None) -> None:
     client = get_secret_client(vault_url)
     if not client:
-        return
+        raise RuntimeError("KEY_VAULT_URI is not configured.")
 
     def _delete() -> None:
         poller = client.begin_delete_secret(secret_name)
