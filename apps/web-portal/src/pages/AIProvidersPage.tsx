@@ -364,9 +364,9 @@ function ProviderFormModal({
   const isEdit = Boolean(form.providerId);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <GlassPanel className="w-full max-w-xl rounded-2xl p-0">
+      <div className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-default bg-raised shadow-2xl">
         <form onSubmit={onSubmit}>
-          <div className="flex items-start justify-between gap-4 border-b border-default p-5">
+          <div className="flex items-start justify-between gap-4 border-b border-default bg-raised p-5">
             <div>
               <h3 className="text-base font-extrabold text-default">
                 {isEdit ? "Edit provider" : "Add provider"}
@@ -385,7 +385,7 @@ function ProviderFormModal({
             </button>
           </div>
 
-          <div className="space-y-4 p-5">
+          <div className="space-y-4 bg-raised p-5">
             <div className="flex items-center justify-between rounded-xl border border-default bg-surface px-4 py-3">
               <div>
                 <p className="text-xs font-extrabold text-default">Provider enabled</p>
@@ -427,7 +427,7 @@ function ProviderFormModal({
             </FieldLabel>
           </div>
 
-          <div className="flex justify-end gap-2 border-t border-default p-5">
+          <div className="flex justify-end gap-2 border-t border-default bg-subtle p-5">
             <GlassButton type="button" onClick={onClose}>
               Cancel
             </GlassButton>
@@ -437,7 +437,7 @@ function ProviderFormModal({
             </GlassButton>
           </div>
         </form>
-      </GlassPanel>
+      </div>
     </div>
   );
 }
