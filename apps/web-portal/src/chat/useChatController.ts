@@ -8,7 +8,7 @@ import {
   chatFailureFromDetail,
   chatFailureFromNetwork,
   chatFailureFromResponse,
-  CHAT_REQUEST_TIMEOUT_MS,
+  CHAT_STREAM_INACTIVITY_TIMEOUT_MS,
   type ChatFailurePayload,
   mergeFetchedChatSessions,
   messageRequestId,
@@ -386,7 +386,17 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     requestId: string,
   ) => {
     const abortController = new AbortController();
-    const timeoutId = setTimeout(() => abortController.abort(), CHAT_REQUEST_TIMEOUT_MS);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const resetStreamTimeout = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => abortController.abort(), CHAT_STREAM_INACTIVITY_TIMEOUT_MS);
+    };
+    const clearStreamTimeout = () => {
+      if (!timeoutId) return;
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    };
+    resetStreamTimeout();
     markSessionSending(session.id);
 
     try {
@@ -414,6 +424,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
+          resetStreamTimeout();
           buffer += decoder.decode(value, { stream: true });
           const parsed = parseSseChunk(buffer);
           buffer = parsed.rest;
@@ -464,7 +475,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     } catch (err: unknown) {
       markAssistantFailed(session.id, pendingMessageId, chatFailureFromNetwork(err, requestId));
     } finally {
-      clearTimeout(timeoutId);
+      clearStreamTimeout();
       unmarkSessionSending(session.id);
       void refreshChatSession(session.id);
       if (activeSessionIdRef.current === session.id) {

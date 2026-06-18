@@ -1,7 +1,7 @@
 import type { ChatMessage, ChatSession } from "../types";
 import { isAbortError } from "../hooks/useApi";
 
-export const CHAT_REQUEST_TIMEOUT_MS = 180_000;
+export const CHAT_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
 
 const CHAT_SESSIONS_CACHE_PREFIX = "ai-platform.chatSessions.";
 const CONNECTOR_PROGRESS_HINTS = [
@@ -190,7 +190,7 @@ export function chatFailureFromNetwork(err: unknown, requestId: string): ChatFai
     requestId,
     errorType: timeout ? "timeout" : "network",
     errorMessage: timeout
-      ? "The request took too long to complete. Please try again or narrow the question."
+      ? "The AI service stopped sending progress before it finished. Please try again."
       : "The AI service could not be reached. Please check your connection and try again.",
     httpStatus: 0,
   };
