@@ -1887,12 +1887,12 @@ class TestToolExecution:
             assert result["total_tokens"] == 43
             assert client.chat_completion.call_count == 2
             post_tool_call = client.chat_completion.call_args_list[1]
-            assert post_tool_call.kwargs["max_tokens"] == 4000
+            assert post_tool_call.kwargs["max_tokens"] == 8000
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
-    async def test_execute_chat_leaves_blank_response_after_tools_for_chat_guard(self):
-        """A blank post-tool response is no longer patched by a fallback finalizer."""
+    async def test_execute_chat_retries_blank_length_response_after_tools(self):
+        """A blank length-limited post-tool response is retried before it reaches the chat guard."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -1946,8 +1946,17 @@ class TestToolExecution:
                     "finish_reason": "length",
                     "tool_calls": None,
                     "prompt_tokens": 20,
-                    "completion_tokens": 2000,
+                    "completion_tokens": 8000,
                     "latency_ms": 200,
+                    "error": False,
+                },
+                {
+                    "content": "The receipt has one matching line.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 30,
+                    "completion_tokens": 8,
+                    "latency_ms": 150,
                     "error": False,
                 },
             ])
@@ -1970,15 +1979,117 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == ""
-        assert result["finish_reason"] == "length"
-        assert result["total_tokens"] == 2035
-        assert client.chat_completion.call_count == 2
+        assert result["content"] == "The receipt has one matching line."
+        assert result["finish_reason"] == "stop"
+        assert result["total_tokens"] == 8073
+        assert client.chat_completion.call_count == 3
 
         post_tool_call = client.chat_completion.call_args_list[1]
-        assert post_tool_call.kwargs["max_tokens"] == 4000
+        assert post_tool_call.kwargs["max_tokens"] == 8000
         assert post_tool_call.kwargs["tools"] is not None
         assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
+
+        retry_call = client.chat_completion.call_args_list[2]
+        assert retry_call.kwargs["max_tokens"] == 8000
+        assert retry_call.kwargs["tools"] is None
+        assert "without producing visible assistant content" in retry_call.kwargs["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_continues_nonblank_length_response_after_tools(self):
+        """A visible but length-limited post-tool table is continued instead of returned mid-row."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "sale.order.line"}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "| SO | Product | Ordered | Delivered |\n| SO1 | A | 1 |",
+                    "finish_reason": "length",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8000,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+                {
+                    "content": "1 |\n| SO2 | B | 2 | 2 |",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "latency_ms": 150,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value={"records": [{"id": 1, "name": "SO1"}, {"id": 2, "name": "SO2"}]})
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "give me all sales lines as a table"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "| SO | Product | Ordered | Delivered |\n| SO1 | A | 1 |1 |\n| SO2 | B | 2 | 2 |"
+        assert result["finish_reason"] == "stop"
+        assert client.chat_completion.call_count == 3
+
+        continuation_call = client.chat_completion.call_args_list[2]
+        assert continuation_call.kwargs["tools"] is None
+        assert "Continue the visible answer exactly where it stopped" in continuation_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):
