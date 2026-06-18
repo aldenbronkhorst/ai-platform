@@ -5,6 +5,8 @@ from typing import Optional, Any
 import httpx
 
 
+ZAI_BASE_URL_MARKERS = ("api.z.ai", "open.bigmodel.cn")
+
 QUOTA_RATE_LIMIT_PATTERNS = [
     re.compile(r"rate\s*limit", re.IGNORECASE),
     re.compile(r"quota", re.IGNORECASE),
@@ -56,6 +58,13 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
+def _default_extra_body(base_url: str) -> dict[str, Any]:
+    lowered = base_url.lower()
+    if any(marker in lowered for marker in ZAI_BASE_URL_MARKERS):
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
+
 class ModelProviderClient:
     def __init__(
         self,
@@ -92,8 +101,11 @@ class ModelProviderClient:
         if tools:
             payload["tools"] = tools
 
-        extra_body = self.request_options.get("extra_body")
-        if isinstance(extra_body, dict):
+        extra_body = _default_extra_body(self.base_url)
+        configured_extra_body = self.request_options.get("extra_body")
+        if isinstance(configured_extra_body, dict):
+            extra_body.update(configured_extra_body)
+        if extra_body:
             payload.update(extra_body)
 
         without_parameters = self.request_options.get("omit_parameters") or []

@@ -39,7 +39,8 @@ MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 50000
 MAX_ODOO_RECORD_CONTEXT_CHARS = 20000
 MAX_ODOO_RECORD_CONTEXT_ITEMS = 25
-TOOL_LOOP_RESPONSE_MAX_TOKENS = 4000
+TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "8000"))
+TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
 TOOL_ERROR_SUMMARY_LIMIT = 8
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
@@ -47,7 +48,23 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
         "Do not tell users to run local native-tool logins; report connector auth/profile failures as platform issues. "
-        "Keep the final answer concise, and state any uncertainty instead of reasoning at length."
+        "If the user asks for all rows, every record, or a complete table, include all rows visible in the tool results. "
+        "Do not put final table rows in hidden reasoning. Keep non-table text concise and state any uncertainty clearly."
+    ),
+}
+TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE = {
+    "role": "system",
+    "content": (
+        "Your previous response used the answer budget without producing visible assistant content. "
+        "Produce the final answer now using the gathered tool results. Do not call tools. "
+        "Do not include reasoning or analysis. If the user asked for a full table, output the full table."
+    ),
+}
+TOOL_LOOP_CONTINUE_LENGTH_MESSAGE = {
+    "role": "system",
+    "content": (
+        "Continue the visible answer exactly where it stopped. Do not repeat completed rows or headings. "
+        "Do not call tools. Do not include reasoning or analysis."
     ),
 }
 OMITTED_TOOL_CONTENT_KEYS = {
@@ -1491,6 +1508,69 @@ async def _run_model_once(
     return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
 
 
+def _is_length_limited_final_response(result: dict[str, Any]) -> bool:
+    return (
+        not result.get("error")
+        and not result.get("tool_calls")
+        and str(result.get("finish_reason") or "").lower() == "length"
+    )
+
+
+def _merge_continued_content(existing: str, continuation: str) -> str:
+    if not existing.strip():
+        return continuation
+    if not continuation.strip():
+        return existing
+    return existing + continuation
+
+
+async def _complete_length_limited_tool_answer(
+    state: ModelCallState,
+    base_messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    trace_svc: Any = None,
+) -> None:
+    combined_content = str(state.result.get("content") or "")
+    for _ in range(TOOL_LOOP_LENGTH_CONTINUATION_LIMIT):
+        if not _is_length_limited_final_response(state.result):
+            break
+
+        if combined_content.strip():
+            continuation_messages = (
+                base_messages
+                + [{"role": "assistant", "content": combined_content}]
+                + [TOOL_LOOP_CONTINUE_LENGTH_MESSAGE]
+            )
+            attempt_reason = "tool_loop_continue"
+        else:
+            continuation_messages = base_messages + [TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE]
+            attempt_reason = "tool_loop_blank_retry"
+
+        result, client = await _call_model(
+            state.used_model,
+            state.used_provider,
+            continuation_messages,
+            temperature,
+            max_tokens,
+            [],
+            trace_svc=trace_svc,
+            attempt_reason=attempt_reason,
+            client=state.client,
+        )
+        state.client = client
+        state.stats.add_result(result)
+
+        new_content = str(result.get("content") or "")
+        if new_content:
+            combined_content = _merge_continued_content(combined_content, new_content)
+            result["content"] = combined_content
+        elif combined_content:
+            result["content"] = combined_content
+
+        state.result = result
+
+
 async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1564,6 +1644,13 @@ async def _run_tool_loop(
         state.result = result
         state.client = client
         state.stats.add_result(state.result)
+        await _complete_length_limited_tool_answer(
+            state,
+            followup_messages,
+            temperature,
+            followup_max_tokens,
+            trace_svc=trace_svc,
+        )
     return tool_results
 
 async def _log_usage(

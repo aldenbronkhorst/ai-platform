@@ -55,3 +55,50 @@ async def test_openai_compatible_client_uses_bearer_auth_and_chat_completions(mo
     assert captured["json"]["thinking"] == {"type": "disabled"}
     assert result["content"] == "ok"
     assert result["total_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_zai_client_disables_thinking_by_default(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": "glm-5.2",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ModelProviderClient(
+        base_url="https://api.z.ai/api/paas/v4",
+        deployment_name="glm-5.2",
+        api_key="test-key",
+    )
+
+    await client.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.3,
+        max_tokens=2000,
+    )
+
+    assert captured["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert captured["json"]["thinking"] == {"type": "disabled"}
