@@ -1,5 +1,6 @@
 import os
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
@@ -89,6 +90,55 @@ class TestArtifactDownloadSurface:
 
 
 class TestChatResponseGuards:
+    def test_recent_verified_odoo_facts_compacts_previous_tool_results(self):
+        from app.routers.chat import _recent_verified_odoo_facts
+
+        facts = _recent_verified_odoo_facts([
+            SimpleNamespace(
+                tool_call_json=[
+                    {
+                        "tool_name": "odoo_ops_runner",
+                        "arguments": {"model": "account.move"},
+                        "result": {
+                            "model": "account.move",
+                            "records": [
+                                {
+                                    "id": 56137,
+                                    "name": "INV-2026-02128",
+                                    "state": "draft",
+                                    "payment_state": "not_paid",
+                                    "amount_total": 5206.75,
+                                    "amount_tax": 0.0,
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "tool_name": "odoo_ops_runner",
+                        "arguments": {"model": "account.partial.reconcile"},
+                        "result": {
+                            "model": "account.partial.reconcile",
+                            "records": [
+                                {
+                                    "id": 47647,
+                                    "debit_move_id": {"id": 230003, "name": "INV-2026-02128 SO-2026-02259"},
+                                    "credit_move_id": {"id": 223707, "name": "BNK01-2026-02619 R026S0Z8Q0 ELAINE WALTERS"},
+                                    "amount": 5206.75,
+                                }
+                            ],
+                        },
+                    },
+                ]
+            )
+        ])
+
+        assert "Active chat context from recent verified Odoo tool results" in facts
+        assert "immediately previous assistant reply" in facts
+        assert "account.move id=56137 name=INV-2026-02128" in facts
+        assert "account.partial.reconcile id=47647 amount=5206.75" in facts
+        assert "BNK01-2026-02619" in facts
+        assert "records" not in facts
+
     def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):
         from app.routers.chat import _assistant_metadata
 
@@ -110,6 +160,25 @@ class TestChatResponseGuards:
         assert metadata["trace_id"] == "trace_123"
         assert metadata["has_tool_errors"] is True
         assert metadata["tool_error_summary"] == summary
+
+    def test_assistant_metadata_includes_activity_events_without_raw_reasoning(self):
+        from app.routers.chat import _assistant_metadata
+
+        activity_events = [
+            {"span_type": "context_build", "event": "span_started"},
+            {"span_type": "tool_call", "span_name": "odoo_ops_runner"},
+        ]
+
+        metadata = _assistant_metadata(
+            {"content": "I answered.", "reasoning_content": "raw provider reasoning"},
+            "req-123",
+            "trace_123",
+            activity_events=activity_events,
+        )
+
+        assert metadata["activity_events"] == activity_events
+        assert "stream_work_items" not in metadata
+        assert "reasoning_content" not in metadata
 
     def test_unprocessed_textual_tool_call_is_rejected(self):
         import uuid

@@ -48,14 +48,72 @@ function parseInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes.length > 0 ? nodes : [text];
 }
 
+function isEscapedPipe(text: string, index: number) {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
+    slashCount += 1;
+  }
+  return slashCount % 2 === 1;
+}
+
+function trimTableBoundaryPipes(line: string) {
+  let trimmed = line.trim();
+  if (trimmed.startsWith("|")) {
+    trimmed = trimmed.slice(1);
+  }
+  if (trimmed.endsWith("|") && !isEscapedPipe(trimmed, trimmed.length - 1)) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
 function splitTableRow(line: string) {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split("|").map(cell => cell.trim());
+  const trimmed = trimTableBoundaryPipes(line);
+  const cells: string[] = [];
+  let current = "";
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (char === "|" && !isEscapedPipe(trimmed, index)) {
+      cells.push(current.trim().replace(/\\\|/g, "|"));
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  cells.push(current.trim().replace(/\\\|/g, "|"));
+  return cells;
 }
 
 function isTableSeparator(line: string) {
   const cells = splitTableRow(line);
   return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function isTableLikeRow(line: string) {
+  return line.trim().startsWith("|") && splitTableRow(line).length > 1;
+}
+
+function flexibleCellIndex(headers: string[]) {
+  const index = headers.findIndex(header => /product|name|description|detail/i.test(header));
+  return index >= 0 ? index : 0;
+}
+
+function normalizeTableRow(cells: string[], headers: string[]) {
+  if (cells.length === headers.length) return cells;
+  if (cells.length < headers.length) {
+    return [...cells, ...Array.from({ length: headers.length - cells.length }, () => "")];
+  }
+
+  const targetIndex = flexibleCellIndex(headers);
+  const extraCount = cells.length - headers.length;
+  const mergedCell = cells.slice(targetIndex, targetIndex + extraCount + 1).join(" | ");
+  return [
+    ...cells.slice(0, targetIndex),
+    mergedCell,
+    ...cells.slice(targetIndex + extraCount + 1),
+  ];
 }
 
 function isHorizontalRule(line: string) {
@@ -111,8 +169,8 @@ function renderTable(lines: string[], startIndex: number, key: string) {
   const rows: string[][] = [];
   let index = startIndex + 2;
 
-  while (index < lines.length && lines[index].trim() && splitTableRow(lines[index]).length === headers.length) {
-    rows.push(splitTableRow(lines[index]));
+  while (index < lines.length && lines[index].trim() && isTableLikeRow(lines[index])) {
+    rows.push(normalizeTableRow(splitTableRow(lines[index]), headers));
     index += 1;
   }
 

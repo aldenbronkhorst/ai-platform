@@ -2,6 +2,7 @@ import re
 import uuid
 from typing import Any
 from uuid import UUID
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +22,10 @@ router = APIRouter(prefix="/model-providers", tags=["model-providers"])
 
 OPENAI_COMPATIBLE = "openai_compatible"
 CHAT_ROUTE = "general_chat"
+CHAT_MODEL_TASK = "chat"
+VOICE_TRANSCRIPTION_MODEL_TASK = "voice_transcription"
+TRANSCRIPTION_MODEL_MARKERS = ("transcribe", "whisper", "asr")
+ZAI_TRANSCRIPTION_MODEL = "glm-asr-2512"
 
 
 class ProviderModelResponse(BaseModel):
@@ -34,6 +39,7 @@ class ProviderModelResponse(BaseModel):
     supports_json_schema: str
     context_window: int | None = None
     enabled: str
+    config_json: dict[str, Any] | None = None
 
 
 class ProviderResponse(BaseModel):
@@ -112,6 +118,7 @@ class DiscoveredModel(BaseModel):
     context_window: int | None = None
     supports_tools: bool | None = None
     supports_json_schema: bool | None = None
+    task_type: str = CHAT_MODEL_TASK
 
 
 def _is_admin(auth: dict[str, Any]) -> bool:
@@ -149,6 +156,25 @@ def _display_name_for_model(model_id: str) -> str:
     return clean or model_id
 
 
+def _model_task_type(model: AIModel) -> str:
+    config = model.config_json if isinstance(model.config_json, dict) else {}
+    task_type = str(config.get("task_type") or CHAT_MODEL_TASK).strip()
+    return task_type or CHAT_MODEL_TASK
+
+
+def _is_chat_model(model: AIModel) -> bool:
+    return _model_task_type(model) == CHAT_MODEL_TASK
+
+
+def _looks_like_transcription_model(model_id: str) -> bool:
+    name = model_id.lower()
+    return any(marker in name for marker in TRANSCRIPTION_MODEL_MARKERS)
+
+
+def _task_type_for_model(model_id: str) -> str:
+    return VOICE_TRANSCRIPTION_MODEL_TASK if _looks_like_transcription_model(model_id) else CHAT_MODEL_TASK
+
+
 def _chat_model_sort_key(model: AIModel) -> tuple[int, str]:
     name = (model.model_name or model.display_name or "").lower()
     score = 0
@@ -180,6 +206,13 @@ def _models_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/models"
 
 
+def _base_hostname(base_url: str) -> str:
+    try:
+        return (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
 def _model_context_window(data: dict[str, Any]) -> int | None:
     for key in ("context_length", "context_window", "context_window_tokens", "max_context_length"):
         value = data.get(key)
@@ -197,6 +230,51 @@ def _supported_parameters(data: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _lower_strings(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value.lower()}
+    if isinstance(value, list):
+        return {str(item).lower() for item in value if item is not None}
+    if isinstance(value, dict):
+        strings: set[str] = set()
+        for key, item in value.items():
+            if isinstance(item, bool) and item:
+                strings.add(str(key).lower())
+            else:
+                strings.update(_lower_strings(item))
+        return strings
+    return set()
+
+
+def _task_type_from_model_metadata(model_id: str, data: dict[str, Any]) -> str:
+    metadata_values: set[str] = set()
+    for key in (
+        "type",
+        "task",
+        "task_type",
+        "category",
+        "mode",
+        "modality",
+        "modalities",
+        "capability",
+        "capabilities",
+        "input_modalities",
+        "output_modalities",
+        "supported_modalities",
+    ):
+        metadata_values.update(_lower_strings(data.get(key)))
+
+    architecture = data.get("architecture")
+    if isinstance(architecture, dict):
+        for key in ("modality", "modalities", "input_modalities", "output_modalities"):
+            metadata_values.update(_lower_strings(architecture.get(key)))
+
+    if {"audio", "speech", "transcription", "asr", "stt", "speech_to_text", "speech-to-text"}.intersection(metadata_values):
+        return VOICE_TRANSCRIPTION_MODEL_TASK
+
+    return _task_type_for_model(model_id)
+
+
 def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
     raw_models = body.get("data") if isinstance(body, dict) else body
     if not isinstance(raw_models, list):
@@ -211,6 +289,7 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
             context_window = None
             supports_tools = None
             supports_json_schema = None
+            task_type = _task_type_for_model(model_id)
         elif isinstance(item, dict):
             model_id = str(item.get("id") or item.get("name") or "").strip()
             if not model_id:
@@ -220,6 +299,7 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
             parameters = _supported_parameters(item)
             supports_tools = True if {"tools", "tool_choice"}.intersection(parameters) else None
             supports_json_schema = True if "response_format" in parameters else None
+            task_type = _task_type_from_model_metadata(model_id, item)
         else:
             continue
 
@@ -233,9 +313,32 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
                 context_window=context_window,
                 supports_tools=supports_tools,
                 supports_json_schema=supports_json_schema,
+                task_type=task_type,
             )
         )
     return sorted(discovered, key=lambda model: model.id.lower())
+
+
+def _provider_catalog_models(base_url: str) -> list[DiscoveredModel]:
+    hostname = _base_hostname(base_url)
+    if hostname == "api.z.ai":
+        return [
+            DiscoveredModel(
+                id=ZAI_TRANSCRIPTION_MODEL,
+                display_name="GLM ASR 2512",
+                supports_tools=False,
+                supports_json_schema=False,
+                task_type=VOICE_TRANSCRIPTION_MODEL_TASK,
+            )
+        ]
+    return []
+
+
+def _merge_catalog_models(base_url: str, discovered: list[DiscoveredModel]) -> list[DiscoveredModel]:
+    models_by_id = {model.id: model for model in discovered}
+    for model in _provider_catalog_models(base_url):
+        models_by_id.setdefault(model.id, model)
+    return sorted(models_by_id.values(), key=lambda model: model.id.lower())
 
 
 async def _fetch_available_models(base_url: str, api_key: str | None = None) -> list[DiscoveredModel]:
@@ -246,7 +349,54 @@ async def _fetch_available_models(base_url: str, api_key: str | None = None) -> 
         response = await client.get(_models_url(base_url), headers=headers)
     if response.status_code != 200:
         raise RuntimeError(response.text[:500] or f"Provider returned HTTP {response.status_code}.")
-    return _parse_models_payload(response.json())
+    return _merge_catalog_models(base_url, _parse_models_payload(response.json()))
+
+
+async def _upsert_discovered_model(db: AsyncSession, provider: AIProvider, discovered: DiscoveredModel) -> None:
+    result = await db.execute(
+        select(AIModel).where(AIModel.provider_id == provider.id, AIModel.model_name == discovered.id)
+    )
+    model = result.scalar_one_or_none()
+    display_name = discovered.display_name or _display_name_for_model(discovered.id)
+    supports_tools = discovered.supports_tools if discovered.supports_tools is not None else True
+    supports_json_schema = discovered.supports_json_schema if discovered.supports_json_schema is not None else False
+    if discovered.task_type != CHAT_MODEL_TASK:
+        supports_tools = False
+        supports_json_schema = False
+
+    if not model:
+        model = AIModel(
+            id=uuid.uuid4(),
+            provider_id=provider.id,
+            display_name=display_name,
+            model_name=discovered.id,
+            deployment_name=discovered.id,
+            model_family=provider.name,
+            model_version=discovered.id,
+            enabled="true",
+            config_json={"task_type": discovered.task_type},
+        )
+        db.add(model)
+
+    model.provider_id = provider.id
+    model.display_name = display_name
+    model.model_name = discovered.id
+    model.deployment_name = discovered.id
+    model.model_family = provider.name
+    model.model_version = discovered.id
+    model.supports_tools = _bool_string(supports_tools)
+    model.supports_json_schema = _bool_string(supports_json_schema)
+    model.context_window = discovered.context_window
+    config = model.config_json if isinstance(model.config_json, dict) else {}
+    config["task_type"] = discovered.task_type
+    model.config_json = config
+
+
+async def _ensure_provider_catalog_models(db: AsyncSession, providers: list[AIProvider]) -> None:
+    for provider in providers:
+        for model in _provider_catalog_models(provider.base_url):
+            await _upsert_discovered_model(db, provider, model)
+    await db.flush()
 
 
 async def _api_key_status(provider: AIProvider) -> str:
@@ -265,6 +415,7 @@ async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = N
         select(AIProvider).where(AIProvider.provider_type == OPENAI_COMPATIBLE).order_by(AIProvider.name)
     )
     providers = list(provider_result.scalars().all())
+    await _ensure_provider_catalog_models(db, providers)
     model_result = await db.execute(
         select(AIModel).where(AIModel.provider_id.in_([p.id for p in providers])).order_by(AIModel.display_name)
     ) if providers else None
@@ -338,7 +489,7 @@ async def _enabled_chat_models(db: AsyncSession) -> list[AIModel]:
         )
         .order_by(AIProvider.name, AIModel.display_name)
     )
-    return sorted(result.scalars().all(), key=_chat_model_sort_key)
+    return sorted([model for model in result.scalars().all() if _is_chat_model(model)], key=_chat_model_sort_key)
 
 
 async def _enabled_chat_models_excluding(db: AsyncSession, excluded_model_ids: set[UUID]) -> list[AIModel]:
@@ -355,7 +506,7 @@ async def _enabled_chat_models_excluding(db: AsyncSession, excluded_model_ids: s
         .where(*conditions)
         .order_by(AIProvider.name, AIModel.display_name)
     )
-    return sorted(result.scalars().all(), key=_chat_model_sort_key)
+    return sorted([model for model in result.scalars().all() if _is_chat_model(model)], key=_chat_model_sort_key)
 
 
 async def _reconcile_chat_route(db: AsyncSession) -> None:
@@ -424,39 +575,8 @@ async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key:
     if not discovered_models:
         raise RuntimeError("No models were returned by this provider.")
 
-    existing_result = await db.execute(select(AIModel).where(AIModel.provider_id == provider.id))
-    existing_by_name = {model.model_name: model for model in existing_result.scalars().all()}
-
     for discovered in discovered_models:
-        model = existing_by_name.get(discovered.id)
-        display_name = discovered.display_name or _display_name_for_model(discovered.id)
-        supports_tools = discovered.supports_tools if discovered.supports_tools is not None else True
-        supports_json_schema = discovered.supports_json_schema if discovered.supports_json_schema is not None else False
-
-        if not model:
-            model = AIModel(
-                id=uuid.uuid4(),
-                provider_id=provider.id,
-                display_name=display_name,
-                model_name=discovered.id,
-                deployment_name=discovered.id,
-                model_family=provider.name,
-                model_version=discovered.id,
-                enabled="true",
-                config_json={},
-            )
-            db.add(model)
-
-        model.provider_id = provider.id
-        model.display_name = display_name
-        model.model_name = discovered.id
-        model.deployment_name = discovered.id
-        model.model_family = provider.name
-        model.model_version = discovered.id
-        model.supports_tools = _bool_string(supports_tools)
-        model.supports_json_schema = _bool_string(supports_json_schema)
-        model.context_window = discovered.context_window
-        model.config_json = model.config_json if isinstance(model.config_json, dict) else {}
+        await _upsert_discovered_model(db, provider, discovered)
 
     return len(discovered_models)
 
@@ -590,6 +710,8 @@ async def update_chat_route(
     _require_admin(auth)
     primary = await _get_model(db, req.primary_model_id)
     await _get_provider(db, primary.provider_id)
+    if not _is_chat_model(primary):
+        raise HTTPException(status_code=400, detail="Only chat models can be selected as the default chat model.")
 
     result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
     route = result.scalar_one_or_none()
@@ -630,6 +752,8 @@ async def test_model_provider(
             api_key = await _stored_api_key(provider)
     if req.model_id:
         model = await _get_model(db, req.model_id)
+        if not _is_chat_model(model):
+            raise HTTPException(status_code=400, detail="Only chat models can be tested here.")
         model_name = model.deployment_name
 
     if not base_url or not model_name:

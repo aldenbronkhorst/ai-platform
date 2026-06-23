@@ -110,7 +110,7 @@ export function ChatView({
   const hasMessages = activeSession && chatMessages.length > 0;
 
   return (
-    <div className="h-full min-h-0 flex flex-col max-w-4xl mx-auto relative w-full overflow-hidden">
+    <div className="h-full min-h-0 flex flex-col max-w-4xl mx-auto relative w-full overflow-visible">
       {hasMessages ? (
         <div
           ref={scrollContainerRef}
@@ -153,7 +153,7 @@ export function ChatView({
         </div>
       )}
 
-      <div ref={composerRef} className="relative z-10 shrink-0">
+      <div ref={composerRef} className="relative z-10 shrink-0 overflow-visible">
         <ChatComposer
           chatInput={chatInput}
           attachedFiles={attachedFiles}

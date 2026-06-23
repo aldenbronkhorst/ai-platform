@@ -1,7 +1,9 @@
 import os
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.core.security import api_key_auth
 from app.services.speech_transcription import (
     SpeechTranscriptionConfigError,
@@ -16,6 +18,15 @@ VOICE_TRANSCRIPTION_MAX_BYTES = int(os.environ.get("VOICE_TRANSCRIPTION_MAX_BYTE
 SUPPORTED_AUDIO_TYPES = {
     "audio/wav",
     "audio/x-wav",
+    "audio/webm",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/mpga",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/ogg",
+    "audio/flac",
 }
 
 
@@ -26,6 +37,7 @@ def _base_content_type(content_type: str | None) -> str:
 @router.post("/transcribe")
 async def transcribe_voice_input(
     file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
     auth=Depends(api_key_auth),
 ):
     content_type = _base_content_type(file.content_type)
@@ -62,6 +74,7 @@ async def transcribe_voice_input(
             audio_bytes,
             file.filename or "voice-input.wav",
             file.content_type or "application/octet-stream",
+            db=db,
         )
     except SpeechTranscriptionConfigError as exc:
         raise HTTPException(

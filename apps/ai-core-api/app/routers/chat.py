@@ -506,17 +506,112 @@ def _content_with_attachment_context(content: str, attachment_context: str) -> s
     return f"{clean_content}\n\n{attachment_context}"
 
 
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value
+
+
+def _named_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("display_name") or value.get("id") or "")
+    if isinstance(value, list) and len(value) >= 2:
+        return str(value[1] or value[0] or "")
+    return str(value or "")
+
+
+def _compact_odoo_tool_fact(tool_result: dict[str, Any], line_budget: int) -> list[str]:
+    if line_budget <= 0 or tool_result.get("tool_name") != "odoo_ops_runner":
+        return []
+    result = tool_result.get("result")
+    if not isinstance(result, dict):
+        return []
+    model = str(result.get("model") or (tool_result.get("arguments") or {}).get("model") or "")
+    records = result.get("records") or result.get("result")
+    if not isinstance(records, list):
+        return []
+
+    lines: list[str] = []
+    for record in records:
+        if not isinstance(record, dict) or len(lines) >= line_budget:
+            break
+        if model == "account.move":
+            lines.append(
+                "account.move "
+                f"id={record.get('id')} name={record.get('name')} state={record.get('state')} "
+                f"payment_state={record.get('payment_state')} amount_total={record.get('amount_total')} "
+                f"amount_tax={record.get('amount_tax')}"
+            )
+        elif model == "account.partial.reconcile":
+            lines.append(
+                "account.partial.reconcile "
+                f"id={record.get('id')} amount={record.get('amount')} "
+                f"debit_move={_named_value(record.get('debit_move_id'))} "
+                f"credit_move={_named_value(record.get('credit_move_id'))}"
+            )
+        elif model == "account.move.line":
+            lines.append(
+                "account.move.line "
+                f"id={record.get('id')} move={_named_value(record.get('move_id'))} "
+                f"account={_named_value(record.get('account_id'))} name={record.get('name') or record.get('display_name')} "
+                f"debit={record.get('debit')} credit={record.get('credit')} reconciled={record.get('reconciled')} "
+                f"tax_ids={record.get('tax_ids')}"
+            )
+        elif model == "account.tax":
+            lines.append(
+                "account.tax "
+                f"id={record.get('id')} name={record.get('name')} description={record.get('description')} "
+                f"amount={record.get('amount')}"
+            )
+    return lines
+
+
+def _recent_verified_odoo_facts(history_messages: list[AIChatMessage]) -> str:
+    lines: list[str] = []
+    for message in reversed(history_messages[-8:]):
+        tool_calls = _json_value(message.tool_call_json)
+        if not isinstance(tool_calls, list):
+            continue
+        for tool_result in reversed(tool_calls):
+            if not isinstance(tool_result, dict):
+                continue
+            remaining = 30 - len(lines)
+            lines.extend(_compact_odoo_tool_fact(tool_result, remaining))
+            if len(lines) >= 30:
+                break
+        if len(lines) >= 30:
+            break
+    if not lines:
+        return ""
+    unique_lines = list(dict.fromkeys(reversed(lines)))
+    return (
+        "Active chat context from recent verified Odoo tool results. If the user refers to the previous "
+        "answer, those items, those invoices, that payment, or similar follow-up wording, resolve it "
+        "against these facts and the immediately previous assistant reply. Reuse these exact ids, names, "
+        "payments, taxes, and reconciliation references when they match the user's current request; do not "
+        "rediscover the same facts with broad searches:\n"
+        + "\n".join(f"- {line}" for line in unique_lines[:30])
+    )
+
+
 async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: AIChatMessage, content: str) -> list[dict[str, str]]:
     history = await db.execute(
         select(AIChatMessage).where(
             AIChatMessage.chat_session_id == session_id
         ).order_by(AIChatMessage.created_at.asc())
     )
+    history_messages = list(history.scalars().all())
     messages = [
         {"role": msg.role, "content": msg.content}
-        for msg in history.scalars().all()
+        for msg in history_messages
         if msg.id != user_msg.id and _is_valid_history_message(msg)
     ]
+    odoo_facts = _recent_verified_odoo_facts(history_messages)
+    if odoo_facts:
+        messages.append({"role": "system", "content": odoo_facts})
     messages.append({"role": "user", "content": content})
     return messages
 
@@ -995,7 +1090,14 @@ async def stream_chat_message(
     async def run_turn() -> None:
         async with AsyncSessionLocal() as db:
             try:
-                assistant_msg = await _process_chat_turn(db, session_id, req, request_id, user_id, collect_activity)
+                assistant_msg = await _process_chat_turn(
+                    db,
+                    session_id,
+                    req,
+                    request_id,
+                    user_id,
+                    collect_activity,
+                )
                 await queue.put({"type": "message", "payload": _chat_message_payload(assistant_msg)})
             except HTTPException as exc:
                 await db.rollback()

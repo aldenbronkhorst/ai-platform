@@ -29,6 +29,9 @@ interface ProviderModel {
   supports_json_schema: string;
   context_window?: number | null;
   enabled: string;
+  config_json?: {
+    task_type?: string;
+  } | null;
 }
 
 interface Provider {
@@ -90,6 +93,8 @@ interface PickerOption {
 }
 
 const CHAT_ROUTE_TASK = "general_chat";
+const CHAT_MODEL_TASK = "chat";
+const VOICE_TRANSCRIPTION_MODEL_TASK = "voice_transcription";
 
 const emptyProviderForm = (): ProviderFormState => ({
   providerId: null,
@@ -109,6 +114,18 @@ function boolString(value: boolean) {
 
 function modelDisplayName(model: ProviderModel) {
   return model.display_name || model.model_name;
+}
+
+function modelTaskType(model: ProviderModel) {
+  return model.config_json?.task_type || CHAT_MODEL_TASK;
+}
+
+function isChatModel(model: ProviderModel) {
+  return modelTaskType(model) === CHAT_MODEL_TASK;
+}
+
+function modelTaskLabel(model: ProviderModel) {
+  return modelTaskType(model) === VOICE_TRANSCRIPTION_MODEL_TASK ? "Voice" : "Chat";
 }
 
 function modelOptionLabel(row: EnabledModelRow) {
@@ -146,6 +163,14 @@ function apiKeyStatusClass(status: string) {
 
 function enabledModelCount(provider: Provider) {
   return provider.models.filter(model => boolValue(model.enabled)).length;
+}
+
+function modelCountByTask(provider: Provider, taskType: string) {
+  return provider.models.filter(model => modelTaskType(model) === taskType).length;
+}
+
+function enabledModelCountByTask(provider: Provider, taskType: string) {
+  return provider.models.filter(model => boolValue(model.enabled) && modelTaskType(model) === taskType).length;
 }
 
 function errorMessageFromBody(body: unknown) {
@@ -193,6 +218,7 @@ function createPreviewModels(providerId: string, modelPrefix: string): ProviderM
       supports_json_schema: "true",
       context_window: 128000,
       enabled: "true",
+      config_json: { task_type: CHAT_MODEL_TASK },
     },
     {
       id: `${providerId}-fast`,
@@ -203,6 +229,7 @@ function createPreviewModels(providerId: string, modelPrefix: string): ProviderM
       supports_json_schema: "false",
       context_window: 64000,
       enabled: "true",
+      config_json: { task_type: CHAT_MODEL_TASK },
     },
     {
       id: `${providerId}-reasoning`,
@@ -213,6 +240,18 @@ function createPreviewModels(providerId: string, modelPrefix: string): ProviderM
       supports_json_schema: "true",
       context_window: 256000,
       enabled: "false",
+      config_json: { task_type: CHAT_MODEL_TASK },
+    },
+    {
+      id: `${providerId}-voice`,
+      display_name: "Voice transcription",
+      model_name: `${normalized}-asr`,
+      deployment_name: `${normalized}-asr`,
+      supports_tools: "false",
+      supports_json_schema: "false",
+      context_window: null,
+      enabled: "true",
+      config_json: { task_type: VOICE_TRANSCRIPTION_MODEL_TASK },
     },
   ];
 }
@@ -249,7 +288,7 @@ function previewProviderPayload(): ProviderListResponse {
 
 function routeForProviders(providers: Provider[], currentRoute: Route | null): Route | null {
   const enabledRows = providers.flatMap(provider => provider.models
-    .filter(model => boolValue(provider.enabled) && boolValue(model.enabled))
+    .filter(model => boolValue(provider.enabled) && boolValue(model.enabled) && isChatModel(model))
     .map(model => ({ provider, model })));
   if (enabledRows.length === 0)
     return null;
@@ -552,7 +591,7 @@ export function AIProvidersPage({
 
   const enabledRows = useMemo(() => {
     return providers.flatMap(provider => provider.models
-      .filter(model => boolValue(provider.enabled) && boolValue(model.enabled))
+      .filter(model => boolValue(provider.enabled) && boolValue(model.enabled) && isChatModel(model))
       .map(model => ({ provider, model })));
   }, [providers]);
 
@@ -918,6 +957,11 @@ export function AIProvidersPage({
 
   const activeProviderCount = providers.filter(provider => boolValue(provider.enabled)).length;
   const totalModelCount = providers.reduce((count, provider) => count + provider.models.length, 0);
+  const chatModelCount = providers.reduce((count, provider) => count + provider.models.filter(isChatModel).length, 0);
+  const voiceModelCount = providers.reduce(
+    (count, provider) => count + provider.models.filter(model => modelTaskType(model) === VOICE_TRANSCRIPTION_MODEL_TASK).length,
+    0,
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8">
@@ -933,7 +977,9 @@ export function AIProvidersPage({
                 {activeProviderCount} active
               </StatusPill>
               <StatusPill>{providers.length} providers</StatusPill>
-              <StatusPill>{totalModelCount} models</StatusPill>
+              <StatusPill>{chatModelCount} chat</StatusPill>
+              <StatusPill>{voiceModelCount} voice</StatusPill>
+              <StatusPill>{totalModelCount} total</StatusPill>
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -1032,6 +1078,10 @@ export function AIProvidersPage({
                 const isProviderEnabled = boolValue(provider.enabled);
                 const routeUsesProvider = provider.models.some(model => model.id === route?.primary_model_id);
                 const providerEnabledModelCount = enabledModelCount(provider);
+                const providerChatModelCount = modelCountByTask(provider, CHAT_MODEL_TASK);
+                const providerVoiceModelCount = modelCountByTask(provider, VOICE_TRANSCRIPTION_MODEL_TASK);
+                const providerEnabledChatModelCount = enabledModelCountByTask(provider, CHAT_MODEL_TASK);
+                const providerEnabledVoiceModelCount = enabledModelCountByTask(provider, VOICE_TRANSCRIPTION_MODEL_TASK);
                 const isConfirmingDelete = confirmingDeleteProviderId === provider.id;
 
                 return (
@@ -1043,7 +1093,7 @@ export function AIProvidersPage({
                           <StatusPill tone={isProviderEnabled ? "active" : "default"}>
                             {isProviderEnabled ? "On" : "Off"}
                           </StatusPill>
-                          {routeUsesProvider ? <StatusPill tone="active">Chat</StatusPill> : null}
+                          {routeUsesProvider ? <StatusPill tone="active">Default chat</StatusPill> : null}
                           {provider.models.length === 0 ? <StatusPill tone="warning">No models</StatusPill> : null}
                         </div>
                         <p className="mt-1 truncate text-xs font-semibold text-muted">{provider.base_url}</p>
@@ -1051,7 +1101,10 @@ export function AIProvidersPage({
 
                       <div className="text-xs font-bold text-muted">
                         <span className="lg:hidden">Models: </span>
-                        {providerEnabledModelCount} of {provider.models.length} on
+                        {providerEnabledChatModelCount} of {providerChatModelCount} chat on
+                        <span className="mx-1 text-muted">·</span>
+                        {providerEnabledVoiceModelCount} of {providerVoiceModelCount} voice on
+                        <span className="sr-only">. {providerEnabledModelCount} of {provider.models.length} total models on.</span>
                       </div>
 
                       <div className={`inline-flex min-w-0 items-center gap-1 text-xs font-bold ${apiKeyStatusClass(provider.api_key_status)}`}>
@@ -1120,6 +1173,7 @@ export function AIProvidersPage({
                                   <div className="min-w-0">
                                     <div className="flex flex-wrap items-center gap-2">
                                       <p className="truncate text-xs font-extrabold text-default">{modelDisplayName(model)}</p>
+                                      <StatusPill tone={isChatModel(model) ? "default" : "active"}>{modelTaskLabel(model)}</StatusPill>
                                       {isPrimary ? <StatusPill tone="active">Default</StatusPill> : null}
                                       {!modelEnabled ? <StatusPill>Off</StatusPill> : null}
                                     </div>
@@ -1128,7 +1182,9 @@ export function AIProvidersPage({
                                     ) : null}
                                   </div>
                                   <p className="text-[11px] font-semibold text-muted">
-                                    {model.context_window ? `${model.context_window.toLocaleString()} tokens` : "Context unknown"}
+                                    {isChatModel(model)
+                                      ? model.context_window ? `${model.context_window.toLocaleString()} tokens` : "Context unknown"
+                                      : "Voice transcription"}
                                   </p>
                                   <div className="lg:justify-self-end">
                                     <SwitchControl

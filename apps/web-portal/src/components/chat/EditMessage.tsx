@@ -1,5 +1,5 @@
 import { useRef, useCallback, useLayoutEffect, useState } from "react";
-import { CornerDownLeft, X } from "lucide-react";
+import { ArrowUp, X } from "lucide-react";
 
 interface EditMessageProps {
   initialContent: string;
@@ -65,7 +65,7 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
             onKeyDown={handleKeyDown}
             disabled={isSaving}
             rows={1}
-            className={`${isExpanded ? "w-full" : "flex-1"} min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-5 disabled:opacity-70`}
+            className={`${isExpanded ? "w-full" : "flex-1"} min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-[7px] resize-none max-h-28 sm:max-h-[160px] leading-5 disabled:opacity-70`}
           />
 
           <div className={isExpanded ? "flex min-h-9 items-center justify-between gap-2" : "flex items-center gap-1 shrink-0"}>
@@ -82,10 +82,14 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
             <button
               type="submit"
               disabled={!canSave}
-              className="h-9 w-9 inline-flex items-center justify-center rounded-lg bg-raised hover-bg-surface text-default border border-default transition-all disabled:cursor-not-allowed disabled:opacity-40"
+              className={`h-9 w-9 inline-flex items-center justify-center rounded-full transition-all ${
+                canSave
+                  ? "border border-subtle bg-surface text-muted hover-text-default hover-bg-surface hover-border-default"
+                  : "border border-subtle bg-surface text-soft"
+              } disabled:cursor-not-allowed`}
               title="Send edited message"
             >
-              <CornerDownLeft className="w-4 h-4" />
+              <ArrowUp className="h-[26px] w-[26px]" />
             </button>
           </div>
         </div>
