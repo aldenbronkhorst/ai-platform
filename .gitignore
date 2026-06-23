@@ -39,6 +39,9 @@ Thumbs.db
 
 # Logs
 *.log
+.local/
+.playwright-cli/
+output/
 
 # Local env files
 .env

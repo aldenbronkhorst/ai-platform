@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 MAX_UNFILTERED_CONTENT_LIMIT = 10
 MAX_SCHEMA_ERROR_CHARS = 400
+DEFAULT_QUERY_LIMIT = 1000
+MAX_QUERY_LIMIT = 5000
 INVALID_FIELD_PATTERNS = [
     re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE),
     re.compile(r"Invalid field ['\"](?P<field>[\w_]+)['\"] on model ['\"](?P<model>[\w.]+)['\"]", re.IGNORECASE),
@@ -50,7 +52,7 @@ class OdooOpsRunnerRequest(BaseModel):
     domain: Optional[list[Any]] = None
     fields: Optional[list[str]] = None
     ids: Optional[list[int]] = None
-    limit: int = 50
+    limit: int = DEFAULT_QUERY_LIMIT
     offset: int = 0
     order: Optional[str] = None
     include_ids: bool = True
@@ -63,6 +65,10 @@ class OdooOpsRunnerRequest(BaseModel):
     lang: Optional[str] = None
     line_names: Optional[list[str]] = None
     include_raw_lines: bool = False
+    include_drilldowns: bool = False
+    drilldown_limit: int = DEFAULT_QUERY_LIMIT
+    drilldown_offset: int = 0
+    drilldown_fields: Optional[list[str]] = None
     attachment_id: Optional[int] = None
     attachment_ids: Optional[list[int]] = None
     content_fields: Optional[list[str]] = None
@@ -320,6 +326,15 @@ def _is_domain_operator(value: Any) -> bool:
     return isinstance(value, str) and value in DOMAIN_LOGICAL_OPERATORS
 
 
+def _is_domain_leaf(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) >= 3
+        and isinstance(value[0], str)
+        and value[0] not in DOMAIN_LOGICAL_OPERATORS
+    )
+
+
 def _normalize_mixed_domain(domain: list[Any] | None) -> list[Any]:
     """Convert implicit-leading AND domains before explicit operators to Odoo prefix form.
 
@@ -385,7 +400,10 @@ def _normalize_domain_field_aliases(model: str | None, domain: list[Any]) -> lis
 
 
 def _normalize_domain(model: str | None, domain: list[Any] | None) -> list[Any]:
-    return _normalize_domain_field_aliases(model, _normalize_mixed_domain(domain or []))
+    normalized_domain = domain or []
+    if _is_domain_leaf(normalized_domain):
+        normalized_domain = [normalized_domain]
+    return _normalize_domain_field_aliases(model, _normalize_mixed_domain(normalized_domain))
 
 
 def _invalid_field_info(exc: Exception) -> dict[str, str] | None:
@@ -428,18 +446,89 @@ def _valid_query_fields(client: OdooClient, model: str, requested_fields: list[s
     return valid_fields, invalid_fields, schema
 
 
-def _query_records(client: OdooClient, req: OdooOpsRunnerRequest, fields: list[str] | None = None) -> list[dict[str, Any]]:
-    if req.ids:
-        return client.read(model=req.model, ids=req.ids, fields=_normalize_fields(req.model, fields))
-    domain = _normalize_domain(req.model, req.domain)
-    return client.search_read(
+def _bounded_query_limit(limit: int | None) -> int:
+    try:
+        parsed = int(limit if limit is not None else DEFAULT_QUERY_LIMIT)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_QUERY_LIMIT
+    return max(1, min(parsed, MAX_QUERY_LIMIT))
+
+
+def _single_page_metadata(
+    *,
+    returned_count: int,
+    total_count: int,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    has_more = (offset + returned_count) < total_count
+    return {
+        "returned_count": returned_count,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "complete": not has_more,
+    }
+
+
+def _search_read_with_metadata(
+    client: OdooClient,
+    *,
+    req: OdooOpsRunnerRequest,
+    domain: list[Any],
+    fields: list[str] | None,
+    limit: int,
+    offset: int,
+    order: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Fetch a read-only result and attach complete/incomplete metadata."""
+    effective_limit = _bounded_query_limit(limit)
+    records = client.search_read(
         model=req.model,
+        domain=domain,
+        fields=fields,
+        limit=effective_limit,
+        offset=offset,
+        order=order,
+        include_ids=req.include_ids,
+    )
+    if len(records) < effective_limit:
+        total_count = offset + len(records)
+    else:
+        total_count = client.search_count(model=req.model, domain=domain or [])
+
+    metadata = _single_page_metadata(
+        returned_count=len(records),
+        total_count=total_count,
+        limit=effective_limit,
+        offset=offset,
+    )
+    return records, metadata
+
+
+def _query_records(
+    client: OdooClient,
+    req: OdooOpsRunnerRequest,
+    fields: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if req.ids:
+        records = client.read(model=req.model, ids=req.ids, fields=_normalize_fields(req.model, fields))
+        return records, _single_page_metadata(
+            returned_count=len(records),
+            total_count=len(records),
+            limit=_bounded_query_limit(req.limit),
+            offset=0,
+        )
+    domain = _normalize_domain(req.model, req.domain)
+    return _search_read_with_metadata(
+        client,
+        req=req,
         domain=domain,
         fields=_normalize_fields(req.model, fields),
         limit=req.limit,
         offset=req.offset,
         order=req.order,
-        include_ids=req.include_ids,
     )
 
 
@@ -476,6 +565,7 @@ def _paged_result(
     records: list[dict[str, Any]],
     *,
     payload_key: str = "records",
+    pagination: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     returned_count = len(records)
     domain = _normalize_domain(req.model, req.domain)
@@ -483,22 +573,25 @@ def _paged_result(
         "model": req.model,
         payload_key: _with_record_urls(req, records),
         "count": returned_count,
-        **_pagination_metadata(
-            client,
-            req.model,
-            domain,
-            returned_count,
-            req.limit,
-            req.offset,
-            req.ids,
+        **(
+            pagination
+            or _pagination_metadata(
+                client,
+                req.model,
+                domain,
+                returned_count,
+                req.limit,
+                req.offset,
+                req.ids,
+            )
         ),
     }
 
 
 def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
     try:
-        records = _query_records(client, req, req.fields)
-        return _paged_result(client, req, records)
+        records, pagination = _query_records(client, req, req.fields)
+        return _paged_result(client, req, records, pagination=pagination)
     except Exception as exc:
         invalid_field = _invalid_field_info(exc)
         requested_fields = set(req.fields or [])
@@ -518,14 +611,14 @@ def _run_query(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]:
         })
 
     try:
-        records = _query_records(client, req, valid_fields)
+        records, pagination = _query_records(client, req, valid_fields)
     except Exception as exc:
         invalid_field = _invalid_field_info(exc)
         if invalid_field:
             raise _invalid_domain_field_response(req, invalid_field)
         raise
     return {
-        **_paged_result(client, req, records),
+        **_paged_result(client, req, records, pagination=pagination),
         "warning": "Some requested fields do not exist on this Odoo model and were omitted.",
         "omitted_invalid_fields": invalid_fields,
         "field_errors": schema.get("field_errors"),
@@ -580,6 +673,10 @@ def _run_report(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any]
         lang=req.lang,
         line_names=req.line_names,
         include_raw_lines=req.include_raw_lines,
+        include_drilldowns=req.include_drilldowns,
+        drilldown_limit=req.drilldown_limit,
+        drilldown_offset=req.drilldown_offset,
+        drilldown_fields=req.drilldown_fields,
     )
     return OdooReportService(client).execute(report_req)
 
@@ -733,6 +830,13 @@ def _record_ids_from_execute_request(req: OdooOpsRunnerRequest) -> list[int]:
 
 def _normalize_execute_args(req: OdooOpsRunnerRequest) -> list[Any]:
     args = list(req.args or [])
+    record_ids = _record_ids_from_execute_request(req)
+
+    if record_ids:
+        if args and _is_int_list(args[0]) and args[0] == record_ids:
+            return args
+        return [record_ids, *args]
+
     if not _execute_method_requires_record_ids(req.method):
         return args
 
@@ -742,9 +846,6 @@ def _normalize_execute_args(req: OdooOpsRunnerRequest) -> list[Any]:
             return [[first_arg], *args[1:]]
         if _is_int_list(first_arg) and first_arg:
             return args
-        record_ids = _record_ids_from_execute_request(req)
-        if record_ids:
-            return [record_ids, *args]
         raise HTTPException(status_code=400, detail={
             "error": "invalid_recordset_args",
             "error_type": "invalid_recordset_args",
@@ -756,10 +857,6 @@ def _normalize_execute_args(req: OdooOpsRunnerRequest) -> list[Any]:
             "model": req.model,
             "suggestion": "Retry with ids, record_id, or args whose first item is a non-empty list of record IDs.",
         })
-
-    record_ids = _record_ids_from_execute_request(req)
-    if record_ids:
-        return [record_ids]
 
     raise HTTPException(status_code=400, detail={
         "error": "record_ids_required",
@@ -924,14 +1021,14 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
         limit = int(kwargs.get("limit") or req.limit)
         offset = int(kwargs.get("offset") or req.offset)
         order = kwargs.get("order") or req.order
-        records = client.search_read(
-            model=req.model,
+        records, pagination = _search_read_with_metadata(
+            client,
+            req=req,
             domain=domain,
             fields=_normalize_fields(req.model, fields),
             limit=limit,
             offset=offset,
             order=order,
-            include_ids=req.include_ids,
         )
         returned_count = len(records)
         return {
@@ -939,22 +1036,21 @@ def _run_execute(client: OdooClient, req: OdooOpsRunnerRequest) -> dict[str, Any
             "method": req.method,
             "result": _with_record_urls(req, records),
             "count": returned_count,
-            **_pagination_metadata(client, req.model, domain, returned_count, limit, offset),
+            **pagination,
         }
     args = _normalize_execute_args(req)
     result = client.call_with_transport(req.model, req.method, args=args, kwargs=req.kwargs or {})
     response: dict[str, Any] = {"model": req.model, "method": req.method, "result": result}
-    if _execute_method_requires_record_ids(req.method):
-        record_ids = _record_ids_from_execute_request(req)
-        if not record_ids and args and _is_int_list(args[0]):
-            record_ids = args[0]
-        if record_ids:
-            response["record_ids"] = record_ids
-            record_urls = _record_urls_for_ids(req, record_ids)
-            if record_urls:
-                response["record_urls"] = record_urls
-                if len(record_urls) == 1:
-                    response["record_url"] = record_urls[0]["url"]
+    record_ids = _record_ids_from_execute_request(req)
+    if not record_ids and _execute_method_requires_record_ids(req.method) and args and _is_int_list(args[0]):
+        record_ids = args[0]
+    if record_ids:
+        response["record_ids"] = record_ids
+        record_urls = _record_urls_for_ids(req, record_ids)
+        if record_urls:
+            response["record_urls"] = record_urls
+            if len(record_urls) == 1:
+                response["record_url"] = record_urls[0]["url"]
     if req.method == "message_post" and isinstance(result, int) and not isinstance(result, bool):
         response["message_id"] = result
     if req.method == "message_post":

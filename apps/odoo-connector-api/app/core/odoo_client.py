@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import ssl
@@ -11,32 +10,6 @@ import httpx
 
 
 logger = logging.getLogger(__name__)
-
-
-SAFE_TRANSPORT_FALLBACK_METHODS = {
-    "fields_get",
-    "fields_view_get",
-    "get_views",
-    "search",
-    "read",
-    "search_read",
-    "search_count",
-    "read_group",
-    "name_get",
-    "name_search",
-    "default_get",
-    "web_read",
-    "web_search_read",
-    "check_access_rights",
-    "check_access_rule",
-}
-
-# Methods that must use JSON-RPC because XML-RPC cannot marshal
-# None values in nested structures (e.g., account.report payloads).
-JSONRPC_REQUIRED_METHODS: set[tuple[str, str]] = {
-    ("account.report", "get_options"),
-    ("account.report", "get_report_information"),
-}
 
 
 class OdooError(Exception):
@@ -68,10 +41,26 @@ def compact_odoo_rpc_error(message: Any) -> str:
             text = "Odoo returned a server traceback while processing the request."
 
     text = text.replace("\\n", " ").replace("\n", " ")
-    text = re.sub(r"\s+", " ", text).strip(" '\"")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
     if len(text) > MAX_ODOO_ERROR_CHARS:
         return text[:MAX_ODOO_ERROR_CHARS].rstrip() + "..."
     return text
+
+
+def compact_odoo_jsonrpc_error(error: dict[str, Any]) -> str:
+    data = error.get("data")
+    if isinstance(data, dict):
+        for key in ("debug", "message"):
+            compacted = compact_odoo_rpc_error(data.get(key))
+            if compacted != "Odoo returned an error.":
+                return compacted
+        name = data.get("name")
+        if name:
+            return compact_odoo_rpc_error(name)
+
+    return compact_odoo_rpc_error(error.get("message"))
 
 
 @dataclass(frozen=True)
@@ -228,7 +217,8 @@ class OdooClient:
         response.raise_for_status()
         data = response.json()
         if data.get("error"):
-            raise OdooError(f"Odoo JSON-RPC error: {json.dumps(data['error'], default=str)[:2000]}")
+            message = compact_odoo_jsonrpc_error(data["error"])
+            raise OdooError(f"Odoo JSON-RPC error: {message}")
         return data.get("result")
 
     def call_with_transport(self, model: str, method: str, args: list[Any] | None = None, kwargs: dict[str, Any] | None = None) -> Any:
@@ -237,24 +227,7 @@ class OdooClient:
         if self.transport == "jsonrpc":
             return self.execute_kw_jsonrpc(model, method, args, kwargs)
         if self.transport == "auto":
-            # JSON-RPC is required for methods that return nested null values
-            if (model, method) in JSONRPC_REQUIRED_METHODS:
-                return self.execute_kw_jsonrpc(model, method, args, kwargs)
-            if method not in SAFE_TRANSPORT_FALLBACK_METHODS:
-                return self.execute_kw_xmlrpc(model, method, args, kwargs)
-            try:
-                return self.execute_kw_jsonrpc(model, method, args, kwargs)
-            except OdooAuthError:
-                raise
-            except Exception as jsonrpc_error:
-                try:
-                    return self.execute_kw_xmlrpc(model, method, args, kwargs)
-                except OdooAuthError:
-                    raise
-                except Exception as xmlrpc_error:
-                    raise OdooError(
-                        f"Both Odoo API transports failed. JSON-RPC: {jsonrpc_error}; XML-RPC: {xmlrpc_error}"
-                    ) from xmlrpc_error
+            return self.execute_kw_jsonrpc(model, method, args, kwargs)
         return self.execute_kw_xmlrpc(model, method, args, kwargs)
 
     def execute_kw(self, model: str, method: str, args: list[Any] | None = None, kwargs: dict[str, Any] | None = None) -> Any:

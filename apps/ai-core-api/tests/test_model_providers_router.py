@@ -157,6 +157,57 @@ def test_provider_model_helpers_pick_general_chat_models():
     assert sorted(models, key=_chat_model_sort_key)[0].model_name == "provider-v1-auto"
 
 
+def test_provider_model_parser_uses_provider_metadata_for_voice_models():
+    from app.routers.model_providers import _parse_models_payload
+
+    parsed = _parse_models_payload({
+        "data": [
+            {
+                "id": "provider-chat-latest",
+                "name": "Provider Chat Latest",
+                "capabilities": ["chat", "tools"],
+                "supported_parameters": ["tools", "tool_choice"],
+            },
+            {
+                "id": "provider-speech-latest",
+                "name": "Provider Speech Latest",
+                "modalities": ["audio", "text"],
+            },
+            {
+                "id": "provider-transcriber",
+                "name": "Provider Transcriber",
+                "architecture": {"input_modalities": ["audio"], "output_modalities": ["text"]},
+            },
+        ]
+    })
+
+    by_id = {model.id: model for model in parsed}
+    assert by_id["provider-chat-latest"].task_type == "chat"
+    assert by_id["provider-chat-latest"].supports_tools is True
+    assert by_id["provider-speech-latest"].task_type == "voice_transcription"
+    assert by_id["provider-transcriber"].task_type == "voice_transcription"
+
+
+def test_provider_model_parser_falls_back_to_voice_model_name_markers():
+    from app.routers.model_providers import _parse_models_payload
+
+    parsed = _parse_models_payload({"data": [{"id": "glm-asr-2512", "name": "GLM ASR 2512"}]})
+
+    assert parsed[0].task_type == "voice_transcription"
+
+
+def test_provider_catalog_adds_documented_zai_voice_model():
+    from app.routers.model_providers import DiscoveredModel, _merge_catalog_models
+
+    parsed = _merge_catalog_models("https://api.z.ai/api/paas/v4", [DiscoveredModel(id="glm-5.2")])
+
+    by_id = {model.id: model for model in parsed}
+    assert by_id["glm-5.2"].task_type == "chat"
+    assert by_id["glm-asr-2512"].display_name == "GLM ASR 2512"
+    assert by_id["glm-asr-2512"].task_type == "voice_transcription"
+    assert by_id["glm-asr-2512"].supports_tools is False
+
+
 def test_model_provider_upsert_stores_key_and_syncs_models(monkeypatch):
     stored = _patch_key_vault(monkeypatch)
 
@@ -199,6 +250,46 @@ def test_model_provider_upsert_stores_key_and_syncs_models(monkeypatch):
     assert _model_ids(provider) == {"provider-chat-latest", "provider-fast"}
     assert all(model["enabled"] == "true" for model in provider["models"])
     assert payload["route"]["primary_model_id"] in {model["id"] for model in provider["models"]}
+
+
+def test_model_provider_upsert_stores_voice_models_outside_chat_route(monkeypatch):
+    stored = _patch_key_vault(monkeypatch)
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        from app.routers.model_providers import DiscoveredModel
+
+        assert api_key == "secret-value"
+        return [
+            DiscoveredModel(id="provider-chat-latest", display_name="Provider Chat Latest", task_type="chat"),
+            DiscoveredModel(
+                id="provider-speech-latest",
+                display_name="Provider Speech Latest",
+                supports_tools=True,
+                supports_json_schema=True,
+                task_type="voice_transcription",
+            ),
+        ]
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    provider_name = f"Voice Tagged {uuid.uuid4()}"
+    response = client.post("/model-providers", json={
+        "name": provider_name,
+        "base_url": "https://provider.example/v1",
+        "api_key": "secret-value",
+    })
+
+    assert response.status_code == 201
+    assert stored
+    payload = response.json()
+    provider = next(item for item in payload["providers"] if item["name"] == provider_name)
+    models = {model["model_name"]: model for model in provider["models"]}
+    assert models["provider-chat-latest"]["config_json"]["task_type"] == "chat"
+    assert models["provider-speech-latest"]["config_json"]["task_type"] == "voice_transcription"
+    assert models["provider-speech-latest"]["supports_tools"] == "false"
+    assert models["provider-speech-latest"]["supports_json_schema"] == "false"
+    assert payload["route"]["primary_model_id"] != models["provider-speech-latest"]["id"]
 
 
 def test_model_provider_upsert_enabled_without_key_is_rejected(monkeypatch):

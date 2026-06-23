@@ -1,5 +1,40 @@
 # AI Platform
 
+## Local Full-Stack Testing
+
+Run the full platform locally, while using the same Azure-backed database, Key Vault secrets, Microsoft login, and existing connector records:
+
+```bash
+./scripts/dev-local-stack.sh
+```
+
+Then open:
+
+```text
+http://localhost:5173
+```
+
+The script starts:
+
+- web portal: `http://localhost:5173`
+- AI core API: `http://127.0.0.1:8000`
+- Odoo connector API: `http://127.0.0.1:8010`
+
+It pulls required secrets from Azure Container Apps at runtime and does not write production secrets into repo files. It also creates or updates a single PostgreSQL firewall rule for this Mac's current public IP so the local API can reach the live database. You must be logged into Azure CLI as an account with access to the production resource group:
+
+```bash
+az account show
+```
+
+Press `Ctrl+C` in the script terminal to stop all local services. Logs are written to `.local/logs/`.
+
+Optional local overrides:
+
+```bash
+UVICORN_RELOAD=true ./scripts/dev-local-stack.sh
+LOCAL_POSTGRES_FIREWALL=false ./scripts/dev-local-stack.sh
+```
+
 Cloud-hosted AI workspace for Lots Lots More.
 
 The product goal is simple: users sign in with Microsoft, connect their own

@@ -162,6 +162,20 @@ def test_voice_interim_text_is_visible_in_composer():
     assert "bg-[var(--color-warning)] text-white" in content
 
 
+def test_markdown_tables_preserve_escaped_pipes_inside_cells():
+    renderer_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
+    with open(renderer_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "function isEscapedPipe" in content
+    assert 'char === "|" && !isEscapedPipe(trimmed, index)' in content
+    assert 'replace(/\\\\\\|/g, "|")' in content
+    assert "function normalizeTableRow" in content
+    assert "cells.length < headers.length" in content
+    assert "flexibleCellIndex(headers)" in content
+    assert "isTableLikeRow(lines[index])" in content
+
+
 def test_ios_pwa_manifest_and_icons_are_declared():
     manifest_path = os.path.join(PUBLIC_DIR, "manifest.webmanifest")
     with open(manifest_path, "r", encoding="utf-8") as f:
@@ -265,13 +279,41 @@ def test_microsoft_native_device_login_uses_verification_url_directly():
     assert "targetWindow.location.href = targetUrl" in content
 
 
-def test_pending_activity_uses_plain_user_facing_statuses():
-    component_path = os.path.join(SRC_DIR, "components", "chat", "PendingAssistant.tsx")
-    with open(component_path, "r", encoding="utf-8") as f:
-        content = f.read()
+def test_pending_activity_uses_chronological_work_log():
+    pending_path = os.path.join(SRC_DIR, "components", "chat", "PendingAssistant.tsx")
+    work_log_path = os.path.join(SRC_DIR, "components", "chat", "AgentWorkLog.tsx")
+    runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
+    with open(pending_path, "r", encoding="utf-8") as f:
+        pending = f.read()
+    with open(work_log_path, "r", encoding="utf-8") as f:
+        work_log = f.read()
+    with open(runtime_path, "r", encoding="utf-8") as f:
+        runtime = f.read()
 
-    assert "Checking connected apps" in content
-    assert "Writing the reply" in content
-    assert "token" not in content.lower()
-    assert "toolDetail" not in content
-    assert "duration_ms" not in content
+    assert "AgentWorkLog" in pending
+    assert "stream_work_items" in work_log
+    assert "stream_work_items" in runtime
+    assert "stream_reasoning" not in runtime
+    assert "reasoning_content" not in work_log
+    assert "stream_reasoning" not in work_log
+    assert "isTableLikeLine" in work_log
+    assert "collapseRepeatedWords" in work_log
+    assert "Worked for" in work_log
+    assert "Checking connected apps" not in pending + work_log
+    assert "Writing the reply" not in pending + work_log
+    assert "toolDetail" not in pending + work_log
+
+
+def test_stream_updates_apply_each_chunk_once():
+    controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
+    runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
+    with open(controller_path, "r", encoding="utf-8") as f:
+        controller = f.read()
+    with open(runtime_path, "r", encoding="utf-8") as f:
+        runtime = f.read()
+
+    assert "let pendingStreamMessage: ChatMessage | null = null;" in controller
+    assert "const updatedMessage = updater(localMessage);" in controller
+    assert "pendingStreamMessage = updatedMessage;" in controller
+    assert "m.id === pendingMessageId ? updatedMessage : m" in controller
+    assert "current.filter(isRecord).map(existing => ({ ...existing }))" in runtime

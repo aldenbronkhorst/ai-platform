@@ -8,7 +8,9 @@ os.environ["DEBUG"] = "true"
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.main import app
-from app.core.odoo_client import OdooError
+from app.core.odoo_client import OdooClient, OdooCredentials, OdooError, compact_odoo_jsonrpc_error
+from app.models.schemas import OdooCredentialsRequest, OdooExecuteReportRequest
+from app.services.odoo_report_service import OdooReportService
 
 client = TestClient(app)
 
@@ -51,6 +53,44 @@ class TestHealth:
 
 
 class TestOdooOpsRunner:
+    def test_auto_transport_uses_jsonrpc_for_record_methods_that_return_none(self):
+        odoo = OdooClient(
+            OdooCredentials(
+                url="https://example.odoo.com",
+                db="test",
+                username="test",
+                password_or_api_key="test",
+            ),
+            transport="auto",
+        )
+        odoo.execute_kw_jsonrpc = MagicMock(return_value=None)
+        odoo.execute_kw_xmlrpc = MagicMock()
+
+        result = odoo.call_with_transport("account.move", "button_draft", args=[[56137]], kwargs={})
+
+        assert result is None
+        odoo.execute_kw_jsonrpc.assert_called_once_with("account.move", "button_draft", [[56137]], {})
+        odoo.execute_kw_xmlrpc.assert_not_called()
+
+    def test_jsonrpc_error_compacts_debug_traceback(self):
+        error = {
+            "code": 200,
+            "message": "Odoo Server Error",
+            "data": {
+                "name": "builtins.TypeError",
+                "debug": (
+                    "Traceback (most recent call last):\n"
+                    "  File \"/odoo/http.py\", line 1, in _serve_db\n"
+                    "TypeError: AccountMove.js_assign_outstanding_line() missing 1 required positional argument: 'line_id'\n"
+                ),
+            },
+        }
+
+        message = compact_odoo_jsonrpc_error(error)
+
+        assert message == "TypeError: AccountMove.js_assign_outstanding_line() missing 1 required positional argument: 'line_id'"
+        assert "Traceback" not in message
+
     @patch("app.routers.ops_runner._get_client")
     def test_schema_handles_unavailable_candidate_model(self, mock_get_client):
         mock_client = MagicMock()
@@ -130,6 +170,36 @@ class TestOdooOpsRunner:
         assert creds_arg.db == user_db
 
     @patch("app.routers.ops_runner._get_client")
+    def test_query_normalizes_single_leaf_domain(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": 56137, "name": "INV-2026-02128"}]
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="account.move",
+                domain=["id", "in", [56137, 56737]],
+                fields=["id", "name"],
+                limit=10,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["records"][0]["name"] == "INV-2026-02128"
+        mock_client.search_read.assert_called_once_with(
+            model="account.move",
+            domain=[["id", "in", [56137, 56737]]],
+            fields=["id", "name"],
+            limit=10,
+            offset=0,
+            order=None,
+            include_ids=True,
+        )
+
+    @patch("app.routers.ops_runner._get_client")
     def test_query_marks_short_first_page_complete_without_count_call(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.search_read.return_value = [{"id": 1}, {"id": 2}]
@@ -183,6 +253,77 @@ class TestOdooOpsRunner:
         mock_client.search_count.assert_called_once_with(
             model="account.move",
             domain=[["write_date", ">=", "2026-06-04"]],
+        )
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_query_returns_broad_read_only_records_inside_one_tool_call(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": i} for i in range(237)]
+        mock_client.search_count.return_value = 237
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="sale.order.line",
+                domain=[["product_id", "!=", False]],
+                fields=["id", "product_id", "product_uom_qty"],
+                limit=500,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 237
+        assert data["total_count"] == 237
+        assert data["has_more"] is False
+        assert data["complete"] is True
+        assert len(data["records"]) == 237
+        mock_client.search_read.assert_called_once_with(
+            model="sale.order.line",
+            domain=[["product_id", "!=", False]],
+            fields=["id", "product_id", "product_uom_qty"],
+            limit=500,
+            offset=0,
+            order=None,
+            include_ids=True,
+        )
+        mock_client.search_count.assert_not_called()
+
+    @patch("app.routers.ops_runner._get_client")
+    def test_query_limit_is_total_cap_not_page_size(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.search_read.return_value = [{"id": i} for i in range(150)]
+        mock_client.search_count.return_value = 237
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "query",
+                model="sale.order.line",
+                domain=[["product_id", "!=", False]],
+                limit=150,
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["returned_count"] == 150
+        assert data["total_count"] == 237
+        assert data["has_more"] is True
+        assert data["complete"] is False
+        mock_client.search_read.assert_called_once_with(
+            model="sale.order.line",
+            domain=[["product_id", "!=", False]],
+            fields=None,
+            limit=150,
+            offset=0,
+            order=None,
+            include_ids=True,
         )
 
     @patch("app.routers.ops_runner._get_client")
@@ -840,6 +981,33 @@ class TestOdooOpsRunner:
         )
 
     @patch("app.routers.ops_runner._get_client")
+    def test_execute_unknown_record_method_uses_ids_before_other_args(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_client.call_with_transport.return_value = True
+        mock_get_client.return_value = mock_client
+
+        response = client.post(
+            "/odoo/ops/run",
+            json=ops_payload(
+                "execute",
+                model="account.move",
+                method="js_assign_outstanding_line",
+                ids=[57559],
+                args=[223707],
+            ),
+            headers=AUTH_HEADERS,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["record_ids"] == [57559]
+        mock_client.call_with_transport.assert_called_once_with(
+            "account.move",
+            "js_assign_outstanding_line",
+            args=[[57559], 223707],
+            kwargs={},
+        )
+
+    @patch("app.routers.ops_runner._get_client")
     def test_write_normalizes_bare_x2many_set_command(self, mock_get_client):
         mock_client = MagicMock()
         mock_client.fields_get.return_value = {
@@ -1032,9 +1200,102 @@ class TestOdooOpsRunner:
                 date_from="2026-05-01",
                 date_to="2026-05-31",
                 line_names=["Revenue"],
+                include_drilldowns=True,
+                drilldown_limit=25,
             ),
             headers=AUTH_HEADERS,
         )
 
         assert response.status_code == 200
         assert response.json()["report_name"] == "Profit and Loss"
+        service_req = mock_report_service.return_value.execute.call_args.args[0]
+        assert service_req.include_drilldowns is True
+        assert service_req.drilldown_limit == 25
+
+
+class TestOdooReportServiceDrilldowns:
+    def test_report_execute_exposes_and_reads_auditable_cell_drilldown(self):
+        mock_client = MagicMock()
+
+        def search_read(model, **kwargs):
+            if model == "account.report":
+                return [{"id": 21, "name": "Tax Report"}]
+            if model == "account.move.line":
+                return [{"id": 501, "date": "2026-05-10", "move_id": {"id": 700, "name": "INV/001"}, "balance": 1000.0}]
+            return []
+
+        def call_with_transport(model, method, args=None, kwargs=None):
+            if model == "account.report" and method == "get_options":
+                return {"report_id": 21, "date": {"date_from": "2026-05-01", "date_to": "2026-05-31"}}
+            if model == "account.report" and method == "get_report_information":
+                return {
+                    "lines": [
+                        {
+                            "id": "report-line-1",
+                            "name": "[1] Standard Rate",
+                            "code": "tax_1",
+                            "level": 5,
+                            "columns": [
+                                {
+                                    "name": "1,000.00",
+                                    "no_format": 1000.0,
+                                    "auditable": True,
+                                    "has_sublines": True,
+                                    "report_line_id": 73,
+                                    "expression_label": "balance",
+                                    "column_group_key": "date-range-key",
+                                    "figure_type": "monetary",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            if model == "account.report" and method == "dispatch_report_action":
+                return {
+                    "name": "Journal Items",
+                    "type": "ir.actions.act_window",
+                    "res_model": "account.move.line",
+                    "domain": [["tax_tag_ids", "in", [20, 21]]],
+                }
+            raise AssertionError(f"Unexpected call {model}.{method}")
+
+        mock_client.search_read.side_effect = search_read
+        mock_client.call_with_transport.side_effect = call_with_transport
+        mock_client.fields_get.return_value = {
+            "fields": {
+                "date": {"type": "date"},
+                "move_id": {"type": "many2one"},
+                "balance": {"type": "monetary"},
+            }
+        }
+        mock_client.search_count.return_value = 1
+
+        req = OdooExecuteReportRequest(
+            credentials=OdooCredentialsRequest(**CREDENTIALS),
+            report_name="Tax Report",
+            date_from="2026-05-01",
+            date_to="2026-05-31",
+            line_names=["Standard Rate"],
+            include_drilldowns=True,
+            drilldown_fields=["date", "move_id", "balance"],
+            drilldown_limit=25,
+        )
+
+        result = OdooReportService(mock_client).execute(req)
+
+        assert result["lines"][0]["value"] == 1000.0
+        assert result["lines"][0]["drilldown_available"] is True
+        assert result["lines"][0]["drilldown_columns"][0]["expression_label"] == "balance"
+        assert result["drilldowns"][0]["source"] == "odoo_account_report_action_audit_cell"
+        assert result["drilldowns"][0]["res_model"] == "account.move.line"
+        assert result["drilldowns"][0]["total_count"] == 1
+        assert result["drilldowns"][0]["complete"] is True
+        assert result["drilldowns"][0]["records"][0]["record_url"] == (
+            "https://example.odoo.com/web#id=501&model=account.move.line&view_type=form"
+        )
+        dispatch_call = [
+            call for call in mock_client.call_with_transport.call_args_list
+            if call.args[1] == "dispatch_report_action"
+        ][0]
+        assert dispatch_call.args[2][2] == "action_audit_cell"
+        assert dispatch_call.args[2][3]["calling_line_dict_id"] == "report-line-1"

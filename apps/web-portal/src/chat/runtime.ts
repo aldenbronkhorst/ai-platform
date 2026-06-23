@@ -99,9 +99,9 @@ export interface ChatFailurePayload {
   httpStatus: number;
 }
 
-function detailString(value: unknown, fallback = "") {
+function detailString(value: unknown, defaultValue = "") {
   if (typeof value === "string") return value;
-  if (value === null || value === undefined) return fallback;
+  if (value === null || value === undefined) return defaultValue;
   try {
     return JSON.stringify(value, null, 2);
   } catch {
@@ -141,7 +141,7 @@ export async function chatFailureFromResponse(res: Response, requestId: string):
   };
 }
 
-export async function uploadFailureFromResponse(res: Response, fallback: string): Promise<string> {
+export async function uploadFailureFromResponse(res: Response, defaultMessage: string): Promise<string> {
   const body = await res.json().catch(() => null);
   const detail = body && typeof body === "object" && "detail" in body
     ? (body as { detail?: unknown }).detail
@@ -149,16 +149,37 @@ export async function uploadFailureFromResponse(res: Response, fallback: string)
 
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
     const record = detail as Record<string, unknown>;
-    return detailString(record.error_message || record.message || record.error || detail, fallback);
+    return detailString(record.error_message || record.message || record.error || detail, defaultMessage);
   }
-  return detailString(detail, fallback);
+  return detailString(detail, defaultMessage);
 }
 
 export function appendActivityEvent(message: ChatMessage, event: unknown): ChatMessage {
   const metadata = isRecord(message.metadata_json) ? { ...message.metadata_json } : {};
   const current = Array.isArray(metadata.activity_events) ? metadata.activity_events : [];
   metadata.activity_events = [...current, event];
+  metadata.stream_work_items = appendWorkItem(metadata.stream_work_items, {
+    kind: "activity",
+    event,
+  });
   return { ...message, metadata_json: metadata };
+}
+
+function appendWorkItem(current: unknown, item: Record<string, unknown>) {
+  const items = Array.isArray(current) ? current.filter(isRecord).map(existing => ({ ...existing })) : [];
+  return [...items, item].slice(-80);
+}
+
+export function mergeStreamMetadata(finalMessage: ChatMessage, pendingMessage: ChatMessage | null): ChatMessage {
+  if (!pendingMessage || !isRecord(pendingMessage.metadata_json)) return finalMessage;
+  const pendingMetadata = pendingMessage.metadata_json;
+  const finalMetadata = isRecord(finalMessage.metadata_json) ? { ...finalMessage.metadata_json } : {};
+  for (const key of ["stream_work_items"]) {
+    if (finalMetadata[key] === undefined && pendingMetadata[key] !== undefined) {
+      finalMetadata[key] = pendingMetadata[key];
+    }
+  }
+  return { ...finalMessage, metadata_json: finalMetadata };
 }
 
 export function parseSseChunk(buffer: string) {

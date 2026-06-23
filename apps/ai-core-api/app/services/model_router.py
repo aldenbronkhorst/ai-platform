@@ -34,19 +34,23 @@ ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an adm
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
-MAX_TOOL_RESULT_RECORD_ITEMS = 80
+MAX_TOOL_RESULT_RECORD_ITEMS = 500
 MAX_TOOL_RESULT_DICT_KEYS = 60
-MAX_TOOL_RESULT_JSON_CHARS = 50000
-MAX_ODOO_RECORD_CONTEXT_CHARS = 20000
-MAX_ODOO_RECORD_CONTEXT_ITEMS = 25
-TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "8000"))
+MAX_TOOL_RESULT_JSON_CHARS = 350000
+MAX_ODOO_RECORD_CONTEXT_CHARS = 300000
+MAX_ODOO_RECORD_CONTEXT_ITEMS = 500
+ODOO_BROAD_QUERY_LIMIT = 5000
+STRUCTURED_CHAT_TABLE_ROW_LIMIT = 500
+TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "24000"))
 TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
+MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "10"))
 TOOL_ERROR_SUMMARY_LIMIT = 8
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
+        "If another tool is needed, call it now instead of saying you will check next. "
         "Do not tell users to run local native-tool logins; report connector auth/profile failures as platform issues. "
         "If the user asks for all rows, every record, or a complete table, include all rows visible in the tool results. "
         "Do not put final table rows in hidden reasoning. Keep non-table text concise and state any uncertainty clearly."
@@ -109,21 +113,6 @@ CANONICAL_SYSTEM_PROMPT = (
 )
 
 DEFAULT_PLATFORM_TIMEZONE = os.environ.get("PLATFORM_TIMEZONE", "Africa/Johannesburg")
-FOLLOW_UP_CONTEXT_WORDS = {
-    "same", "again", "this", "that", "these", "those", "it", "she", "he",
-    "they", "them", "her", "him", "full", "more", "all", "timeline",
-}
-FOLLOW_UP_GREETINGS = {"hi", "hello", "hey", "thanks", "thank you"}
-FOLLOW_UP_CORRECTION_WORDS = {
-    "actually", "correction", "meant", "mean", "instead", "rather", "sorry",
-    "previous", "earlier",
-}
-MONTH_WORDS = {
-    "jan", "january", "feb", "february", "mar", "march", "apr", "april",
-    "may", "jun", "june", "jul", "july", "aug", "august", "sep", "sept",
-    "september", "oct", "october", "nov", "november", "dec", "december",
-}
-DATE_LIKE_RE = re.compile(r"\b\d{1,4}([/-]\d{1,2}){1,2}\b|\b\d{1,2}(st|nd|rd|th)?\b", re.IGNORECASE)
 
 
 @dataclass
@@ -417,9 +406,33 @@ def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
 def _normalize_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
     mode = str(normalized.get("mode") or "").strip()
+    if not mode and _is_query_shaped_odoo_call(normalized):
+        normalized["mode"] = "query"
+        mode = "query"
     if mode == "message" and not normalized.get("operation"):
         normalized["operation"] = "post"
     return normalized
+
+
+def _is_query_shaped_odoo_call(arguments: dict[str, Any]) -> bool:
+    if not arguments.get("model"):
+        return False
+    if any(arguments.get(key) not in (None, "", [], {}) for key in (
+        "operation",
+        "values",
+        "body",
+        "record_id",
+        "ids",
+        "method",
+        "args",
+        "kwargs",
+        "report_name",
+        "report_id",
+        "attachment_id",
+        "attachment_ids",
+    )):
+        return False
+    return any(key in arguments for key in ("domain", "fields", "limit", "offset", "order"))
 
 
 def _handled_odoo_schema_connector_error(
@@ -937,6 +950,655 @@ def _compact_tool_result_for_model(result: Any) -> Any:
 def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
 
+
+def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _is_broad_odoo_detail_request(text: str) -> bool:
+    normalized = text.lower()
+    return bool(re.search(
+        r"\b(all|every|complete|full)\b|all\s+(sales?|orders?|rows?|records?)|"
+        r"\b(line[- ]by[- ]line|each\s+so|each\s+sales?\s+order)\b|"
+        r"\b\d[\d,]*\s*k?\s+(rows?|records?|orders?|items?|lines?)\b",
+        normalized,
+    ))
+
+
+def _requested_result_size(text: str) -> int | None:
+    normalized = text.lower()
+    patterns = [
+        r"\b(?:limit|top|first|last|latest|only|max(?:imum)?)\s+(?P<count>\d[\d,]*(?:\.\d+)?)\s*(?P<suffix>k)?\b",
+        r"\b(?P<count>\d[\d,]*(?:\.\d+)?)\s*(?P<suffix>k)?\s+(?:rows?|records?|orders?|items?|lines?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        count = float(match.group("count").replace(",", ""))
+        if match.groupdict().get("suffix"):
+            count *= 1000
+        return int(count)
+    return None
+
+
+def _user_requested_chat_sized_result(text: str) -> bool:
+    requested_size = _requested_result_size(text)
+    return requested_size is not None and requested_size <= ODOO_BROAD_QUERY_LIMIT
+
+
+def _user_requested_oversized_raw_result(text: str) -> bool:
+    requested_size = _requested_result_size(text)
+    return requested_size is not None and requested_size > ODOO_BROAD_QUERY_LIMIT
+
+
+def _normalize_odoo_read_args_for_request(args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    mode = str(args.get("mode") or "").strip().lower()
+    method = str(args.get("method") or "").strip().lower()
+    is_read_call = mode == "query" or (mode == "execute" and method in {"search_read", "search"})
+    if not is_read_call:
+        return args
+
+    user_text = _latest_user_text(messages)
+    if not _is_broad_odoo_detail_request(user_text) or _user_requested_chat_sized_result(user_text):
+        return args
+    if _user_requested_oversized_raw_result(user_text):
+        return args
+
+    try:
+        requested_limit = int(args.get("limit") or 0)
+    except (TypeError, ValueError):
+        requested_limit = 0
+    requested_size = _requested_result_size(user_text)
+    if requested_size is None and requested_limit >= ODOO_BROAD_QUERY_LIMIT:
+        return args
+
+    normalized = dict(args)
+    normalized["limit"] = ODOO_BROAD_QUERY_LIMIT
+    return normalized
+
+
+def _odoo_raw_pagination_policy_result(args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    mode = str(args.get("mode") or "").strip().lower()
+    method = str(args.get("method") or "").strip().lower()
+    is_read_call = mode == "query" or (mode == "execute" and method in {"search_read", "search"})
+    if not is_read_call:
+        return None
+
+    user_text = _latest_user_text(messages)
+    if not _is_broad_odoo_detail_request(user_text) or _user_requested_chat_sized_result(user_text):
+        return None
+
+    try:
+        offset = int(args.get("offset") or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    requested_size = _requested_result_size(user_text)
+    is_explicitly_oversized = requested_size is not None and requested_size > ODOO_BROAD_QUERY_LIMIT
+    is_manual_raw_page = offset > 0
+    if not is_explicitly_oversized and not is_manual_raw_page:
+        return None
+
+    if is_explicitly_oversized:
+        message = (
+            f"The user requested {requested_size} raw Odoo rows, which is larger than the chat raw row ceiling "
+            f"of {ODOO_BROAD_QUERY_LIMIT}. Raw Odoo reads for oversized results are not executed in chat."
+        )
+        recommended_next_step = (
+            "Use Odoo count or aggregate for analysis. If every raw row is genuinely needed, ask for narrower filters "
+            "or use a dedicated export workflow instead of paging raw rows through the chat model."
+        )
+    else:
+        message = (
+            "Raw Odoo pagination was stopped because the request is larger than the chat result ceiling. "
+            "Use count or aggregate for analysis, narrow the filters, or use an export workflow for the full raw dataset."
+        )
+        recommended_next_step = (
+            "Do not fetch additional raw pages into chat. Summarize the visible records, call aggregate for totals, "
+            "or ask the user for narrower filters/export requirements."
+        )
+
+    return {
+        "error": False,
+        "status": "skipped",
+        "handled": True,
+        "policy": "large_raw_result",
+        "model": args.get("model"),
+        "message": message,
+        "recommended_next_step": recommended_next_step,
+        "requested_size": requested_size,
+        "limit": ODOO_BROAD_QUERY_LIMIT,
+        "offset": offset,
+        "complete": False,
+        "has_more": True,
+    }
+
+
+def _normalize_tool_call_arguments_for_request(call: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    if call.get("type") != "function":
+        return call
+    function = call.get("function", {})
+    if function.get("name") != "odoo_ops_runner":
+        return call
+    try:
+        args = json.loads(function.get("arguments", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return call
+    if not isinstance(args, dict):
+        return call
+
+    normalized_args = _normalize_odoo_read_args_for_request(args, messages)
+    if normalized_args is args:
+        return call
+    normalized_call = dict(call)
+    normalized_function = dict(function)
+    normalized_function["arguments"] = json.dumps(normalized_args, ensure_ascii=False)
+    normalized_call["function"] = normalized_function
+    return normalized_call
+
+
+def _value_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("display_name") or value.get("id") or "")
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return str(value[1] or value[0] or "")
+    return str(value or "")
+
+
+def _format_quantity(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return str(value or "")
+    if number.is_integer():
+        return f"{int(number):,}"
+    return f"{number:,.2f}".rstrip("0").rstrip(".")
+
+
+def _format_amount(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return str(value or "")
+    sign = "-" if number < 0 else ""
+    return f"{sign}{abs(number):,.2f}"
+
+
+def _markdown_text(value: Any) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _markdown_cell(value: Any) -> str:
+    return _markdown_text(value).replace("|", "\\|")
+
+
+def _is_structured_table_request(text: str) -> bool:
+    normalized = text.lower()
+    return any(phrase in normalized for phrase in (
+        "table",
+        "tabular",
+        "spreadsheet",
+        "rows",
+        "list",
+        "break down",
+        "breakdown",
+        "per product",
+        "per customer",
+        "per sales order",
+        "per so",
+        "compare",
+    ))
+
+
+def _is_odoo_action_workflow_request(text: str) -> bool:
+    return bool(re.search(
+        r"\b("
+        r"fix|update|change|write|set|reset|draft|post|repost|confirm|validate|cancel|"
+        r"delete|remove|unlink|reconcile|unreconcile|allocate|reallocate|put\s+back"
+        r")\b",
+        text.lower(),
+    ))
+
+
+ODOO_DOCUMENT_REF_RE = re.compile(
+    r"\b(?:INV|RINV|BILL|SO|PO|BNK\d*)-\d{4}-\d{5}\b|\bR\d{3}[A-Z0-9]{5,}\b",
+    re.IGNORECASE,
+)
+
+
+def _known_odoo_record_refs(messages: list[dict[str, Any]]) -> set[str]:
+    refs: set[str] = set()
+    for message in messages[-12:]:
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get("content") or "")
+        refs.update(match.group(0).upper() for match in ODOO_DOCUMENT_REF_RE.finditer(content))
+    return refs
+
+
+def _odoo_targeted_action_phase_message(messages: list[dict[str, Any]]) -> dict[str, str] | None:
+    if not _is_odoo_action_workflow_request(_latest_user_text(messages)):
+        return None
+
+    known_refs = _known_odoo_record_refs(messages)
+    if not known_refs:
+        return None
+
+    refs = ", ".join(sorted(known_refs)[:20])
+    return {
+        "role": "system",
+        "content": (
+            "Odoo targeted action phase. The current user request is asking for an action/change, and exact "
+            f"Odoo record references are already known: {refs}. Treat this as execution on known targets, not "
+            "fresh discovery. Query target records directly by exact id/name/ref, then query only their direct "
+            "related records such as move lines, tax lines, partial reconciles, bank/payment move lines, or "
+            "report drilldowns tied to those records. Do not re-find the customer, broad invoice set, broad "
+            "payment set, or broad chatter unless a required fact is genuinely missing and cannot be obtained "
+            "from the known target records. If the user asks to find unknown records first, discovery is allowed "
+            "until exact targets are identified; once targets are identified, switch back to exact-target action."
+        ),
+    }
+
+
+def _messages_with_odoo_targeting_guidance(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    guidance = _odoo_targeted_action_phase_message(messages)
+    if not guidance:
+        return messages
+    return messages + [guidance]
+
+
+def _structured_rows_from_odoo_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
+    for payload_key in ("records", "result", "groups"):
+        rows = result.get(payload_key)
+        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
+            return payload_key, rows
+    return None
+
+
+def _structured_result_matches_request(
+    *,
+    result: dict[str, Any],
+    arguments: dict[str, Any],
+    rows: list[dict[str, Any]],
+    user_text: str,
+) -> bool:
+    normalized = user_text.lower()
+    columns = set()
+    requested_fields = arguments.get("fields")
+    if isinstance(requested_fields, list):
+        columns.update(str(field).lower() for field in requested_fields)
+    for row in rows[:10]:
+        columns.update(str(key).lower() for key in row.keys())
+
+    searchable = " ".join([
+        str(result.get("model") or arguments.get("model") or "").lower(),
+        " ".join(columns),
+    ]).replace(".", "_")
+    requirement_groups: list[tuple[str, ...]] = []
+    if re.search(r"\b(?:so|sales?\s+orders?)\b", normalized):
+        requirement_groups.append(("sale", "order"))
+    if re.search(r"\b(?:deliver(?:ed|y)?|ordered|quantity|qty|compare)\b", normalized):
+        requirement_groups.append(("qty", "quantity", "deliver", "uom", "amount"))
+    if re.search(r"\binvoices?\b", normalized):
+        requirement_groups.append(("invoice", "move", "amount"))
+
+    return all(any(term in searchable for term in group) for group in requirement_groups)
+
+
+def _is_complete_structured_result(result: dict[str, Any], payload_key: str) -> bool:
+    if payload_key == "groups":
+        return True
+    return result.get("complete") is True
+
+
+def _column_label(column: str) -> str:
+    labels = {
+        "id": "ID",
+        "name": "Name",
+        "display_name": "Name",
+        "order_id": "Order",
+        "partner_id": "Customer",
+        "order_partner_id": "Customer",
+        "product_id": "Product",
+        "product_uom_qty": "Ordered Qty",
+        "qty_delivered": "Delivered Qty",
+        "qty_invoiced": "Invoiced Qty",
+        "price_unit": "Unit Price",
+        "amount_total": "Total",
+        "amount_untaxed": "Untaxed",
+        "move_id": "Journal Entry",
+        "journal_id": "Journal",
+        "account_id": "Account",
+        "tax_ids": "Taxes",
+        "tax_line_id": "Tax Line",
+        "tax_tag_ids": "Tax Tags",
+        "parent_state": "State",
+        "record_url": "Link",
+        "state": "Status",
+        "__difference": "Difference",
+    }
+    if column in labels:
+        return labels[column]
+    return column.replace("_", " ").replace(".", " ").title()
+
+
+def _safe_table_columns(rows: list[dict[str, Any]], arguments: dict[str, Any]) -> tuple[list[str], int]:
+    excluded = {
+        "record_url",
+        "datas",
+        "raw",
+        "raw_html",
+        "html",
+        "content_base64",
+        "base64",
+        "binary",
+    }
+    requested = arguments.get("fields")
+    columns: list[str] = []
+    if isinstance(requested, list):
+        for field in requested:
+            field_name = str(field)
+            if field_name not in excluded and any(field_name in row for row in rows):
+                columns.append(field_name)
+    if not columns:
+        for row in rows:
+            for key in row.keys():
+                if key in excluded or key in columns:
+                    continue
+                columns.append(key)
+    if "product_uom_qty" in columns and "qty_delivered" in columns:
+        columns.append("__difference")
+    max_columns = 10
+    hidden_count = max(0, len(columns) - max_columns)
+    return columns[:max_columns], hidden_count
+
+
+def _table_value(row: dict[str, Any], column: str) -> Any:
+    if column == "__difference":
+        try:
+            return _format_quantity(float(row.get("qty_delivered") or 0) - float(row.get("product_uom_qty") or 0))
+        except (TypeError, ValueError):
+            return ""
+    value = row.get(column)
+    if value is False or value is None:
+        return ""
+    if isinstance(value, dict):
+        return _value_name(value)
+    if isinstance(value, (list, tuple)):
+        return _value_name(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _format_quantity(value)
+    return value
+
+
+def _group_column_from_request(text: str, columns: list[str]) -> str | None:
+    normalized = text.lower()
+    candidates: list[str] = []
+    if "per product" in normalized or "by product" in normalized:
+        candidates.extend(["product_id", "product", "default_code"])
+    if "per customer" in normalized or "by customer" in normalized:
+        candidates.extend(["order_partner_id", "partner_id", "customer_id"])
+    if "per sales order" in normalized or "per so" in normalized or "by sales order" in normalized:
+        candidates.extend(["order_id", "sale_order_id"])
+    if "per invoice" in normalized or "by invoice" in normalized:
+        candidates.extend(["move_id", "invoice_id"])
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def _grouped_table_columns(columns: list[str], group_column: str) -> list[str]:
+    table_columns = [column for column in columns if column != group_column]
+    if group_column == "product_id":
+        table_columns = [column for column in table_columns if column not in {"name", "display_name"}]
+    return table_columns or columns
+
+
+def _numeric_column_totals(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
+    totals = []
+    for column in columns:
+        values: list[float] = []
+        for row in rows:
+            if column == "__difference":
+                try:
+                    value = float(row.get("qty_delivered") or 0) - float(row.get("product_uom_qty") or 0)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                value = row.get(column)
+            if isinstance(value, bool):
+                continue
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if values and len(values) == len(rows):
+            totals.append(f"{_column_label(column)}: {_format_quantity(sum(values))}")
+    return totals[:4]
+
+
+def _render_markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
+    lines = [
+        "| " + " | ".join(_markdown_cell(_column_label(column)) for column in columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(_markdown_cell(_table_value(row, column)) for column in columns)
+            + " |"
+        )
+    return lines
+
+
+def _list_value_names(value: Any) -> str:
+    if isinstance(value, dict):
+        return _value_name(value)
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2 and isinstance(value[0], int) and isinstance(value[1], str):
+            return str(value[1])
+        names = []
+        for item in value:
+            item_name = _value_name(item)
+            names.append(item_name if item_name else str(item))
+        return ", ".join(name for name in names if name)
+    return str(value or "")
+
+
+def _drilldown_table_value(row: dict[str, Any], column: str) -> Any:
+    value = row.get(column)
+    if value is False or value is None:
+        return ""
+    if column == "record_url":
+        return f"[Open]({value})" if value else ""
+    if column in {"debit", "credit", "balance", "amount_currency"}:
+        return _format_amount(value)
+    if isinstance(value, (dict, list, tuple)):
+        return _list_value_names(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _format_quantity(value)
+    return value
+
+
+def _render_drilldown_table(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
+    lines = [
+        "| " + " | ".join(_markdown_cell(_column_label(column)) for column in columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
+    for row in rows:
+        lines.append(
+            "| "
+            + " | ".join(_markdown_cell(_drilldown_table_value(row, column)) for column in columns)
+            + " |"
+        )
+    return lines
+
+
+def _odoo_report_drilldown_answer(result: dict[str, Any]) -> str | None:
+    if result.get("source") != "odoo_account_report":
+        return None
+    drilldowns = result.get("drilldowns")
+    if not isinstance(drilldowns, list) or not drilldowns:
+        return None
+
+    rendered_any = False
+    lines = [f"## {result.get('report_name') or 'Odoo Report'} Drilldown"]
+    for drilldown in drilldowns:
+        if not isinstance(drilldown, dict) or drilldown.get("error"):
+            continue
+        records = drilldown.get("records")
+        if not isinstance(records, list) or not records:
+            continue
+        if len(records) > STRUCTURED_CHAT_TABLE_ROW_LIMIT:
+            continue
+
+        action = drilldown.get("action") if isinstance(drilldown.get("action"), dict) else {}
+        total_count = drilldown.get("total_count")
+        returned_count = drilldown.get("returned_count")
+        model_name = drilldown.get("res_model") or (action or {}).get("res_model") or "Odoo records"
+        line_name = drilldown.get("line_name") or "Report line"
+        amount = drilldown.get("formatted_value") or drilldown.get("value") or ""
+        action_name = _markdown_text(action.get("name")) if action.get("name") else ""
+        action_suffix = f" -> {action_name}" if action_name else ""
+
+        lines.extend([
+            "",
+            f"### {_markdown_text(line_name)}",
+            f"Report amount: {_markdown_text(amount)}",
+            f"Drilldown source: Odoo report audit action{action_suffix} (`{model_name}`)",
+        ])
+        if isinstance(total_count, int):
+            lines.append(f"Showing {returned_count or len(records):,} of {total_count:,} records returned by the report drilldown.")
+        else:
+            lines.append(f"Showing {returned_count or len(records):,} records returned by the report drilldown.")
+
+        preferred_columns = [
+            "date",
+            "move_id",
+            "journal_id",
+            "account_id",
+            "partner_id",
+            "name",
+            "debit",
+            "credit",
+            "balance",
+            "amount_currency",
+            "currency_id",
+            "tax_ids",
+            "tax_line_id",
+            "tax_tag_ids",
+            "parent_state",
+            "record_url",
+        ]
+        columns = [column for column in preferred_columns if any(column in row for row in records)]
+        if not columns:
+            columns, _hidden = _safe_table_columns(records, {})
+        if not columns:
+            continue
+        lines.append("")
+        lines.extend(_render_drilldown_table(records, columns))
+        rendered_any = True
+
+    return "\n".join(lines) if rendered_any else None
+
+
+def _odoo_structured_table_answer(
+    *,
+    result: dict[str, Any],
+    arguments: dict[str, Any],
+    user_text: str,
+) -> str | None:
+    rows_payload = _structured_rows_from_odoo_result(result)
+    if not rows_payload:
+        return None
+    payload_key, rows = rows_payload
+    if not rows or len(rows) > STRUCTURED_CHAT_TABLE_ROW_LIMIT:
+        return None
+    if not _is_complete_structured_result(result, payload_key):
+        return None
+    if not _structured_result_matches_request(result=result, arguments=arguments, rows=rows, user_text=user_text):
+        return None
+
+    columns, hidden_column_count = _safe_table_columns(rows, arguments)
+    if not columns:
+        return None
+
+    model_name = str(result.get("model") or arguments.get("model") or "Odoo records")
+    total_rows = result.get("total_count") if isinstance(result.get("total_count"), int) else len(rows)
+    lines = [
+        f"Found {total_rows:,} {model_name} rows.",
+        "",
+        "The table below is rendered directly from the complete structured connector result.",
+    ]
+    if hidden_column_count:
+        lines.append(f"{hidden_column_count} additional columns were left out to keep the chat table readable.")
+
+    group_column = _group_column_from_request(user_text, columns)
+    if group_column:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(_table_value(row, group_column) or "Unspecified"), []).append(row)
+        table_columns = _grouped_table_columns(columns, group_column)
+        for group_name in sorted(grouped.keys(), key=str.lower):
+            group_rows = grouped[group_name]
+            totals = _numeric_column_totals(group_rows, table_columns)
+            lines.extend(["", f"### {_markdown_text(group_name)}", f"Rows: {len(group_rows):,}"])
+            if totals:
+                lines.append("Totals: " + " | ".join(totals))
+            lines.append("")
+            lines.extend(_render_markdown_table(group_rows, table_columns))
+        return "\n".join(lines)
+
+    totals = _numeric_column_totals(rows, columns)
+    if totals:
+        lines.extend([
+            "",
+            "Totals: " + " | ".join(totals),
+        ])
+    lines.append("")
+    lines.extend(_render_markdown_table(rows, columns))
+    return "\n".join(lines)
+
+
+def _structured_answer_from_tool_results(
+    tool_results: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> str | None:
+    user_text = _latest_user_text(messages)
+    if not _is_odoo_action_workflow_request(user_text):
+        for tool_result in reversed(tool_results):
+            if tool_result.get("tool_name") != "odoo_ops_runner":
+                continue
+            result = tool_result.get("result")
+            if not isinstance(result, dict):
+                continue
+            drilldown_answer = _odoo_report_drilldown_answer(result)
+            if drilldown_answer:
+                return drilldown_answer
+
+    if not _is_structured_table_request(user_text):
+        return None
+
+    for tool_result in reversed(tool_results):
+        if tool_result.get("tool_name") != "odoo_ops_runner":
+            continue
+        result = tool_result.get("result")
+        if not isinstance(result, dict):
+            continue
+        arguments = tool_result.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        answer = _odoo_structured_table_answer(result=result, arguments=arguments, user_text=user_text)
+        if answer:
+            return answer
+    return None
+
+
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "mode", "operation", "method", "resource",
@@ -1114,33 +1776,7 @@ def _last_user_message(messages: list) -> str:
 
 
 def _tool_selection_message(messages: list) -> str:
-    latest = _last_user_message(messages).strip()
-    if not latest:
-        return ""
-    lower = latest.lower()
-    if lower in FOLLOW_UP_GREETINGS:
-        return latest
-
-    tokens = set(re.findall(r"[a-z0-9_&+-]+", lower))
-    has_date_or_month = bool(tokens.intersection(MONTH_WORDS)) or bool(DATE_LIKE_RE.search(lower))
-    is_follow_up = (
-        len(tokens) <= 3
-        or (len(tokens) <= 8 and bool(tokens.intersection(FOLLOW_UP_CORRECTION_WORDS)))
-        or (len(tokens) <= 8 and has_date_or_month)
-        or bool(tokens.intersection(FOLLOW_UP_CONTEXT_WORDS))
-        or lower in {"?", "??"}
-    )
-    if not is_follow_up:
-        return latest
-
-    recent: list[str] = []
-    for message in messages[-6:]:
-        if not isinstance(message, dict):
-            continue
-        content = str(message.get("content") or "").strip()
-        if content:
-            recent.append(content[:1000])
-    return "\n".join(recent) if recent else latest
+    return _last_user_message(messages).strip()
 
 async def _select_route_model_provider(
     db: AsyncSession,
@@ -1159,7 +1795,10 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         "\n\nYou have access to the following tools. "
         "When the user asks about data from a connected system, call the appropriate tool "
         "rather than saying you cannot access it. "
-        "Use tools proactively when relevant."
+        "Use tools proactively when relevant. "
+        "When the previous assistant message proposed a connected-system action plan and the user approves "
+        "or clarifies it, continue by calling the relevant tool in the same response. Do not only say "
+        "`starting now`, `let me proceed`, or `I will do that`; either execute with the tool or state the blocker."
     )
 
     odoo_available = [name for name in available_names if name.startswith("odoo_")]
@@ -1175,10 +1814,16 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "For create/write/delete, use mode `mutation` with the `operation` field."
         )
         guidance_parts.append(
-            "Odoo query/content results include returned_count, total_count, has_more, and complete. "
+            "Odoo query and execute/search_read results return up to the requested limit in one tool call. "
+            "Treat `limit` as the maximum total records to return, not a page size. "
+            "For all/full/complete detail requests, omit `limit` or use 5000 unless the user explicitly asks for fewer rows. "
+            "Do not manually page with offsets when complete is true. "
+            "Odoo query and execute/search_read results include returned_count, total_count, has_more, and complete. "
             "If complete is true, do not describe the result as truncated. "
-            "If the user asks for all records, full detail, or a timeline and has_more is true, "
-            "fetch the next page with the same query and a higher offset before answering."
+            "If the user explicitly asks for more than 5000 raw rows, do not call query/search_read for the raw dataset. "
+            "Use count or aggregate for analysis, ask for narrower filters, or explain that a dedicated export workflow is required. "
+            "If a broad raw result still has_more after 5000 rows, do not page raw data into chat. Use count/aggregate for analysis, "
+            "ask for narrower filters, or explain that a file export workflow is required for the full raw dataset."
         )
         guidance_parts.append(
             "Do not invent Odoo web URLs, domains, or hostnames. Only provide Odoo links from connector results "
@@ -1189,6 +1834,40 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "Use Odoo `schema` to inspect models and fields. Use `query` with explicit fields for record lists. "
             "Use `content` only for text/body fields on a narrow domain or specific ids; never use broad unfiltered "
             "`content` calls for schema discovery or general user/activity lookups."
+        )
+        guidance_parts.append(
+            "Use Odoo `aggregate` only for summary totals. If the user asks for all sales orders, all rows, line-by-line detail, "
+            "or quantities on each SO, do not answer from aggregate groups alone. Use `query` on `sale.order.line` with explicit "
+            "fields such as order_id, product_id, product_uom_qty, and qty_delivered so the final table contains the actual SO rows."
+        )
+        guidance_parts.append(
+            "For Odoo accounting reports, report lines may include `drilldown_available` and `drilldown_columns`. "
+            "If the user asks what makes up a report amount, call report mode again with the relevant `line_names` "
+            "and `include_drilldowns=true`; this uses Odoo's own audit action for the same clickable amount in the Odoo UI."
+        )
+        guidance_parts.append(
+            "For Odoo invoice/payment accounting work, do not look only at `account.payment`; paid invoices are often "
+            "matched through receivable/payable journal lines. To identify payments on invoices: read the invoice "
+            "`account.move` records, read their receivable/payable `account.move.line` records, then query "
+            "`account.partial.reconcile` where `debit_move_id` or `credit_move_id` is one of those lines. The opposite "
+            "move line identifies the bank/payment move to restore later. For invoice tax repair workflows, first capture "
+            "invoice ids, current state, totals, receivable/payable lines, partial reconcile ids, opposite payment/bank "
+            "move lines, and the tax_id used on comparable valid invoice lines for that partner/fiscal position. Then "
+            "reset to draft, update invoice line `tax_ids` with Odoo x2many commands, post, verify totals/report values, "
+            "and only then restore the original reconciliations."
+        )
+        guidance_parts.append(
+            "For Odoo workflows on named records, keep the path narrow: query the exact records and exact related lines "
+            "needed for the task. Do not query broad unrelated invoice sets, full chatter history, or `account.payment` "
+            "when the needed ids/lines can be found from the target records or receivable/payable reconciliation lines. "
+            "Reuse facts already established in the current conversation and current tool results instead of rediscovering "
+            "the same partner, tax, or payment evidence."
+        )
+        guidance_parts.append(
+            "When the previous assistant message proposed an Odoo action plan and asked whether to proceed, treat a user "
+            "approval or clarification as instruction to continue the action. Do not answer with phrases such as "
+            "`starting now`, `let me proceed`, or `I will do that` unless you are also calling the needed Odoo tool in "
+            "the same response. If a blocker prevents the action, explain the blocker instead."
         )
         guidance_parts.append(
             "For chatter/activity lookups: `mail.activity` uses `res_model` and `res_id`; "
@@ -1414,6 +2093,11 @@ def _provider_response_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _discard_provider_stream_event(_event: dict[str, Any]) -> None:
+    """Consume provider streaming internally without exposing raw deltas to chat."""
+    return None
+
+
 async def _call_model(
     model: AIModel,
     provider: AIProvider,
@@ -1460,11 +2144,13 @@ async def _call_model(
     try:
         if client is None:
             client = await build_model_client(provider, model)
+
         result = await client.chat_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             tools=tool_definitions if tool_definitions else None,
+            stream_event_sink=_discard_provider_stream_event,
         )
         result = _coerce_text_tool_calls(result, tool_definitions)
     except Exception as exc:
@@ -1583,14 +2269,17 @@ async def _run_tool_loop(
     trace_svc: Any = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
-    for _ in range(10):
+    for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
         if state.result.get("error"):
             break
         tool_calls = state.result.get("tool_calls")
         if not tool_calls:
             break
 
-        tool_calls = [_canonicalize_tool_call(call) for call in tool_calls]
+        tool_calls = [
+            _normalize_tool_call_arguments_for_request(_canonicalize_tool_call(call), messages)
+            for call in tool_calls
+        ]
         state.result["tool_calls"] = tool_calls
         state.stats.tool_calls += len(tool_calls)
         messages.append({
@@ -1612,7 +2301,10 @@ async def _run_tool_loop(
             except (json.JSONDecodeError, TypeError):
                 args = {}
 
-            result = await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
+            policy_result = None
+            if name == "odoo_ops_runner":
+                policy_result = _odoo_raw_pagination_policy_result(args, messages)
+            result = policy_result or await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
             if isinstance(result, dict):
                 await _record_delegated_tool_auth_failure(db, user_id, name, result)
             compact_result = _compact_tool_result_for_model(result)
@@ -1628,7 +2320,22 @@ async def _run_tool_loop(
                 "content": _tool_message_content(compact_result),
             })
 
-        followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
+        structured_answer = _structured_answer_from_tool_results(tool_results, messages)
+        if structured_answer:
+            state.result = {
+                "error": False,
+                "content": structured_answer,
+                "finish_reason": "structured_tool_result",
+                "tool_calls": None,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "latency_ms": 0,
+                "model": state.result.get("model"),
+            }
+            break
+
+        followup_messages = _messages_with_odoo_targeting_guidance(messages) + [TOOL_LOOP_FOLLOWUP_MESSAGE]
         followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
         result, client = await _call_model(
             state.used_model,
@@ -1651,6 +2358,22 @@ async def _run_tool_loop(
             followup_max_tokens,
             trace_svc=trace_svc,
         )
+    else:
+        if state.result.get("tool_calls"):
+            state.result = {
+                "error": False,
+                "content": (
+                    "The operation stopped because the model requested more tool calls after the allowed tool steps. "
+                    "No further tools were run, so I did not guess or continue with an incomplete action."
+                ),
+                "finish_reason": "tool_loop_limit",
+                "tool_calls": None,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "latency_ms": 0,
+                "model": state.result.get("model"),
+            }
     return tool_results
 
 async def _log_usage(
@@ -1808,6 +2531,7 @@ async def execute_chat(
         )
         injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
         full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
+        full_messages = _messages_with_odoo_targeting_guidance(full_messages)
         temperature = float(route.temperature) if route.temperature is not None else 0.3
         max_tokens = route.max_tokens or 2000
         if trace_svc and context_span:
@@ -1843,7 +2567,6 @@ async def execute_chat(
         trace_svc=trace_svc,
     ))
     tool_error_summary = _tool_result_error_summary(tool_results)
-
     await _log_usage(
         db,
         route,

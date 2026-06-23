@@ -39,3 +39,7 @@ class OdooExecuteReportRequest(BaseModel):
     lang: Optional[str] = None
     line_names: Optional[list[str]] = None
     include_raw_lines: bool = False
+    include_drilldowns: bool = False
+    drilldown_limit: int = 1000
+    drilldown_offset: int = 0
+    drilldown_fields: Optional[list[str]] = None

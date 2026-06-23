@@ -1,5 +1,5 @@
 import { useRef, useCallback, useLayoutEffect, useState } from "react";
-import { AlertCircle, Plus, Mic, CornerDownLeft, FileText, RefreshCw, X } from "lucide-react";
+import { AlertCircle, Plus, Mic, ArrowUp, FileText, RefreshCw, X } from "lucide-react";
 import type { AttachedFile, VoiceState } from "../../types";
 
 interface ChatComposerProps {
@@ -58,9 +58,15 @@ export function ChatComposer({
     const maxHeight = window.innerWidth < 640 ? 112 : 160;
     const newHeight = Math.min(ta.scrollHeight, maxHeight);
     ta.style.height = `${newHeight}px`;
-    const stackThreshold = window.innerWidth < 640 ? 44 : 96;
-    const shouldExpand = chatInput.includes("\n") || chatInput.length > stackThreshold || ta.scrollHeight > 48;
-    setIsComposerExpanded(prev => prev === shouldExpand ? prev : shouldExpand);
+    const hasWrappedText = ta.scrollHeight > 48;
+    setIsComposerExpanded(prev => {
+      const shouldExpand = Boolean(chatInput) && (
+        chatInput.includes("\n")
+        || hasWrappedText
+        || (prev && chatInput.length > 48)
+      );
+      return prev === shouldExpand ? prev : shouldExpand;
+    });
   }, [chatInput]);
 
   const isListening = voiceState === "listening";
@@ -74,8 +80,21 @@ export function ChatComposer({
       ? "Microphone access blocked"
       : placeholder;
   const controlButtonClass = "h-9 w-9 inline-flex items-center justify-center rounded-lg transition-all shrink-0 [&>svg]:block";
+  const composerIconClass = "h-[18px] w-[18px]";
+  const openStrokeIconClass = "h-[26px] w-[26px]";
   const idleControlClass = "text-muted hover-text-default hover-bg-surface";
-  const textareaClass = `${isComposerExpanded ? "w-full" : "flex-1"} min-w-0 min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-2 resize-none max-h-28 sm:max-h-[160px] leading-5`;
+  const sendButtonClass = `h-9 w-9 inline-flex shrink-0 items-center justify-center rounded-full transition-all [&>svg]:block ${
+    canSubmit
+      ? "border border-subtle bg-surface text-muted hover-text-default hover-bg-surface hover-border-default"
+      : "border border-subtle bg-surface text-soft"
+  } disabled:cursor-not-allowed`;
+  const textareaClass = "block w-full min-w-0 min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-[7px] resize-none max-h-28 sm:max-h-[160px] leading-5 align-middle";
+  const formClass = `${isComposerExpanded ? "items-center gap-x-1 gap-y-1.5" : "items-center gap-1"} grid grid-cols-[auto_minmax(0,1fr)_auto] p-1 sm:p-1.5`;
+  const uploadSlotClass = isComposerExpanded ? "col-start-1 row-start-2 flex items-center" : "col-start-1 row-start-1 flex items-center";
+  const textareaSlotClass = isComposerExpanded ? "col-span-3 row-start-1 flex min-w-0 items-center px-1" : "col-start-2 row-start-1 flex min-w-0 items-center";
+  const actionSlotClass = isComposerExpanded
+    ? "col-start-3 row-start-2 flex items-center justify-self-end gap-1"
+    : "col-start-3 row-start-1 flex items-center gap-1";
 
   const uploadButton = (
     <button
@@ -84,7 +103,7 @@ export function ChatComposer({
       className={`${controlButtonClass} ${idleControlClass}`}
       title="Attach files"
     >
-      <Plus className="w-5 h-5" />
+      <Plus className={openStrokeIconClass} />
     </button>
   );
 
@@ -100,7 +119,7 @@ export function ChatComposer({
       } disabled:opacity-40 disabled:cursor-not-allowed`}
       title={isVoiceDisabled ? "Voice not supported" : isVoiceProcessing ? "Transcribing voice input" : isListening ? "Stop listening" : "Voice input"}
     >
-      <Mic className="w-4 h-4" />
+      <Mic className={composerIconClass} />
     </button>
   );
 
@@ -108,10 +127,10 @@ export function ChatComposer({
     <button
       type="submit"
       disabled={!canSubmit}
-      className={`${controlButtonClass} bg-raised hover-bg-surface text-default border border-default disabled:opacity-40 disabled:cursor-not-allowed`}
+      className={sendButtonClass}
       title={hasPendingUpload ? "Waiting for file upload" : hasFailedUpload ? "Remove failed upload" : "Send message"}
     >
-      <CornerDownLeft className="w-4 h-4" />
+      <ArrowUp className={openStrokeIconClass} />
     </button>
   );
 
@@ -128,7 +147,7 @@ export function ChatComposer({
   );
 
   return (
-    <div className="px-3 pb-3 sm:px-4 sm:pb-4 select-none">
+    <div className="px-5 pt-2 pb-5 sm:px-6 sm:pt-3 sm:pb-5 select-none">
       <div className="glass-composer">
         {hasComposerPreview && (
           <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1">
@@ -180,31 +199,18 @@ export function ChatComposer({
         <form
           ref={formRef}
           onSubmit={onSend}
-          className={`${isComposerExpanded ? "flex flex-col gap-1.5" : "flex items-center gap-1"} p-1 sm:p-1.5`}
+          className={formClass}
         >
-          {isComposerExpanded ? (
-            <>
-              <div className="w-full px-1">
-                {textarea}
-              </div>
-              <div className="flex w-full items-center justify-between">
-                <div className="flex items-center gap-1">
-                  {uploadButton}
-                </div>
-                <div className="flex items-center gap-1">
-                  {voiceButton}
-                  {sendButton}
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-              {uploadButton}
-              {textarea}
-              {voiceButton}
-              {sendButton}
-            </>
-          )}
+          <div className={uploadSlotClass}>
+            {uploadButton}
+          </div>
+          <div className={textareaSlotClass}>
+            {textarea}
+          </div>
+          <div className={actionSlotClass}>
+            {voiceButton}
+            {sendButton}
+          </div>
         </form>
       </div>
     </div>

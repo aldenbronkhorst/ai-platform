@@ -5,6 +5,7 @@ import { PendingAssistant } from "./PendingAssistant";
 import { FailedMessage } from "./FailedMessage";
 import { MessageActions } from "./MessageActions";
 import { EditMessage } from "./EditMessage";
+import { AgentWorkLog } from "./AgentWorkLog";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -105,6 +106,22 @@ export function MessageBubble({
     return <PendingAssistant message={message} />;
   }
 
+  if (message.status === "streaming") {
+    const hasContent = message.content.trim().length > 0;
+    return (
+      <div className="w-full flex justify-start">
+        <div className="w-full max-w-none min-w-0 space-y-3">
+          <PendingAssistant message={message} />
+          {hasContent && (
+            <div className="text-sm leading-relaxed">
+              <MarkdownRenderer content={message.content} />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (message.status === "failed") {
     return <FailedMessage errorMessage={message.error_message} onRetry={onRetry} />;
   }
@@ -112,6 +129,7 @@ export function MessageBubble({
   return (
     <div className="w-full flex justify-start">
       <div className="group w-full max-w-none min-w-0">
+        <AgentWorkLog message={message} variant="completed" />
         <div className="text-sm leading-relaxed">
           <MarkdownRenderer content={message.content} />
         </div>

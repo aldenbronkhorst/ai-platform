@@ -16,7 +16,6 @@ from app.core.database import get_db
 from app.models.models import AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool, AIMemory
 from app.services.model_router import (
     CANONICAL_SYSTEM_PROMPT,
-    _tool_selection_message,
     _compact_tool_result_for_model,
     _append_tool_guidance,
     _guard_connected_system_denial,
@@ -142,19 +141,6 @@ def test_deterministic_chat_title_does_not_preserve_raw_misspellings():
     assert title == "Failures During Thinking Connectors"
     assert "Faliours" not in title
     assert "Connecotrs" not in title
-
-
-def test_tool_selection_message_inherits_context_for_date_correction():
-    messages = [
-        {"role": "user", "content": "what did Penelope do in Odoo today, give me a timeline"},
-        {"role": "assistant", "content": "I checked Odoo for Penelope's activity today."},
-        {"role": "user", "content": "i meant 4 june"},
-    ]
-
-    selection_text = _tool_selection_message(messages)
-
-    assert "Odoo" in selection_text
-    assert "i meant 4 june" in selection_text
 
 
 MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_NATIVE_TOOL_NAMES))
@@ -919,6 +905,12 @@ class TestToolDefinitions:
         assert "cannot provide a verified link" in system_prompt
         assert "effect_verified=true" in system_prompt
         assert "not a private Discuss direct message" in system_prompt
+        assert "Use Odoo `aggregate` only for summary totals" in system_prompt
+        assert "quantities on each SO" in system_prompt
+        assert "Use `query` on `sale.order.line`" in system_prompt
+        assert "account.partial.reconcile" in system_prompt
+        assert "restore the original reconciliations" in system_prompt
+        assert "query broad unrelated invoice sets" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_tool_calls import _build_tool_definitions
@@ -1180,35 +1172,135 @@ class TestToolExecution:
         assert result["missing"] == ["mode"]
         mock_credentials.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_odoo_ops_runner_query_shaped_missing_mode_is_rejected(self):
-        from app.services.model_router import _execute_tool_call_impl
+    def test_odoo_ops_runner_query_shaped_missing_mode_is_normalized_to_query(self):
+        from app.services.model_router import _normalize_odoo_ops_runner_arguments
 
-        db = MockSession(has_config=True)
-        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
+        normalized = _normalize_odoo_ops_runner_arguments({
+            "model": "stock.picking",
+            "domain": [["id", "=", 5266]],
+            "fields": ["name", "state", "move_ids", "date_done"],
+            "limit": 10,
+        })
 
-        with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=mock_credentials,
-        ):
-            result = await _execute_tool_call_impl(
-                db,
-                uuid.uuid4(),
-                "odoo_ops_runner",
-                {
-                    "model": "stock.picking",
-                    "domain": [["id", "=", 5266]],
-                    "fields": ["name", "state", "move_ids", "date_done"],
-                    "limit": 10,
-                },
-            )
+        assert normalized["mode"] == "query"
 
-        assert result["error"] is True
-        assert result["handled"] is True
+    def test_broad_odoo_query_lifts_arbitrary_model_limit(self):
+        from app.services.model_router import _normalize_tool_call_arguments_for_request, ODOO_BROAD_QUERY_LIMIT
+
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "odoo_ops_runner",
+                "arguments": json.dumps({
+                    "mode": "query",
+                    "model": "sale.order.line",
+                    "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered"],
+                    "limit": 200,
+                }),
+            },
+        }
+
+        normalized = _normalize_tool_call_arguments_for_request(
+            call,
+            [{"role": "user", "content": "get all sales orders with Aquafresh and Sensodyne in a table"}],
+        )
+
+        args = json.loads(normalized["function"]["arguments"])
+        assert args["limit"] == ODOO_BROAD_QUERY_LIMIT
+
+    def test_huge_odoo_row_request_is_not_normalized_into_raw_read(self):
+        from app.services.model_router import _normalize_tool_call_arguments_for_request
+
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "odoo_ops_runner",
+                "arguments": json.dumps({
+                    "mode": "query",
+                    "model": "sale.order.line",
+                    "fields": ["order_id", "product_id"],
+                    "limit": 100000,
+                }),
+            },
+        }
+
+        normalized = _normalize_tool_call_arguments_for_request(
+            call,
+            [{"role": "user", "content": "export 100k rows of sales order lines"}],
+        )
+
+        args = json.loads(normalized["function"]["arguments"])
+        assert args["limit"] == 100000
+
+    def test_huge_odoo_initial_raw_read_is_stopped_for_chat(self):
+        from app.services.model_router import _odoo_raw_pagination_policy_result, ODOO_BROAD_QUERY_LIMIT
+
+        result = _odoo_raw_pagination_policy_result(
+            {
+                "mode": "query",
+                "model": "sale.order.line",
+                "fields": ["order_id", "product_id"],
+                "limit": 100000,
+                "offset": 0,
+            },
+            [{"role": "user", "content": "export 100,000 rows of sales order lines"}],
+        )
+
+        assert result is not None
+        assert result["policy"] == "large_raw_result"
         assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["mode"]
-        mock_credentials.assert_not_awaited()
+        assert result["requested_size"] == 100000
+        assert result["offset"] == 0
+        assert result["limit"] == ODOO_BROAD_QUERY_LIMIT
+        assert "not executed in chat" in result["message"]
+        assert "count or aggregate" in result["recommended_next_step"]
+
+    def test_explicit_small_odoo_query_limit_is_respected(self):
+        from app.services.model_router import _normalize_tool_call_arguments_for_request
+
+        call = {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "odoo_ops_runner",
+                "arguments": json.dumps({
+                    "mode": "query",
+                    "model": "sale.order",
+                    "fields": ["name", "state"],
+                    "limit": 20,
+                }),
+            },
+        }
+
+        normalized = _normalize_tool_call_arguments_for_request(
+            call,
+            [{"role": "user", "content": "show the first 20 sales orders"}],
+        )
+
+        args = json.loads(normalized["function"]["arguments"])
+        assert args["limit"] == 20
+
+    def test_broad_odoo_raw_pagination_is_stopped_for_chat(self):
+        from app.services.model_router import _odoo_raw_pagination_policy_result, ODOO_BROAD_QUERY_LIMIT
+
+        result = _odoo_raw_pagination_policy_result(
+            {
+                "mode": "query",
+                "model": "sale.order.line",
+                "fields": ["order_id", "product_id"],
+                "limit": ODOO_BROAD_QUERY_LIMIT,
+                "offset": ODOO_BROAD_QUERY_LIMIT,
+            },
+            [{"role": "user", "content": "get all sales order lines in a complete table"}],
+        )
+
+        assert result is not None
+        assert result["policy"] == "large_raw_result"
+        assert result["status"] == "skipped"
+        assert result["offset"] == ODOO_BROAD_QUERY_LIMIT
+        assert "Do not fetch additional raw pages into chat" in result["recommended_next_step"]
 
     @pytest.mark.asyncio
     async def test_odoo_attachment_without_attachment_id_is_handled_before_connector(self):
@@ -1745,22 +1837,57 @@ class TestToolExecution:
                 {
                     "id": i,
                     "create_date": "2026-06-06 08:00:00",
-                    "description": "x" * 2500,
+                    "description": "x" * 1000,
                 }
-                for i in range(50)
+                for i in range(MAX_ODOO_RECORD_CONTEXT_ITEMS + 5)
             ],
-            "count": 50,
-            "returned_count": 50,
-            "total_count": 52,
+            "count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 5,
+            "returned_count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 5,
+            "total_count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 7,
             "has_more": True,
             "complete": False,
         })
 
         assert compacted["records_compacted_for_model"] is True
         assert compacted["visible_record_count"] == MAX_ODOO_RECORD_CONTEXT_ITEMS
-        assert compacted["original_record_count"] == 50
+        assert compacted["original_record_count"] == MAX_ODOO_RECORD_CONTEXT_ITEMS + 5
         assert len(compacted["records"]) == MAX_ODOO_RECORD_CONTEXT_ITEMS
         assert "model_context_warning" in compacted
+
+    def test_tool_result_compaction_keeps_complete_odoo_sales_page_visible(self):
+        from app.services.model_router import _compact_tool_result_for_model
+
+        compacted = _compact_tool_result_for_model({
+            "model": "sale.order.line",
+            "records": [
+                {
+                    "id": i,
+                    "order_id": {"id": i // 8, "name": f"SO-2026-{i:05d}"},
+                    "product_id": {"id": 5000 + i, "name": f"[AF{i:05d}] Aquafresh Product {i}"},
+                    "name": f"[AF{i:05d}] Aquafresh Product {i}",
+                    "product_uom_qty": 144.0,
+                    "qty_delivered": 72.0,
+                    "qty_invoiced": 72.0,
+                    "price_unit": 12.34,
+                    "record_url": f"https://odoo.example/web#id={i}&model=sale.order.line&view_type=form",
+                }
+                for i in range(337)
+            ],
+            "count": 337,
+            "returned_count": 337,
+            "total_count": 337,
+            "limit": 5000,
+            "offset": 0,
+            "has_more": False,
+            "complete": True,
+        })
+
+        assert isinstance(compacted["records"], list)
+        assert len(compacted["records"]) == 337
+        assert compacted["complete"] is True
+        assert compacted["has_more"] is False
+        assert "result_preview" not in compacted
+        assert "records_compacted_for_model" not in compacted
 
     def test_tool_result_compaction_keeps_practical_cli_stdout_complete(self):
         from app.services.model_router import _compact_tool_result_for_model
@@ -1800,7 +1927,7 @@ class TestToolExecution:
     async def test_execute_chat_with_tools(self):
         """When model supports tools and tools are registered, they should be
         sent to the model. If model returns tool_calls, execute and loop."""
-        from app.services.model_router import execute_chat
+        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -1887,13 +2014,209 @@ class TestToolExecution:
             assert result["total_tokens"] == 43
             assert client.chat_completion.call_count == 2
             post_tool_call = client.chat_completion.call_args_list[1]
-            assert post_tool_call.kwargs["max_tokens"] == 8000
+            assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_switches_to_targeted_odoo_action_phase_after_finding_records(self):
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+        db.has_tools = True
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "account.move"}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "I found the two invoices and will work from those exact records.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "total_tokens": 28,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value={
+                "model": "account.move",
+                "records": [
+                    {"id": 56137, "name": "INV-2026-02128"},
+                    {"id": 56737, "name": "INV-2026-02155"},
+                ],
+            })
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "Find the invoices causing the VAT issue and fix them."}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "I found the two invoices and will work from those exact records."
+        assert client.chat_completion.call_count == 2
+        first_messages = client.chat_completion.call_args_list[0].kwargs["messages"]
+        assert not any("Odoo targeted action phase" in str(message.get("content", "")) for message in first_messages)
+        followup_call = client.chat_completion.call_args_list[1]
+        followup_messages = followup_call.kwargs["messages"]
+        assert followup_call.kwargs["tools"] is not None
+        assert "Odoo targeted action phase" in followup_messages[-2]["content"]
+        assert "INV-2026-02128" in followup_messages[-2]["content"]
+        assert "INV-2026-02155" in followup_messages[-2]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_reports_tool_loop_limit_without_disabling_tools(self):
+        """The loop limit must stop cleanly without pretending tools were unavailable."""
+        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+        db.has_tools = True
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "account.move"}',
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": "I need to check another Odoo record.",
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "odoo_ops_runner",
+                            "arguments": '{"mode": "query", "model": "account.move.line"}',
+                        },
+                    }],
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.MAX_TOOL_LOOP_ITERATIONS',
+            1,
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value={"records": [{"id": 56137, "name": "INV-2026-02128"}]})
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
+
+        assert "requested more tool calls after the allowed tool steps" in result["content"]
+        assert result["finish_reason"] == "tool_loop_limit"
+        assert result["tool_calls"] is not None
+        assert client.chat_completion.call_count == 2
+        final_call = client.chat_completion.call_args_list[1]
+        assert final_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
+        assert final_call.kwargs["tools"] is not None
+        assert "Use the tool results already gathered" in final_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
     async def test_execute_chat_retries_blank_length_response_after_tools(self):
         """A blank length-limited post-tool response is retried before it reaches the chat guard."""
-        from app.services.model_router import execute_chat
+        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -1985,12 +2308,12 @@ class TestToolExecution:
         assert client.chat_completion.call_count == 3
 
         post_tool_call = client.chat_completion.call_args_list[1]
-        assert post_tool_call.kwargs["max_tokens"] == 8000
+        assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
         assert post_tool_call.kwargs["tools"] is not None
         assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
 
         retry_call = client.chat_completion.call_args_list[2]
-        assert retry_call.kwargs["max_tokens"] == 8000
+        assert retry_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
         assert retry_call.kwargs["tools"] is None
         assert "without producing visible assistant content" in retry_call.kwargs["messages"][-1]["content"]
 
@@ -2090,6 +2413,258 @@ class TestToolExecution:
         continuation_call = client.chat_completion.call_args_list[2]
         assert continuation_call.kwargs["tools"] is None
         assert "Continue the visible answer exactly where it stopped" in continuation_call.kwargs["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_finalizes_complete_odoo_sales_quantity_table_without_model_transcription(self):
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(return_value={
+                "content": None,
+                "finish_reason": "tool_calls",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "odoo_ops_runner",
+                        "arguments": json.dumps({
+                            "mode": "query",
+                            "model": "sale.order.line",
+                            "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered", "name"],
+                            "limit": 50,
+                        }),
+                    },
+                }],
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "latency_ms": 100,
+                "error": False,
+            })
+        )
+        tool_result = {
+            "model": "sale.order.line",
+            "records": [
+                {
+                    "id": 1,
+                    "order_id": {"id": 101, "name": "SO-2026-00001"},
+                    "product_id": {"id": 501, "name": "[AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml"},
+                    "product_uom_qty": 144.0,
+                    "qty_delivered": 72.0,
+                    "name": "[AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml",
+                },
+                {
+                    "id": 2,
+                    "order_id": {"id": 102, "name": "SO-2026-00002"},
+                    "product_id": {"id": 502, "name": "[103Y] Sensodyne Gentle Whitening 75ml"},
+                    "product_uom_qty": 288.0,
+                    "qty_delivered": 288.0,
+                    "name": "[103Y] Sensodyne Gentle Whitening 75ml",
+                },
+            ],
+            "count": 2,
+            "returned_count": 2,
+            "total_count": 2,
+            "limit": 5000,
+            "offset": 0,
+            "has_more": False,
+            "complete": True,
+        }
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value=tool_result),
+        ):
+            result = await execute_chat(
+                db,
+                [{
+                    "role": "user",
+                    "content": (
+                        "in odoo for customer cosmetic connection, get all sales orders with Aquafresh and Sensodyne "
+                        "products and compare SO quantity with dleiverd quantity. ensure it is in tabular format "
+                        "and break it down per product"
+                    ),
+                }],
+                user_id=uuid.uuid4(),
+            )
+
+        assert client.chat_completion.call_count == 1
+        assert result["finish_reason"] == "structured_tool_result"
+        assert "Found 2 sale.order.line rows." in result["content"]
+        assert "### [AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml" in result["content"]
+        assert "| Order | Ordered Qty | Delivered Qty | Difference |" in result["content"]
+        assert "| Order | Ordered Qty | Delivered Qty | Name | Difference |" not in result["content"]
+        assert "| SO-2026-00001 | 144 | 72 | -72 |" in result["content"]
+        assert "### [103Y] Sensodyne Gentle Whitening 75ml" in result["content"]
+        assert "| SO-2026-00002 | 288 | 288 | 0 |" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_finalizes_any_complete_odoo_table_without_model_transcription(self):
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="odoo_ops_runner",
+                                display_name="Odoo Ops Runner",
+                                description="Run Odoo operations",
+                                target_system="odoo",
+                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(return_value={
+                "content": None,
+                "finish_reason": "tool_calls",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "odoo_ops_runner",
+                        "arguments": json.dumps({
+                            "mode": "query",
+                            "model": "res.partner",
+                            "fields": ["name", "email", "phone"],
+                            "limit": 10,
+                        }),
+                    },
+                }],
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "latency_ms": 100,
+                "error": False,
+            })
+        )
+        tool_result = {
+            "model": "res.partner",
+            "records": [
+                {"id": 1, "name": "Acme Supplies", "email": "sales@acme.example", "phone": "+27 10 000 0001"},
+                {"id": 2, "name": "Northwind Traders", "email": "ops@northwind.example", "phone": "+27 10 000 0002"},
+            ],
+            "count": 2,
+            "returned_count": 2,
+            "total_count": 2,
+            "limit": 10,
+            "offset": 0,
+            "has_more": False,
+            "complete": True,
+        }
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=AsyncMock(return_value=tool_result),
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "show customers in a table"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert client.chat_completion.call_count == 1
+        assert result["finish_reason"] == "structured_tool_result"
+        assert "Found 2 res.partner rows." in result["content"]
+        assert "| Name | Email | Phone |" in result["content"]
+        assert "| Acme Supplies | sales@acme.example | +27 10 000 0001 |" in result["content"]
+        assert "| Northwind Traders | ops@northwind.example | +27 10 000 0002 |" in result["content"]
+
+    def test_structured_answer_does_not_finalize_intermediate_odoo_lookup_rows(self):
+        from app.services.model_router import _structured_answer_from_tool_results
+
+        answer = _structured_answer_from_tool_results(
+            [{
+                "tool_name": "odoo_ops_runner",
+                "arguments": {
+                    "mode": "query",
+                    "model": "product.product",
+                    "fields": ["id", "name", "default_code"],
+                    "limit": 50,
+                },
+                "result": {
+                    "model": "product.product",
+                    "records": [
+                        {"id": 8128, "name": "Aquafresh Fresh & Minty Toothpaste 50ml", "default_code": "102R"},
+                        {"id": 8197, "name": "Sensodyne Multi Care Toothpaste 75ml", "default_code": "103T"},
+                    ],
+                    "count": 2,
+                    "returned_count": 2,
+                    "total_count": 2,
+                    "has_more": False,
+                    "complete": True,
+                },
+            }],
+            [{
+                "role": "user",
+                "content": (
+                    "in odoo for customer cosmetic connection, get all sales orders with Aquafresh and Sensodyne "
+                    "products and compare SO quantity with delivered quantity. ensure it is in tabular format "
+                    "and break it down per product"
+                ),
+            }],
+        )
+
+        assert answer is None
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):
@@ -2195,7 +2770,7 @@ class TestToolExecution:
 
     @pytest.mark.asyncio
     async def test_execute_chat_recovers_text_tool_call_without_selected_tool_schema(self):
-        """A textual canonical connector call must run even if intent selection missed a short correction."""
+        """Textual connector calls must still run when connected tools are already available."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2282,7 +2857,7 @@ class TestToolExecution:
         assert result["content"] == "Penelope's 4 June Odoo activity was checked."
         assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
         first_call = client.chat_completion.call_args_list[0]
-        assert first_call.kwargs["tools"] is None
+        assert first_call.kwargs["tools"] is not None
         assert execute_tool.await_count == 1
 
     @pytest.mark.asyncio
@@ -2710,6 +3285,142 @@ class TestToolExecution:
         assert args["model"] == "hr.employee"
         assert args["ids"] == [42]
         assert args["values"] == {"parent_id": 7}
+
+    def test_report_drilldown_answer_uses_connector_values_without_retyping(self):
+        from app.services.model_router import _structured_answer_from_tool_results
+
+        answer = _structured_answer_from_tool_results(
+            [
+                {
+                    "tool_name": "odoo_ops_runner",
+                    "arguments": {
+                        "mode": "report",
+                        "report_name": "Tax Report",
+                        "include_drilldowns": True,
+                    },
+                    "result": {
+                        "source": "odoo_account_report",
+                        "report_name": "Tax Report",
+                        "drilldowns": [
+                            {
+                                "line_name": "[1] Standard Rate",
+                                "formatted_value": "7,590,009.89",
+                                "source": "odoo_account_report_action_audit_cell",
+                                "action": {"name": "Journal Items", "res_model": "account.move.line"},
+                                "res_model": "account.move.line",
+                                "returned_count": 1,
+                                "total_count": 1318,
+                                "records": [
+                                    {
+                                        "id": 222580,
+                                        "date": "2026-05-04",
+                                        "move_id": {"id": 55125, "name": "INV-2026-02104"},
+                                        "journal_id": {"id": 1, "name": "Customer Invoices"},
+                                        "account_id": {"id": 99, "name": "500010 Sales category 1"},
+                                        "partner_id": {"id": 65, "name": "Iguewa Beauty Parlour"},
+                                        "name": "[KM01-0008] Kormesic Rosemary Mint Shampoo 480ml",
+                                        "debit": 0,
+                                        "credit": 2088.0,
+                                        "balance": -2088.0,
+                                        "tax_tag_ids": [21],
+                                        "record_url": "https://lotslotsmore.odoo.com/web#id=222580&model=account.move.line&view_type=form",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ],
+            [{"role": "user", "content": "show the journal items behind block 1"}],
+        )
+
+        assert answer is not None
+        assert "2,088.00" in answer
+        assert "-2,088.00" in answer
+        assert "https://lotslotsmore.odoo.com/web#id=222580&model=account.move.line&view_type=form" in answer
+        assert "https://lotsmore.odoo.com" not in answer
+
+    def test_report_drilldown_does_not_finish_action_workflow(self):
+        from app.services.model_router import _structured_answer_from_tool_results
+
+        answer = _structured_answer_from_tool_results(
+            [
+                {
+                    "tool_name": "odoo_ops_runner",
+                    "arguments": {
+                        "mode": "report",
+                        "report_name": "Tax Report",
+                        "include_drilldowns": True,
+                    },
+                    "result": {
+                        "source": "odoo_account_report",
+                        "report_name": "Tax Report",
+                        "drilldowns": [
+                            {
+                                "line_name": "[1] Standard Rate",
+                                "formatted_value": "7,590,009.89",
+                                "source": "odoo_account_report_action_audit_cell",
+                                "action": {"name": "Journal Items", "res_model": "account.move.line"},
+                                "res_model": "account.move.line",
+                                "returned_count": 1,
+                                "total_count": 1,
+                                "records": [
+                                    {
+                                        "id": 222580,
+                                        "date": "2026-05-04",
+                                        "move_id": {"id": 55125, "name": "INV-2026-02104"},
+                                        "balance": -2088.0,
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ],
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Reset the invoices to draft, fix their taxes, post them again, "
+                        "and put back the original payments."
+                    ),
+                }
+            ],
+        )
+
+        assert answer is None
+
+    def test_odoo_targeted_action_phase_guidance_requires_action_and_known_refs(self):
+        from app.services.model_router import _odoo_targeted_action_phase_message
+
+        action_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Recent verified Odoo facts:\n"
+                    "- account.move id=56137 name=INV-2026-02128 state=draft\n"
+                    "- account.move id=56737 name=INV-2026-02155 state=draft\n"
+                    "- account.partial.reconcile id=47647 amount=5206.75 credit_move=BNK01-2026-02619 R026S0Z8Q0"
+                ),
+            },
+            {"role": "user", "content": "Fix those two invoices and put back the original payments."},
+        ]
+        discovery_messages = [
+            {"role": "user", "content": "Find which invoices caused the VAT mismatch."},
+        ]
+        action_without_refs = [
+            {"role": "user", "content": "Fix the invoices causing the VAT mismatch."},
+        ]
+
+        guidance = _odoo_targeted_action_phase_message(action_messages)
+
+        assert guidance is not None
+        assert guidance["role"] == "system"
+        assert "Odoo targeted action phase" in guidance["content"]
+        assert "INV-2026-02128" in guidance["content"]
+        assert "execution on known targets" in guidance["content"]
+        assert _odoo_targeted_action_phase_message(discovery_messages) is None
+        assert _odoo_targeted_action_phase_message(action_without_refs) is None
 
 
 # ── Security Tests ──

@@ -33,8 +33,10 @@
     --glass-border: rgba(17, 24, 39, 0.10);
     --glass-border-bright: rgba(17, 24, 39, 0.18);
     --glass-highlight: rgba(255, 255, 255, 0.75);
-    --glass-shadow: rgba(15, 23, 42, 0.14);
+    --glass-shadow: rgba(15, 23, 42, 0.08);
     --glass-inner-shadow: rgba(255, 255, 255, 0.35);
+    --glass-composer-shadow: 0 3px 18px rgba(15, 23, 42, 0.08), 0 1px 5px rgba(15, 23, 42, 0.05);
+    --glass-composer-shadow-focus: 0 4px 20px rgba(15, 23, 42, 0.10), 0 1px 6px rgba(15, 23, 42, 0.06);
     --glass-blur: 22px;
     --glass-saturation: 1.35;
     --glass-radius: 16px;
@@ -68,8 +70,10 @@
     --glass-border: rgba(255, 255, 255, 0.08);
     --glass-border-bright: rgba(255, 255, 255, 0.15);
     --glass-highlight: rgba(255, 255, 255, 0.10);
-    --glass-shadow: rgba(0, 0, 0, 0.40);
+    --glass-shadow: rgba(0, 0, 0, 0.26);
     --glass-inner-shadow: rgba(255, 255, 255, 0.06);
+    --glass-composer-shadow: 0 3px 18px rgba(0, 0, 0, 0.30), 0 1px 5px rgba(0, 0, 0, 0.20);
+    --glass-composer-shadow-focus: 0 4px 20px rgba(0, 0, 0, 0.34), 0 1px 6px rgba(0, 0, 0, 0.22);
     --glass-blur: 24px;
     --glass-saturation: 1.2;
     --glass-radius: 16px;
@@ -200,7 +204,7 @@
     border-radius: 20px;
     box-shadow:
       inset 0 1px 0 var(--glass-inner-shadow),
-      0 8px 32px var(--glass-shadow);
+      var(--glass-composer-shadow);
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -208,7 +212,7 @@
     border-color: var(--glass-border-bright);
     box-shadow:
       inset 0 1px 0 var(--glass-inner-shadow),
-      0 8px 40px var(--glass-shadow);
+      var(--glass-composer-shadow-focus);
   }
 }
 

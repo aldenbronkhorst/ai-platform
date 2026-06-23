@@ -10,6 +10,7 @@ import {
   chatFailureFromResponse,
   CHAT_STREAM_INACTIVITY_TIMEOUT_MS,
   type ChatFailurePayload,
+  mergeStreamMetadata,
   mergeFetchedChatSessions,
   messageRequestId,
   normalizeChatMessage,
@@ -420,6 +421,26 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         let buffer = "";
         let finalMessage: ChatMessage | null = null;
         let streamFailure: ChatFailurePayload | null = null;
+        let pendingStreamMessage: ChatMessage | null = null;
+        const createPendingStreamMessage = (): ChatMessage => ({
+          id: pendingMessageId,
+          chat_session_id: session.id,
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+          status: "pending",
+        });
+        const updatePendingMessage = (updater: (message: ChatMessage) => ChatMessage) => {
+          const localMessage = pendingStreamMessage
+            || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
+            || createPendingStreamMessage();
+          const updatedMessage = updater(localMessage);
+          pendingStreamMessage = updatedMessage;
+          updateLocalMessage(session.id, pendingMessageId, updatedMessage);
+          if (activeSessionIdRef.current === session.id) {
+            setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? updatedMessage : m));
+          }
+        };
 
         while (true) {
           const { value, done } = await reader.read();
@@ -431,22 +452,12 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
 
           for (const item of parsed.events) {
             if (item.event === "activity") {
-              updateLocalMessage(session.id, pendingMessageId, appendActivityEvent(
-                (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId) || {
-                  id: pendingMessageId,
-                  chat_session_id: session.id,
-                  role: "assistant",
-                  content: "",
-                  created_at: new Date().toISOString(),
-                  status: "pending",
-                },
-                item.data,
-              ));
-              if (activeSessionIdRef.current === session.id) {
-                setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? appendActivityEvent(m, item.data) : m));
-              }
+              updatePendingMessage(message => appendActivityEvent(message, item.data));
             } else if (item.event === "message") {
-              finalMessage = normalizeChatMessage(item.data as ChatMessage);
+              const pendingMessage = pendingStreamMessage
+                || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
+                || null;
+              finalMessage = mergeStreamMetadata(normalizeChatMessage(item.data as ChatMessage), pendingMessage);
               finalMessage.status = "completed";
             } else if (item.event === "error") {
               streamFailure = chatFailureFromDetail(item.data, requestId, 502);
