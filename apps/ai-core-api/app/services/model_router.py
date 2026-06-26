@@ -39,7 +39,6 @@ MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 350000
 MAX_ODOO_RECORD_CONTEXT_CHARS = 300000
 MAX_ODOO_RECORD_CONTEXT_ITEMS = 500
-ODOO_BROAD_QUERY_LIMIT = 5000
 STRUCTURED_CHAT_TABLE_ROW_LIMIT = 500
 TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "24000"))
 TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
@@ -310,31 +309,10 @@ DELEGATED_AUTH_FAILURE_MARKERS = (
 )
 
 
-ODOO_OPS_RUNNER_MODES = {
-    "health",
-    "schema",
-    "query",
-    "count",
-    "aggregate",
-    "report",
-    "attachment",
-    "content",
-    "message",
-    "mutation",
-    "execute",
+ODOO_ORM_MODES = {
+    "orm",
+    "orm_batch",
 }
-ODOO_RECORDSET_METHODS_REQUIRE_IDS = {
-    "message_post",
-    "message_subscribe",
-    "message_unsubscribe",
-    "action_feedback",
-    "action_done",
-    "action_cancel",
-    "unlink",
-    "write",
-}
-ODOO_RECORDSET_METHOD_PREFIXES = ("action_", "button_", "message_")
-ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION = {"message_post", "action_feedback", "action_done"}
 MICROSOFT_TOOL_PROVIDER_BY_NAME = {
     "ms_azure_cli": "azure_cli",
     "ms_graph": "microsoft_graph",
@@ -380,167 +358,43 @@ def _handled_tool_argument_error(message: str, missing: list[str] | None = None,
     return result
 
 
-def _odoo_execute_method_requires_record_ids(method: str | None) -> bool:
-    normalized = (method or "").strip()
-    return normalized in ODOO_RECORDSET_METHODS_REQUIRE_IDS or normalized.startswith(ODOO_RECORDSET_METHOD_PREFIXES)
-
-
-def _odoo_execute_has_record_ids(arguments: dict[str, Any]) -> bool:
-    ids = arguments.get("ids")
-    if isinstance(ids, list) and any(isinstance(item, int) and not isinstance(item, bool) for item in ids):
-        return True
-
-    record_id = arguments.get("record_id")
-    if isinstance(record_id, int) and not isinstance(record_id, bool):
-        return True
-
-    args = arguments.get("args")
-    if not isinstance(args, list) or not args:
-        return False
-    first_arg = args[0]
-    if isinstance(first_arg, int) and not isinstance(first_arg, bool):
-        return True
-    return isinstance(first_arg, list) and any(isinstance(item, int) and not isinstance(item, bool) for item in first_arg)
-
-
-def _normalize_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+def _normalize_odoo_orm_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(arguments)
     mode = str(normalized.get("mode") or "").strip()
-    if not mode and _is_query_shaped_odoo_call(normalized):
-        normalized["mode"] = "query"
-        mode = "query"
-    if mode == "message" and not normalized.get("operation"):
-        normalized["operation"] = "post"
+    if not mode and isinstance(normalized.get("calls"), list):
+        normalized["mode"] = "orm_batch"
+    if not mode and normalized.get("model") and normalized.get("method"):
+        normalized["mode"] = "orm"
     return normalized
 
 
-def _is_query_shaped_odoo_call(arguments: dict[str, Any]) -> bool:
-    if not arguments.get("model"):
-        return False
-    if any(arguments.get(key) not in (None, "", [], {}) for key in (
-        "operation",
-        "values",
-        "body",
-        "record_id",
-        "ids",
-        "method",
-        "args",
-        "kwargs",
-        "report_name",
-        "report_id",
-        "attachment_id",
-        "attachment_ids",
-    )):
-        return False
-    return any(key in arguments for key in ("domain", "fields", "limit", "offset", "order"))
-
-
-def _handled_odoo_schema_connector_error(
-    arguments: dict[str, Any],
-    detail: dict[str, Any],
-    status_code: int,
-) -> dict[str, Any] | None:
-    mode = str(arguments.get("mode") or "").strip()
-    if mode != "schema":
-        return None
-
-    raw_error_type = str(detail.get("error_type") or "connector_error")
-    handled_schema_errors = {
-        "model_unavailable",
-        "schema_unavailable",
-        "invalid_domain_field",
-        "odoo_error",
-        "connector_http_error",
-        "internal_error",
-    }
-    if raw_error_type not in handled_schema_errors or status_code not in {400, 404, 422, 500}:
-        return None
-
-    model = str(arguments.get("model") or detail.get("model") or "unknown")
-    error_type = raw_error_type if raw_error_type in {"model_unavailable", "schema_unavailable"} else "schema_unavailable"
-    message = (
-        detail.get("message")
-        if raw_error_type in {"model_unavailable", "schema_unavailable"}
-        else f"Odoo model '{model}' could not be inspected by this connected account, so the schema probe was skipped."
-    )
-    return {
-        "error": True,
-        "handled": True,
-        "status": "skipped",
-        "error_type": error_type,
-        "message": _truncate_tool_text(str(message), 600),
-        "model": model,
-        "status_code": status_code,
-        "connector_error": detail,
-        "suggestion": "Use mode 'schema' with query to discover installed models, or inspect a different candidate model.",
-    }
-
-
-def _validate_odoo_ops_runner_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
+def _validate_odoo_orm_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
     mode = str(arguments.get("mode") or "").strip()
     if not mode:
         return _handled_tool_argument_error(
-            "The Odoo tool call was missing the required mode, so it was skipped before reaching the connector.",
-            missing=["mode"],
-            suggestion="Retry with mode set to health, schema, query, count, aggregate, report, attachment, content, message, mutation, or execute.",
+            "The Odoo ORM call was missing model/method or calls, so it was skipped before reaching the connector.",
+            missing=["model", "method", "calls"],
+            suggestion="Retry with model and method for one ORM call, or calls for an ORM batch.",
         )
-    if mode not in ODOO_OPS_RUNNER_MODES:
+    if mode not in ODOO_ORM_MODES:
         return _handled_tool_argument_error(
             f"Unknown Odoo tool mode: {mode}.",
-            suggestion="Use one of the supported Odoo ops runner modes.",
+            suggestion="Use mode='orm' or mode='orm_batch'.",
         )
-    if mode == "attachment" and not arguments.get("attachment_id") and not arguments.get("attachment_ids"):
+    if mode == "orm" and (not arguments.get("model") or not arguments.get("method")):
+        missing = [key for key in ("model", "method") if not arguments.get(key)]
         return _handled_tool_argument_error(
-            "The Odoo attachment request was missing attachment_id or attachment_ids, so it was skipped before reaching the connector.",
-            missing=["attachment_id", "attachment_ids"],
-            suggestion="Query ir.attachment first, then call attachment mode with attachment_id or attachment_ids.",
+            "The Odoo raw ORM request was missing model or method, so it was skipped before reaching the connector.",
+            missing=missing,
+            suggestion="Retry with mode='orm', model, method, and optional args/kwargs.",
         )
-    if mode == "execute":
-        method = str(arguments.get("method") or "").strip()
-        if _odoo_execute_method_requires_record_ids(method) and not _odoo_execute_has_record_ids(arguments):
-            return _handled_tool_argument_error(
-                f"The Odoo method '{method}' is record-bound and cannot be called without target record IDs.",
-                missing=["ids", "record_id", "args[0]"],
-                suggestion=(
-                    "Retry with ids, record_id, or args=[[id]]. For chatter posts, prefer mode 'message' "
-                    "with model, record_id, operation='post', and body. For mail.activity completion, "
-                    "use mode 'execute' with ids=[activity_id]."
-                ),
-            )
+    if mode == "orm_batch" and not isinstance(arguments.get("calls"), list):
+        return _handled_tool_argument_error(
+            "The Odoo raw ORM batch request was missing calls, so it was skipped before reaching the connector.",
+            missing=["calls"],
+            suggestion="Retry with mode='orm_batch' and calls=[{model, method, args, kwargs}].",
+        )
     return None
-
-
-def _odoo_side_effect_requires_verification(arguments: dict[str, Any]) -> bool:
-    mode = str(arguments.get("mode") or "").strip()
-    if mode == "message":
-        return True
-    if mode != "execute":
-        return False
-    method = str(arguments.get("method") or "").strip()
-    return method in ODOO_SIDE_EFFECT_METHODS_REQUIRE_VERIFICATION
-
-
-def _guard_unverified_odoo_side_effect(arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-    if not _odoo_side_effect_requires_verification(arguments):
-        return result
-    if result.get("error") or result.get("effect_verified") is True:
-        return result
-
-    guarded = dict(result)
-    guarded.update(
-        {
-            "error": True,
-            "handled": True,
-            "status": "unverified_side_effect",
-            "error_type": "unverified_side_effect",
-            "message": (
-                "The Odoo side-effect call returned, but the connector did not verify that the change "
-                "persisted. Do not claim the activity was completed or the message was sent."
-            ),
-        }
-    )
-    guarded.setdefault("verification", {"status": "missing"})
-    return guarded
 
 
 async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
@@ -687,9 +541,9 @@ async def _execute_tool_call_impl(
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
-    if tool_name == "odoo_ops_runner":
-        arguments = _normalize_odoo_ops_runner_arguments(arguments)
-        validation_error = _validate_odoo_ops_runner_arguments(arguments)
+    if tool_name == "odoo_orm":
+        arguments = _normalize_odoo_orm_arguments(arguments)
+        validation_error = _validate_odoo_orm_arguments(arguments)
         if validation_error:
             return validation_error
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
@@ -698,7 +552,7 @@ async def _execute_tool_call_impl(
             "identity_mode": "user-delegated",
             **arguments,
         }
-        path = "/odoo/ops/run"
+        path = "/odoo/orm/run"
         url = f"{ODOO_CONNECTOR_URL.rstrip('/')}{path}" if ODOO_CONNECTOR_URL else ""
         if not url:
             return {"error": "Odoo connector URL not configured"}
@@ -711,9 +565,6 @@ async def _execute_tool_call_impl(
             except Exception:
                 raw_detail = {"error_type": "connector_http_error", "message": response.text}
             detail = _connector_error_payload(raw_detail, response.text)
-            handled = _handled_odoo_schema_connector_error(arguments, detail, response.status_code)
-            if handled:
-                return handled
             return {
                 "error": True,
                 "status_code": response.status_code,
@@ -722,8 +573,6 @@ async def _execute_tool_call_impl(
                 "message": detail.get("message") or "Connector returned an error.",
             }
         result = response.json()
-        if isinstance(result, dict):
-            return _guard_unverified_odoo_side_effect(arguments, result)
         return result
 
     if tool_name in MICROSOFT_NATIVE_TOOL_NAMES or tool_name == "github_cli":
@@ -958,148 +807,6 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _is_broad_odoo_detail_request(text: str) -> bool:
-    normalized = text.lower()
-    return bool(re.search(
-        r"\b(all|every|complete|full)\b|all\s+(sales?|orders?|rows?|records?)|"
-        r"\b(line[- ]by[- ]line|each\s+so|each\s+sales?\s+order)\b|"
-        r"\b\d[\d,]*\s*k?\s+(rows?|records?|orders?|items?|lines?)\b",
-        normalized,
-    ))
-
-
-def _requested_result_size(text: str) -> int | None:
-    normalized = text.lower()
-    patterns = [
-        r"\b(?:limit|top|first|last|latest|only|max(?:imum)?)\s+(?P<count>\d[\d,]*(?:\.\d+)?)\s*(?P<suffix>k)?\b",
-        r"\b(?P<count>\d[\d,]*(?:\.\d+)?)\s*(?P<suffix>k)?\s+(?:rows?|records?|orders?|items?|lines?)\b",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, normalized)
-        if not match:
-            continue
-        count = float(match.group("count").replace(",", ""))
-        if match.groupdict().get("suffix"):
-            count *= 1000
-        return int(count)
-    return None
-
-
-def _user_requested_chat_sized_result(text: str) -> bool:
-    requested_size = _requested_result_size(text)
-    return requested_size is not None and requested_size <= ODOO_BROAD_QUERY_LIMIT
-
-
-def _user_requested_oversized_raw_result(text: str) -> bool:
-    requested_size = _requested_result_size(text)
-    return requested_size is not None and requested_size > ODOO_BROAD_QUERY_LIMIT
-
-
-def _normalize_odoo_read_args_for_request(args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
-    mode = str(args.get("mode") or "").strip().lower()
-    method = str(args.get("method") or "").strip().lower()
-    is_read_call = mode == "query" or (mode == "execute" and method in {"search_read", "search"})
-    if not is_read_call:
-        return args
-
-    user_text = _latest_user_text(messages)
-    if not _is_broad_odoo_detail_request(user_text) or _user_requested_chat_sized_result(user_text):
-        return args
-    if _user_requested_oversized_raw_result(user_text):
-        return args
-
-    try:
-        requested_limit = int(args.get("limit") or 0)
-    except (TypeError, ValueError):
-        requested_limit = 0
-    requested_size = _requested_result_size(user_text)
-    if requested_size is None and requested_limit >= ODOO_BROAD_QUERY_LIMIT:
-        return args
-
-    normalized = dict(args)
-    normalized["limit"] = ODOO_BROAD_QUERY_LIMIT
-    return normalized
-
-
-def _odoo_raw_pagination_policy_result(args: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    mode = str(args.get("mode") or "").strip().lower()
-    method = str(args.get("method") or "").strip().lower()
-    is_read_call = mode == "query" or (mode == "execute" and method in {"search_read", "search"})
-    if not is_read_call:
-        return None
-
-    user_text = _latest_user_text(messages)
-    if not _is_broad_odoo_detail_request(user_text) or _user_requested_chat_sized_result(user_text):
-        return None
-
-    try:
-        offset = int(args.get("offset") or 0)
-    except (TypeError, ValueError):
-        offset = 0
-    requested_size = _requested_result_size(user_text)
-    is_explicitly_oversized = requested_size is not None and requested_size > ODOO_BROAD_QUERY_LIMIT
-    is_manual_raw_page = offset > 0
-    if not is_explicitly_oversized and not is_manual_raw_page:
-        return None
-
-    if is_explicitly_oversized:
-        message = (
-            f"The user requested {requested_size} raw Odoo rows, which is larger than the chat raw row ceiling "
-            f"of {ODOO_BROAD_QUERY_LIMIT}. Raw Odoo reads for oversized results are not executed in chat."
-        )
-        recommended_next_step = (
-            "Use Odoo count or aggregate for analysis. If every raw row is genuinely needed, ask for narrower filters "
-            "or use a dedicated export workflow instead of paging raw rows through the chat model."
-        )
-    else:
-        message = (
-            "Raw Odoo pagination was stopped because the request is larger than the chat result ceiling. "
-            "Use count or aggregate for analysis, narrow the filters, or use an export workflow for the full raw dataset."
-        )
-        recommended_next_step = (
-            "Do not fetch additional raw pages into chat. Summarize the visible records, call aggregate for totals, "
-            "or ask the user for narrower filters/export requirements."
-        )
-
-    return {
-        "error": False,
-        "status": "skipped",
-        "handled": True,
-        "policy": "large_raw_result",
-        "model": args.get("model"),
-        "message": message,
-        "recommended_next_step": recommended_next_step,
-        "requested_size": requested_size,
-        "limit": ODOO_BROAD_QUERY_LIMIT,
-        "offset": offset,
-        "complete": False,
-        "has_more": True,
-    }
-
-
-def _normalize_tool_call_arguments_for_request(call: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
-    if call.get("type") != "function":
-        return call
-    function = call.get("function", {})
-    if function.get("name") != "odoo_ops_runner":
-        return call
-    try:
-        args = json.loads(function.get("arguments", "{}"))
-    except (json.JSONDecodeError, TypeError):
-        return call
-    if not isinstance(args, dict):
-        return call
-
-    normalized_args = _normalize_odoo_read_args_for_request(args, messages)
-    if normalized_args is args:
-        return call
-    normalized_call = dict(call)
-    normalized_function = dict(function)
-    normalized_function["arguments"] = json.dumps(normalized_args, ensure_ascii=False)
-    normalized_call["function"] = normalized_function
-    return normalized_call
-
-
 def _value_name(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("name") or value.get("display_name") or value.get("id") or "")
@@ -1116,15 +823,6 @@ def _format_quantity(value: Any) -> str:
     if number.is_integer():
         return f"{int(number):,}"
     return f"{number:,.2f}".rstrip("0").rstrip(".")
-
-
-def _format_amount(value: Any) -> str:
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError):
-        return str(value or "")
-    sign = "-" if number < 0 else ""
-    return f"{sign}{abs(number):,.2f}"
 
 
 def _markdown_text(value: Any) -> str:
@@ -1154,68 +852,21 @@ def _is_structured_table_request(text: str) -> bool:
     ))
 
 
-def _is_odoo_action_workflow_request(text: str) -> bool:
-    return bool(re.search(
-        r"\b("
-        r"fix|update|change|write|set|reset|draft|post|repost|confirm|validate|cancel|"
-        r"delete|remove|unlink|reconcile|unreconcile|allocate|reallocate|put\s+back"
-        r")\b",
-        text.lower(),
-    ))
-
-
-ODOO_DOCUMENT_REF_RE = re.compile(
-    r"\b(?:INV|RINV|BILL|SO|PO|BNK\d*)-\d{4}-\d{5}\b|\bR\d{3}[A-Z0-9]{5,}\b",
-    re.IGNORECASE,
-)
-
-
-def _known_odoo_record_refs(messages: list[dict[str, Any]]) -> set[str]:
-    refs: set[str] = set()
-    for message in messages[-12:]:
-        if not isinstance(message, dict):
-            continue
-        content = str(message.get("content") or "")
-        refs.update(match.group(0).upper() for match in ODOO_DOCUMENT_REF_RE.finditer(content))
-    return refs
-
-
-def _odoo_targeted_action_phase_message(messages: list[dict[str, Any]]) -> dict[str, str] | None:
-    if not _is_odoo_action_workflow_request(_latest_user_text(messages)):
-        return None
-
-    known_refs = _known_odoo_record_refs(messages)
-    if not known_refs:
-        return None
-
-    refs = ", ".join(sorted(known_refs)[:20])
-    return {
-        "role": "system",
-        "content": (
-            "Odoo targeted action phase. The current user request is asking for an action/change, and exact "
-            f"Odoo record references are already known: {refs}. Treat this as execution on known targets, not "
-            "fresh discovery. Query target records directly by exact id/name/ref, then query only their direct "
-            "related records such as move lines, tax lines, partial reconciles, bank/payment move lines, or "
-            "report drilldowns tied to those records. Do not re-find the customer, broad invoice set, broad "
-            "payment set, or broad chatter unless a required fact is genuinely missing and cannot be obtained "
-            "from the known target records. If the user asks to find unknown records first, discovery is allowed "
-            "until exact targets are identified; once targets are identified, switch back to exact-target action."
-        ),
-    }
-
-
-def _messages_with_odoo_targeting_guidance(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    guidance = _odoo_targeted_action_phase_message(messages)
-    if not guidance:
-        return messages
-    return messages + [guidance]
-
-
 def _structured_rows_from_odoo_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
     for payload_key in ("records", "result", "groups"):
         rows = result.get(payload_key)
         if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
             return payload_key, rows
+    return None
+
+
+def _requested_fields_from_arguments(arguments: dict[str, Any]) -> list[Any] | None:
+    requested = arguments.get("fields")
+    if isinstance(requested, list):
+        return requested
+    kwargs = arguments.get("kwargs")
+    if isinstance(kwargs, dict) and isinstance(kwargs.get("fields"), list):
+        return kwargs["fields"]
     return None
 
 
@@ -1228,7 +879,7 @@ def _structured_result_matches_request(
 ) -> bool:
     normalized = user_text.lower()
     columns = set()
-    requested_fields = arguments.get("fields")
+    requested_fields = _requested_fields_from_arguments(arguments)
     if isinstance(requested_fields, list):
         columns.update(str(field).lower() for field in requested_fields)
     for row in rows[:10]:
@@ -1297,7 +948,7 @@ def _safe_table_columns(rows: list[dict[str, Any]], arguments: dict[str, Any]) -
         "base64",
         "binary",
     }
-    requested = arguments.get("fields")
+    requested = _requested_fields_from_arguments(arguments)
     columns: list[str] = []
     if isinstance(requested, list):
         for field in requested:
@@ -1396,117 +1047,6 @@ def _render_markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> li
     return lines
 
 
-def _list_value_names(value: Any) -> str:
-    if isinstance(value, dict):
-        return _value_name(value)
-    if isinstance(value, (list, tuple)):
-        if len(value) == 2 and isinstance(value[0], int) and isinstance(value[1], str):
-            return str(value[1])
-        names = []
-        for item in value:
-            item_name = _value_name(item)
-            names.append(item_name if item_name else str(item))
-        return ", ".join(name for name in names if name)
-    return str(value or "")
-
-
-def _drilldown_table_value(row: dict[str, Any], column: str) -> Any:
-    value = row.get(column)
-    if value is False or value is None:
-        return ""
-    if column == "record_url":
-        return f"[Open]({value})" if value else ""
-    if column in {"debit", "credit", "balance", "amount_currency"}:
-        return _format_amount(value)
-    if isinstance(value, (dict, list, tuple)):
-        return _list_value_names(value)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _format_quantity(value)
-    return value
-
-
-def _render_drilldown_table(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
-    lines = [
-        "| " + " | ".join(_markdown_cell(_column_label(column)) for column in columns) + " |",
-        "| " + " | ".join("---" for _ in columns) + " |",
-    ]
-    for row in rows:
-        lines.append(
-            "| "
-            + " | ".join(_markdown_cell(_drilldown_table_value(row, column)) for column in columns)
-            + " |"
-        )
-    return lines
-
-
-def _odoo_report_drilldown_answer(result: dict[str, Any]) -> str | None:
-    if result.get("source") != "odoo_account_report":
-        return None
-    drilldowns = result.get("drilldowns")
-    if not isinstance(drilldowns, list) or not drilldowns:
-        return None
-
-    rendered_any = False
-    lines = [f"## {result.get('report_name') or 'Odoo Report'} Drilldown"]
-    for drilldown in drilldowns:
-        if not isinstance(drilldown, dict) or drilldown.get("error"):
-            continue
-        records = drilldown.get("records")
-        if not isinstance(records, list) or not records:
-            continue
-        if len(records) > STRUCTURED_CHAT_TABLE_ROW_LIMIT:
-            continue
-
-        action = drilldown.get("action") if isinstance(drilldown.get("action"), dict) else {}
-        total_count = drilldown.get("total_count")
-        returned_count = drilldown.get("returned_count")
-        model_name = drilldown.get("res_model") or (action or {}).get("res_model") or "Odoo records"
-        line_name = drilldown.get("line_name") or "Report line"
-        amount = drilldown.get("formatted_value") or drilldown.get("value") or ""
-        action_name = _markdown_text(action.get("name")) if action.get("name") else ""
-        action_suffix = f" -> {action_name}" if action_name else ""
-
-        lines.extend([
-            "",
-            f"### {_markdown_text(line_name)}",
-            f"Report amount: {_markdown_text(amount)}",
-            f"Drilldown source: Odoo report audit action{action_suffix} (`{model_name}`)",
-        ])
-        if isinstance(total_count, int):
-            lines.append(f"Showing {returned_count or len(records):,} of {total_count:,} records returned by the report drilldown.")
-        else:
-            lines.append(f"Showing {returned_count or len(records):,} records returned by the report drilldown.")
-
-        preferred_columns = [
-            "date",
-            "move_id",
-            "journal_id",
-            "account_id",
-            "partner_id",
-            "name",
-            "debit",
-            "credit",
-            "balance",
-            "amount_currency",
-            "currency_id",
-            "tax_ids",
-            "tax_line_id",
-            "tax_tag_ids",
-            "parent_state",
-            "record_url",
-        ]
-        columns = [column for column in preferred_columns if any(column in row for row in records)]
-        if not columns:
-            columns, _hidden = _safe_table_columns(records, {})
-        if not columns:
-            continue
-        lines.append("")
-        lines.extend(_render_drilldown_table(records, columns))
-        rendered_any = True
-
-    return "\n".join(lines) if rendered_any else None
-
-
 def _odoo_structured_table_answer(
     *,
     result: dict[str, Any],
@@ -1570,22 +1110,11 @@ def _structured_answer_from_tool_results(
     messages: list[dict[str, Any]],
 ) -> str | None:
     user_text = _latest_user_text(messages)
-    if not _is_odoo_action_workflow_request(user_text):
-        for tool_result in reversed(tool_results):
-            if tool_result.get("tool_name") != "odoo_ops_runner":
-                continue
-            result = tool_result.get("result")
-            if not isinstance(result, dict):
-                continue
-            drilldown_answer = _odoo_report_drilldown_answer(result)
-            if drilldown_answer:
-                return drilldown_answer
-
     if not _is_structured_table_request(user_text):
         return None
 
     for tool_result in reversed(tool_results):
-        if tool_result.get("tool_name") != "odoo_ops_runner":
+        if tool_result.get("tool_name") != "odoo_orm":
             continue
         result = tool_result.get("result")
         if not isinstance(result, dict):
@@ -1602,7 +1131,7 @@ def _structured_answer_from_tool_results(
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "mode", "operation", "method", "resource",
-        "timeout", "report_name", "fields", "limit", "order",
+        "timeout", "fields", "limit", "order",
     }
     safe: dict[str, Any] = {}
     for key in allowed:
@@ -1803,94 +1332,22 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
 
     odoo_available = [name for name in available_names if name.startswith("odoo_")]
     guidance_parts: list[str] = []
-    if "odoo_ops_runner" in odoo_available:
+    if "odoo_orm" in odoo_available:
         guidance_parts.append(
             "\n\n### Connected Account Tool Guidance\n"
             "Use one consolidated tool per connected system. Do not invent feature-specific connector tools."
         )
-        guidance_parts.append("Odoo: use `odoo_ops_runner` only. Select a broad mode for the operation.")
         guidance_parts.append(
-            "Modes: health, schema, query, count, aggregate, report, attachment, content, message, mutation, execute. "
-            "For create/write/delete, use mode `mutation` with the `operation` field."
+            "Odoo: use `odoo_orm` as direct ORM access. For one call, provide `model`, `method`, "
+            "`args`, and `kwargs`; the router infers mode `orm`. For related lookups, provide `calls` and "
+            "the router infers mode `orm_batch`. Use `fields_get` to inspect fields, `search_read` or `read` "
+            "to fetch records, and preserve raw IDs when following relationships."
         )
         guidance_parts.append(
-            "Odoo query and execute/search_read results return up to the requested limit in one tool call. "
-            "Treat `limit` as the maximum total records to return, not a page size. "
-            "For all/full/complete detail requests, omit `limit` or use 5000 unless the user explicitly asks for fewer rows. "
-            "Do not manually page with offsets when complete is true. "
-            "Odoo query and execute/search_read results include returned_count, total_count, has_more, and complete. "
-            "If complete is true, do not describe the result as truncated. "
-            "If the user explicitly asks for more than 5000 raw rows, do not call query/search_read for the raw dataset. "
-            "Use count or aggregate for analysis, ask for narrower filters, or explain that a dedicated export workflow is required. "
-            "If a broad raw result still has_more after 5000 rows, do not page raw data into chat. Use count/aggregate for analysis, "
-            "ask for narrower filters, or explain that a file export workflow is required for the full raw dataset."
-        )
-        guidance_parts.append(
-            "Do not invent Odoo web URLs, domains, or hostnames. Only provide Odoo links from connector results "
-            "such as record_url or record_urls. If no verified connector-provided URL is available, say you "
-            "cannot provide a verified link instead of guessing."
-        )
-        guidance_parts.append(
-            "Use Odoo `schema` to inspect models and fields. Use `query` with explicit fields for record lists. "
-            "Use `content` only for text/body fields on a narrow domain or specific ids; never use broad unfiltered "
-            "`content` calls for schema discovery or general user/activity lookups."
-        )
-        guidance_parts.append(
-            "Use Odoo `aggregate` only for summary totals. If the user asks for all sales orders, all rows, line-by-line detail, "
-            "or quantities on each SO, do not answer from aggregate groups alone. Use `query` on `sale.order.line` with explicit "
-            "fields such as order_id, product_id, product_uom_qty, and qty_delivered so the final table contains the actual SO rows."
-        )
-        guidance_parts.append(
-            "For Odoo accounting reports, report lines may include `drilldown_available` and `drilldown_columns`. "
-            "If the user asks what makes up a report amount, call report mode again with the relevant `line_names` "
-            "and `include_drilldowns=true`; this uses Odoo's own audit action for the same clickable amount in the Odoo UI."
-        )
-        guidance_parts.append(
-            "For Odoo invoice/payment accounting work, do not look only at `account.payment`; paid invoices are often "
-            "matched through receivable/payable journal lines. To identify payments on invoices: read the invoice "
-            "`account.move` records, read their receivable/payable `account.move.line` records, then query "
-            "`account.partial.reconcile` where `debit_move_id` or `credit_move_id` is one of those lines. The opposite "
-            "move line identifies the bank/payment move to restore later. For invoice tax repair workflows, first capture "
-            "invoice ids, current state, totals, receivable/payable lines, partial reconcile ids, opposite payment/bank "
-            "move lines, and the tax_id used on comparable valid invoice lines for that partner/fiscal position. Then "
-            "reset to draft, update invoice line `tax_ids` with Odoo x2many commands, post, verify totals/report values, "
-            "and only then restore the original reconciliations."
-        )
-        guidance_parts.append(
-            "For Odoo workflows on named records, keep the path narrow: query the exact records and exact related lines "
-            "needed for the task. Do not query broad unrelated invoice sets, full chatter history, or `account.payment` "
-            "when the needed ids/lines can be found from the target records or receivable/payable reconciliation lines. "
-            "Reuse facts already established in the current conversation and current tool results instead of rediscovering "
-            "the same partner, tax, or payment evidence."
-        )
-        guidance_parts.append(
-            "When the previous assistant message proposed an Odoo action plan and asked whether to proceed, treat a user "
-            "approval or clarification as instruction to continue the action. Do not answer with phrases such as "
-            "`starting now`, `let me proceed`, or `I will do that` unless you are also calling the needed Odoo tool in "
-            "the same response. If a blocker prevents the action, explain the blocker instead."
-        )
-        guidance_parts.append(
-            "For chatter/activity lookups: `mail.activity` uses `res_model` and `res_id`; "
-            "`mail.message` uses `model` and `res_id` for the related business record. "
-            "Do not filter `mail.message` by `res_model`."
-        )
-        guidance_parts.append(
-            "Use Odoo mode `message` to post chatter comments with model, record_id, operation='post', and body. "
-            "Odoo message_post posts to the target record's chatter; it is not a private Discuss direct message. "
-            "Do not tell the user a private/direct message was sent unless a direct-message-capable tool result "
-            "explicitly verifies that delivery. "
-            "For record methods in mode `execute` such as message_post, action_feedback, action_done, "
-            "button_validate, or unlink, always include ids/record_id or args=[[id]]. Never call these with empty args."
-        )
-        guidance_parts.append(
-            "For Odoo side effects such as message_post and mail.activity action_feedback/action_done, only say the "
-            "message was sent or the activity was marked done when the tool result has effect_verified=true. "
-            "If the result is unverified, say the call could not be verified and do not present it as completed."
-        )
-        guidance_parts.append(
-            "Report aliases: P&L/PNL -> Profit and Loss, BS/Balance Sheet, TB/Trial Balance, GL/General Ledger.\n"
-            "Dates: this month -> first day to today; this year -> Jan 1 to today; last month -> previous month.\n"
-            "Do not infer a report from a business metric. Use a report only when the user names the report or chooses one after discovery."
+            "Keep Odoo calls narrow and script-like: start from the exact record named by the user, read the related "
+            "IDs you need, then follow those IDs in the next batch call. Do not invent Odoo web URLs, domains, "
+            "hostnames, fields, or record IDs. For writes/actions, verify the result with a follow-up ORM read before "
+            "claiming the change is complete."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
     if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
@@ -2276,10 +1733,7 @@ async def _run_tool_loop(
         if not tool_calls:
             break
 
-        tool_calls = [
-            _normalize_tool_call_arguments_for_request(_canonicalize_tool_call(call), messages)
-            for call in tool_calls
-        ]
+        tool_calls = [_canonicalize_tool_call(call) for call in tool_calls]
         state.result["tool_calls"] = tool_calls
         state.stats.tool_calls += len(tool_calls)
         messages.append({
@@ -2301,10 +1755,7 @@ async def _run_tool_loop(
             except (json.JSONDecodeError, TypeError):
                 args = {}
 
-            policy_result = None
-            if name == "odoo_ops_runner":
-                policy_result = _odoo_raw_pagination_policy_result(args, messages)
-            result = policy_result or await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
+            result = await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
             if isinstance(result, dict):
                 await _record_delegated_tool_auth_failure(db, user_id, name, result)
             compact_result = _compact_tool_result_for_model(result)
@@ -2335,7 +1786,7 @@ async def _run_tool_loop(
             }
             break
 
-        followup_messages = _messages_with_odoo_targeting_guidance(messages) + [TOOL_LOOP_FOLLOWUP_MESSAGE]
+        followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
         followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
         result, client = await _call_model(
             state.used_model,
@@ -2531,7 +1982,6 @@ async def execute_chat(
         )
         injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
         full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
-        full_messages = _messages_with_odoo_targeting_guidance(full_messages)
         temperature = float(route.temperature) if route.temperature is not None else 0.3
         max_tokens = route.max_tokens or 2000
         if trace_svc and context_span:

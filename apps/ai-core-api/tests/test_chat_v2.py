@@ -97,7 +97,7 @@ class TestChatResponseGuards:
             SimpleNamespace(
                 tool_call_json=[
                     {
-                        "tool_name": "odoo_ops_runner",
+                        "tool_name": "odoo_orm",
                         "arguments": {"model": "account.move"},
                         "result": {
                             "model": "account.move",
@@ -114,7 +114,7 @@ class TestChatResponseGuards:
                         },
                     },
                     {
-                        "tool_name": "odoo_ops_runner",
+                        "tool_name": "odoo_orm",
                         "arguments": {"model": "account.partial.reconcile"},
                         "result": {
                             "model": "account.partial.reconcile",
@@ -143,7 +143,7 @@ class TestChatResponseGuards:
         from app.routers.chat import _assistant_metadata
 
         summary = [{
-            "tool_name": "odoo_ops_runner",
+            "tool_name": "odoo_orm",
             "status": "skipped",
             "handled": True,
             "error_type": "model_unavailable",
@@ -166,7 +166,7 @@ class TestChatResponseGuards:
 
         activity_events = [
             {"span_type": "context_build", "event": "span_started"},
-            {"span_type": "tool_call", "span_name": "odoo_ops_runner"},
+            {"span_type": "tool_call", "span_name": "odoo_orm"},
         ]
 
         metadata = _assistant_metadata(

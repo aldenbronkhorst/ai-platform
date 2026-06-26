@@ -1,4 +1,4 @@
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
@@ -9,7 +9,10 @@ class OdooCredentialsRequest(BaseModel):
     db: str = Field(..., description="Odoo database name")
     username: str = Field(..., description="Odoo username")
     api_key: str = Field(..., description="Odoo API key or password")
-    transport: Literal["auto", "xmlrpc", "jsonrpc"] = Field(default="auto", description="Transport: auto, xmlrpc, jsonrpc")
+    transport: Literal["auto", "json2", "xmlrpc", "jsonrpc"] = Field(
+        default="auto",
+        description="Transport: auto, json2, xmlrpc, jsonrpc. Auto tries JSON-2 first and falls back to JSON-RPC.",
+    )
 
     @field_validator("url")
     @classmethod
@@ -26,20 +29,3 @@ class CapabilitiesResponse(BaseModel):
     endpoints: list[dict[str, Any]]
     execute_kw_enabled: bool
     execute_kw_write_methods: bool
-
-
-class OdooExecuteReportRequest(BaseModel):
-    credentials: OdooCredentialsRequest
-    report_name: str
-    report_id: Optional[int] = None
-    date_from: Optional[str] = None
-    date_to: Optional[str] = None
-    company_id: Optional[int] = None
-    timezone: Optional[str] = None
-    lang: Optional[str] = None
-    line_names: Optional[list[str]] = None
-    include_raw_lines: bool = False
-    include_drilldowns: bool = False
-    drilldown_limit: int = 1000
-    drilldown_offset: int = 0
-    drilldown_fields: Optional[list[str]] = None

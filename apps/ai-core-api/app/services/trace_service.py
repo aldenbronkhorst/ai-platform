@@ -56,20 +56,15 @@ def _tool_connector(tool_name: str) -> str:
 
 def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
     connector = _tool_connector(tool_name)
-    if tool_name == "odoo_ops_runner":
-        mode = str(args.get("mode") or args.get("operation") or "operation")
+    if tool_name == "odoo_orm":
+        calls = args.get("calls")
         model = str(args.get("model") or "").strip()
-        report = str(args.get("report_name") or args.get("report") or "").strip()
-        if mode in {"query", "count", "aggregate", "schema"} and model:
-            return f"{mode.title()} {model}"
-        if mode == "report" and report:
-            return f"Run Odoo report: {report}"
-        if mode == "mutation" and model:
-            operation = str(args.get("operation") or "mutation").title()
-            return f"{operation} {model}"
-        if model:
-            return f"Odoo {mode}: {model}"
-        return f"Odoo {mode}"
+        method = str(args.get("method") or "").strip()
+        if isinstance(calls, list):
+            return f"Odoo ORM batch ({len(calls)} calls)"
+        if model and method:
+            return f"Odoo ORM {model}.{method}"
+        return "Odoo ORM"
 
     command = _preview_text(args.get("command"))
     if command:
@@ -92,7 +87,7 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
 def _safe_tool_arguments(args: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "mode", "operation", "method", "resource",
-        "timeout", "report_name", "fields", "limit", "order",
+        "timeout", "fields", "limit", "order",
     }
     safe: dict[str, Any] = {}
     for key in allowed:

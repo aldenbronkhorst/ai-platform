@@ -524,7 +524,7 @@ def _named_value(value: Any) -> str:
 
 
 def _compact_odoo_tool_fact(tool_result: dict[str, Any], line_budget: int) -> list[str]:
-    if line_budget <= 0 or tool_result.get("tool_name") != "odoo_ops_runner":
+    if line_budget <= 0 or tool_result.get("tool_name") != "odoo_orm":
         return []
     result = tool_result.get("result")
     if not isinstance(result, dict):

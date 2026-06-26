@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.core.odoo_client import OdooError, OdooAuthError, compact_odoo_rpc_error
 from app.core.middleware import CorrelationIdMiddleware
 from app.routers import health
-from app.routers import ops_runner as ops_runner_router
+from app.routers import orm_runner as orm_runner_router
 
 settings = get_settings()
 
@@ -68,7 +68,7 @@ async def appinsights_middleware(request: Request, call_next):
 
 
 app.include_router(health.router, tags=["Health"])
-app.include_router(ops_runner_router.router, prefix="/odoo/ops", tags=["Odoo Ops Runner"])
+app.include_router(orm_runner_router.router, prefix="/odoo/orm", tags=["Odoo ORM"])
 
 
 @app.exception_handler(OdooAuthError)
