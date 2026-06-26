@@ -175,16 +175,17 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
                 "api_key": api_key,
                 "transport": "auto",
             },
-            "mode": "query",
             "model": "res.company",
-            "domain": [],
-            "fields": ["id", "name", "currency_id"],
-            "limit": 1,
-            "include_ids": True,
+            "method": "search_read",
+            "args": [[]],
+            "kwargs": {
+                "fields": ["id", "name", "currency_id"],
+                "limit": 1,
+            },
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
-                f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/ops/run",
+                f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/orm/run",
                 json=payload,
                 headers=headers,
             )
@@ -193,7 +194,7 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
             return {}
 
         data = response.json()
-        records = data.get("records") if isinstance(data, dict) else data
+        records = data.get("result") if isinstance(data, dict) else data
         if isinstance(records, list) and len(records) > 0:
             company = records[0]
             company_id = company.get("id")
@@ -308,10 +309,13 @@ def _odoo_verify_payload(url: str, db: str, username: str, api_key: str) -> dict
             "api_key": api_key,
             "transport": "auto"
         },
-        "mode": "query",
         "model": "res.partner",
-        "domain": [],
-        "limit": 1
+        "method": "search_read",
+        "args": [[]],
+        "kwargs": {
+            "fields": ["id"],
+            "limit": 1,
+        },
     }
 
 
@@ -324,7 +328,7 @@ async def _post_odoo_verify_request(
 ) -> httpx.Response:
     async with httpx.AsyncClient(timeout=30.0) as client:
         return await client.post(
-            f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/ops/run",
+            f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/orm/run",
             json=_odoo_verify_payload(url, db, username, api_key),
             headers=_odoo_verify_headers(request_id),
         )

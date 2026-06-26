@@ -869,14 +869,14 @@ class TestToolDefinitions:
 
     def test_build_tool_definitions_skips_missing_schema(self):
         from app.services.model_tool_calls import _build_tool_definitions
-        tool = AITool(name="odoo_ops_runner", display_name="Odoo Ops Runner",
+        tool = AITool(name="odoo_orm", display_name="Odoo ORM",
                        description="Search Odoo", target_system="odoo", input_schema=None)
         assert _build_tool_definitions([tool]) == []
 
     def test_build_tool_definitions_valid(self):
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
-            name="odoo_ops_runner", display_name="Odoo Ops Runner",
+            name="odoo_orm", display_name="Odoo ORM",
             description="Run Odoo operations",
             target_system="odoo",
             input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
@@ -884,15 +884,15 @@ class TestToolDefinitions:
         defs = _build_tool_definitions([tool])
         assert len(defs) == 1
         assert defs[0]["type"] == "function"
-        assert defs[0]["function"]["name"] == "odoo_ops_runner"
+        assert defs[0]["function"]["name"] == "odoo_orm"
         assert "parameters" in defs[0]["function"]
 
     def test_odoo_tool_guidance_forbids_invented_links(self):
         from app.services.model_router import _append_tool_guidance
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
-            name="odoo_ops_runner",
-            display_name="Odoo Ops Runner",
+            name="odoo_orm",
+            display_name="Odoo ORM",
             description="Run Odoo operations",
             target_system="odoo",
             input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -901,33 +901,29 @@ class TestToolDefinitions:
         system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
 
         assert "Do not invent Odoo web URLs" in system_prompt
-        assert "record_url" in system_prompt
-        assert "cannot provide a verified link" in system_prompt
-        assert "effect_verified=true" in system_prompt
-        assert "not a private Discuss direct message" in system_prompt
-        assert "Use Odoo `aggregate` only for summary totals" in system_prompt
-        assert "quantities on each SO" in system_prompt
-        assert "Use `query` on `sale.order.line`" in system_prompt
-        assert "account.partial.reconcile" in system_prompt
-        assert "restore the original reconciliations" in system_prompt
-        assert "query broad unrelated invoice sets" in system_prompt
+        assert "direct ORM access" in system_prompt
+        assert "model`, `method`, `args`, and `kwargs`" in system_prompt
+        assert "router infers mode `orm`" in system_prompt
+        assert "router infers mode `orm_batch`" in system_prompt
+        assert "Use `fields_get` to inspect fields" in system_prompt
+        assert "verify the result with a follow-up ORM read" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
-            name="odoo.ops_runner", display_name="Odoo Ops Runner",
+            name="odoo.orm", display_name="Odoo ORM",
             description="Run Odoo operations",
             target_system="odoo",
             input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
         )
         defs = _build_tool_definitions([tool])
         assert len(defs) == 1
-        assert defs[0]["function"]["name"] == "odoo_ops_runner"
+        assert defs[0]["function"]["name"] == "odoo_orm"
         assert "." not in defs[0]["function"]["name"]
 
     def test_normalize_tool_name(self):
         from app.services.model_tool_calls import _normalize_tool_name
-        assert _normalize_tool_name("odoo.ops_runner") == "odoo_ops_runner"
+        assert _normalize_tool_name("odoo.orm") == "odoo_orm"
         assert _normalize_tool_name("odoo.attach_artifact") == "odoo_attach_artifact"
         assert _normalize_tool_name("already_normal") == "already_normal"
         assert _normalize_tool_name("no-changes_needed") == "no-changes_needed"
@@ -1153,7 +1149,7 @@ class TestToolExecution:
         assert arguments == original_arguments
 
     @pytest.mark.asyncio
-    async def test_odoo_ops_runner_missing_mode_is_handled_before_connector(self):
+    async def test_odoo_orm_missing_mode_is_handled_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
         db = MockSession(has_config=True)
@@ -1163,147 +1159,115 @@ class TestToolExecution:
             "app.services.model_router._resolve_odoo_credentials_for_tool",
             new=mock_credentials,
         ):
-            result = await _execute_tool_call_impl(db, uuid.uuid4(), "odoo_ops_runner", {})
+            result = await _execute_tool_call_impl(db, uuid.uuid4(), "odoo_orm", {})
 
         assert result["error"] is True
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["mode"]
+        assert result["missing"] == ["model", "method", "calls"]
         mock_credentials.assert_not_awaited()
 
-    def test_odoo_ops_runner_query_shaped_missing_mode_is_normalized_to_query(self):
-        from app.services.model_router import _normalize_odoo_ops_runner_arguments
+    def test_odoo_orm_query_shaped_missing_mode_is_not_normalized(self):
+        from app.services.model_router import _normalize_odoo_orm_arguments
 
-        normalized = _normalize_odoo_ops_runner_arguments({
+        normalized = _normalize_odoo_orm_arguments({
             "model": "stock.picking",
             "domain": [["id", "=", 5266]],
             "fields": ["name", "state", "move_ids", "date_done"],
             "limit": 10,
         })
 
-        assert normalized["mode"] == "query"
+        assert "mode" not in normalized
 
-    def test_broad_odoo_query_lifts_arbitrary_model_limit(self):
-        from app.services.model_router import _normalize_tool_call_arguments_for_request, ODOO_BROAD_QUERY_LIMIT
+    def test_odoo_orm_model_method_missing_mode_is_normalized_to_orm(self):
+        from app.services.model_router import _normalize_odoo_orm_arguments
 
-        call = {
-            "id": "call_1",
-            "type": "function",
-            "function": {
-                "name": "odoo_ops_runner",
-                "arguments": json.dumps({
-                    "mode": "query",
-                    "model": "sale.order.line",
-                    "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered"],
-                    "limit": 200,
-                }),
-            },
-        }
+        normalized = _normalize_odoo_orm_arguments({
+            "model": "account.move",
+            "method": "search_read",
+            "args": [[["name", "=", "BNK01-2026-02065"]]],
+            "kwargs": {"fields": ["id", "name"], "limit": 1},
+        })
 
-        normalized = _normalize_tool_call_arguments_for_request(
-            call,
-            [{"role": "user", "content": "get all sales orders with Aquafresh and Sensodyne in a table"}],
-        )
+        assert normalized["mode"] == "orm"
 
-        args = json.loads(normalized["function"]["arguments"])
-        assert args["limit"] == ODOO_BROAD_QUERY_LIMIT
+    def test_odoo_orm_calls_missing_mode_is_normalized_to_orm_batch(self):
+        from app.services.model_router import _normalize_odoo_orm_arguments
 
-    def test_huge_odoo_row_request_is_not_normalized_into_raw_read(self):
-        from app.services.model_router import _normalize_tool_call_arguments_for_request
+        normalized = _normalize_odoo_orm_arguments({
+            "calls": [
+                {
+                    "model": "account.move",
+                    "method": "search_read",
+                    "args": [[["name", "=", "BNK01-2026-02065"]]],
+                }
+            ],
+        })
 
-        call = {
-            "id": "call_1",
-            "type": "function",
-            "function": {
-                "name": "odoo_ops_runner",
-                "arguments": json.dumps({
-                    "mode": "query",
-                    "model": "sale.order.line",
-                    "fields": ["order_id", "product_id"],
-                    "limit": 100000,
-                }),
-            },
-        }
-
-        normalized = _normalize_tool_call_arguments_for_request(
-            call,
-            [{"role": "user", "content": "export 100k rows of sales order lines"}],
-        )
-
-        args = json.loads(normalized["function"]["arguments"])
-        assert args["limit"] == 100000
-
-    def test_huge_odoo_initial_raw_read_is_stopped_for_chat(self):
-        from app.services.model_router import _odoo_raw_pagination_policy_result, ODOO_BROAD_QUERY_LIMIT
-
-        result = _odoo_raw_pagination_policy_result(
-            {
-                "mode": "query",
-                "model": "sale.order.line",
-                "fields": ["order_id", "product_id"],
-                "limit": 100000,
-                "offset": 0,
-            },
-            [{"role": "user", "content": "export 100,000 rows of sales order lines"}],
-        )
-
-        assert result is not None
-        assert result["policy"] == "large_raw_result"
-        assert result["status"] == "skipped"
-        assert result["requested_size"] == 100000
-        assert result["offset"] == 0
-        assert result["limit"] == ODOO_BROAD_QUERY_LIMIT
-        assert "not executed in chat" in result["message"]
-        assert "count or aggregate" in result["recommended_next_step"]
-
-    def test_explicit_small_odoo_query_limit_is_respected(self):
-        from app.services.model_router import _normalize_tool_call_arguments_for_request
-
-        call = {
-            "id": "call_1",
-            "type": "function",
-            "function": {
-                "name": "odoo_ops_runner",
-                "arguments": json.dumps({
-                    "mode": "query",
-                    "model": "sale.order",
-                    "fields": ["name", "state"],
-                    "limit": 20,
-                }),
-            },
-        }
-
-        normalized = _normalize_tool_call_arguments_for_request(
-            call,
-            [{"role": "user", "content": "show the first 20 sales orders"}],
-        )
-
-        args = json.loads(normalized["function"]["arguments"])
-        assert args["limit"] == 20
-
-    def test_broad_odoo_raw_pagination_is_stopped_for_chat(self):
-        from app.services.model_router import _odoo_raw_pagination_policy_result, ODOO_BROAD_QUERY_LIMIT
-
-        result = _odoo_raw_pagination_policy_result(
-            {
-                "mode": "query",
-                "model": "sale.order.line",
-                "fields": ["order_id", "product_id"],
-                "limit": ODOO_BROAD_QUERY_LIMIT,
-                "offset": ODOO_BROAD_QUERY_LIMIT,
-            },
-            [{"role": "user", "content": "get all sales order lines in a complete table"}],
-        )
-
-        assert result is not None
-        assert result["policy"] == "large_raw_result"
-        assert result["status"] == "skipped"
-        assert result["offset"] == ODOO_BROAD_QUERY_LIMIT
-        assert "Do not fetch additional raw pages into chat" in result["recommended_next_step"]
+        assert normalized["mode"] == "orm_batch"
 
     @pytest.mark.asyncio
-    async def test_odoo_attachment_without_attachment_id_is_handled_before_connector(self):
+    async def test_odoo_raw_orm_posts_to_raw_endpoint(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        posted = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {"model": "account.move", "method": "search_read", "result": []}
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, *args, **kwargs):
+                posted["url"] = url
+                posted["payload"] = kwargs["json"]
+                return FakeResponse()
+
+        fake_credentials = {
+            "url": "https://example.odoo.com",
+            "db": "example",
+            "username": "user@example.com",
+            "api_key": "secret",
+            "transport": "auto",
+        }
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(return_value=fake_credentials),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call_impl(
+                MockSession(has_config=True),
+                uuid.uuid4(),
+                "odoo_orm",
+                {
+                    "model": "account.move",
+                    "method": "search_read",
+                    "args": [[["name", "=", "BNK01-2026-02065"]]],
+                    "kwargs": {"fields": ["id", "name"], "limit": 1},
+                },
+            )
+
+        assert posted["url"] == "http://mock-connector:8000/odoo/orm/run"
+        assert posted["payload"]["mode"] == "orm"
+        assert posted["payload"]["model"] == "account.move"
+        assert result["result"] == []
+
+    @pytest.mark.asyncio
+    async def test_odoo_attachment_mode_is_rejected_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
         db = MockSession(has_config=True)
@@ -1316,7 +1280,7 @@ class TestToolExecution:
             result = await _execute_tool_call_impl(
                 db,
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {"mode": "attachment", "model": "account.move", "ids": [57508]},
             )
 
@@ -1324,11 +1288,11 @@ class TestToolExecution:
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["attachment_id", "attachment_ids"]
+        assert "Unknown Odoo tool mode: attachment." in result["message"]
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_odoo_execute_recordset_method_without_ids_is_handled_before_connector(self):
+    async def test_odoo_execute_mode_is_rejected_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
         db = MockSession(has_config=True)
@@ -1341,7 +1305,7 @@ class TestToolExecution:
             result = await _execute_tool_call_impl(
                 db,
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {
                     "mode": "execute",
                     "model": "mail.activity",
@@ -1354,12 +1318,11 @@ class TestToolExecution:
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["ids", "record_id", "args[0]"]
-        assert "record-bound" in result["message"]
+        assert "Unknown Odoo tool mode: execute." in result["message"]
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_odoo_message_mode_defaults_operation_to_post_before_connector(self):
+    async def test_odoo_message_mode_is_rejected_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
         posted_payload = {}
@@ -1402,7 +1365,7 @@ class TestToolExecution:
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {
                     "mode": "message",
                     "model": "res.partner",
@@ -1411,14 +1374,13 @@ class TestToolExecution:
                 },
             )
 
-        assert result == {"operation": "post", "result": 9002, "effect_verified": True}
-        assert posted_payload["operation"] == "post"
-        assert posted_payload["mode"] == "message"
-        assert posted_payload["model"] == "res.partner"
-        assert posted_payload["record_id"] == 42
+        assert result["error"] is True
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "Unknown Odoo tool mode: message." in result["message"]
+        assert posted_payload == {}
 
     @pytest.mark.asyncio
-    async def test_odoo_unverified_side_effect_is_guarded_before_model_answer(self):
+    async def test_odoo_execute_side_effect_mode_is_rejected_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
         class FakeResponse:
@@ -1463,7 +1425,7 @@ class TestToolExecution:
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {
                     "mode": "execute",
                     "model": "mail.activity",
@@ -1475,10 +1437,9 @@ class TestToolExecution:
 
         assert result["error"] is True
         assert result["handled"] is True
-        assert result["status"] == "unverified_side_effect"
-        assert result["error_type"] == "unverified_side_effect"
-        assert result["verification"]["status"] == "still_open"
-        assert "Do not claim" in result["message"]
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "Unknown Odoo tool mode: execute." in result["message"]
 
     @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
@@ -1527,7 +1488,7 @@ class TestToolExecution:
         assert result["extraction_source"] == "native_pdf"
 
     @pytest.mark.asyncio
-    async def test_odoo_schema_connector_error_is_handled_for_trace(self):
+    async def test_odoo_schema_mode_is_rejected_for_trace(self):
         from app.services.model_router import _execute_tool_call
 
         class FakeResponse:
@@ -1590,7 +1551,7 @@ class TestToolExecution:
             result = await _execute_tool_call(
                 db,
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {"mode": "schema", "model": "auditlog.log"},
                 trace_svc=trace,
             )
@@ -1598,15 +1559,13 @@ class TestToolExecution:
         assert result["error"] is True
         assert result["handled"] is True
         assert result["status"] == "skipped"
-        assert result["error_type"] == "schema_unavailable"
-        assert result["model"] == "auditlog.log"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "Unknown Odoo tool mode: schema." in result["message"]
         assert trace.ended["status"] == "warning"
-        assert trace.ended["error_type"] == "schema_unavailable"
-        assert trace.ended["error_message"] == "Odoo model 'auditlog.log' could not be inspected by this connected account, so the schema probe was skipped."
-        assert trace.ended["output_summary"]["result"]["connector_error"]["correlation_id"] == "corr-123"
+        assert trace.ended["error_type"] == "invalid_tool_arguments"
 
     @pytest.mark.asyncio
-    async def test_odoo_delete_blocked_error_is_preserved_for_model_and_trace(self):
+    async def test_odoo_mutation_mode_is_rejected_for_trace(self):
         from app.services.model_router import _execute_tool_call
 
         blocked_message = (
@@ -1673,26 +1632,25 @@ class TestToolExecution:
             result = await _execute_tool_call(
                 db,
                 uuid.uuid4(),
-                "odoo_ops_runner",
+                "odoo_orm",
                 {"mode": "mutation", "operation": "delete", "model": "hr.employee", "ids": [77]},
                 trace_svc=trace,
             )
 
         assert result["error"] is True
-        assert result["status_code"] == 400
-        assert result["error_type"] == "odoo_delete_blocked_active_pos_session"
-        assert "active PoS session" in result["message"]
-        assert "Gallagher Convention Center" in result["message"]
-        assert trace.ended["status"] == "failed"
-        assert trace.ended["error_type"] == "odoo_delete_blocked_active_pos_session"
-        assert "Gallagher Convention Center" in trace.ended["error_message"]
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "Unknown Odoo tool mode: mutation." in result["message"]
+        assert trace.ended["status"] == "warning"
+        assert trace.ended["error_type"] == "invalid_tool_arguments"
 
     def test_tool_result_error_summary_captures_handled_odoo_issue(self):
         from app.services.model_router import _tool_result_error_summary
 
         summary = _tool_result_error_summary([
             {
-                "tool_name": "odoo_ops_runner",
+                "tool_name": "odoo_orm",
                 "arguments": {
                     "mode": "schema",
                     "model": "auditlog.log",
@@ -1711,7 +1669,7 @@ class TestToolExecution:
         assert summary == [
             {
                 "index": 1,
-                "tool_name": "odoo_ops_runner",
+                "tool_name": "odoo_orm",
                 "status": "skipped",
                 "handled": True,
                 "error_type": "model_unavailable",
@@ -1743,7 +1701,7 @@ class TestToolExecution:
             request_id="req-123",
             trace_id="trace_123",
             tool_error_summary=[{
-                "tool_name": "odoo_ops_runner",
+                "tool_name": "odoo_orm",
                 "error_type": "model_unavailable",
                 "message": "Odoo model 'auditlog.log' is not installed.",
             }],
@@ -1751,10 +1709,10 @@ class TestToolExecution:
 
         usage_log = next(obj for obj in db.added if isinstance(obj, AIUsageLog))
         assert usage_log.status == "partial_failure"
-        assert usage_log.error_message == "odoo_ops_runner: model_unavailable - Odoo model 'auditlog.log' is not installed."
+        assert usage_log.error_message == "odoo_orm: model_unavailable - Odoo model 'auditlog.log' is not installed."
 
     @pytest.mark.asyncio
-    async def test_turnover_without_report_name_uses_model_path(self):
+    async def test_turnover_uses_raw_odoo_tool_path(self):
         from app.services.model_router import execute_chat
 
         fixed_now = datetime(2026, 6, 3, 8, 30, 0, tzinfo=ZoneInfo("Africa/Johannesburg"))
@@ -1942,7 +1900,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -1971,8 +1929,8 @@ class TestToolExecution:
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "res.partner"}',
+                            "name": "odoo_orm",
+                            "arguments": '{"model": "res.partner", "method": "search_read", "args": [[]], "kwargs": {"limit": 5}}',
                         },
                     }],
                     "prompt_tokens": 10,
@@ -2010,112 +1968,12 @@ class TestToolExecution:
             assert result["content"] == "I found 5 partners in Odoo."
             assert result["tool_calls"] is not None
             assert len(result["tool_calls"]) == 1
-            assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+            assert result["tool_calls"][0]["tool_name"] == "odoo_orm"
             assert result["total_tokens"] == 43
             assert client.chat_completion.call_count == 2
             post_tool_call = client.chat_completion.call_args_list[1]
             assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_switches_to_targeted_odoo_action_phase_after_finding_records(self):
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-        db.has_tools = True
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": None,
-                    "finish_reason": "tool_calls",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "account.move"}',
-                        },
-                    }],
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "I found the two invoices and will work from those exact records.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "total_tokens": 28,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=AsyncMock(return_value={
-                "model": "account.move",
-                "records": [
-                    {"id": 56137, "name": "INV-2026-02128"},
-                    {"id": 56737, "name": "INV-2026-02155"},
-                ],
-            })
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "Find the invoices causing the VAT issue and fix them."}],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "I found the two invoices and will work from those exact records."
-        assert client.chat_completion.call_count == 2
-        first_messages = client.chat_completion.call_args_list[0].kwargs["messages"]
-        assert not any("Odoo targeted action phase" in str(message.get("content", "")) for message in first_messages)
-        followup_call = client.chat_completion.call_args_list[1]
-        followup_messages = followup_call.kwargs["messages"]
-        assert followup_call.kwargs["tools"] is not None
-        assert "Odoo targeted action phase" in followup_messages[-2]["content"]
-        assert "INV-2026-02128" in followup_messages[-2]["content"]
-        assert "INV-2026-02155" in followup_messages[-2]["content"]
 
     @pytest.mark.asyncio
     async def test_execute_chat_reports_tool_loop_limit_without_disabling_tools(self):
@@ -2135,7 +1993,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -2160,8 +2018,8 @@ class TestToolExecution:
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "account.move"}',
+                            "name": "odoo_orm",
+                            "arguments": '{"model": "account.move", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
                         },
                     }],
                     "prompt_tokens": 10,
@@ -2176,8 +2034,8 @@ class TestToolExecution:
                         "id": "call_2",
                         "type": "function",
                         "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "account.move.line"}',
+                            "name": "odoo_orm",
+                            "arguments": '{"model": "account.move.line", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
                         },
                     }],
                     "prompt_tokens": 20,
@@ -2230,7 +2088,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -2255,8 +2113,8 @@ class TestToolExecution:
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "purchase.order"}',
+                            "name": "odoo_orm",
+                            "arguments": '{"model": "purchase.order", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
                         },
                     }],
                     "prompt_tokens": 10,
@@ -2334,7 +2192,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -2359,8 +2217,8 @@ class TestToolExecution:
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "odoo_ops_runner",
-                            "arguments": '{"mode": "query", "model": "sale.order.line"}',
+                            "name": "odoo_orm",
+                            "arguments": '{"model": "sale.order.line", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
                         },
                     }],
                     "prompt_tokens": 10,
@@ -2430,7 +2288,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -2454,12 +2312,15 @@ class TestToolExecution:
                     "id": "call_1",
                     "type": "function",
                     "function": {
-                        "name": "odoo_ops_runner",
+                        "name": "odoo_orm",
                         "arguments": json.dumps({
-                            "mode": "query",
                             "model": "sale.order.line",
-                            "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered", "name"],
-                            "limit": 50,
+                            "method": "search_read",
+                            "args": [[]],
+                            "kwargs": {
+                                "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered", "name"],
+                                "limit": 50,
+                            },
                         }),
                     },
                 }],
@@ -2549,8 +2410,8 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner",
-                                display_name="Odoo Ops Runner",
+                                name="odoo_orm",
+                                display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "required": ["mode"]},
@@ -2574,12 +2435,15 @@ class TestToolExecution:
                     "id": "call_1",
                     "type": "function",
                     "function": {
-                        "name": "odoo_ops_runner",
+                        "name": "odoo_orm",
                         "arguments": json.dumps({
-                            "mode": "query",
                             "model": "res.partner",
-                            "fields": ["name", "email", "phone"],
-                            "limit": 10,
+                            "method": "search_read",
+                            "args": [[]],
+                            "kwargs": {
+                                "fields": ["name", "email", "phone"],
+                                "limit": 10,
+                            },
                         }),
                     },
                 }],
@@ -2634,12 +2498,15 @@ class TestToolExecution:
 
         answer = _structured_answer_from_tool_results(
             [{
-                "tool_name": "odoo_ops_runner",
+                "tool_name": "odoo_orm",
                 "arguments": {
-                    "mode": "query",
                     "model": "product.product",
-                    "fields": ["id", "name", "default_code"],
-                    "limit": 50,
+                    "method": "search_read",
+                    "args": [[]],
+                    "kwargs": {
+                        "fields": ["id", "name", "default_code"],
+                        "limit": 50,
+                    },
                 },
                 "result": {
                     "model": "product.product",
@@ -2667,7 +2534,7 @@ class TestToolExecution:
         assert answer is None
 
     @pytest.mark.asyncio
-    async def test_execute_chat_converts_text_tool_calls_to_odoo_ops_runner(self):
+    async def test_execute_chat_converts_text_tool_calls_to_odoo_orm(self):
         """textual tool markers must be executed, not shown to users."""
         from app.services.model_router import execute_chat
 
@@ -2683,7 +2550,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={
@@ -2706,9 +2573,9 @@ class TestToolExecution:
         raw_tool_markup = (
             "I'll look that up."
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_ops_runner:0"
+            "<|tool_call_begin|>functions.odoo_orm:0"
             "<|tool_call_argument_begin|>"
-            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name","login"],"limit":1}'
+            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name","login"],"limit":1}}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -2759,14 +2626,13 @@ class TestToolExecution:
 
         assert result["content"] == "Penelope was found in Odoo."
         assert "<|tool_call" not in result["content"]
-        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["tool_name"] == "odoo_orm"
         called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo_ops_runner"
-        assert called_args[3]["mode"] == "query"
+        assert called_args[2] == "odoo_orm"
         assert called_args[3]["model"] == "res.users"
-        assert called_args[3]["domain"] == [["name", "ilike", "Penelope"]]
-        assert called_args[3]["fields"] == ["id", "name", "login"]
-        assert called_args[3]["limit"] == 1
+        assert called_args[3]["method"] == "search_read"
+        assert called_args[3]["args"] == [[["name", "ilike", "Penelope"]]]
+        assert called_args[3]["kwargs"] == {"fields": ["id", "name", "login"], "limit": 1}
 
     @pytest.mark.asyncio
     async def test_execute_chat_recovers_text_tool_call_without_selected_tool_schema(self):
@@ -2785,7 +2651,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={
@@ -2807,9 +2673,9 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_ops_runner:0"
+            "<|tool_call_begin|>functions.odoo_orm:0"
             "<|tool_call_argument_begin|>"
-            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name","login"],"limit":1}'
+            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name","login"],"limit":1}}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -2855,7 +2721,7 @@ class TestToolExecution:
             )
 
         assert result["content"] == "Penelope's 4 June Odoo activity was checked."
-        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["tool_name"] == "odoo_orm"
         first_call = client.chat_completion.call_args_list[0]
         assert first_call.kwargs["tools"] is not None
         assert execute_tool.await_count == 1
@@ -2877,7 +2743,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
@@ -2895,9 +2761,9 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<tool_calls_section_begin>"
-            "<tool_call_begin>functions.odoo_ops_runner:0"
+            "<tool_call_begin>functions.odoo_orm:0"
             "<tool_call_argument_begin>"
-            '{"mode":"query","model":"res.users","domain":[["name","ilike","Penelope"]],"fields":["id","name"]}'
+            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name"]}}'
             "<tool_call_end>"
             "<tool_calls_section_end>"
         )
@@ -2946,11 +2812,11 @@ class TestToolExecution:
             )
 
         assert result["content"] == "Plain marker variant executed."
-        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["tool_name"] == "odoo_orm"
         called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo_ops_runner"
-        assert called_args[3]["mode"] == "query"
+        assert called_args[2] == "odoo_orm"
         assert called_args[3]["model"] == "res.users"
+        assert called_args[3]["method"] == "search_read"
 
     @pytest.mark.asyncio
     async def test_execute_chat_converts_compact_text_tool_call_without_argument_marker(self):
@@ -2969,7 +2835,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
@@ -2988,8 +2854,8 @@ class TestToolExecution:
         raw_tool_markup = (
             "I'll merge the duplicate employee into the older record."
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_ops_runner:0 "
-            '{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"parent_id":7,"notes":"move data before delete"}}'
+            "<|tool_call_begin|>functions.odoo_orm:0 "
+            '{"model":"hr.employee","method":"write","args":[[42],{"parent_id":7,"notes":"move data before delete"}]}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -3039,15 +2905,13 @@ class TestToolExecution:
 
         assert result["content"] == "Duplicate employee data was merged into the older record."
         assert "<|tool_call" not in result["content"]
-        assert result["tool_calls"][0]["tool_name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["tool_name"] == "odoo_orm"
         called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo_ops_runner"
+        assert called_args[2] == "odoo_orm"
         assert called_args[3] == {
-            "mode": "mutation",
-            "operation": "write",
             "model": "hr.employee",
-            "ids": [42],
-            "values": {"parent_id": 7, "notes": "move data before delete"},
+            "method": "write",
+            "args": [[42], {"parent_id": 7, "notes": "move data before delete"}],
         }
 
     @pytest.mark.asyncio
@@ -3067,7 +2931,7 @@ class TestToolExecution:
                     def all(self):
                         return [
                             AITool(
-                                name="odoo_ops_runner", display_name="Odoo Ops Runner",
+                                name="odoo_orm", display_name="Odoo ORM",
                                 description="Run Odoo operations",
                                 target_system="odoo",
                                 input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
@@ -3085,8 +2949,8 @@ class TestToolExecution:
         db.execute = mock_execute
         raw_tool_markup = (
             "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo_ops_runner:0 "
-            '{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"notes":"contains } brace","metadata":{"old_id":7}}}'
+            "<|tool_call_begin|>functions.odoo_orm:0 "
+            '{"model":"hr.employee","method":"write","args":[[42],{"notes":"contains } brace","metadata":{"old_id":7}}]}'
             "<|tool_call_end|>"
             "<|tool_calls_section_end|>"
         )
@@ -3133,7 +2997,7 @@ class TestToolExecution:
 
         assert result["content"] == "Nested JSON compact call executed."
         called_args = execute_tool.call_args.args
-        assert called_args[3]["values"] == {
+        assert called_args[3]["args"][1] == {
             "notes": "contains } brace",
             "metadata": {"old_id": 7},
         }
@@ -3147,7 +3011,7 @@ class TestToolExecution:
                 "content": (
                     "<|tool_calls_section_begin|>"
                     "<|tool_call_begin|>"
-                    '{"name":"functions.odoo_ops_runner","arguments":{"mode":"mutation","operation":"write","model":"hr.employee","ids":[42],"values":{"parent_id":7}}}'
+                    '{"name":"functions.odoo_orm","arguments":{"model":"hr.employee","method":"write","args":[[42],{"parent_id":7}]}}'
                     "<|tool_call_end|>"
                     "<|tool_calls_section_end|>"
                 ),
@@ -3160,14 +3024,12 @@ class TestToolExecution:
 
         assert result["finish_reason"] == "tool_calls"
         assert result["content"] is None
-        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["function"]["name"] == "odoo_orm"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
         assert args == {
-            "mode": "mutation",
-            "operation": "write",
             "model": "hr.employee",
-            "ids": [42],
-            "values": {"parent_id": 7},
+            "method": "write",
+            "args": [[42], {"parent_id": 7}],
         }
 
     def test_coerce_text_tool_call_ignores_cased_odoo_alias_without_mode(self):
@@ -3236,8 +3098,8 @@ class TestToolExecution:
             {
                 "content": (
                     "<tool_call>"
-                    '{"tool_name":"odoo_ops_runner","parameters":{"mode":"query","model":"hr.employee",'
-                    '"domain":[["name","ilike","Gerhard"]],"fields":["id","name"],"limit":2}}'
+                    '{"tool_name":"odoo_orm","parameters":{"model":"hr.employee","method":"search_read",'
+                    '"args":[[["name","ilike","Gerhard"]]],"kwargs":{"fields":["id","name"],"limit":2}}}'
                     "</tool_call>"
                 ),
                 "finish_reason": "stop",
@@ -3249,14 +3111,13 @@ class TestToolExecution:
 
         assert result["finish_reason"] == "tool_calls"
         assert result["content"] is None
-        assert result["tool_calls"][0]["function"]["name"] == "odoo_ops_runner"
+        assert result["tool_calls"][0]["function"]["name"] == "odoo_orm"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
         assert args == {
-            "mode": "query",
             "model": "hr.employee",
-            "domain": [["name", "ilike", "Gerhard"]],
-            "fields": ["id", "name"],
-            "limit": 2,
+            "method": "search_read",
+            "args": [[["name", "ilike", "Gerhard"]]],
+            "kwargs": {"fields": ["id", "name"], "limit": 2},
         }
 
     def test_coerce_text_tool_call_from_function_payload_with_string_arguments(self):
@@ -3267,8 +3128,8 @@ class TestToolExecution:
             {
                 "content": (
                     "<|tool_call_begin|>"
-                    '{"type":"function","function":{"name":"functions.odoo_ops_runner",'
-                    '"arguments":"{\\"mode\\":\\"mutation\\",\\"operation\\":\\"write\\",\\"model\\":\\"hr.employee\\",\\"ids\\":[42],\\"values\\":{\\"parent_id\\":7}}"}}'
+                    '{"type":"function","function":{"name":"functions.odoo_orm",'
+                    '"arguments":"{\\"model\\":\\"hr.employee\\",\\"method\\":\\"write\\",\\"args\\":[[42],{\\"parent_id\\":7}]}"}}'
                     "<|tool_call_end|>"
                 ),
                 "finish_reason": "stop",
@@ -3280,148 +3141,9 @@ class TestToolExecution:
 
         assert result["finish_reason"] == "tool_calls"
         args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args["mode"] == "mutation"
-        assert args["operation"] == "write"
         assert args["model"] == "hr.employee"
-        assert args["ids"] == [42]
-        assert args["values"] == {"parent_id": 7}
-
-    def test_report_drilldown_answer_uses_connector_values_without_retyping(self):
-        from app.services.model_router import _structured_answer_from_tool_results
-
-        answer = _structured_answer_from_tool_results(
-            [
-                {
-                    "tool_name": "odoo_ops_runner",
-                    "arguments": {
-                        "mode": "report",
-                        "report_name": "Tax Report",
-                        "include_drilldowns": True,
-                    },
-                    "result": {
-                        "source": "odoo_account_report",
-                        "report_name": "Tax Report",
-                        "drilldowns": [
-                            {
-                                "line_name": "[1] Standard Rate",
-                                "formatted_value": "7,590,009.89",
-                                "source": "odoo_account_report_action_audit_cell",
-                                "action": {"name": "Journal Items", "res_model": "account.move.line"},
-                                "res_model": "account.move.line",
-                                "returned_count": 1,
-                                "total_count": 1318,
-                                "records": [
-                                    {
-                                        "id": 222580,
-                                        "date": "2026-05-04",
-                                        "move_id": {"id": 55125, "name": "INV-2026-02104"},
-                                        "journal_id": {"id": 1, "name": "Customer Invoices"},
-                                        "account_id": {"id": 99, "name": "500010 Sales category 1"},
-                                        "partner_id": {"id": 65, "name": "Iguewa Beauty Parlour"},
-                                        "name": "[KM01-0008] Kormesic Rosemary Mint Shampoo 480ml",
-                                        "debit": 0,
-                                        "credit": 2088.0,
-                                        "balance": -2088.0,
-                                        "tax_tag_ids": [21],
-                                        "record_url": "https://lotslotsmore.odoo.com/web#id=222580&model=account.move.line&view_type=form",
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                }
-            ],
-            [{"role": "user", "content": "show the journal items behind block 1"}],
-        )
-
-        assert answer is not None
-        assert "2,088.00" in answer
-        assert "-2,088.00" in answer
-        assert "https://lotslotsmore.odoo.com/web#id=222580&model=account.move.line&view_type=form" in answer
-        assert "https://lotsmore.odoo.com" not in answer
-
-    def test_report_drilldown_does_not_finish_action_workflow(self):
-        from app.services.model_router import _structured_answer_from_tool_results
-
-        answer = _structured_answer_from_tool_results(
-            [
-                {
-                    "tool_name": "odoo_ops_runner",
-                    "arguments": {
-                        "mode": "report",
-                        "report_name": "Tax Report",
-                        "include_drilldowns": True,
-                    },
-                    "result": {
-                        "source": "odoo_account_report",
-                        "report_name": "Tax Report",
-                        "drilldowns": [
-                            {
-                                "line_name": "[1] Standard Rate",
-                                "formatted_value": "7,590,009.89",
-                                "source": "odoo_account_report_action_audit_cell",
-                                "action": {"name": "Journal Items", "res_model": "account.move.line"},
-                                "res_model": "account.move.line",
-                                "returned_count": 1,
-                                "total_count": 1,
-                                "records": [
-                                    {
-                                        "id": 222580,
-                                        "date": "2026-05-04",
-                                        "move_id": {"id": 55125, "name": "INV-2026-02104"},
-                                        "balance": -2088.0,
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                }
-            ],
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Reset the invoices to draft, fix their taxes, post them again, "
-                        "and put back the original payments."
-                    ),
-                }
-            ],
-        )
-
-        assert answer is None
-
-    def test_odoo_targeted_action_phase_guidance_requires_action_and_known_refs(self):
-        from app.services.model_router import _odoo_targeted_action_phase_message
-
-        action_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Recent verified Odoo facts:\n"
-                    "- account.move id=56137 name=INV-2026-02128 state=draft\n"
-                    "- account.move id=56737 name=INV-2026-02155 state=draft\n"
-                    "- account.partial.reconcile id=47647 amount=5206.75 credit_move=BNK01-2026-02619 R026S0Z8Q0"
-                ),
-            },
-            {"role": "user", "content": "Fix those two invoices and put back the original payments."},
-        ]
-        discovery_messages = [
-            {"role": "user", "content": "Find which invoices caused the VAT mismatch."},
-        ]
-        action_without_refs = [
-            {"role": "user", "content": "Fix the invoices causing the VAT mismatch."},
-        ]
-
-        guidance = _odoo_targeted_action_phase_message(action_messages)
-
-        assert guidance is not None
-        assert guidance["role"] == "system"
-        assert "Odoo targeted action phase" in guidance["content"]
-        assert "INV-2026-02128" in guidance["content"]
-        assert "execution on known targets" in guidance["content"]
-        assert _odoo_targeted_action_phase_message(discovery_messages) is None
-        assert _odoo_targeted_action_phase_message(action_without_refs) is None
-
+        assert args["method"] == "write"
+        assert args["args"] == [[42], {"parent_id": 7}]
 
 # ── Security Tests ──
 
