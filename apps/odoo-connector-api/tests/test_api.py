@@ -226,6 +226,37 @@ def test_raw_orm_endpoint_runs_batch(mock_get_client):
     assert mock_client.call_with_transport.call_count == 2
 
 
+@patch("app.routers.orm_runner._get_client")
+def test_raw_orm_endpoint_batch_errors_are_sanitized(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.call_with_transport.side_effect = RuntimeError("traceback with secret details")
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "continue_on_error": True,
+            "calls": [
+                {
+                    "name": "failing_call",
+                    "model": "account.move",
+                    "method": "search_read",
+                    "args": [[["name", "=", "BNK01-2026-02065"]]],
+                },
+            ],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    error_result = response.json()["results"][0]
+    assert error_result["error"] is True
+    assert error_result["error_type"] == "RuntimeError"
+    assert error_result["message"] == "Odoo ORM call failed."
+    assert "secret" not in error_result["message"]
+
+
 def test_raw_orm_endpoint_requires_model_and_method():
     response = client.post(
         "/odoo/orm/run",
