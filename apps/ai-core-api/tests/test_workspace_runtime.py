@@ -51,10 +51,12 @@ async def test_workspace_odoo_helper_brokers_read_call_without_credentials():
     assert result["status"] == "success"
     assert result["stdout"].strip() == "7"
     assert result["odoo_calls"] == 1
+    assert result["tool_calls"] == 1
+    assert result["connector_calls"] == {"odoo": 1}
 
 
 @pytest.mark.asyncio
-async def test_workspace_odoo_helper_blocks_write_methods():
+async def test_workspace_odoo_helper_allows_write_methods_to_reach_connector():
     calls = []
 
     async def fake_odoo(model, method, args, kwargs):
@@ -72,10 +74,74 @@ async def test_workspace_odoo_helper_blocks_write_methods():
         odoo_executor=fake_odoo,
     )
 
-    assert result["status"] == "failed"
-    assert result["exit_code"] != 0
-    assert "read-oriented methods only" in result["stderr"]
-    assert calls == []
+    assert result["status"] == "success"
+    assert result["stdout"] == ""
+    assert calls == [("res.partner", "write", [[[1], {"name": "bad"}]], {})]
+
+
+@pytest.mark.asyncio
+async def test_workspace_python_can_call_any_platform_tool():
+    calls = []
+
+    async def fake_tool(tool_name, arguments):
+        calls.append((tool_name, arguments))
+        return {"status": "success", "connector": tool_name, "value": arguments["value"]}
+
+    result = await run_workspace(
+        {
+            "code": (
+                "from ai_platform_tools import call\n"
+                "print(call('github_cli', {'value': 42})['value'])"
+            ),
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "42"
+    assert result["connector_calls"] == {"github_cli": 1}
+    assert calls == [("github_cli", {"value": 42})]
+
+
+@pytest.mark.asyncio
+async def test_workspace_shell_can_call_any_platform_tool():
+    async def fake_tool(tool_name, arguments):
+        return {"status": "success", "connector": tool_name, "value": arguments["value"]}
+
+    result = await run_workspace(
+        {
+            "language": "shell",
+            "code": "ai-platform-tool github_cli '{\"value\": 42}'",
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+    )
+
+    assert result["status"] == "success"
+    assert '"value": 42' in result["stdout"]
+    assert result["connector_calls"] == {"github_cli": 1}
+
+
+@pytest.mark.asyncio
+async def test_workspace_runs_shell_and_collects_files():
+    result = await run_workspace({
+        "language": "terminal",
+        "code": "printf 'terminal-ok\\n'\nprintf 123 > terminal.txt",
+        "timeout": 10,
+    })
+
+    assert result["status"] == "success"
+    assert result["language"] == "shell"
+    assert result["stdout"].strip() == "terminal-ok"
+    assert result["files"] == [
+        {
+            "path": "terminal.txt",
+            "bytes": 3,
+            "sha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+            "preview": "123",
+        }
+    ]
 
 
 @pytest.mark.asyncio

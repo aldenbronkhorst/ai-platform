@@ -10,17 +10,18 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "workspace",
         "display_name": "Workspace",
         "description": (
-            "Cloud workspace for bounded Python execution, file scratch work, and multi-step analysis. "
-            "Use when a task needs scripting, iteration, aggregation, data cleanup, calculations, or temporary files. "
-            "The workspace can import ai_platform_odoo and call execute_kw/search/search_read/search_count/read against "
-            "the connected Odoo account without exposing credentials; those helper calls are read-oriented."
+            "Cloud workspace with Python and shell/terminal execution, file scratch work, and multi-step analysis. "
+            "Use when a task needs scripting, command-line work, iteration, aggregation, data cleanup, calculations, "
+            "or temporary files. The workspace can import ai_platform_tools and call any platform tool/connector by "
+            "name through the connected user's credentials, without exposing connector secrets. It also includes "
+            "ai_platform_odoo as a convenience wrapper around the raw Odoo tool."
         ),
         "target_system": "ai-platform",
         "input_schema": {
             "type": "object",
             "properties": {
-                "language": {"type": "string", "enum": ["python"], "description": "Execution language. Currently python.", "default": "python"},
-                "code": {"type": "string", "description": "Python code to run in the workspace."},
+                "language": {"type": "string", "enum": ["python", "shell", "bash", "sh", "terminal"], "description": "Execution language or terminal mode.", "default": "python"},
+                "code": {"type": "string", "description": "Python code or shell commands to run in the workspace."},
                 "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 120).", "default": 60},
                 "purpose": {"type": "string", "description": "Short reason why a workspace script is needed."},
                 "files": {
