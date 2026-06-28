@@ -56,6 +56,103 @@ async def test_workspace_odoo_helper_brokers_read_call_without_credentials():
 
 
 @pytest.mark.asyncio
+async def test_workspace_odoo_call_helper_accepts_natural_search_read_kwargs():
+    async def fake_odoo(model, method, args, kwargs):
+        assert model == "account.move"
+        assert method == "search_read"
+        assert args == [[["move_type", "=", "out_refund"]]]
+        assert kwargs == {"fields": ["id", "name"], "limit": 500}
+        return {"model": model, "method": method, "result": [{"id": 57508, "name": "RINV-2026-00007"}]}
+
+    result = await run_workspace(
+        {
+            "code": (
+                "from ai_platform_odoo import call as odoo_call\n"
+                "rows = odoo_call(\n"
+                "    'account.move',\n"
+                "    'search_read',\n"
+                "    domain=[['move_type', '=', 'out_refund']],\n"
+                "    fields=['id', 'name'],\n"
+                "    limit=500,\n"
+                ")\n"
+                "print(rows[0]['name'])"
+            ),
+            "timeout": 10,
+        },
+        odoo_executor=fake_odoo,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "RINV-2026-00007"
+    assert result["connector_calls"] == {"odoo": 1}
+
+
+@pytest.mark.asyncio
+async def test_workspace_odoo_call_helper_unwraps_raw_payload_result():
+    async def fake_odoo(model, method, args, kwargs):
+        assert model == "account.move"
+        assert method == "search_count"
+        assert args == [[]]
+        assert kwargs == {}
+        return {"model": model, "method": method, "transport": "jsonrpc", "result": 408}
+
+    result = await run_workspace(
+        {
+            "code": (
+                "from ai_platform_odoo import call\n"
+                "print(call({'model': 'account.move', 'method': 'search_count', 'args': [[]]}))"
+            ),
+            "timeout": 10,
+        },
+        odoo_executor=fake_odoo,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "408"
+    assert result["connector_calls"] == {"odoo": 1}
+
+
+@pytest.mark.asyncio
+async def test_workspace_odoo_helpers_make_bulk_attachment_pattern_easy():
+    calls = []
+
+    async def fake_odoo(model, method, args, kwargs):
+        calls.append((model, method, args, kwargs))
+        if model == "account.move":
+            return {"result": [{"id": 1}, {"id": 2}]}
+        if model == "ir.attachment":
+            return {"result": [{"res_id": 1, "name": "one.pdf"}, {"res_id": 2, "name": "two.pdf"}]}
+        raise AssertionError(model)
+
+    result = await run_workspace(
+        {
+            "code": (
+                "from ai_platform_odoo import search_read\n"
+                "notes = search_read('account.move', [['move_type', '=', 'out_refund']], fields=['id'])\n"
+                "ids = [row['id'] for row in notes]\n"
+                "attachments = search_read('ir.attachment', [['res_model', '=', 'account.move'], ['res_id', 'in', ids]], fields=['res_id', 'name'])\n"
+                "print(len(notes), len(attachments))"
+            ),
+            "timeout": 10,
+        },
+        odoo_executor=fake_odoo,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "2 2"
+    assert result["connector_calls"] == {"odoo": 2}
+    assert calls == [
+        ("account.move", "search_read", [[["move_type", "=", "out_refund"]]], {"fields": ["id"]}),
+        (
+            "ir.attachment",
+            "search_read",
+            [[["res_model", "=", "account.move"], ["res_id", "in", [1, 2]]]],
+            {"fields": ["res_id", "name"]},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_workspace_odoo_helper_allows_write_methods_to_reach_connector():
     calls = []
 
