@@ -87,7 +87,7 @@ def odoo_orm_runner(req: OdooOrmRequest, _auth: dict = Depends(internal_api_key_
                         "method": call.get("method"),
                         "error": True,
                         "error_type": type(exc).__name__,
-                        "message": str(exc),
+                        "message": "Odoo ORM call failed.",
                     }
                 )
         return {"results": results, "count": len(results)}
