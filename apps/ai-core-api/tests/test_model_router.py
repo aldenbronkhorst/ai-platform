@@ -914,9 +914,37 @@ class TestToolDefinitions:
         assert "direct Odoo RPC access" in system_prompt
         assert "model`, `method`, `args`, and `kwargs`" in system_prompt
         assert "Credentials are already supplied" in system_prompt
+        assert "Prefer bulk domains" in system_prompt
+        assert "read_group" in system_prompt
         assert "router infers mode" not in system_prompt
         assert "fields_get" not in system_prompt
-        assert "search_read" not in system_prompt
+
+    def test_workspace_guidance_prefers_set_based_odoo_queries(self):
+        from app.services.model_router import _append_tool_guidance
+        from app.services.model_tool_calls import _build_tool_definitions
+        tools = [
+            AITool(
+                name="workspace",
+                display_name="Workspace",
+                description="Run workspace code",
+                target_system="ai-platform",
+                input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
+            ),
+            AITool(
+                name="odoo",
+                display_name="Odoo",
+                description="Run Odoo operations",
+                target_system="odoo",
+                input_schema={"type": "object", "properties": {"model": {"type": "string"}}},
+            ),
+        ]
+
+        system_prompt = _append_tool_guidance("Base prompt.", tools, _build_tool_definitions(tools))
+
+        assert "prefer set-based calls" in system_prompt
+        assert "`search_read`, `read`, `read_group`" in system_prompt
+        assert "('res_id', 'in', ids)" in system_prompt
+        assert "group or join results locally" in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_tool_calls import _build_tool_definitions

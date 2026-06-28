@@ -284,21 +284,14 @@ def call(tool_name, arguments=None):
     (workdir / "ai_platform_tools.py").write_text(textwrap.dedent(tools_helper).strip() + "\n", encoding="utf-8")
 
     odoo_helper = '''
-from ai_platform_tools import PlatformToolError, call
+from ai_platform_tools import PlatformToolError, call as _platform_call
 
 
 class OdooWorkspaceError(PlatformToolError):
     pass
 
 
-def execute_kw(model, method, args=None, kwargs=None):
-    """Call the connected user's Odoo account through the platform broker."""
-    tool_result = call("odoo", {
-        "model": model,
-        "method": method,
-        "args": args or [],
-        "kwargs": kwargs or {},
-    })
+def _unwrap_odoo_result(tool_result):
     if isinstance(tool_result, dict) and tool_result.get("error"):
         raise OdooWorkspaceError(tool_result.get("message") or tool_result.get("error_type") or "Odoo call failed", tool_result)
     if isinstance(tool_result, dict) and "result" in tool_result:
@@ -306,26 +299,89 @@ def execute_kw(model, method, args=None, kwargs=None):
     return tool_result
 
 
-def search(model, domain, **kwargs):
-    return execute_kw(model, "search", [domain], kwargs)
+def _method_options(fields=None, limit=None, offset=None, order=None, **kwargs):
+    options = dict(kwargs)
+    if fields is not None:
+        options["fields"] = fields
+    if limit is not None:
+        options["limit"] = limit
+    if offset not in (None, 0):
+        options["offset"] = offset
+    if order:
+        options["order"] = order
+    return options
+
+
+def execute_kw(model, method, args=None, kwargs=None):
+    """Call an Odoo model method and return the raw Odoo result."""
+    tool_result = _platform_call("odoo", {
+        "model": model,
+        "method": method,
+        "args": args or [],
+        "kwargs": kwargs or {},
+    })
+    return _unwrap_odoo_result(tool_result)
+
+
+def call(model, method=None, *method_args, **method_kwargs):
+    """Natural Odoo helper.
+
+    Examples:
+        call("account.move", "search_read", domain=[...], fields=[...], limit=100)
+        call("res.partner", "write", [ids], {"name": "New name"})
+        call({"model": "account.move", "method": "search_count", "args": [[]]})
+    """
+    if isinstance(model, dict) and method is None:
+        return _unwrap_odoo_result(_platform_call("odoo", model))
+    if not method:
+        raise TypeError("Odoo call requires model and method.")
+
+    explicit_args = method_kwargs.pop("args", None)
+    explicit_kwargs = method_kwargs.pop("kwargs", None)
+    if explicit_args is not None and method_args:
+        raise TypeError("Pass Odoo positional arguments either positionally or with args=, not both.")
+    args = list(explicit_args) if explicit_args is not None else list(method_args)
+    kwargs = dict(explicit_kwargs or {})
+
+    domain = method_kwargs.pop("domain", None)
+    ids = method_kwargs.pop("ids", None)
+    fields = method_kwargs.pop("fields", None)
+    limit = method_kwargs.pop("limit", None)
+    offset = method_kwargs.pop("offset", None)
+    order = method_kwargs.pop("order", None)
+
+    if method in {"search", "search_read", "search_count", "read_group"} and domain is not None and not args:
+        args.append(domain)
+    if method == "read" and ids is not None and not args:
+        args.append(ids)
+
+    kwargs.update(_method_options(fields=fields, limit=limit, offset=offset, order=order, **method_kwargs))
+    return execute_kw(model, method, args, kwargs)
+
+
+def search(model, domain=None, limit=None, offset=0, order=None, **kwargs):
+    return execute_kw(model, "search", [domain or []], _method_options(limit=limit, offset=offset, order=order, **kwargs))
 
 
 def read(model, ids, fields=None, **kwargs):
-    options = dict(kwargs)
-    if fields is not None:
-        options["fields"] = fields
-    return execute_kw(model, "read", [ids], options)
+    return execute_kw(model, "read", [ids], _method_options(fields=fields, **kwargs))
 
 
-def search_read(model, domain, fields=None, **kwargs):
-    options = dict(kwargs)
-    if fields is not None:
-        options["fields"] = fields
-    return execute_kw(model, "search_read", [domain], options)
+def search_read(model, domain=None, fields=None, limit=None, offset=0, order=None, **kwargs):
+    return execute_kw(model, "search_read", [domain or []], _method_options(fields=fields, limit=limit, offset=offset, order=order, **kwargs))
 
 
-def search_count(model, domain, **kwargs):
-    return execute_kw(model, "search_count", [domain], kwargs)
+def search_count(model, domain=None, **kwargs):
+    return execute_kw(model, "search_count", [domain or []], kwargs)
+
+
+def read_group(model, domain=None, fields=None, groupby=None, **kwargs):
+    return execute_kw(model, "read_group", [domain or [], fields or [], groupby or []], kwargs)
+
+
+def batch(calls, continue_on_error=False):
+    """Run ordered raw Odoo calls through one broker call."""
+    return _platform_call("odoo", {"calls": calls, "continue_on_error": continue_on_error})
 '''
     (workdir / "ai_platform_odoo.py").write_text(textwrap.dedent(odoo_helper).strip() + "\n", encoding="utf-8")
 

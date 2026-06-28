@@ -14,7 +14,8 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Use when a task needs scripting, command-line work, iteration, aggregation, data cleanup, calculations, "
             "or temporary files. The workspace can import ai_platform_tools and call any platform tool/connector by "
             "name through the connected user's credentials, without exposing connector secrets. It also includes "
-            "ai_platform_odoo as a convenience wrapper around the raw Odoo tool."
+            "ai_platform_odoo as a convenience wrapper around the raw Odoo tool. For Odoo, prefer bulk domains, "
+            "batch reads, and read_group instead of connector calls inside per-record loops."
         ),
         "target_system": "ai-platform",
         "input_schema": {

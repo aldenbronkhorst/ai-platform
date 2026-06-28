@@ -1338,6 +1338,10 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "`ai-platform-tool <tool_name> '<json arguments>'`. Odoo convenience helpers are still available through "
             "`ai_platform_odoo`, but they are wrappers around the raw Odoo tool; Odoo permissions come from the "
             "connected Odoo user account. "
+            "When using Odoo from Workspace, prefer set-based calls: use `search_read`, `read`, `read_group`, "
+            "`search_count`, and domains such as `('id', 'in', ids)` or `('res_id', 'in', ids)` instead of calling "
+            "the connector once per record in a loop. Pull related records in bulk where the connector supports it "
+            "and group or join results locally in the workspace. "
             "Keep scripts focused, print the final facts needed for the answer, and write small output files only when useful."
         )
     if "odoo" in odoo_available:
@@ -1348,7 +1352,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "Odoo: use `odoo` for direct Odoo RPC access. Provide `model`, `method`, `args`, and `kwargs` "
             "for one raw call, or `calls` for ordered raw calls. Credentials are already supplied from the "
-            "connected Odoo account."
+            "connected Odoo account. Prefer bulk domains, batch reads, and `read_group` over per-record loops."
         )
         guidance_parts.append(
             "Use Odoo tool results to inspect, act, and verify. Do not invent Odoo web URLs, domains, hostnames, "
