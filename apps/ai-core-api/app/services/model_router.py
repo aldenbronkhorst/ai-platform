@@ -527,15 +527,10 @@ async def _execute_tool_call_impl(
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name == WORKSPACE_TOOL_NAME:
-        async def odoo_executor(model: str, method: str, args: list[Any], kwargs: dict[str, Any]) -> dict[str, Any]:
-            return await _execute_tool_call_impl(
-                db,
-                user_id,
-                "odoo",
-                {"model": model, "method": method, "args": args, "kwargs": kwargs},
-            )
+        async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
+            return await _execute_tool_call_impl(db, user_id, nested_tool_name, nested_arguments)
 
-        return await run_workspace(arguments, odoo_executor=odoo_executor)
+        return await run_workspace(arguments, tool_executor=workspace_tool_executor)
 
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
@@ -1335,11 +1330,14 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace Guidance\n"
             "Workspace is the platform cloud-computer surface. Use `workspace` when the task benefits from a short "
-            "script, iteration over records, aggregation, data cleanup, calculations, or temporary files. "
+            "Python script, shell/terminal commands, iteration over records, aggregation, data cleanup, calculations, "
+            "or temporary files. "
             "For connected-system investigations that need loops or joins, prefer a compact Workspace script over "
-            "many chat-level tool calls. Workspace Python can import `ai_platform_odoo` and call "
-            "`execute_kw`, `search`, `search_read`, `search_count`, and `read`; the platform brokers those calls "
-            "through the connected Odoo account without exposing credentials. "
+            "many chat-level tool calls. Workspace Python can import `ai_platform_tools` and call any available "
+            "platform tool/connector by name with `call(tool_name, arguments)`. Shell/terminal scripts can call "
+            "`ai-platform-tool <tool_name> '<json arguments>'`. Odoo convenience helpers are still available through "
+            "`ai_platform_odoo`, but they are wrappers around the raw Odoo tool; Odoo permissions come from the "
+            "connected Odoo user account. "
             "Keep scripts focused, print the final facts needed for the answer, and write small output files only when useful."
         )
     if "odoo" in odoo_available:
