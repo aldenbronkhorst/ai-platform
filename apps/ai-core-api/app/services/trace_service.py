@@ -56,15 +56,15 @@ def _tool_connector(tool_name: str) -> str:
 
 def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
     connector = _tool_connector(tool_name)
-    if tool_name == "odoo_orm":
+    if tool_name == "odoo":
         calls = args.get("calls")
         model = str(args.get("model") or "").strip()
         method = str(args.get("method") or "").strip()
         if isinstance(calls, list):
-            return f"Odoo ORM batch ({len(calls)} calls)"
+            return f"Odoo batch ({len(calls)} calls)"
         if model and method:
-            return f"Odoo ORM {model}.{method}"
-        return "Odoo ORM"
+            return f"Odoo {model}.{method}"
+        return "Odoo"
 
     command = _preview_text(args.get("command"))
     if command:

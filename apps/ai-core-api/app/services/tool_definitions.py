@@ -7,21 +7,20 @@ from typing import Any
 
 CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "name": "odoo_orm",
-        "display_name": "Odoo ORM",
-        "description": "Direct Odoo ORM access. Use this like a small script: call one model method with model, method, args, and kwargs, or run several related calls with calls. The connector handles Odoo 19 JSON-2 first and falls back to JSON-RPC for Odoo 18 report/ORM calls. Use fields_get to inspect fields, search_read/read for records, and narrow batches to follow related IDs.",
+        "name": "odoo",
+        "display_name": "Odoo",
+        "description": "Direct Odoo RPC access using the connected account. Call any Odoo model method with model, method, args, and kwargs, or provide calls for ordered raw calls. The connector injects credentials and uses the connected Odoo user's permissions.",
         "target_system": "odoo",
         "input_schema": {
             "type": "object",
             "properties": {
-                "mode": {"type": "string", "enum": ["orm", "orm_batch"], "description": "Optional. Use orm for one direct call and orm_batch for several calls. If omitted, model+method infers orm and calls infers orm_batch."},
-                "model": {"type": "string", "description": "Odoo model name, e.g. account.move, account.move.line, res.partner."},
-                "method": {"type": "string", "description": "Odoo model method, e.g. fields_get, search_read, search, read, create, write, action_post."},
-                "args": {"type": "array", "items": {}, "description": "Positional ORM arguments, execute_kw style. Example for search_read: [[['name', '=', 'SO001']]]. For record methods, first item is usually the ID list, e.g. [[2180]]."},
-                "kwargs": {"type": "object", "description": "Keyword ORM arguments, execute_kw style. Example: {'fields': ['id', 'name'], 'limit': 20}."},
-                "json2_payload": {"type": "object", "description": "Optional explicit Odoo JSON-2 request body for /json/2/<model>/<method>. Use when targeting Odoo 19+ methods whose positional args cannot be inferred."},
-                "calls": {"type": "array", "items": {"type": "object"}, "description": "For orm_batch: ordered list of direct ORM calls, each with optional name, model, method, args, kwargs, and json2_payload."},
-                "continue_on_error": {"type": "boolean", "description": "For orm_batch: return per-call errors instead of aborting at the first failed call.", "default": False},
+                "model": {"type": "string", "description": "Odoo model name."},
+                "method": {"type": "string", "description": "Odoo model method."},
+                "args": {"type": "array", "items": {}, "description": "Positional method arguments."},
+                "kwargs": {"type": "object", "description": "Keyword method arguments."},
+                "json2_payload": {"type": "object", "description": "Optional explicit Odoo JSON-2 request body."},
+                "calls": {"type": "array", "items": {"type": "object"}, "description": "Optional ordered list of raw Odoo calls. Each call may include name, model, method, args, kwargs, and json2_payload."},
+                "continue_on_error": {"type": "boolean", "description": "For calls: return per-call errors instead of aborting at the first failed call.", "default": False},
             },
             "required": [],
         },

@@ -1,4 +1,4 @@
-"""Raw Odoo ORM runner."""
+"""Raw Odoo runner."""
 
 from typing import Any, Optional
 
@@ -12,9 +12,8 @@ from app.models.schemas import OdooCredentialsRequest
 router = APIRouter()
 
 
-class OdooOrmRequest(BaseModel):
+class OdooRunRequest(BaseModel):
     credentials: OdooCredentialsRequest
-    mode: Optional[str] = None
     model: Optional[str] = None
     method: Optional[str] = None
     args: Optional[list[Any]] = None
@@ -41,8 +40,8 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
     method = call.get("method")
     if not model or not method:
         detail: dict[str, Any] = {
-            "error": "orm_call_requires_model_and_method",
-            "message": "Odoo ORM calls require model and method.",
+            "error": "odoo_call_requires_model_and_method",
+            "message": "Odoo calls require model and method.",
         }
         if index is not None:
             detail["index"] = index
@@ -69,7 +68,7 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
 
 
 @router.post("/run")
-def odoo_orm_runner(req: OdooOrmRequest, _auth: dict = Depends(internal_api_key_auth)):
+def odoo_runner(req: OdooRunRequest, _auth: dict = Depends(internal_api_key_auth)):
     client = _get_client(req.credentials)
     if req.calls is not None:
         results = []
@@ -87,7 +86,7 @@ def odoo_orm_runner(req: OdooOrmRequest, _auth: dict = Depends(internal_api_key_
                         "method": call.get("method"),
                         "error": True,
                         "error_type": type(exc).__name__,
-                        "message": "Odoo ORM call failed.",
+                        "message": "Odoo call failed.",
                     }
                 )
         return {"results": results, "count": len(results)}

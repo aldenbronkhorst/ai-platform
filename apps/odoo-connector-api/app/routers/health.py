@@ -18,7 +18,7 @@ def health_check():
         "status": "healthy" if not config_issues else "degraded",
         "version": settings.app_version,
         "capabilities": [
-            "odoo.orm.run",
+            "odoo.run",
         ],
     }
     if config_issues:
@@ -54,7 +54,7 @@ def _validate_startup_config() -> list:
 def get_capabilities(_auth: dict = Depends(internal_api_key_auth)):
     return CapabilitiesResponse(
         endpoints=[
-            {"path": "/odoo/orm/run", "method": "POST", "description": "Run direct Odoo ORM calls"},
+            {"path": "/odoo/orm/run", "method": "POST", "description": "Run direct Odoo calls"},
         ],
         execute_kw_enabled=True,
         execute_kw_write_methods=True,

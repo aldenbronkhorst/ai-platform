@@ -35,6 +35,10 @@ MICROSOFT_TOOL_NAME_ALIASES = {
     "microsoft_graph_api": "ms_graph",
     "graph_api": "ms_graph",
 }
+TOOL_NAME_ALIASES = {
+    **MICROSOFT_TOOL_NAME_ALIASES,
+    "odoo_orm": "odoo",
+}
 GRAPH_API_VERSION_SEGMENTS = {"v1.0", "beta"}
 
 
@@ -94,16 +98,16 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
         "ms_teams_powershell",
         "ms_sharepoint_pnp_powershell",
         "github_cli",
-        "odoo_orm",
+        "odoo",
         "document_reader",
     }
-    mapped = MICROSOFT_TOOL_NAME_ALIASES.get(
+    mapped = TOOL_NAME_ALIASES.get(
         normalized_lower,
         normalized_lower if normalized_lower in canonical_names else cleaned,
     )
     if mapped == "ms_graph":
         return mapped, _normalize_ms_graph_arguments(arguments)
-    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo_orm", "document_reader"}:
+    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo", "document_reader"}:
         return mapped, arguments
     return mapped, arguments
 
