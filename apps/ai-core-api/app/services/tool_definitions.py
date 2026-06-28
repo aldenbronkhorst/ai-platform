@@ -7,6 +7,39 @@ from typing import Any
 
 CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
+        "name": "workspace",
+        "display_name": "Workspace",
+        "description": (
+            "Cloud workspace for bounded Python execution, file scratch work, and multi-step analysis. "
+            "Use when a task needs scripting, iteration, aggregation, data cleanup, calculations, or temporary files. "
+            "The workspace can import ai_platform_odoo and call execute_kw/search/search_read/search_count/read against "
+            "the connected Odoo account without exposing credentials; those helper calls are read-oriented."
+        ),
+        "target_system": "ai-platform",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python"], "description": "Execution language. Currently python.", "default": "python"},
+                "code": {"type": "string", "description": "Python code to run in the workspace."},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default 60, max 120).", "default": 60},
+                "purpose": {"type": "string", "description": "Short reason why a workspace script is needed."},
+                "files": {
+                    "type": "array",
+                    "description": "Optional text files to create before execution.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative path inside the workspace."},
+                            "content": {"type": "string", "description": "UTF-8 text content."},
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "odoo",
         "display_name": "Odoo",
         "description": "Direct Odoo RPC access using the connected account. Call any Odoo model method with model, method, args, and kwargs, or provide calls for ordered raw calls. The connector injects credentials and uses the connected Odoo user's permissions.",

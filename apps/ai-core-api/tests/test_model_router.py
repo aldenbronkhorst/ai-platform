@@ -206,6 +206,16 @@ def test_microsoft_graph_alias_normalizes_relative_version_endpoint():
     }
 
 
+def test_workspace_tool_name_is_canonicalized():
+    tool_name, args = _canonical_tool_invocation(
+        "functions.workspace:0",
+        {"language": "python", "code": "print(1)", "purpose": "quick calculation"},
+    )
+
+    assert tool_name == "workspace"
+    assert args == {"language": "python", "code": "print(1)", "purpose": "quick calculation"}
+
+
 @pytest.mark.asyncio
 async def test_model_router_rejects_removed_microsoft_tool_names():
     for old_tool_name in ("azure_cli", "ms_admin", "ms_powershell", "ms_az_powershell", "ms_graph_powershell", "ms_bicep"):

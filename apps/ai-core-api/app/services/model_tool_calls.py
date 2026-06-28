@@ -100,6 +100,7 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
         "github_cli",
         "odoo",
         "document_reader",
+        "workspace",
     }
     mapped = TOOL_NAME_ALIASES.get(
         normalized_lower,
@@ -107,7 +108,7 @@ def _canonical_tool_invocation(name: str, arguments: dict[str, Any]) -> tuple[st
     )
     if mapped == "ms_graph":
         return mapped, _normalize_ms_graph_arguments(arguments)
-    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo", "document_reader"}:
+    if mapped in MICROSOFT_NATIVE_TOOL_NAMES or mapped in {"github_cli", "odoo", "document_reader", "workspace"}:
         return mapped, arguments
     return mapped, arguments
 

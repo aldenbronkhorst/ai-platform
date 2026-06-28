@@ -18,6 +18,7 @@ from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, is_model_facing_
 logger = logging.getLogger(__name__)
 
 DOCUMENT_READER_TOOL = "document_reader"
+WORKSPACE_TOOL = "workspace"
 DOCUMENT_CONTEXT_MARKERS = {
     "[attached file context]",
     "attached file",
@@ -69,7 +70,9 @@ async def get_tool_selection(
         accounts = await effective_connected_accounts(db, user_id)
         connected_systems = {a.provider for a in accounts if a.status in ("connected", "active")}
 
-    requested_platform_tools = {DOCUMENT_READER_TOOL} if _needs_document_reader(_user_message, _task_type) else set()
+    requested_platform_tools = {WORKSPACE_TOOL}
+    if _needs_document_reader(_user_message, _task_type):
+        requested_platform_tools.add(DOCUMENT_READER_TOOL)
     intent_parts = sorted(connected_systems)
     if requested_platform_tools:
         intent_parts.append("ai-platform")
