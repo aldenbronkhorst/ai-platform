@@ -376,7 +376,7 @@ def _validate_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None
 
 
 def _clean_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"model", "method", "args", "kwargs", "json2_payload", "calls", "continue_on_error"}
+    allowed = {"model", "method", "args", "kwargs", "calls", "continue_on_error"}
     return {
         key: value
         for key, value in arguments.items()

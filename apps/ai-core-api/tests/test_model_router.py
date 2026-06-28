@@ -1189,6 +1189,7 @@ class TestToolExecution:
             "ids": [123],
             "args": [[["name", "=", "BNK01-2026-02065"]]],
             "kwargs": {"fields": ["id", "name"], "limit": 1},
+            "json2_payload": {"domain": []},
         })
 
         assert cleaned == {
