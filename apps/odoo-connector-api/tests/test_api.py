@@ -25,16 +25,16 @@ CREDENTIALS = {
 }
 
 
-def test_health_exposes_only_raw_orm_capability():
+def test_health_exposes_only_raw_odoo_capability():
     response = client.get("/health")
 
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["capabilities"] == ["odoo.orm.run"]
+    assert data["capabilities"] == ["odoo.run"]
 
 
-def test_capabilities_exposes_only_raw_orm_endpoint():
+def test_capabilities_exposes_only_raw_odoo_endpoint():
     response = client.get("/capabilities", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
@@ -42,7 +42,7 @@ def test_capabilities_exposes_only_raw_orm_endpoint():
         {
             "path": "/odoo/orm/run",
             "method": "POST",
-            "description": "Run direct Odoo ORM calls",
+            "description": "Run direct Odoo calls",
         }
     ]
 
@@ -149,7 +149,7 @@ def test_jsonrpc_error_compacts_debug_traceback():
 
 
 @patch("app.routers.orm_runner._get_client")
-def test_raw_orm_endpoint_runs_single_model_method(mock_get_client):
+def test_raw_odoo_endpoint_runs_single_model_method(mock_get_client):
     mock_client = MagicMock()
     mock_client.call_with_transport.return_value = [{"id": 42, "name": "BNK01-2026-02065"}]
     mock_client.last_transport = "xmlrpc"
@@ -184,7 +184,7 @@ def test_raw_orm_endpoint_runs_single_model_method(mock_get_client):
 
 
 @patch("app.routers.orm_runner._get_client")
-def test_raw_orm_endpoint_runs_batch(mock_get_client):
+def test_raw_odoo_endpoint_runs_batch(mock_get_client):
     mock_client = MagicMock()
     mock_client.call_with_transport.side_effect = [
         [{"id": 10, "line_ids": [100]}],
@@ -227,7 +227,7 @@ def test_raw_orm_endpoint_runs_batch(mock_get_client):
 
 
 @patch("app.routers.orm_runner._get_client")
-def test_raw_orm_endpoint_batch_errors_are_sanitized(mock_get_client):
+def test_raw_odoo_endpoint_batch_errors_are_sanitized(mock_get_client):
     mock_client = MagicMock()
     mock_client.call_with_transport.side_effect = RuntimeError("traceback with secret details")
     mock_get_client.return_value = mock_client
@@ -253,11 +253,11 @@ def test_raw_orm_endpoint_batch_errors_are_sanitized(mock_get_client):
     error_result = response.json()["results"][0]
     assert error_result["error"] is True
     assert error_result["error_type"] == "RuntimeError"
-    assert error_result["message"] == "Odoo ORM call failed."
+    assert error_result["message"] == "Odoo call failed."
     assert "secret" not in error_result["message"]
 
 
-def test_raw_orm_endpoint_requires_model_and_method():
+def test_raw_odoo_endpoint_requires_model_and_method():
     response = client.post(
         "/odoo/orm/run",
         json={"credentials": CREDENTIALS, "model": "account.move"},
@@ -265,4 +265,4 @@ def test_raw_orm_endpoint_requires_model_and_method():
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"]["error"] == "orm_call_requires_model_and_method"
+    assert response.json()["detail"]["error"] == "odoo_call_requires_model_and_method"

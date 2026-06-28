@@ -68,7 +68,7 @@ async def appinsights_middleware(request: Request, call_next):
 
 
 app.include_router(health.router, tags=["Health"])
-app.include_router(orm_runner_router.router, prefix="/odoo/orm", tags=["Odoo ORM"])
+app.include_router(orm_runner_router.router, prefix="/odoo/orm", tags=["Odoo"])
 
 
 @app.exception_handler(OdooAuthError)

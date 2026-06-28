@@ -309,10 +309,6 @@ DELEGATED_AUTH_FAILURE_MARKERS = (
 )
 
 
-ODOO_ORM_MODES = {
-    "orm",
-    "orm_batch",
-}
 MICROSOFT_TOOL_PROVIDER_BY_NAME = {
     "ms_azure_cli": "azure_cli",
     "ms_graph": "microsoft_graph",
@@ -358,43 +354,34 @@ def _handled_tool_argument_error(message: str, missing: list[str] | None = None,
     return result
 
 
-def _normalize_odoo_orm_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(arguments)
-    mode = str(normalized.get("mode") or "").strip()
-    if not mode and isinstance(normalized.get("calls"), list):
-        normalized["mode"] = "orm_batch"
-    if not mode and normalized.get("model") and normalized.get("method"):
-        normalized["mode"] = "orm"
-    return normalized
-
-
-def _validate_odoo_orm_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
-    mode = str(arguments.get("mode") or "").strip()
-    if not mode:
+def _validate_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    if "calls" in arguments:
+        if isinstance(arguments.get("calls"), list):
+            return None
         return _handled_tool_argument_error(
-            "The Odoo ORM call was missing model/method or calls, so it was skipped before reaching the connector.",
-            missing=["model", "method", "calls"],
-            suggestion="Retry with model and method for one ORM call, or calls for an ORM batch.",
-        )
-    if mode not in ODOO_ORM_MODES:
-        return _handled_tool_argument_error(
-            f"Unknown Odoo tool mode: {mode}.",
-            suggestion="Use mode='orm' or mode='orm_batch'.",
-        )
-    if mode == "orm" and (not arguments.get("model") or not arguments.get("method")):
-        missing = [key for key in ("model", "method") if not arguments.get(key)]
-        return _handled_tool_argument_error(
-            "The Odoo raw ORM request was missing model or method, so it was skipped before reaching the connector.",
-            missing=missing,
-            suggestion="Retry with mode='orm', model, method, and optional args/kwargs.",
-        )
-    if mode == "orm_batch" and not isinstance(arguments.get("calls"), list):
-        return _handled_tool_argument_error(
-            "The Odoo raw ORM batch request was missing calls, so it was skipped before reaching the connector.",
+            "The Odoo raw call list must be an array.",
             missing=["calls"],
-            suggestion="Retry with mode='orm_batch' and calls=[{model, method, args, kwargs}].",
+            suggestion="Retry with calls=[{model, method, args, kwargs}].",
+        )
+    if not arguments.get("model") or not arguments.get("method"):
+        missing = [key for key in ("model", "method") if not arguments.get(key)]
+        if not missing:
+            missing = ["model", "method", "calls"]
+        return _handled_tool_argument_error(
+            "The Odoo raw call was missing model/method or calls, so it was skipped before reaching the connector.",
+            missing=missing,
+            suggestion="Retry with model and method for one raw call, or calls for ordered raw calls.",
         )
     return None
+
+
+def _clean_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"model", "method", "args", "kwargs", "json2_payload", "calls", "continue_on_error"}
+    return {
+        key: value
+        for key, value in arguments.items()
+        if key in allowed
+    }
 
 
 async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
@@ -541,9 +528,9 @@ async def _execute_tool_call_impl(
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
-    if tool_name == "odoo_orm":
-        arguments = _normalize_odoo_orm_arguments(arguments)
-        validation_error = _validate_odoo_orm_arguments(arguments)
+    if tool_name == "odoo":
+        arguments = _clean_odoo_arguments(arguments)
+        validation_error = _validate_odoo_arguments(arguments)
         if validation_error:
             return validation_error
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
@@ -1114,7 +1101,7 @@ def _structured_answer_from_tool_results(
         return None
 
     for tool_result in reversed(tool_results):
-        if tool_result.get("tool_name") != "odoo_orm":
+        if tool_result.get("tool_name") != "odoo":
             continue
         result = tool_result.get("result")
         if not isinstance(result, dict):
@@ -1130,7 +1117,7 @@ def _structured_answer_from_tool_results(
 
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
-        "command", "query", "model", "mode", "operation", "method", "resource",
+        "command", "query", "model", "operation", "method", "resource",
         "timeout", "fields", "limit", "order",
     }
     safe: dict[str, Any] = {}
@@ -1330,24 +1317,21 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         "`starting now`, `let me proceed`, or `I will do that`; either execute with the tool or state the blocker."
     )
 
-    odoo_available = [name for name in available_names if name.startswith("odoo_")]
+    odoo_available = [name for name in available_names if name == "odoo"]
     guidance_parts: list[str] = []
-    if "odoo_orm" in odoo_available:
+    if "odoo" in odoo_available:
         guidance_parts.append(
             "\n\n### Connected Account Tool Guidance\n"
             "Use one consolidated tool per connected system. Do not invent feature-specific connector tools."
         )
         guidance_parts.append(
-            "Odoo: use `odoo_orm` as direct ORM access. For one call, provide `model`, `method`, "
-            "`args`, and `kwargs`; the router infers mode `orm`. For related lookups, provide `calls` and "
-            "the router infers mode `orm_batch`. Use `fields_get` to inspect fields, `search_read` or `read` "
-            "to fetch records, and preserve raw IDs when following relationships."
+            "Odoo: use `odoo` for direct Odoo RPC access. Provide `model`, `method`, `args`, and `kwargs` "
+            "for one raw call, or `calls` for ordered raw calls. Credentials are already supplied from the "
+            "connected Odoo account."
         )
         guidance_parts.append(
-            "Keep Odoo calls narrow and script-like: start from the exact record named by the user, read the related "
-            "IDs you need, then follow those IDs in the next batch call. Do not invent Odoo web URLs, domains, "
-            "hostnames, fields, or record IDs. For writes/actions, verify the result with a follow-up ORM read before "
-            "claiming the change is complete."
+            "Use Odoo tool results to inspect, act, and verify. Do not invent Odoo web URLs, domains, hostnames, "
+            "fields, or record IDs."
         )
         guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
     if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
