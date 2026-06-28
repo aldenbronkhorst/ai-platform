@@ -5,7 +5,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.odoo_client import OdooClient, OdooCredentials
+from app.core.odoo_client import OdooClient, OdooCredentials, OdooError
 from app.core.security import internal_api_key_auth
 from app.models.schemas import OdooCredentialsRequest
 
@@ -18,7 +18,6 @@ class OdooRunRequest(BaseModel):
     method: Optional[str] = None
     args: Optional[list[Any]] = None
     kwargs: Optional[dict[str, Any]] = None
-    json2_payload: Optional[dict[str, Any]] = None
     calls: Optional[list[dict[str, Any]]] = None
     continue_on_error: bool = False
 
@@ -47,13 +46,24 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
             detail["index"] = index
         raise HTTPException(status_code=400, detail=detail)
 
-    result = client.call_with_transport(
-        model,
-        method,
-        args=call.get("args") or [],
-        kwargs=call.get("kwargs") or {},
-        json2_payload=call.get("json2_payload"),
-    )
+    try:
+        result = client.call_with_transport(
+            model,
+            method,
+            args=call.get("args") or [],
+            kwargs=call.get("kwargs") or {},
+        )
+    except OdooError as exc:
+        detail: dict[str, Any] = {
+            "error": "odoo_call_failed",
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+            "model": model,
+            "method": method,
+        }
+        if index is not None:
+            detail["index"] = index
+        raise HTTPException(status_code=400, detail=detail) from exc
     response = {
         "model": model,
         "method": method,
@@ -98,6 +108,5 @@ def odoo_runner(req: OdooRunRequest, _auth: dict = Depends(internal_api_key_auth
             "method": req.method,
             "args": req.args or [],
             "kwargs": req.kwargs or {},
-            "json2_payload": req.json2_payload,
         },
     )

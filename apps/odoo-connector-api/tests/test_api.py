@@ -1,6 +1,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
@@ -9,7 +10,8 @@ os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 from app.core.odoo_client import (  # noqa: E402
     OdooClient,
     OdooCredentials,
-    OdooJson2Unavailable,
+    OdooError,
+    OdooJsonRpcUnavailable,
     compact_odoo_jsonrpc_error,
 )
 from app.main import app  # noqa: E402
@@ -47,7 +49,7 @@ def test_capabilities_exposes_only_raw_odoo_endpoint():
     ]
 
 
-def test_auto_transport_uses_json2_first():
+def test_auto_transport_uses_jsonrpc_first():
     odoo = OdooClient(
         OdooCredentials(
             url="https://example.odoo.com",
@@ -57,17 +59,17 @@ def test_auto_transport_uses_json2_first():
         ),
         transport="auto",
     )
-    odoo.execute_kw_json2 = MagicMock(return_value=None)
+    odoo.execute_kw_jsonrpc = MagicMock(return_value=True)
     odoo.execute_kw_xmlrpc = MagicMock()
 
     result = odoo.call_with_transport("account.move", "button_draft", args=[[56137]], kwargs={})
 
-    assert result is None
-    odoo.execute_kw_json2.assert_called_once_with("account.move", "button_draft", [[56137]], {}, json2_payload=None)
+    assert result is True
+    odoo.execute_kw_jsonrpc.assert_called_once_with("account.move", "button_draft", [[56137]], {})
     odoo.execute_kw_xmlrpc.assert_not_called()
 
 
-def test_auto_transport_falls_back_to_jsonrpc_when_json2_unavailable():
+def test_auto_transport_returns_jsonrpc_unavailable_without_xmlrpc_fallback():
     odoo = OdooClient(
         OdooCredentials(
             url="https://example.odoo.com",
@@ -77,18 +79,17 @@ def test_auto_transport_falls_back_to_jsonrpc_when_json2_unavailable():
         ),
         transport="auto",
     )
-    odoo.execute_kw_json2 = MagicMock(side_effect=OdooJson2Unavailable("not available"))
-    odoo.execute_kw_jsonrpc = MagicMock(return_value=[{"id": 1, "name": "INV/001"}])
-    odoo.execute_kw_xmlrpc = MagicMock()
+    odoo.execute_kw_jsonrpc = MagicMock(side_effect=OdooJsonRpcUnavailable("not available"))
+    odoo.execute_kw_xmlrpc = MagicMock(return_value=[{"id": 1, "name": "INV/001"}])
 
-    result = odoo.call_with_transport(
-        "account.move",
-        "search_read",
-        args=[[["name", "=", "INV/001"]]],
-        kwargs={"fields": ["id", "name"]},
-    )
+    with pytest.raises(OdooJsonRpcUnavailable):
+        odoo.call_with_transport(
+            "account.move",
+            "search_read",
+            args=[[["name", "=", "INV/001"]]],
+            kwargs={"fields": ["id", "name"]},
+        )
 
-    assert result == [{"id": 1, "name": "INV/001"}]
     odoo.execute_kw_jsonrpc.assert_called_once_with(
         "account.move",
         "search_read",
@@ -98,7 +99,7 @@ def test_auto_transport_falls_back_to_jsonrpc_when_json2_unavailable():
     odoo.execute_kw_xmlrpc.assert_not_called()
 
 
-def test_auto_transport_uses_jsonrpc_for_report_methods_json2_cannot_infer():
+def test_auto_transport_uses_jsonrpc_for_report_methods():
     odoo = OdooClient(
         OdooCredentials(
             url="https://example.odoo.com",
@@ -126,6 +127,67 @@ def test_auto_transport_uses_jsonrpc_for_report_methods_json2_cannot_infer():
         {},
     )
     odoo.execute_kw_xmlrpc.assert_not_called()
+
+
+def test_execute_kw_jsonrpc_authenticates_and_calls_through_jsonrpc():
+    posted_payloads = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        responses = [
+            FakeResponse({"result": 7}),
+            FakeResponse({"result": [{"id": 1, "name": "INV/001"}]}),
+        ]
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            posted_payloads.append(kwargs["json"])
+            return self.responses.pop(0)
+
+    odoo = OdooClient(
+        OdooCredentials(
+            url="https://example.odoo.com",
+            db="test",
+            username="test",
+            password_or_api_key="test",
+        ),
+        transport="jsonrpc",
+    )
+    odoo.common.authenticate = MagicMock(side_effect=AssertionError("XML-RPC auth should not be used"))
+
+    with patch("app.core.odoo_client.httpx.Client", FakeClient):
+        result = odoo.execute_kw_jsonrpc(
+            "account.move",
+            "search_read",
+            args=[[["name", "=", "INV/001"]]],
+            kwargs={"fields": ["id", "name"]},
+        )
+
+    assert result == [{"id": 1, "name": "INV/001"}]
+    assert posted_payloads[0]["params"]["service"] == "common"
+    assert posted_payloads[0]["params"]["method"] == "authenticate"
+    assert posted_payloads[1]["params"]["service"] == "object"
+    assert posted_payloads[1]["params"]["method"] == "execute_kw"
 
 
 def test_jsonrpc_error_compacts_debug_traceback():
@@ -179,7 +241,6 @@ def test_raw_odoo_endpoint_runs_single_model_method(mock_get_client):
         "search_read",
         args=[[["name", "=", "BNK01-2026-02065"]]],
         kwargs={"fields": ["id", "name"], "limit": 1},
-        json2_payload=None,
     )
 
 
@@ -190,7 +251,7 @@ def test_raw_odoo_endpoint_runs_batch(mock_get_client):
         [{"id": 10, "line_ids": [100]}],
         [{"id": 100, "balance": 250.0}],
     ]
-    mock_client.last_transport = "json2"
+    mock_client.last_transport = "jsonrpc"
     mock_get_client.return_value = mock_client
 
     response = client.post(
@@ -255,6 +316,34 @@ def test_raw_odoo_endpoint_batch_errors_are_sanitized(mock_get_client):
     assert error_result["error_type"] == "RuntimeError"
     assert error_result["message"] == "Odoo call failed."
     assert "secret" not in error_result["message"]
+
+
+@patch("app.routers.orm_runner._get_client")
+def test_raw_odoo_endpoint_returns_structured_odoo_errors(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.call_with_transport.side_effect = OdooError(
+        "Odoo JSON-RPC returned a non-JSON response: HTTP 200 (text/html)"
+    )
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "model": "res.users",
+            "method": "search_count",
+            "args": [[]],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error"] == "odoo_call_failed"
+    assert detail["error_type"] == "OdooError"
+    assert detail["model"] == "res.users"
+    assert detail["method"] == "search_count"
+    assert "non-JSON response" in detail["message"]
 
 
 def test_raw_odoo_endpoint_requires_model_and_method():
