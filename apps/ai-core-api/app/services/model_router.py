@@ -27,6 +27,7 @@ from app.services.tool_registry import (
     MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
     MICROSOFT_NATIVE_TOOL_NAMES,
 )
+from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, run_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, GitHub, Azure CLI, Microsoft Graph, Exchange Online, Teams Admin, SharePoint/PnP, and documents "
+    "You may use connected tools such as Odoo, GitHub, Azure CLI, Microsoft Graph, Exchange Online, Teams Admin, SharePoint/PnP, documents, and Workspace "
     "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
@@ -525,6 +526,17 @@ async def _execute_tool_call_impl(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
+    if tool_name == WORKSPACE_TOOL_NAME:
+        async def odoo_executor(model: str, method: str, args: list[Any], kwargs: dict[str, Any]) -> dict[str, Any]:
+            return await _execute_tool_call_impl(
+                db,
+                user_id,
+                "odoo",
+                {"model": model, "method": method, "args": args, "kwargs": kwargs},
+            )
+
+        return await run_workspace(arguments, odoo_executor=odoo_executor)
+
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
@@ -1118,7 +1130,7 @@ def _structured_answer_from_tool_results(
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "operation", "method", "resource",
-        "timeout", "fields", "limit", "order",
+        "timeout", "fields", "limit", "order", "language", "purpose",
     }
     safe: dict[str, Any] = {}
     for key in allowed:
@@ -1319,6 +1331,17 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
 
     odoo_available = [name for name in available_names if name == "odoo"]
     guidance_parts: list[str] = []
+    if WORKSPACE_TOOL_NAME in available_names:
+        guidance_parts.append(
+            "\n\n### Workspace Guidance\n"
+            "Workspace is the platform cloud-computer surface. Use `workspace` when the task benefits from a short "
+            "script, iteration over records, aggregation, data cleanup, calculations, or temporary files. "
+            "For connected-system investigations that need loops or joins, prefer a compact Workspace script over "
+            "many chat-level tool calls. Workspace Python can import `ai_platform_odoo` and call "
+            "`execute_kw`, `search`, `search_read`, `search_count`, and `read`; the platform brokers those calls "
+            "through the connected Odoo account without exposing credentials. "
+            "Keep scripts focused, print the final facts needed for the answer, and write small output files only when useful."
+        )
     if "odoo" in odoo_available:
         guidance_parts.append(
             "\n\n### Connected Account Tool Guidance\n"

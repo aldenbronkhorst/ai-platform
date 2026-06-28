@@ -37,6 +37,8 @@ def _preview_text(value: Any, limit: int = TEXT_PREVIEW_CHARS) -> str:
 
 
 def _tool_connector(tool_name: str) -> str:
+    if tool_name == "workspace":
+        return "Workspace"
     if tool_name.startswith("odoo"):
         return "Odoo"
     if tool_name == "ms_azure_cli":
@@ -65,6 +67,10 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
         if model and method:
             return f"Odoo {model}.{method}"
         return "Odoo"
+    if tool_name == "workspace":
+        language = _preview_text(args.get("language") or "python")
+        purpose = _preview_text(args.get("purpose"))
+        return f"Workspace {language}{f': {purpose}' if purpose else ''}"
 
     command = _preview_text(args.get("command"))
     if command:
@@ -87,7 +93,7 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
 def _safe_tool_arguments(args: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "mode", "operation", "method", "resource",
-        "timeout", "fields", "limit", "order",
+        "timeout", "fields", "limit", "order", "language", "purpose",
     }
     safe: dict[str, Any] = {}
     for key in allowed:
