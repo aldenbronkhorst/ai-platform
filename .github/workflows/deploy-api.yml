@@ -7,6 +7,7 @@ on:
       - 'apps/ai-core-api/**'
       - 'apps/odoo-connector-api/**'
       - 'apps/web-portal/**'
+      - 'infra/bicep/**'
       - '.github/workflows/deploy-api.yml'
   push:
     branches: [main]
