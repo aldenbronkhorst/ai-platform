@@ -18,11 +18,9 @@ from app.services.model_router import (
     CANONICAL_SYSTEM_PROMPT,
     _compact_tool_result_for_model,
     _append_tool_guidance,
-    _guard_connected_system_denial,
     _execute_tool_call_impl,
 )
 from app.services.chat_titles import _deterministic_chat_title, _sanitize_chat_title
-from app.services.model_tool_calls import _canonical_tool_invocation
 from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
 
@@ -157,63 +155,14 @@ def _microsoft_tool_target(tool_name: str) -> str:
     return MICROSOFT_TOOL_TARGET_SYSTEMS[tool_name]
 
 
-def test_removed_azure_cli_tool_name_is_not_canonicalized():
-    tool_name, args = _canonical_tool_invocation("azure_cli", {"command": "account show"})
-
-    assert tool_name == "azure_cli"
-    assert args == {"command": "account show"}
-
-
-def test_removed_ms_admin_and_ms_powershell_tool_names_are_not_canonicalized():
-    assert _canonical_tool_invocation("ms_admin", {"mode": "azure_cli", "command": "account show"}) == (
-        "ms_admin",
-        {"mode": "azure_cli", "command": "account show"},
+def _odoo_tool() -> AITool:
+    return AITool(
+        name="odoo",
+        display_name="Odoo",
+        description="Run raw Odoo operations",
+        target_system="odoo",
+        input_schema={"type": "object", "properties": {}, "required": []},
     )
-    assert _canonical_tool_invocation("ms_powershell", {"script": "Get-MgUser"}) == (
-        "ms_powershell",
-        {"script": "Get-MgUser"},
-    )
-
-
-def test_microsoft_graph_textual_alias_is_canonicalized_to_ms_graph():
-    tool_name, args = _canonical_tool_invocation(
-        "functions.microsoft_graph:0",
-        {
-            "method": "GET",
-            "url": "https://graph.microsoft.com/v1.0/users?$filter=accountEnabled eq true&$select=displayName,userPrincipalName",
-        },
-    )
-
-    assert tool_name == "ms_graph"
-    assert args == {
-        "method": "GET",
-        "api_version": "v1.0",
-        "path": "/users?$filter=accountEnabled eq true&$select=displayName,userPrincipalName",
-    }
-
-
-def test_microsoft_graph_alias_normalizes_relative_version_endpoint():
-    tool_name, args = _canonical_tool_invocation(
-        "graph_api",
-        {"method": "GET", "endpoint": "beta/groups?$select=id,displayName"},
-    )
-
-    assert tool_name == "ms_graph"
-    assert args == {
-        "method": "GET",
-        "api_version": "beta",
-        "path": "/groups?$select=id,displayName",
-    }
-
-
-def test_workspace_tool_name_is_canonicalized():
-    tool_name, args = _canonical_tool_invocation(
-        "functions.workspace:0",
-        {"language": "python", "code": "print(1)", "purpose": "quick calculation"},
-    )
-
-    assert tool_name == "workspace"
-    assert args == {"language": "python", "code": "print(1)", "purpose": "quick calculation"}
 
 
 @pytest.mark.asyncio
@@ -225,16 +174,15 @@ async def test_model_router_rejects_removed_microsoft_tool_names():
         assert "current tool registry" in result["message"]
 
 
-def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
+def test_microsoft_guidance_uses_workspace_broker_targets():
     tools = [
         AITool(
-            name=name,
-            display_name=name,
-            description="Run Microsoft admin tooling",
-            target_system=_microsoft_tool_target(name),
-            input_schema={"type": "object", "properties": {}, "required": []},
+            name="workspace",
+            display_name="Workspace",
+            description="Run workspace code",
+            target_system="ai-platform",
+            input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
         )
-        for name in MICROSOFT_TOOL_NAMES
     ]
     prompt = _append_tool_guidance(
         "base\n",
@@ -242,72 +190,17 @@ def test_microsoft_guidance_uses_native_tools_and_cost_management_rest_query():
         [{"type": "function", "function": {"name": tool.name, "parameters": {"type": "object"}}} for tool in tools],
     )
 
-    assert "use only these broad native-interface tools" in prompt
-    assert "`ms_azure_cli`, `ms_graph`" in prompt
-    assert "`ms_exchange_powershell`, `ms_teams_powershell`, and `ms_sharepoint_pnp_powershell`" in prompt
+    assert "Broker targets include" in prompt
+    assert "`ms_azure_cli`" in prompt
+    assert "`ms_graph`" in prompt
+    assert "`ms_exchange_powershell`" in prompt
+    assert "`ms_teams_powershell`" in prompt
+    assert "`ms_sharepoint_pnp_powershell`" in prompt
     assert "ms_graph_powershell" not in prompt
     assert "ms_az_powershell" not in prompt
     assert "ms_bicep" not in prompt
-    assert "do not call removed generic or duplicate Microsoft tools" in prompt
-    assert "do not use `az costmanagement query`" in prompt
-    assert "az rest --method post" in prompt
-    assert "Microsoft.CostManagement/query" in prompt
-    assert "Do not claim all Microsoft access is broken" in prompt
-    assert "limited by that user's platform roles/RBAC plus consent" in prompt
-    assert "does not by itself prove Azure Resource Manager" in prompt
-    assert "Never invent Azure cost totals" in prompt
-    assert "successful tool result only" in prompt
-    assert "do not say there is no Microsoft user-management tool" in prompt
-
-def test_guard_replaces_false_azure_not_connected_denial_when_connected():
-    bad_content = (
-        "I do not have access to your Azure cost data.\n\n"
-        "Azure Cost Management — Not connected.\n"
-        "Go to Connected Accounts and add/authorize an Azure connector."
-    )
-
-    guarded = _guard_connected_system_denial(
-        bad_content,
-        {"azure_cli"},
-        [{
-            "tool_name": "ms_azure_cli",
-            "error_type": "command_failed",
-            "message": "ERROR: 'query' is misspelled or not recognized by the system.",
-        }],
-    )
-
-    assert "Azure CLI is connected" in guarded
-    assert "successful Azure Cost Management tool result" in guarded
-    assert "Connected Accounts" not in guarded
-
-
-def test_guard_preserves_real_connected_azure_permission_error():
-    content = "I do not have access to your Azure cost data because the Cost Management query returned AuthorizationFailed."
-
-    guarded = _guard_connected_system_denial(
-        content,
-        {"azure_cli"},
-        [{
-            "tool_name": "ms_azure_cli",
-            "error_type": "AuthorizationFailed",
-            "message": "The client does not have authorization to perform action Microsoft.CostManagement/query/read.",
-        }],
-    )
-
-    assert guarded == content
-
-
-def test_guard_allows_real_microsoft_connector_not_connected_tool_error():
-    content = "Azure is not connected. Go to Connected Accounts."
-
-    guarded = _guard_connected_system_denial(
-        content,
-        {"microsoft_graph"},
-        [{"tool_name": "ms_graph", "error_type": "not_connected", "message": "Microsoft Graph is not connected."}],
-    )
-
-    assert guarded == content
-
+    assert "connected account permissions decide what succeeds" in prompt
+    assert "Do not present business-system behavior as verified unless the script actually checked it." in prompt
 
 def test_compact_tool_result_preserves_small_graph_collections():
     result = {
@@ -607,6 +500,14 @@ class TestConnectorContext:
                     def all(self):
                         return [
                             AITool(
+                                name="workspace",
+                                display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+                            ),
+                            *[
+                            AITool(
                                 name=name,
                                 display_name=name,
                                 description="Run Microsoft admin tooling",
@@ -614,6 +515,7 @@ class TestConnectorContext:
                                 input_schema={"type": "object", "properties": {}, "required": []},
                             )
                             for name in MICROSOFT_TOOL_NAMES
+                            ],
                         ]
                 return Scalars()
 
@@ -658,8 +560,8 @@ class TestConnectorContext:
         system_prompt_content = called_kwargs["messages"][0]["content"]
         tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
         assert "Azure CLI: connected" in system_prompt_content
-        assert "Do not claim all Microsoft access is broken" in system_prompt_content
-        assert "ms_azure_cli" in tool_names
+        assert tool_names == ["workspace"]
+        assert "`ms_azure_cli`" in system_prompt_content
         assert "ms_admin" not in tool_names
         assert result["content"] == "Azure is connected."
 
@@ -897,27 +799,27 @@ class TestToolDefinitions:
         assert defs[0]["function"]["name"] == "odoo"
         assert "parameters" in defs[0]["function"]
 
-    def test_odoo_tool_guidance_forbids_invented_links(self):
+    def test_workspace_guidance_exposes_connector_broker_names(self):
         from app.services.model_router import _append_tool_guidance
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
-            name="odoo",
-            display_name="Odoo",
-            description="Run Odoo operations",
-            target_system="odoo",
-            input_schema={"type": "object", "properties": {"model": {"type": "string"}}},
+            name="workspace",
+            display_name="Workspace",
+            description="Run workspace code",
+            target_system="ai-platform",
+            input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
         )
 
         system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
 
-        assert "Do not invent Odoo web URLs" in system_prompt
-        assert "direct Odoo RPC access" in system_prompt
-        assert "model`, `method`, `args`, and `kwargs`" in system_prompt
-        assert "Credentials are already supplied" in system_prompt
-        assert "Prefer bulk domains" in system_prompt
-        assert "read_group" in system_prompt
+        assert "Broker targets include" in system_prompt
+        assert "`odoo`" in system_prompt
+        assert "`ms_graph`" in system_prompt
+        assert "`github_cli`" in system_prompt
+        assert "connected account permissions decide what succeeds" in system_prompt
+        assert "report, dashboard, or other system-calculated value" in system_prompt
+        assert "one workspace call per discovery step" in system_prompt
         assert "router infers mode" not in system_prompt
-        assert "fields_get" not in system_prompt
 
     def test_workspace_guidance_prefers_set_based_odoo_queries(self):
         from app.services.model_router import _append_tool_guidance
@@ -930,53 +832,38 @@ class TestToolDefinitions:
                 target_system="ai-platform",
                 input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
             ),
-            AITool(
-                name="odoo",
-                display_name="Odoo",
-                description="Run Odoo operations",
-                target_system="odoo",
-                input_schema={"type": "object", "properties": {"model": {"type": "string"}}},
-            ),
         ]
 
         system_prompt = _append_tool_guidance("Base prompt.", tools, _build_tool_definitions(tools))
 
-        assert "prefer set-based calls" in system_prompt
-        assert "`search_read`, `read`, `read_group`" in system_prompt
-        assert "('res_id', 'in', ids)" in system_prompt
-        assert "group or join results locally" in system_prompt
+        assert "Prefer set-based and batch calls" in system_prompt
+        assert "available by default" in system_prompt
+        assert "imported from `ai_platform_tools`" in system_prompt
+        assert "returns connector errors as data" in system_prompt
+        assert "Broker targets include" in system_prompt
+        assert "query the source system object/API" in system_prompt
+        assert "prefer the direct `odoo` tool" not in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
-            name="odoo.orm", display_name="Odoo",
-            description="Run Odoo operations",
-            target_system="odoo",
+            name="sample.tool", display_name="Sample",
+            description="Run sample operations",
+            target_system="sample",
             input_schema={"type": "object", "properties": {"model": {"type": "string"}}, "required": ["model"]},
         )
         defs = _build_tool_definitions([tool])
         assert len(defs) == 1
-        assert defs[0]["function"]["name"] == "odoo_orm"
+        assert defs[0]["function"]["name"] == "sample_tool"
         assert "." not in defs[0]["function"]["name"]
 
     def test_normalize_tool_name(self):
         from app.services.model_tool_calls import _normalize_tool_name
-        assert _normalize_tool_name("odoo.orm") == "odoo_orm"
-        assert _normalize_tool_name("odoo.attach_artifact") == "odoo_attach_artifact"
+        assert _normalize_tool_name("sample.tool") == "sample_tool"
+        assert _normalize_tool_name("sample.attach_artifact") == "sample_attach_artifact"
         assert _normalize_tool_name("already_normal") == "already_normal"
         assert _normalize_tool_name("no-changes_needed") == "no-changes_needed"
         assert len(_normalize_tool_name("a" * 100)) == 64
-
-    def test_legacy_odoo_tool_names_map_to_canonical_odoo(self):
-        from app.services.model_tool_calls import _canonical_tool_invocation
-
-        for legacy_name in ("odoo_orm", "odoo.orm", "functions.odoo_orm:0"):
-            tool_name, arguments = _canonical_tool_invocation(
-                legacy_name,
-                {"model": "res.partner", "method": "search_read"},
-            )
-            assert tool_name == "odoo"
-            assert arguments == {"model": "res.partner", "method": "search_read"}
 
     def test_build_tool_definitions_strips_invalid_chars(self):
         from app.services.model_tool_calls import _build_tool_definitions
@@ -1180,23 +1067,6 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_report_intent")
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
 
-    def test_odoo_alias_execute_is_not_canonicalized(self):
-        from app.services.model_tool_calls import _canonical_tool_invocation
-
-        original_arguments = {
-            "model": "mail.activity",
-            "method": "action_feedback",
-            "ids": [2180],
-            "kwargs": {"feedback": "Receipt corrected"},
-        }
-        tool_name, arguments = _canonical_tool_invocation(
-            "odoo",
-            original_arguments,
-        )
-
-        assert tool_name == "odoo"
-        assert arguments == original_arguments
-
     @pytest.mark.asyncio
     async def test_odoo_missing_raw_call_shape_is_handled_before_connector(self):
         from app.services.model_router import _execute_tool_call_impl
@@ -1217,25 +1087,25 @@ class TestToolExecution:
         assert result["missing"] == ["model", "method"]
         mock_credentials.assert_not_awaited()
 
-    def test_odoo_legacy_mode_key_is_stripped(self):
-        from app.services.model_router import _clean_odoo_arguments
+    def test_odoo_non_raw_keys_are_rejected_not_stripped(self):
+        from app.services.model_router import _validate_odoo_arguments
 
-        cleaned = _clean_odoo_arguments({
+        result = _validate_odoo_arguments({
             "mode": "orm",
             "model": "account.move",
             "method": "search_read",
-            "ids": [123],
-            "args": [[["name", "=", "BNK01-2026-02065"]]],
-            "kwargs": {"fields": ["id", "name"], "limit": 1},
-            "json2_payload": {"domain": []},
+            "domain": [["name", "=", "INV/001"]],
+            "fields": ["id", "name"],
+            "limit": 1,
+            "extra_payload": {"domain": []},
         })
 
-        assert cleaned == {
-            "model": "account.move",
-            "method": "search_read",
-            "args": [[["name", "=", "BNK01-2026-02065"]]],
-            "kwargs": {"fields": ["id", "name"], "limit": 1},
-        }
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "unsupported keys" in result["message"]
+        assert result["missing"] == ["args", "kwargs"]
 
     def test_odoo_validation_accepts_raw_model_method(self):
         from app.services.model_router import _validate_odoo_arguments
@@ -1243,7 +1113,7 @@ class TestToolExecution:
         result = _validate_odoo_arguments({
             "model": "account.move",
             "method": "search_read",
-            "args": [[["name", "=", "BNK01-2026-02065"]]],
+            "args": [[["name", "=", "INV/001"]]],
             "kwargs": {"fields": ["id", "name"], "limit": 1},
         })
 
@@ -1257,7 +1127,7 @@ class TestToolExecution:
                 {
                     "model": "account.move",
                     "method": "search_read",
-                    "args": [[["name", "=", "BNK01-2026-02065"]]],
+                    "args": [[["name", "=", "INV/001"]]],
                 }
             ],
         })
@@ -1274,7 +1144,7 @@ class TestToolExecution:
             status_code = 200
 
             def json(self):
-                return {"model": "account.move", "method": "search_read", "result": []}
+                return []
 
         class FakeAsyncClient:
             def __init__(self, *args, **kwargs):
@@ -1296,7 +1166,6 @@ class TestToolExecution:
             "db": "example",
             "username": "user@example.com",
             "api_key": "secret",
-            "transport": "auto",
         }
 
         with patch(
@@ -1313,7 +1182,7 @@ class TestToolExecution:
                 {
                     "model": "account.move",
                     "method": "search_read",
-                    "args": [[["name", "=", "BNK01-2026-02065"]]],
+                    "args": [[["name", "=", "INV/001"]]],
                     "kwargs": {"fields": ["id", "name"], "limit": 1},
                 },
             )
@@ -1321,7 +1190,7 @@ class TestToolExecution:
         assert posted["url"] == "http://mock-connector:8000/odoo/orm/run"
         assert "mode" not in posted["payload"]
         assert posted["payload"]["model"] == "account.move"
-        assert result["result"] == []
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_odoo_legacy_feature_shape_without_method_is_rejected_before_connector(self):
@@ -1345,50 +1214,19 @@ class TestToolExecution:
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["method"]
+        assert "unsupported keys" in result["message"]
         mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_odoo_legacy_extra_keys_are_stripped_before_connector(self):
+    async def test_odoo_legacy_extra_keys_never_reach_connector(self):
         from app.services.model_router import _execute_tool_call_impl
 
-        posted_payload = {}
-
-        class FakeResponse:
-            status_code = 200
-
-            def json(self):
-                return {"model": "mail.activity", "method": "action_feedback", "result": True}
-
-        class FakeAsyncClient:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            async def post(self, *args, **kwargs):
-                posted_payload.update(kwargs["json"])
-                return FakeResponse()
-
-        fake_credentials = {
-            "url": "https://example.odoo.com",
-            "db": "example",
-            "username": "user@example.com",
-            "api_key": "secret",
-            "transport": "auto",
-        }
+        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
 
         with patch(
             "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=AsyncMock(return_value=fake_credentials),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            new=mock_credentials,
+        ):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
                 uuid.uuid4(),
@@ -1403,13 +1241,12 @@ class TestToolExecution:
                 },
             )
 
-        assert result["result"] is True
-        assert "mode" not in posted_payload
-        assert "ids" not in posted_payload
-        assert "operation" not in posted_payload
-        assert posted_payload["model"] == "mail.activity"
-        assert posted_payload["method"] == "action_feedback"
-        assert posted_payload["kwargs"] == {"feedback": "Receipt corrected"}
+        assert result["error"] is True
+        assert result["handled"] is True
+        assert result["status"] == "skipped"
+        assert result["error_type"] == "invalid_tool_arguments"
+        assert "unsupported keys" in result["message"]
+        mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
@@ -1508,7 +1345,6 @@ class TestToolExecution:
             "db": "example",
             "username": "user@example.com",
             "api_key": "secret",
-            "transport": "auto",
         }
 
         with patch(
@@ -1530,7 +1366,7 @@ class TestToolExecution:
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["method"]
+        assert "unsupported keys: mode" in result["message"]
         assert trace.ended["status"] == "warning"
         assert trace.ended["error_type"] == "invalid_tool_arguments"
 
@@ -1589,7 +1425,6 @@ class TestToolExecution:
             "db": "example",
             "username": "user@example.com",
             "api_key": "secret",
-            "transport": "auto",
         }
 
         with patch(
@@ -1611,7 +1446,11 @@ class TestToolExecution:
         assert result["handled"] is True
         assert result["status"] == "skipped"
         assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["method"]
+        assert "unsupported keys" in result["message"]
+        assert "ids" in result["message"]
+        assert "mode" in result["message"]
+        assert "operation" in result["message"]
+        assert result["missing"] == ["args", "kwargs"]
         assert trace.ended["status"] == "warning"
         assert trace.ended["error_type"] == "invalid_tool_arguments"
 
@@ -1756,67 +1595,6 @@ class TestToolExecution:
         assert compacted["records"]["truncated_items"] == 5
         assert len(compacted["records"]["items"]) == MAX_TOOL_RESULT_RECORD_ITEMS
 
-    def test_tool_result_compaction_caps_large_odoo_record_pages_before_generic_limit(self):
-        from app.services.model_router import _compact_tool_result_for_model, MAX_ODOO_RECORD_CONTEXT_ITEMS
-
-        compacted = _compact_tool_result_for_model({
-            "model": "res.device.log",
-            "records": [
-                {
-                    "id": i,
-                    "create_date": "2026-06-06 08:00:00",
-                    "description": "x" * 1000,
-                }
-                for i in range(MAX_ODOO_RECORD_CONTEXT_ITEMS + 5)
-            ],
-            "count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 5,
-            "returned_count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 5,
-            "total_count": MAX_ODOO_RECORD_CONTEXT_ITEMS + 7,
-            "has_more": True,
-            "complete": False,
-        })
-
-        assert compacted["records_compacted_for_model"] is True
-        assert compacted["visible_record_count"] == MAX_ODOO_RECORD_CONTEXT_ITEMS
-        assert compacted["original_record_count"] == MAX_ODOO_RECORD_CONTEXT_ITEMS + 5
-        assert len(compacted["records"]) == MAX_ODOO_RECORD_CONTEXT_ITEMS
-        assert "model_context_warning" in compacted
-
-    def test_tool_result_compaction_keeps_complete_odoo_sales_page_visible(self):
-        from app.services.model_router import _compact_tool_result_for_model
-
-        compacted = _compact_tool_result_for_model({
-            "model": "sale.order.line",
-            "records": [
-                {
-                    "id": i,
-                    "order_id": {"id": i // 8, "name": f"SO-2026-{i:05d}"},
-                    "product_id": {"id": 5000 + i, "name": f"[AF{i:05d}] Aquafresh Product {i}"},
-                    "name": f"[AF{i:05d}] Aquafresh Product {i}",
-                    "product_uom_qty": 144.0,
-                    "qty_delivered": 72.0,
-                    "qty_invoiced": 72.0,
-                    "price_unit": 12.34,
-                    "record_url": f"https://odoo.example/web#id={i}&model=sale.order.line&view_type=form",
-                }
-                for i in range(337)
-            ],
-            "count": 337,
-            "returned_count": 337,
-            "total_count": 337,
-            "limit": 5000,
-            "offset": 0,
-            "has_more": False,
-            "complete": True,
-        })
-
-        assert isinstance(compacted["records"], list)
-        assert len(compacted["records"]) == 337
-        assert compacted["complete"] is True
-        assert compacted["has_more"] is False
-        assert "result_preview" not in compacted
-        assert "records_compacted_for_model" not in compacted
-
     def test_tool_result_compaction_keeps_practical_cli_stdout_complete(self):
         from app.services.model_router import _compact_tool_result_for_model
 
@@ -1869,11 +1647,12 @@ class TestToolExecution:
                 class Scalars:
                     def all(self):
                         return [
+                            _odoo_tool(),
                             AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
+                                name="workspace", display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
                             ),
                         ]
                 return Scalars()
@@ -1946,9 +1725,107 @@ class TestToolExecution:
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
-    async def test_execute_chat_reports_tool_loop_limit_without_disabling_tools(self):
-        """The loop limit must stop cleanly without pretending tools were unavailable."""
-        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
+    async def test_execute_chat_reuses_workspace_session_across_tool_calls(self):
+        from app.services.model_router import execute_chat
+
+        db = MockSession(has_config=True)
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="workspace", display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "workspace",
+                            "arguments": json.dumps({
+                                "code": "open('state.txt', 'w', encoding='utf-8').write('42')\nprint('stored')",
+                                "timeout": 10,
+                            }),
+                        },
+                    }],
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                    "latency_ms": 100,
+                    "error": False,
+                },
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {
+                            "name": "workspace",
+                            "arguments": json.dumps({
+                                "code": "value = open('state.txt', encoding='utf-8').read()\nfinal(f'state={value}')",
+                                "timeout": 10,
+                            }),
+                        },
+                    }],
+                    "prompt_tokens": 20,
+                    "completion_tokens": 8,
+                    "total_tokens": 28,
+                    "latency_ms": 200,
+                    "error": False,
+                },
+            ])
+        )
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "use workspace in two steps"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "state=42"
+        assert result["finish_reason"] == "workspace_final_answer"
+        assert result["tool_call_count"] == 2
+        assert result["tool_calls"] is not None
+        assert len(result["tool_calls"]) == 2
+        workspace_ids = [call["result"]["workspace_id"] for call in result["tool_calls"]]
+        assert workspace_ids[0] == workspace_ids[1]
+        assert result["tool_calls"][0]["result"]["run_index"] == 1
+        assert result["tool_calls"][1]["result"]["run_index"] == 2
+        assert client.chat_completion.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_stops_at_tool_loop_limit_without_forced_final_fallback(self):
+        """The loop limit should stop honestly instead of running a hidden final-answer retry."""
+        from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -1962,11 +1839,12 @@ class TestToolExecution:
                 class Scalars:
                     def all(self):
                         return [
+                            _odoo_tool(),
                             AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
+                                name="workspace", display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
                             ),
                         ]
                 return Scalars()
@@ -2013,8 +1891,19 @@ class TestToolExecution:
                     "latency_ms": 200,
                     "error": False,
                 },
+                {
+                    "content": "I found INV-2026-02128 from the gathered Odoo result. I did not run the extra lookup.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 30,
+                    "completion_tokens": 9,
+                    "latency_ms": 250,
+                    "error": False,
+                },
             ])
         )
+
+        execute_tool = AsyncMock(return_value={"records": [{"id": 56137, "name": "INV-2026-02128"}]})
 
         with patch.object(
             type(db), 'add'
@@ -2028,18 +1917,15 @@ class TestToolExecution:
             new=AsyncMock(return_value=client),
         ), patch(
             'app.services.model_router._execute_tool_call',
-            new=AsyncMock(return_value={"records": [{"id": 56137, "name": "INV-2026-02128"}]})
+            new=execute_tool,
         ):
             result = await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
 
-        assert "requested more tool calls after the allowed tool steps" in result["content"]
+        assert "tool calls after the allowed tool steps" in result["content"]
         assert result["finish_reason"] == "tool_loop_limit"
         assert result["tool_calls"] is not None
         assert client.chat_completion.call_count == 2
-        final_call = client.chat_completion.call_args_list[1]
-        assert final_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
-        assert final_call.kwargs["tools"] is not None
-        assert "Use the tool results already gathered" in final_call.kwargs["messages"][-1]["content"]
+        execute_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_execute_chat_retries_blank_length_response_after_tools(self):
@@ -2057,11 +1943,12 @@ class TestToolExecution:
                 class Scalars:
                     def all(self):
                         return [
+                            _odoo_tool(),
                             AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
+                                name="workspace", display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
                             ),
                         ]
                 return Scalars()
@@ -2242,882 +2129,59 @@ class TestToolExecution:
         assert continuation_call.kwargs["tools"] is None
         assert "Continue the visible answer exactly where it stopped" in continuation_call.kwargs["messages"][-1]["content"]
 
-    @pytest.mark.asyncio
-    async def test_execute_chat_finalizes_complete_odoo_sales_quantity_table_without_model_transcription(self):
-        from app.services.model_router import execute_chat
+    def test_workspace_final_answer_finalizes_stdout_marker(self):
+        from app.services.model_router import _workspace_final_answer
 
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        client = AsyncMock(
-            chat_completion=AsyncMock(return_value={
-                "content": None,
-                "finish_reason": "tool_calls",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "odoo",
-                        "arguments": json.dumps({
-                            "model": "sale.order.line",
-                            "method": "search_read",
-                            "args": [[]],
-                            "kwargs": {
-                                "fields": ["order_id", "product_id", "product_uom_qty", "qty_delivered", "name"],
-                                "limit": 50,
-                            },
-                        }),
-                    },
-                }],
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15,
-                "latency_ms": 100,
-                "error": False,
-            })
-        )
-        tool_result = {
-            "model": "sale.order.line",
-            "records": [
+        answer = _workspace_final_answer(
+            [
                 {
-                    "id": 1,
-                    "order_id": {"id": 101, "name": "SO-2026-00001"},
-                    "product_id": {"id": 501, "name": "[AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml"},
-                    "product_uom_qty": 144.0,
-                    "qty_delivered": 72.0,
-                    "name": "[AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml",
-                },
+                    "tool_name": "workspace",
+                    "result": {
+                        "status": "success",
+                        "stdout": "debug line\nFINAL: The requested value is 42.\n",
+                    },
+                }
+            ],
+        )
+
+        assert answer == "The requested value is 42."
+
+    def test_workspace_final_answer_finalizes_explicit_field(self):
+        from app.services.model_router import _workspace_final_answer
+
+        answer = _workspace_final_answer(
+            [
                 {
-                    "id": 2,
-                    "order_id": {"id": 102, "name": "SO-2026-00002"},
-                    "product_id": {"id": 502, "name": "[103Y] Sensodyne Gentle Whitening 75ml"},
-                    "product_uom_qty": 288.0,
-                    "qty_delivered": 288.0,
-                    "name": "[103Y] Sensodyne Gentle Whitening 75ml",
-                },
-            ],
-            "count": 2,
-            "returned_count": 2,
-            "total_count": 2,
-            "limit": 5000,
-            "offset": 0,
-            "has_more": False,
-            "complete": True,
-        }
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=AsyncMock(return_value=tool_result),
-        ):
-            result = await execute_chat(
-                db,
-                [{
-                    "role": "user",
-                    "content": (
-                        "in odoo for customer cosmetic connection, get all sales orders with Aquafresh and Sensodyne "
-                        "products and compare SO quantity with dleiverd quantity. ensure it is in tabular format "
-                        "and break it down per product"
-                    ),
-                }],
-                user_id=uuid.uuid4(),
-            )
-
-        assert client.chat_completion.call_count == 1
-        assert result["finish_reason"] == "structured_tool_result"
-        assert "Found 2 sale.order.line rows." in result["content"]
-        assert "### [AF01001] Aquafresh Fresh & Minty | Toothpaste | 100ml" in result["content"]
-        assert "| Order | Ordered Qty | Delivered Qty | Difference |" in result["content"]
-        assert "| Order | Ordered Qty | Delivered Qty | Name | Difference |" not in result["content"]
-        assert "| SO-2026-00001 | 144 | 72 | -72 |" in result["content"]
-        assert "### [103Y] Sensodyne Gentle Whitening 75ml" in result["content"]
-        assert "| SO-2026-00002 | 288 | 288 | 0 |" in result["content"]
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_finalizes_any_complete_odoo_table_without_model_transcription(self):
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo",
-                                display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        client = AsyncMock(
-            chat_completion=AsyncMock(return_value={
-                "content": None,
-                "finish_reason": "tool_calls",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "odoo",
-                        "arguments": json.dumps({
-                            "model": "res.partner",
-                            "method": "search_read",
-                            "args": [[]],
-                            "kwargs": {
-                                "fields": ["name", "email", "phone"],
-                                "limit": 10,
-                            },
-                        }),
+                    "tool_name": "workspace",
+                    "result": {
+                        "status": "success",
+                        "stdout": "debug output\n",
+                        "final_answer": {"value": "R 6,619,093.31"},
                     },
-                }],
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15,
-                "latency_ms": 100,
-                "error": False,
-            })
-        )
-        tool_result = {
-            "model": "res.partner",
-            "records": [
-                {"id": 1, "name": "Acme Supplies", "email": "sales@acme.example", "phone": "+27 10 000 0001"},
-                {"id": 2, "name": "Northwind Traders", "email": "ops@northwind.example", "phone": "+27 10 000 0002"},
+                }
             ],
-            "count": 2,
-            "returned_count": 2,
-            "total_count": 2,
-            "limit": 10,
-            "offset": 0,
-            "has_more": False,
-            "complete": True,
-        }
+        )
 
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=AsyncMock(return_value=tool_result),
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "show customers in a table"}],
-                user_id=uuid.uuid4(),
-            )
+        assert answer == '{"value": "R 6,619,093.31"}'
 
-        assert client.chat_completion.call_count == 1
-        assert result["finish_reason"] == "structured_tool_result"
-        assert "Found 2 res.partner rows." in result["content"]
-        assert "| Name | Email | Phone |" in result["content"]
-        assert "| Acme Supplies | sales@acme.example | +27 10 000 0001 |" in result["content"]
-        assert "| Northwind Traders | ops@northwind.example | +27 10 000 0002 |" in result["content"]
+    def test_workspace_final_answer_ignores_runs_with_connector_errors(self):
+        from app.services.model_router import _workspace_final_answer
 
-    def test_structured_answer_does_not_finalize_intermediate_odoo_lookup_rows(self):
-        from app.services.model_router import _structured_answer_from_tool_results
-
-        answer = _structured_answer_from_tool_results(
-            [{
-                "tool_name": "odoo",
-                "arguments": {
-                    "model": "product.product",
-                    "method": "search_read",
-                    "args": [[]],
-                    "kwargs": {
-                        "fields": ["id", "name", "default_code"],
-                        "limit": 50,
+        answer = _workspace_final_answer(
+            [
+                {
+                    "tool_name": "workspace",
+                    "result": {
+                        "status": "success",
+                        "stdout": "FINAL: I could not find the report.\n",
+                        "final_answer": "I could not find the report.",
+                        "connector_error_calls": {"odoo": 1},
                     },
-                },
-                "result": {
-                    "model": "product.product",
-                    "records": [
-                        {"id": 8128, "name": "Aquafresh Fresh & Minty Toothpaste 50ml", "default_code": "102R"},
-                        {"id": 8197, "name": "Sensodyne Multi Care Toothpaste 75ml", "default_code": "103T"},
-                    ],
-                    "count": 2,
-                    "returned_count": 2,
-                    "total_count": 2,
-                    "has_more": False,
-                    "complete": True,
-                },
-            }],
-            [{
-                "role": "user",
-                "content": (
-                    "in odoo for customer cosmetic connection, get all sales orders with Aquafresh and Sensodyne "
-                    "products and compare SO quantity with delivered quantity. ensure it is in tabular format "
-                    "and break it down per product"
-                ),
-            }],
+                }
+            ],
         )
 
         assert answer is None
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_converts_text_tool_calls_to_odoo(self):
-        """textual tool markers must be executed, not shown to users."""
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {"model": {"type": "string"}, "method": {"type": "string"}},
-                                },
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        raw_tool_markup = (
-            "I'll look that up."
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0"
-            "<|tool_call_argument_begin|>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name","login"],"limit":1}}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": raw_tool_markup,
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "Penelope was found in Odoo.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        execute_tool = AsyncMock(return_value={"records": [{"id": 7, "name": "Penelope"}], "count": 1})
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=execute_tool,
-        ):
-            result = await execute_chat(
-                db,
-                [
-                    {"role": "user", "content": "What did Penny do today in Odoo?"},
-                    {"role": "assistant", "content": "I found Penny's Odoo activity for today."},
-                    {"role": "user", "content": "Penelope"},
-                ],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Penelope was found in Odoo."
-        assert "<|tool_call" not in result["content"]
-        assert result["tool_calls"][0]["tool_name"] == "odoo"
-        called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo"
-        assert called_args[3]["model"] == "res.users"
-        assert called_args[3]["method"] == "search_read"
-        assert called_args[3]["args"] == [[["name", "ilike", "Penelope"]]]
-        assert called_args[3]["kwargs"] == {"fields": ["id", "name", "login"], "limit": 1}
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_recovers_text_tool_call_without_selected_tool_schema(self):
-        """Textual connector calls must still run when connected tools are already available."""
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {"model": {"type": "string"}, "method": {"type": "string"}},
-                                },
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        raw_tool_markup = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0"
-            "<|tool_call_argument_begin|>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name","login"],"limit":1}}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": raw_tool_markup,
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "Penelope's 4 June Odoo activity was checked.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        execute_tool = AsyncMock(return_value={"records": [{"id": 7, "name": "Penelope"}], "count": 1})
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=execute_tool,
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "i meant 4 june"}],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Penelope's 4 June Odoo activity was checked."
-        assert result["tool_calls"][0]["tool_name"] == "odoo"
-        first_call = client.chat_completion.call_args_list[0]
-        assert first_call.kwargs["tools"] is not None
-        assert execute_tool.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_converts_text_tool_calls_with_plain_marker_variant(self):
-        """Some providers may omit pipe characters in marker text; that variant must be parsed too."""
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        raw_tool_markup = (
-            "<tool_calls_section_begin>"
-            "<tool_call_begin>functions.odoo:0"
-            "<tool_call_argument_begin>"
-            '{"model":"res.users","method":"search_read","args":[[["name","ilike","Penelope"]]],"kwargs":{"fields":["id","name"]}}'
-            "<tool_call_end>"
-            "<tool_calls_section_end>"
-        )
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": raw_tool_markup,
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "Plain marker variant executed.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        execute_tool = AsyncMock(return_value={"records": [{"id": 7, "name": "Penelope"}], "count": 1})
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=execute_tool,
-        ):
-            result = await execute_chat(
-                db,
-                [
-                    {"role": "user", "content": "what did Penelope do in Odoo today"},
-                    {"role": "user", "content": "i meant 4 june"},
-                ],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Plain marker variant executed."
-        assert result["tool_calls"][0]["tool_name"] == "odoo"
-        called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo"
-        assert called_args[3]["model"] == "res.users"
-        assert called_args[3]["method"] == "search_read"
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_converts_compact_text_tool_call_without_argument_marker(self):
-        """Compact textual calls must execute instead of leaking markup to the chat router."""
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        raw_tool_markup = (
-            "I'll merge the duplicate employee into the older record."
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0 "
-            '{"model":"hr.employee","method":"write","args":[[42],{"parent_id":7,"notes":"move data before delete"}]}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": raw_tool_markup,
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "Duplicate employee data was merged into the older record.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        execute_tool = AsyncMock(return_value={"status": "success", "operation": "write", "updated": 1})
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=execute_tool,
-        ):
-            result = await execute_chat(
-                db,
-                [
-                    {"role": "user", "content": "there is duplicate gerhdard employee"},
-                    {"role": "user", "content": "move everything to the oldest one and delete the new one"},
-                ],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Duplicate employee data was merged into the older record."
-        assert "<|tool_call" not in result["content"]
-        assert result["tool_calls"][0]["tool_name"] == "odoo"
-        called_args = execute_tool.call_args.args
-        assert called_args[2] == "odoo"
-        assert called_args[3] == {
-            "model": "hr.employee",
-            "method": "write",
-            "args": [[42], {"parent_id": 7, "notes": "move data before delete"}],
-        }
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_converts_compact_text_tool_call_with_nested_json_strings(self):
-        """The compact parser must not stop at braces that appear inside JSON strings."""
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="odoo", status="connected",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="odoo", display_name="Odoo",
-                                description="Run Odoo operations",
-                                target_system="odoo",
-                                input_schema={"type": "object", "properties": {"model": {"type": "string"}, "method": {"type": "string"}}},
-                            ),
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        db.execute = mock_execute
-        raw_tool_markup = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.odoo:0 "
-            '{"model":"hr.employee","method":"write","args":[[42],{"notes":"contains } brace","metadata":{"old_id":7}}]}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        client = AsyncMock(
-            chat_completion=AsyncMock(side_effect=[
-                {
-                    "content": raw_tool_markup,
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "latency_ms": 100,
-                    "error": False,
-                },
-                {
-                    "content": "Nested JSON compact call executed.",
-                    "finish_reason": "stop",
-                    "tool_calls": None,
-                    "prompt_tokens": 20,
-                    "completion_tokens": 8,
-                    "latency_ms": 200,
-                    "error": False,
-                },
-            ])
-        )
-        execute_tool = AsyncMock(return_value={"status": "success", "operation": "write", "updated": 1})
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=client),
-        ), patch(
-            'app.services.model_router._execute_tool_call',
-            new=execute_tool,
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "update the duplicate employee notes in Odoo"}],
-                user_id=uuid.uuid4(),
-            )
-
-        assert result["content"] == "Nested JSON compact call executed."
-        called_args = execute_tool.call_args.args
-        assert called_args[3]["args"][1] == {
-            "notes": "contains } brace",
-            "metadata": {"old_id": 7},
-        }
-
-    def test_coerce_text_tool_call_from_json_envelope_block(self):
-        """Some models emit the tool name and arguments as one JSON object inside the marker block."""
-        from app.services.model_tool_calls import _coerce_text_tool_calls
-
-        result = _coerce_text_tool_calls(
-            {
-                "content": (
-                    "<|tool_calls_section_begin|>"
-                    "<|tool_call_begin|>"
-                    '{"name":"functions.odoo","arguments":{"model":"hr.employee","method":"write","args":[[42],{"parent_id":7}]}}'
-                    "<|tool_call_end|>"
-                    "<|tool_calls_section_end|>"
-                ),
-                "finish_reason": "stop",
-                "tool_calls": None,
-                "error": False,
-            },
-            [],
-        )
-
-        assert result["finish_reason"] == "tool_calls"
-        assert result["content"] is None
-        assert result["tool_calls"][0]["function"]["name"] == "odoo"
-        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args == {
-            "model": "hr.employee",
-            "method": "write",
-            "args": [[42], {"parent_id": 7}],
-        }
-
-    def test_coerce_text_tool_call_maps_cased_odoo_alias_to_raw_tool(self):
-        """Legacy Odoo aliases still resolve to the canonical raw Odoo tool."""
-        from app.services.model_tool_calls import _coerce_text_tool_calls
-
-        result = _coerce_text_tool_calls(
-            {
-                "content": (
-                    "<|tool_calls_section_begin|>"
-                    "<|tool_call_begin|>functions.Odoo:0"
-                    "<|tool_call_argument_begin|>"
-                    '{"model":"stock.picking","domain":[["id","=",5266]],'
-                    '"fields":["name","state","move_ids","date_done"],"limit":10}'
-                    "<|tool_call_end|>"
-                    "<|tool_calls_section_end|>"
-                ),
-                "finish_reason": "stop",
-                "tool_calls": None,
-                "error": False,
-            },
-            [],
-        )
-
-        assert result["finish_reason"] == "tool_calls"
-        assert result["tool_calls"][0]["function"]["name"] == "odoo"
-        assert json.loads(result["tool_calls"][0]["function"]["arguments"]) == {
-            "model": "stock.picking",
-            "domain": [["id", "=", 5266]],
-            "fields": ["name", "state", "move_ids", "date_done"],
-            "limit": 10,
-        }
-
-    def test_coerce_text_tool_call_converts_microsoft_graph_alias_with_full_url(self):
-        """Production textual Microsoft Graph aliases must execute instead of becoming 502s."""
-        from app.services.model_tool_calls import _coerce_text_tool_calls
-
-        result = _coerce_text_tool_calls(
-            {
-                "content": (
-                    "Let me query Microsoft Graph."
-                    "<|tool_calls_section_begin|>"
-                    "<|tool_call_begin|>functions.microsoft_graph:0"
-                    "<|tool_call_argument_begin|>"
-                    '{"method":"GET","url":"https://graph.microsoft.com/v1.0/users?$filter=accountEnabled eq true&$count=true&$select=displayName,userPrincipalName&$top=999"}'
-                    "<|tool_call_end|>"
-                    "<|tool_calls_section_end|>"
-                ),
-                "finish_reason": "stop",
-                "tool_calls": None,
-                "error": False,
-            },
-            [],
-        )
-
-        assert result["finish_reason"] == "tool_calls"
-        assert result["content"] == "Let me query Microsoft Graph."
-        assert "<|tool_call" not in result["content"]
-        assert result["tool_calls"][0]["function"]["name"] == "ms_graph"
-        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args == {
-            "method": "GET",
-            "api_version": "v1.0",
-            "path": "/users?$filter=accountEnabled eq true&$count=true&$select=displayName,userPrincipalName&$top=999",
-        }
-
-    def test_coerce_text_tool_call_from_xml_json_envelope_with_parameters(self):
-        """The parser must handle XML-style tool_call blocks with parameters instead of arguments."""
-        from app.services.model_tool_calls import _coerce_text_tool_calls
-
-        result = _coerce_text_tool_calls(
-            {
-                "content": (
-                    "<tool_call>"
-                    '{"tool_name":"odoo","parameters":{"model":"hr.employee","method":"search_read",'
-                    '"args":[[["name","ilike","Gerhard"]]],"kwargs":{"fields":["id","name"],"limit":2}}}'
-                    "</tool_call>"
-                ),
-                "finish_reason": "stop",
-                "tool_calls": None,
-                "error": False,
-            },
-            [],
-        )
-
-        assert result["finish_reason"] == "tool_calls"
-        assert result["content"] is None
-        assert result["tool_calls"][0]["function"]["name"] == "odoo"
-        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args == {
-            "model": "hr.employee",
-            "method": "search_read",
-            "args": [[["name", "ilike", "Gerhard"]]],
-            "kwargs": {"fields": ["id", "name"], "limit": 2},
-        }
-
-    def test_coerce_text_tool_call_from_function_payload_with_string_arguments(self):
-        """OpenAI-compatible function envelopes may nest a JSON string under function.arguments."""
-        from app.services.model_tool_calls import _coerce_text_tool_calls
-
-        result = _coerce_text_tool_calls(
-            {
-                "content": (
-                    "<|tool_call_begin|>"
-                    '{"type":"function","function":{"name":"functions.odoo",'
-                    '"arguments":"{\\"model\\":\\"hr.employee\\",\\"method\\":\\"write\\",\\"args\\":[[42],{\\"parent_id\\":7}]}"}}'
-                    "<|tool_call_end|>"
-                ),
-                "finish_reason": "stop",
-                "tool_calls": None,
-                "error": False,
-            },
-            [],
-        )
-
-        assert result["finish_reason"] == "tool_calls"
-        args = json.loads(result["tool_calls"][0]["function"]["arguments"])
-        assert args["model"] == "hr.employee"
-        assert args["method"] == "write"
-        assert args["args"] == [[42], {"parent_id": 7}]
 
 # ── Security Tests ──
 

@@ -20,14 +20,12 @@ from app.services.key_vault import get_secret_value, key_vault_uri
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
 from app.services.model_tool_calls import (
     _build_tool_definitions,
-    _canonicalize_tool_call,
-    _coerce_text_tool_calls,
 )
 from app.services.tool_registry import (
     MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
     MICROSOFT_NATIVE_TOOL_NAMES,
 )
-from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, run_workspace
+from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -35,25 +33,20 @@ ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an adm
 MAX_TOOL_RESULT_STRING_CHARS = 600
 MAX_TOOL_STDIO_STRING_CHARS = 8000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
-MAX_TOOL_RESULT_RECORD_ITEMS = 500
+MAX_TOOL_RESULT_RECORD_ITEMS = 120
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 350000
-MAX_ODOO_RECORD_CONTEXT_CHARS = 300000
-MAX_ODOO_RECORD_CONTEXT_ITEMS = 500
-STRUCTURED_CHAT_TABLE_ROW_LIMIT = 500
-TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "24000"))
+TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "3000"))
 TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
-MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "10"))
+MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "8"))
 TOOL_ERROR_SUMMARY_LIMIT = 8
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
-        "If another tool is needed, call it now instead of saying you will check next. "
-        "Do not tell users to run local native-tool logins; report connector auth/profile failures as platform issues. "
-        "If the user asks for all rows, every record, or a complete table, include all rows visible in the tool results. "
-        "Do not put final table rows in hidden reasoning. Keep non-table text concise and state any uncertainty clearly."
+        "Only state connected-system facts that are present in successful tool output. "
+        "If another tool is needed, call it now instead of saying you will check next."
     ),
 }
 TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE = {
@@ -275,27 +268,6 @@ CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
 
 ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
 ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
-AZURE_FALSE_DENIAL_RE = re.compile(
-    r"(?i)("
-    r"\bazure(?:\s+(?:connector|account|cost\s+management))?\s*(?:is|was|[-—])\s*not\s+connected\b"
-    r"|\bi\s+do\s+not\s+have\s+access\s+to\s+your\s+azure(?:\s+cost)?\s+data\b"
-    r"|\byou\s+(?:would\s+)?need\s+to\s+connect\s+an\s+azure\s+account\b"
-    r"|\badd/authorize\s+an\s+azure\s+connector\b"
-    r")"
-)
-AZURE_CONNECTED_ACCESS_ERROR_MARKERS = (
-    "authorizationfailed",
-    "authorization failed",
-    "forbidden",
-    "permission",
-    "permissions",
-    "rbac",
-    "billing",
-    "access denied",
-    "insufficient privileges",
-    "does not have authorization",
-    "not authorized",
-)
 DELEGATED_AUTH_FAILURE_MARKERS = (
     "does not exist in msal token cache",
     "run `az login`",
@@ -355,34 +327,76 @@ def _handled_tool_argument_error(message: str, missing: list[str] | None = None,
     return result
 
 
+ODOO_RAW_TOOL_KEYS = {"model", "method", "args", "kwargs", "calls", "continue_on_error"}
+ODOO_RAW_CALL_KEYS = {"name", "model", "method", "args", "kwargs"}
+
+
+def _raw_odoo_shape_suggestion() -> str:
+    return (
+        "Use raw Odoo RPC shape: "
+        '{"model": "res.partner", "method": "search_read", '
+        '"args": [[[...domain...]]], "kwargs": {"fields": ["id", "name"], "limit": 5}}.'
+    )
+
+
+def _validate_odoo_raw_call(call: Any, index: int | None = None) -> dict[str, Any] | None:
+    if not isinstance(call, dict):
+        return _handled_tool_argument_error(
+            "Each Odoo call must be an object with model, method, args, and kwargs.",
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
+    unexpected = sorted(key for key in call.keys() if key not in ODOO_RAW_CALL_KEYS)
+    if unexpected:
+        where = f" in calls[{index}]" if index is not None else ""
+        return _handled_tool_argument_error(
+            f"Odoo raw RPC call{where} has unsupported keys: {', '.join(unexpected)}.",
+            missing=["args", "kwargs"] if any(key in unexpected for key in ("domain", "fields", "limit", "order", "ids", "values")) else None,
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
+    missing = [key for key in ("model", "method") if not call.get(key)]
+    if missing:
+        return _handled_tool_argument_error(
+            "Odoo raw RPC calls require model and method.",
+            missing=missing,
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
+    if "args" in call and call.get("args") is not None and not isinstance(call.get("args"), list):
+        return _handled_tool_argument_error(
+            "Odoo raw RPC args must be an array.",
+            missing=["args"],
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
+    if "kwargs" in call and call.get("kwargs") is not None and not isinstance(call.get("kwargs"), dict):
+        return _handled_tool_argument_error(
+            "Odoo raw RPC kwargs must be an object.",
+            missing=["kwargs"],
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
+    return None
+
+
 def _validate_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    unexpected = sorted(key for key in arguments.keys() if key not in ODOO_RAW_TOOL_KEYS)
+    if unexpected:
+        return _handled_tool_argument_error(
+            f"Odoo raw RPC call has unsupported keys: {', '.join(unexpected)}.",
+            missing=["args", "kwargs"] if any(key in unexpected for key in ("domain", "fields", "limit", "order", "ids", "values")) else None,
+            suggestion=_raw_odoo_shape_suggestion(),
+        )
     if "calls" in arguments:
-        if isinstance(arguments.get("calls"), list):
+        calls = arguments.get("calls")
+        if isinstance(calls, list):
+            for index, call in enumerate(calls):
+                validation_error = _validate_odoo_raw_call(call, index=index)
+                if validation_error:
+                    return validation_error
             return None
         return _handled_tool_argument_error(
             "The Odoo raw call list must be an array.",
             missing=["calls"],
             suggestion="Retry with calls=[{model, method, args, kwargs}].",
         )
-    if not arguments.get("model") or not arguments.get("method"):
-        missing = [key for key in ("model", "method") if not arguments.get(key)]
-        if not missing:
-            missing = ["model", "method", "calls"]
-        return _handled_tool_argument_error(
-            "The Odoo raw call was missing model/method or calls, so it was skipped before reaching the connector.",
-            missing=missing,
-            suggestion="Retry with model and method for one raw call, or calls for ordered raw calls.",
-        )
-    return None
-
-
-def _clean_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"model", "method", "args", "kwargs", "calls", "continue_on_error"}
-    return {
-        key: value
-        for key, value in arguments.items()
-        if key in allowed
-    }
+    return _validate_odoo_raw_call(arguments)
 
 
 async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
@@ -421,7 +435,6 @@ async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) ->
         "db": odoo_db,
         "username": account.provider_username or "",
         "api_key": api_key,
-        "transport": "auto",
     }
 
 
@@ -524,9 +537,14 @@ async def _execute_tool_call_impl(
     user_id: UUID,
     tool_name: str,
     arguments: dict[str, Any],
+    *,
+    workspace_session: WorkspaceSession | None = None,
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name == WORKSPACE_TOOL_NAME:
+        if workspace_session is not None:
+            return await workspace_session.run(arguments)
+
         async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
             return await _execute_tool_call_impl(db, user_id, nested_tool_name, nested_arguments)
 
@@ -536,7 +554,6 @@ async def _execute_tool_call_impl(
         return await _execute_document_reader_tool(db, user_id, arguments)
 
     if tool_name == "odoo":
-        arguments = _clean_odoo_arguments(arguments)
         validation_error = _validate_odoo_arguments(arguments)
         if validation_error:
             return validation_error
@@ -607,6 +624,8 @@ async def _execute_tool_call(
     user_id: UUID,
     tool_name: str,
     arguments: dict[str, Any],
+    *,
+    workspace_session: WorkspaceSession | None = None,
     trace_svc: Any = None,
 ) -> dict[str, Any]:
     """Execute a tool call and record a troubleshooting span when tracing is enabled."""
@@ -622,7 +641,7 @@ async def _execute_tool_call(
             },
         )
     try:
-        result = await _execute_tool_call_impl(db, user_id, tool_name, arguments)
+        result = await _execute_tool_call_impl(db, user_id, tool_name, arguments, workspace_session=workspace_session)
     except Exception as exc:
         if trace_svc and span_id:
             trace_svc.span_error(span_id, type(exc).__name__, str(exc))
@@ -749,35 +768,7 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
     return value
 
 
-def _compact_odoo_record_page(result: dict[str, Any]) -> dict[str, Any]:
-    """Keep broad Odoo pages useful without letting one page dominate prompts."""
-    records = result.get("records")
-    if not isinstance(records, list):
-        return result
-    try:
-        records_payload_chars = len(json.dumps(records, ensure_ascii=False, default=str))
-    except Exception:
-        records_payload_chars = len(str(records))
-    if records_payload_chars <= MAX_ODOO_RECORD_CONTEXT_CHARS:
-        return result
-
-    visible_records = records[:MAX_ODOO_RECORD_CONTEXT_ITEMS]
-    compacted = dict(result)
-    compacted["records"] = visible_records
-    compacted["records_compacted_for_model"] = True
-    compacted["visible_record_count"] = len(visible_records)
-    compacted["original_record_count"] = len(records)
-    compacted["original_records_chars"] = records_payload_chars
-    compacted["model_context_warning"] = (
-        "Only the first records are visible in model context because the Odoo page was large. "
-        "Use pagination, narrower fields, or a stricter domain for complete detail."
-    )
-    return compacted
-
-
 def _compact_tool_result_for_model(result: Any) -> Any:
-    if isinstance(result, dict) and isinstance(result.get("model"), str):
-        result = _compact_odoo_record_page(result)
     compacted = _compact_tool_value(result)
     payload = json.dumps(compacted, ensure_ascii=False, default=str)
     serializable = json.loads(payload)
@@ -794,331 +785,31 @@ def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
 
 
-def _latest_user_text(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        if isinstance(message, dict) and message.get("role") == "user":
-            return str(message.get("content") or "")
-    return ""
-
-
-def _value_name(value: Any) -> str:
-    if isinstance(value, dict):
-        return str(value.get("name") or value.get("display_name") or value.get("id") or "")
-    if isinstance(value, (list, tuple)) and len(value) >= 2:
-        return str(value[1] or value[0] or "")
-    return str(value or "")
-
-
-def _format_quantity(value: Any) -> str:
-    try:
-        number = float(value or 0)
-    except (TypeError, ValueError):
-        return str(value or "")
-    if number.is_integer():
-        return f"{int(number):,}"
-    return f"{number:,.2f}".rstrip("0").rstrip(".")
-
-
-def _markdown_text(value: Any) -> str:
-    text = str(value or "").replace("\n", " ").strip()
-    return re.sub(r"\s+", " ", text)
-
-
-def _markdown_cell(value: Any) -> str:
-    return _markdown_text(value).replace("|", "\\|")
-
-
-def _is_structured_table_request(text: str) -> bool:
-    normalized = text.lower()
-    return any(phrase in normalized for phrase in (
-        "table",
-        "tabular",
-        "spreadsheet",
-        "rows",
-        "list",
-        "break down",
-        "breakdown",
-        "per product",
-        "per customer",
-        "per sales order",
-        "per so",
-        "compare",
-    ))
-
-
-def _structured_rows_from_odoo_result(result: dict[str, Any]) -> tuple[str, list[dict[str, Any]]] | None:
-    for payload_key in ("records", "result", "groups"):
-        rows = result.get(payload_key)
-        if isinstance(rows, list) and all(isinstance(row, dict) for row in rows):
-            return payload_key, rows
-    return None
-
-
-def _requested_fields_from_arguments(arguments: dict[str, Any]) -> list[Any] | None:
-    requested = arguments.get("fields")
-    if isinstance(requested, list):
-        return requested
-    kwargs = arguments.get("kwargs")
-    if isinstance(kwargs, dict) and isinstance(kwargs.get("fields"), list):
-        return kwargs["fields"]
-    return None
-
-
-def _structured_result_matches_request(
-    *,
-    result: dict[str, Any],
-    arguments: dict[str, Any],
-    rows: list[dict[str, Any]],
-    user_text: str,
-) -> bool:
-    normalized = user_text.lower()
-    columns = set()
-    requested_fields = _requested_fields_from_arguments(arguments)
-    if isinstance(requested_fields, list):
-        columns.update(str(field).lower() for field in requested_fields)
-    for row in rows[:10]:
-        columns.update(str(key).lower() for key in row.keys())
-
-    searchable = " ".join([
-        str(result.get("model") or arguments.get("model") or "").lower(),
-        " ".join(columns),
-    ]).replace(".", "_")
-    requirement_groups: list[tuple[str, ...]] = []
-    if re.search(r"\b(?:so|sales?\s+orders?)\b", normalized):
-        requirement_groups.append(("sale", "order"))
-    if re.search(r"\b(?:deliver(?:ed|y)?|ordered|quantity|qty|compare)\b", normalized):
-        requirement_groups.append(("qty", "quantity", "deliver", "uom", "amount"))
-    if re.search(r"\binvoices?\b", normalized):
-        requirement_groups.append(("invoice", "move", "amount"))
-
-    return all(any(term in searchable for term in group) for group in requirement_groups)
-
-
-def _is_complete_structured_result(result: dict[str, Any], payload_key: str) -> bool:
-    if payload_key == "groups":
-        return True
-    return result.get("complete") is True
-
-
-def _column_label(column: str) -> str:
-    labels = {
-        "id": "ID",
-        "name": "Name",
-        "display_name": "Name",
-        "order_id": "Order",
-        "partner_id": "Customer",
-        "order_partner_id": "Customer",
-        "product_id": "Product",
-        "product_uom_qty": "Ordered Qty",
-        "qty_delivered": "Delivered Qty",
-        "qty_invoiced": "Invoiced Qty",
-        "price_unit": "Unit Price",
-        "amount_total": "Total",
-        "amount_untaxed": "Untaxed",
-        "move_id": "Journal Entry",
-        "journal_id": "Journal",
-        "account_id": "Account",
-        "tax_ids": "Taxes",
-        "tax_line_id": "Tax Line",
-        "tax_tag_ids": "Tax Tags",
-        "parent_state": "State",
-        "record_url": "Link",
-        "state": "Status",
-        "__difference": "Difference",
-    }
-    if column in labels:
-        return labels[column]
-    return column.replace("_", " ").replace(".", " ").title()
-
-
-def _safe_table_columns(rows: list[dict[str, Any]], arguments: dict[str, Any]) -> tuple[list[str], int]:
-    excluded = {
-        "record_url",
-        "datas",
-        "raw",
-        "raw_html",
-        "html",
-        "content_base64",
-        "base64",
-        "binary",
-    }
-    requested = _requested_fields_from_arguments(arguments)
-    columns: list[str] = []
-    if isinstance(requested, list):
-        for field in requested:
-            field_name = str(field)
-            if field_name not in excluded and any(field_name in row for row in rows):
-                columns.append(field_name)
-    if not columns:
-        for row in rows:
-            for key in row.keys():
-                if key in excluded or key in columns:
-                    continue
-                columns.append(key)
-    if "product_uom_qty" in columns and "qty_delivered" in columns:
-        columns.append("__difference")
-    max_columns = 10
-    hidden_count = max(0, len(columns) - max_columns)
-    return columns[:max_columns], hidden_count
-
-
-def _table_value(row: dict[str, Any], column: str) -> Any:
-    if column == "__difference":
-        try:
-            return _format_quantity(float(row.get("qty_delivered") or 0) - float(row.get("product_uom_qty") or 0))
-        except (TypeError, ValueError):
-            return ""
-    value = row.get(column)
-    if value is False or value is None:
-        return ""
-    if isinstance(value, dict):
-        return _value_name(value)
-    if isinstance(value, (list, tuple)):
-        return _value_name(value)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _format_quantity(value)
-    return value
-
-
-def _group_column_from_request(text: str, columns: list[str]) -> str | None:
-    normalized = text.lower()
-    candidates: list[str] = []
-    if "per product" in normalized or "by product" in normalized:
-        candidates.extend(["product_id", "product", "default_code"])
-    if "per customer" in normalized or "by customer" in normalized:
-        candidates.extend(["order_partner_id", "partner_id", "customer_id"])
-    if "per sales order" in normalized or "per so" in normalized or "by sales order" in normalized:
-        candidates.extend(["order_id", "sale_order_id"])
-    if "per invoice" in normalized or "by invoice" in normalized:
-        candidates.extend(["move_id", "invoice_id"])
-    for candidate in candidates:
-        if candidate in columns:
-            return candidate
-    return None
-
-
-def _grouped_table_columns(columns: list[str], group_column: str) -> list[str]:
-    table_columns = [column for column in columns if column != group_column]
-    if group_column == "product_id":
-        table_columns = [column for column in table_columns if column not in {"name", "display_name"}]
-    return table_columns or columns
-
-
-def _numeric_column_totals(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
-    totals = []
-    for column in columns:
-        values: list[float] = []
-        for row in rows:
-            if column == "__difference":
-                try:
-                    value = float(row.get("qty_delivered") or 0) - float(row.get("product_uom_qty") or 0)
-                except (TypeError, ValueError):
-                    continue
-            else:
-                value = row.get(column)
-            if isinstance(value, bool):
-                continue
-            try:
-                values.append(float(value))
-            except (TypeError, ValueError):
-                continue
-        if values and len(values) == len(rows):
-            totals.append(f"{_column_label(column)}: {_format_quantity(sum(values))}")
-    return totals[:4]
-
-
-def _render_markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> list[str]:
-    lines = [
-        "| " + " | ".join(_markdown_cell(_column_label(column)) for column in columns) + " |",
-        "| " + " | ".join("---" for _ in columns) + " |",
-    ]
-    for row in rows:
-        lines.append(
-            "| "
-            + " | ".join(_markdown_cell(_table_value(row, column)) for column in columns)
-            + " |"
-        )
-    return lines
-
-
-def _odoo_structured_table_answer(
-    *,
-    result: dict[str, Any],
-    arguments: dict[str, Any],
-    user_text: str,
-) -> str | None:
-    rows_payload = _structured_rows_from_odoo_result(result)
-    if not rows_payload:
-        return None
-    payload_key, rows = rows_payload
-    if not rows or len(rows) > STRUCTURED_CHAT_TABLE_ROW_LIMIT:
-        return None
-    if not _is_complete_structured_result(result, payload_key):
-        return None
-    if not _structured_result_matches_request(result=result, arguments=arguments, rows=rows, user_text=user_text):
-        return None
-
-    columns, hidden_column_count = _safe_table_columns(rows, arguments)
-    if not columns:
-        return None
-
-    model_name = str(result.get("model") or arguments.get("model") or "Odoo records")
-    total_rows = result.get("total_count") if isinstance(result.get("total_count"), int) else len(rows)
-    lines = [
-        f"Found {total_rows:,} {model_name} rows.",
-        "",
-        "The table below is rendered directly from the complete structured connector result.",
-    ]
-    if hidden_column_count:
-        lines.append(f"{hidden_column_count} additional columns were left out to keep the chat table readable.")
-
-    group_column = _group_column_from_request(user_text, columns)
-    if group_column:
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            grouped.setdefault(str(_table_value(row, group_column) or "Unspecified"), []).append(row)
-        table_columns = _grouped_table_columns(columns, group_column)
-        for group_name in sorted(grouped.keys(), key=str.lower):
-            group_rows = grouped[group_name]
-            totals = _numeric_column_totals(group_rows, table_columns)
-            lines.extend(["", f"### {_markdown_text(group_name)}", f"Rows: {len(group_rows):,}"])
-            if totals:
-                lines.append("Totals: " + " | ".join(totals))
-            lines.append("")
-            lines.extend(_render_markdown_table(group_rows, table_columns))
-        return "\n".join(lines)
-
-    totals = _numeric_column_totals(rows, columns)
-    if totals:
-        lines.extend([
-            "",
-            "Totals: " + " | ".join(totals),
-        ])
-    lines.append("")
-    lines.extend(_render_markdown_table(rows, columns))
-    return "\n".join(lines)
-
-
-def _structured_answer_from_tool_results(
-    tool_results: list[dict[str, Any]],
-    messages: list[dict[str, Any]],
-) -> str | None:
-    user_text = _latest_user_text(messages)
-    if not _is_structured_table_request(user_text):
-        return None
-
+def _workspace_final_answer(tool_results: list[dict[str, Any]]) -> str | None:
     for tool_result in reversed(tool_results):
-        if tool_result.get("tool_name") != "odoo":
+        if tool_result.get("tool_name") != WORKSPACE_TOOL_NAME:
             continue
         result = tool_result.get("result")
         if not isinstance(result, dict):
             continue
-        arguments = tool_result.get("arguments")
-        if not isinstance(arguments, dict):
-            arguments = {}
-        answer = _odoo_structured_table_answer(result=result, arguments=arguments, user_text=user_text)
-        if answer:
-            return answer
+        if result.get("error") or str(result.get("status") or "").lower() != "success":
+            continue
+        connector_error_calls = result.get("connector_error_calls")
+        if isinstance(connector_error_calls, dict) and connector_error_calls:
+            continue
+        if "final_answer" in result:
+            answer = result.get("final_answer")
+            if isinstance(answer, str):
+                return answer.strip()
+            return json.dumps(answer, ensure_ascii=False, default=str)
+        stdout = result.get("stdout")
+        if not isinstance(stdout, str) or not stdout.strip():
+            continue
+        for line in stdout.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("final:"):
+                answer = stripped.split(":", 1)[1].strip()
+                return answer or stdout.strip()
     return None
 
 
@@ -1187,56 +878,6 @@ def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str
     return "; ".join(parts)
 
 
-def _azure_tool_summary_says_not_connected(tool_error_summary: list[dict[str, Any]]) -> bool:
-    for item in tool_error_summary:
-        tool_name = str(item.get("tool_name") or "")
-        if MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name) != "azure_cli":
-            continue
-        error_type = str(item.get("error_type") or "").lower()
-        message = str(item.get("message") or "").lower()
-        if error_type == "not_connected" or "not connected" in message:
-            return True
-    return False
-
-
-def _azure_tool_summary_has_connected_access_error(tool_error_summary: list[dict[str, Any]]) -> bool:
-    for item in tool_error_summary:
-        tool_name = str(item.get("tool_name") or "")
-        if MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name) != "azure_cli":
-            continue
-        error_type = str(item.get("error_type") or "").lower()
-        message = str(item.get("message") or "").lower()
-        if error_type == "not_connected":
-            continue
-        haystack = f"{error_type} {message}"
-        if any(marker in haystack for marker in AZURE_CONNECTED_ACCESS_ERROR_MARKERS):
-            return True
-    return False
-
-
-def _guard_connected_system_denial(
-    content: str,
-    connected_systems: set[str],
-    tool_error_summary: list[dict[str, Any]],
-) -> str:
-    if "azure_cli" not in connected_systems or not content:
-        return content
-    if not AZURE_FALSE_DENIAL_RE.search(content):
-        return content
-    if _azure_tool_summary_says_not_connected(tool_error_summary):
-        return content
-    if _azure_tool_summary_has_connected_access_error(tool_error_summary):
-        return content
-
-    logger.warning("Correcting assistant response that contradicted connected Azure CLI connector")
-    return (
-        "Azure CLI is connected for this user. I cannot verify Azure cost figures or a cost "
-        "breakdown unless they come from a successful Azure Cost Management tool result. For this request, "
-        "I should query Cost Management through `ms_azure_cli` using `az rest`, or report the exact command, RBAC, "
-        "billing, or permission error if that query fails."
-    )
-
-
 async def _load_connected_accounts(db: AsyncSession, user_id: Optional[UUID]) -> ConnectedAccountsSnapshot:
     if not user_id:
         return ConnectedAccountsSnapshot()
@@ -1299,7 +940,21 @@ def _last_user_message(messages: list) -> str:
 
 
 def _tool_selection_message(messages: list) -> str:
-    return _last_user_message(messages).strip()
+    latest = _last_user_message(messages).strip()
+    recent: list[str] = []
+    for message in messages[-6:]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip()
+        if role not in {"user", "assistant", "system"}:
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        recent.append(f"{role}: {content[:500]}")
+    if not recent:
+        return latest
+    return f"Latest user message:\n{latest}\n\nRecent chat context:\n" + "\n".join(recent)
 
 async def _select_route_model_provider(
     db: AsyncSession,
@@ -1316,86 +971,33 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
     available_names = [tool.name for tool in tools]
     system_prompt += (
         "\n\nYou have access to the following tools. "
-        "When the user asks about data from a connected system, call the appropriate tool "
-        "rather than saying you cannot access it. "
-        "Use tools proactively when relevant. "
+        "Use a tool only when the user asks for live connected-system data, file work, code execution, "
+        "calculation, or document reading. Answer ordinary conversation and questions about the previous "
+        "assistant answer from the chat context without calling tools. "
         "When the previous assistant message proposed a connected-system action plan and the user approves "
         "or clarifies it, continue by calling the relevant tool in the same response. Do not only say "
         "`starting now`, `let me proceed`, or `I will do that`; either execute with the tool or state the blocker."
     )
 
-    odoo_available = [name for name in available_names if name == "odoo"]
     guidance_parts: list[str] = []
     if WORKSPACE_TOOL_NAME in available_names:
         guidance_parts.append(
             "\n\n### Workspace Guidance\n"
-            "Workspace is the platform cloud-computer surface. Use `workspace` when the task benefits from a short "
-            "Python script, shell/terminal commands, iteration over records, aggregation, data cleanup, calculations, "
-            "or temporary files. "
-            "For connected-system investigations that need loops or joins, prefer a compact Workspace script over "
-            "many chat-level tool calls. Workspace Python can import `ai_platform_tools` and call any available "
-            "platform tool/connector by name with `call(tool_name, arguments)`. Shell/terminal scripts can call "
-            "`ai-platform-tool <tool_name> '<json arguments>'`. Odoo convenience helpers are still available through "
-            "`ai_platform_odoo`, but they are wrappers around the raw Odoo tool; Odoo permissions come from the "
-            "connected Odoo user account. "
-            "When using Odoo from Workspace, prefer set-based calls: use `search_read`, `read`, `read_group`, "
-            "`search_count`, and domains such as `('id', 'in', ids)` or `('res_id', 'in', ids)` instead of calling "
-            "the connector once per record in a loop. Pull related records in bulk where the connector supports it "
-            "and group or join results locally in the workspace. "
-            "Keep scripts focused, print the final facts needed for the answer, and write small output files only when useful."
-        )
-    if "odoo" in odoo_available:
-        guidance_parts.append(
-            "\n\n### Connected Account Tool Guidance\n"
-            "Use one consolidated tool per connected system. Do not invent feature-specific connector tools."
-        )
-        guidance_parts.append(
-            "Odoo: use `odoo` for direct Odoo RPC access. Provide `model`, `method`, `args`, and `kwargs` "
-            "for one raw call, or `calls` for ordered raw calls. Credentials are already supplied from the "
-            "connected Odoo account. Prefer bulk domains, batch reads, and `read_group` over per-record loops."
-        )
-        guidance_parts.append(
-            "Use Odoo tool results to inspect, act, and verify. Do not invent Odoo web URLs, domains, hostnames, "
-            "fields, or record IDs."
-        )
-        guidance_parts.append("Odoo permissions come from the connected Odoo user account.")
-    if MICROSOFT_NATIVE_TOOL_NAMES.intersection(available_names):
-        guidance_parts.append(
-            "Native Microsoft tools: use only these broad native-interface tools: `ms_azure_cli`, `ms_graph`, "
-            "`ms_exchange_powershell`, `ms_teams_powershell`, and `ms_sharepoint_pnp_powershell`. "
-            "Do not invent detailed Microsoft tools and do not call removed generic or duplicate Microsoft tools. "
-            "These are separate connectors: Azure CLI uses `azure_cli`; Graph/Intune/Entra use "
-            "`microsoft_graph`; Exchange uses `exchange_online`; Teams uses `teams_admin`; SharePoint/PnP uses "
-            "`sharepoint_pnp`. Do not claim all Microsoft access is broken when only one native connector fails. "
-            "Each connector is delegated per signed-in user and limited by that user's platform roles/RBAC plus consent "
-            "for the relevant Microsoft API resource. A connected Microsoft connector does not by itself prove Azure "
-            "Resource Manager, Exchange, Intune, Teams, or SharePoint access; verify the specific operation with the "
-            "relevant tool result before saying it is accessible. "
-            "Use `ms_azure_cli` for Azure Resource Manager CLI commands, `ms_graph` for direct Microsoft Graph requests, "
-            "`ms_exchange_powershell` for Exchange Online PowerShell, "
-            "`ms_teams_powershell` for Teams PowerShell, `ms_sharepoint_pnp_powershell` for SharePoint/PnP PowerShell, "
-            "and `ms_azure_cli` for Azure deployment/template commands. "
-            "For Azure Cost Management or spend questions, do not use `az costmanagement query`; use `ms_azure_cli` with "
-            "`az rest --method post --url https://management.azure.com/subscriptions/{subscriptionId}/providers/"
-            "Microsoft.CostManagement/query?api-version=2023-03-01` and a JSON body with type=Usage, "
-            "timeframe=Custom, timePeriod.from/to, dataset.granularity=Daily, and "
-            "dataset.aggregation.totalCost={name: PreTaxCost, function: Sum}. "
-            "For 'what is costing so much' questions, query a grouped Cost Management breakdown, for example by "
-            "ResourceName, ResourceGroupName, ServiceName, MeterCategory, or MeterSubCategory, then answer from the "
-            "successful tool result only. Never invent Azure cost totals or breakdowns from prior assistant text, "
-            "and do not turn a failed command into a disconnected-connector claim unless the tool result says not_connected. "
-            "For Microsoft 365/Entra user management, use `ms_graph` with POST/PATCH/GET /users; "
-            "do not say there is no Microsoft user-management tool while `ms_graph` is available. "
-            "If a Microsoft user/group/license write fails, report the exact Graph permission or admin-role "
-            "error and ask for the missing consent/role; do not downgrade that to 'no write-capable connector'. "
-            "`ms_graph` GET collection requests auto-follow @odata.nextLink; do not invent manual $skip paging for /users. "
-            "In Microsoft PowerShell tools, call Connect-AIPlatformExchange or Connect-AIPlatformTeams before using "
-            "authenticated cmdlets when those tools require it. "
-            "Do not use this connector for GitHub; use `github_cli` for GitHub work."
-        )
-    if "github_cli" in available_names:
-        guidance_parts.append(
-            "GitHub: use `github_cli` only. Use native gh/git/rg/jq commands; GitHub permissions decide access."
+            "Workspace is the platform cloud-computer surface. It runs Python or shell code in a temporary directory. "
+            "Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, and `final(answer)` available "
+            "by default; they can also be imported from `ai_platform_tools`. Shell scripts can call "
+            "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
+            "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
+            "`github_cli`; connected account permissions decide what succeeds. Odoo broker calls use raw "
+            "`model`, `method`, `args`, and `kwargs`, or `calls` for ordered raw calls. "
+            "`call(...)` returns connector errors as data with `error: true`; inspect those errors and continue "
+            "inside the same script when discovering the right API shape. Use `call_checked(...)` only when a "
+            "connector error should stop the script. For connected-system work, run one compact end-to-end script "
+            "where practical instead of one workspace call per discovery step, inspect real returned data, and call "
+            "`final(answer)` with the user-facing answer. Prefer set-based and batch calls over per-record connector "
+            "loops. When the user asks for a report, dashboard, or other system-calculated value, query the source "
+            "system object/API for that value instead of rebuilding it from lower-level records unless the source "
+            "is unavailable. Do not present business-system behavior as verified unless the script actually checked it."
         )
     if "document_reader" in available_names:
         guidance_parts.append(
@@ -1618,7 +1220,6 @@ async def _call_model(
             tools=tool_definitions if tool_definitions else None,
             stream_event_sink=_discard_provider_stream_event,
         )
-        result = _coerce_text_tool_calls(result, tool_definitions)
     except Exception as exc:
         if trace_svc and span_id:
             trace_svc.span_error(span_id, type(exc).__name__, str(exc))
@@ -1735,105 +1336,141 @@ async def _run_tool_loop(
     trace_svc: Any = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
-    for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
-        if state.result.get("error"):
-            break
-        tool_calls = state.result.get("tool_calls")
-        if not tool_calls:
-            break
+    workspace_session: WorkspaceSession | None = None
 
-        tool_calls = [_canonicalize_tool_call(call) for call in tool_calls]
-        state.result["tool_calls"] = tool_calls
-        state.stats.tool_calls += len(tool_calls)
-        messages.append({
-            "role": "assistant",
-            "content": state.result.get("content") or None,
-            "tool_calls": [
-                {"id": call["id"], "type": call["type"], "function": call["function"]}
-                for call in tool_calls
-            ],
-        })
+    async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
+        return await _execute_tool_call_impl(db, user_id, nested_tool_name, nested_arguments)
 
-        for call in tool_calls:
-            if call.get("type") != "function":
-                continue
-            function = call.get("function", {})
-            name = function.get("name", "")
-            try:
-                args = json.loads(function.get("arguments", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                args = {}
+    async def get_workspace_session() -> WorkspaceSession:
+        nonlocal workspace_session
+        if workspace_session is None:
+            session = WorkspaceSession(tool_executor=workspace_tool_executor)
+            workspace_session = await session.__aenter__()
+        return workspace_session
 
-            result = await _execute_tool_call(db, user_id, name, args, trace_svc=trace_svc)
-            if isinstance(result, dict):
-                await _record_delegated_tool_auth_failure(db, user_id, name, result)
-            compact_result = _compact_tool_result_for_model(result)
-            tool_results.append({
-                "tool_call_id": call.get("id", ""),
-                "tool_name": name,
-                "arguments": args,
-                "result": compact_result,
-            })
+    exposed_tool_names = {
+        str(((definition.get("function") or {}).get("name")) or "")
+        for definition in tool_definitions
+        if isinstance(definition, dict)
+    }
+    try:
+        for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
+            if state.result.get("error"):
+                break
+            tool_calls = state.result.get("tool_calls")
+            if not tool_calls:
+                break
+
+            state.result["tool_calls"] = tool_calls
+            state.stats.tool_calls += len(tool_calls)
             messages.append({
-                "role": "tool",
-                "tool_call_id": call.get("id", ""),
-                "content": _tool_message_content(compact_result),
+                "role": "assistant",
+                "content": state.result.get("content") or None,
+                "tool_calls": [
+                    {"id": call["id"], "type": call["type"], "function": call["function"]}
+                    for call in tool_calls
+                ],
             })
 
-        structured_answer = _structured_answer_from_tool_results(tool_results, messages)
-        if structured_answer:
-            state.result = {
-                "error": False,
-                "content": structured_answer,
-                "finish_reason": "structured_tool_result",
-                "tool_calls": None,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "latency_ms": 0,
-                "model": state.result.get("model"),
-            }
-            break
+            for call in tool_calls:
+                if call.get("type") != "function":
+                    continue
+                function = call.get("function", {})
+                name = function.get("name", "")
+                try:
+                    args = json.loads(function.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
 
-        followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
-        followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
-        result, client = await _call_model(
-            state.used_model,
-            state.used_provider,
-            followup_messages,
-            temperature,
-            followup_max_tokens,
-            tool_definitions,
-            trace_svc=trace_svc,
-            attempt_reason="tool_loop",
-            client=state.client,
-        )
-        state.result = result
-        state.client = client
-        state.stats.add_result(state.result)
-        await _complete_length_limited_tool_answer(
-            state,
-            followup_messages,
-            temperature,
-            followup_max_tokens,
-            trace_svc=trace_svc,
-        )
-    else:
-        if state.result.get("tool_calls"):
-            state.result = {
-                "error": False,
-                "content": (
-                    "The operation stopped because the model requested more tool calls after the allowed tool steps. "
-                    "No further tools were run, so I did not guess or continue with an incomplete action."
-                ),
-                "finish_reason": "tool_loop_limit",
-                "tool_calls": None,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "latency_ms": 0,
-                "model": state.result.get("model"),
-            }
+                if name not in exposed_tool_names:
+                    result = {
+                        "error": True,
+                        "status": "failed",
+                        "error_type": "unavailable_tool",
+                        "message": f"Tool '{name}' is not exposed for this chat turn.",
+                    }
+                else:
+                    active_workspace_session = await get_workspace_session() if name == WORKSPACE_TOOL_NAME else None
+                    result = await _execute_tool_call(
+                        db,
+                        user_id,
+                        name,
+                        args,
+                        workspace_session=active_workspace_session,
+                        trace_svc=trace_svc,
+                    )
+                    if isinstance(result, dict):
+                        await _record_delegated_tool_auth_failure(db, user_id, name, result)
+                compact_result = _compact_tool_result_for_model(result)
+                tool_results.append({
+                    "tool_call_id": call.get("id", ""),
+                    "tool_name": name,
+                    "arguments": args,
+                    "result": compact_result,
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id", ""),
+                    "content": _tool_message_content(compact_result),
+                })
+
+            workspace_answer = _workspace_final_answer(tool_results)
+            if workspace_answer:
+                state.result = {
+                    "error": False,
+                    "content": workspace_answer,
+                    "finish_reason": "workspace_final_answer",
+                    "tool_calls": None,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "latency_ms": 0,
+                    "model": state.result.get("model"),
+                }
+                break
+
+            followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
+            followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
+            result, client = await _call_model(
+                state.used_model,
+                state.used_provider,
+                followup_messages,
+                temperature,
+                followup_max_tokens,
+                tool_definitions,
+                trace_svc=trace_svc,
+                attempt_reason="tool_loop",
+                client=state.client,
+            )
+            state.result = result
+            state.client = client
+            state.stats.add_result(state.result)
+            await _complete_length_limited_tool_answer(
+                state,
+                followup_messages,
+                temperature,
+                followup_max_tokens,
+                trace_svc=trace_svc,
+            )
+        else:
+            if state.result.get("tool_calls"):
+                state.result = {
+                    "error": False,
+                    "content": (
+                        "The operation stopped because the model requested more tool calls after the allowed tool steps. "
+                        "No further tools were run, so I did not guess or continue with an incomplete action."
+                    ),
+                    "finish_reason": "tool_loop_limit",
+                    "tool_calls": None,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "latency_ms": 0,
+                    "model": state.result.get("model"),
+                }
+    finally:
+        if workspace_session is not None:
+            await workspace_session.__aexit__(None, None, None)
     return tool_results
 
 async def _log_usage(
@@ -2038,14 +1675,8 @@ async def execute_chat(
         tool_error_summary=tool_error_summary,
     )
     _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
-    content = _guard_connected_system_denial(
-        str(state.result.get("content") or ""),
-        connected_accounts.connected_systems,
-        tool_error_summary,
-    )
-
     response = {
-        "content": content,
+        "content": str(state.result.get("content") or ""),
         "finish_reason": state.result.get("finish_reason", ""),
         "model_provider": state.used_provider.name,
         "model_name": state.used_model.display_name,

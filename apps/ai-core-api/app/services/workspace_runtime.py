@@ -28,7 +28,6 @@ except Exception:  # pragma: no cover - non-Unix fallback
 
 
 WorkspaceToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
-WorkspaceOdooExecutor = Callable[[str, str, list[Any], dict[str, Any]], Awaitable[dict[str, Any]]]
 
 WORKSPACE_TOOL_NAME = "workspace"
 WORKSPACE_BACKEND = "local-workspace"
@@ -49,10 +48,28 @@ SUPPORTED_LANGUAGES = PYTHON_LANGUAGES | SHELL_LANGUAGES
 INTERNAL_WORKSPACE_FILES = {
     "main.py",
     "main.sh",
-    "ai_platform_odoo.py",
+    "__ai_platform_runner.py",
     "ai_platform_tools.py",
     "ai-platform-tool",
+    ".ai_platform_final.json",
 }
+
+PYTHON_RUNNER = """
+from ai_platform_tools import PlatformToolError, call, call_checked, call_raw, final
+
+namespace = {
+    "__name__": "__main__",
+    "__file__": "main.py",
+    "PlatformToolError": PlatformToolError,
+    "call": call,
+    "call_checked": call_checked,
+    "call_raw": call_raw,
+    "final": final,
+}
+with open("main.py", "r", encoding="utf-8") as handle:
+    source = handle.read()
+exec(compile(source, "main.py", "exec"), namespace)
+"""
 
 
 def _truncate_text(value: str, limit: int = MAX_OUTPUT_CHARS) -> str:
@@ -172,6 +189,7 @@ class WorkspaceToolBroker:
         self.socket_path = str(socket_root / socket_name) if os.name == "posix" else ""
         self.calls = 0
         self.call_counts: dict[str, int] = {}
+        self.error_counts: dict[str, int] = {}
         self._server: asyncio.AbstractServer | None = None
 
     async def __aenter__(self) -> "WorkspaceToolBroker":
@@ -223,6 +241,7 @@ class WorkspaceToolBroker:
         self.call_counts[tool_name] = self.call_counts.get(tool_name, 0) + 1
         result = await self.executor(tool_name, arguments)
         if isinstance(result, dict) and (result.get("error") or result.get("status") == "failed"):
+            self.error_counts[tool_name] = self.error_counts.get(tool_name, 0) + 1
             return {
                 "ok": False,
                 "error": True,
@@ -242,6 +261,7 @@ _HOST = {broker.host!r}
 _PORT = {broker.port!r}
 _SOCKET_PATH = {broker.socket_path!r}
 _TOKEN = {broker.token!r}
+_FINAL_PATH = ".ai_platform_final.json"
 
 
 class PlatformToolError(RuntimeError):
@@ -274,122 +294,51 @@ def call_raw(tool_name, arguments=None):
     return json.loads(b"".join(chunks).decode("utf-8"))
 
 
-def call(tool_name, arguments=None):
-    """Call a platform tool/connector and return its tool result."""
+def tool_error(response):
+    """Return a compact error object from a failed broker response."""
+    return {{
+        "error": True,
+        "error_type": response.get("error_type") or "platform_tool_error",
+        "message": response.get("message") or "Platform tool call failed",
+        "result": response.get("result"),
+    }}
+
+
+def call(tool_name, arguments=None, raise_on_error=False):
+    """Call a platform tool/connector and return its result or an error object."""
     response = call_raw(tool_name, arguments)
     if response.get("error"):
+        if not raise_on_error:
+            return tool_error(response)
         raise PlatformToolError(response.get("message") or response.get("error_type") or "Platform tool call failed", response)
     return response.get("result")
+
+
+def call_checked(tool_name, arguments=None):
+    """Call a platform tool/connector and raise PlatformToolError on failure."""
+    return call(tool_name, arguments, raise_on_error=True)
+
+
+def final(answer):
+    """Mark the workspace result as the final answer for the chat turn."""
+    payload = {{"answer": answer}}
+    with open(_FINAL_PATH, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, default=str)
+    if isinstance(answer, str):
+        print("FINAL: " + answer)
+    else:
+        print("FINAL: " + json.dumps(answer, ensure_ascii=False, default=str))
+    return answer
+
+
 '''
     (workdir / "ai_platform_tools.py").write_text(textwrap.dedent(tools_helper).strip() + "\n", encoding="utf-8")
 
-    odoo_helper = '''
-from ai_platform_tools import PlatformToolError, call as _platform_call
-
-
-class OdooWorkspaceError(PlatformToolError):
-    pass
-
-
-def _unwrap_odoo_result(tool_result):
-    if isinstance(tool_result, dict) and tool_result.get("error"):
-        raise OdooWorkspaceError(tool_result.get("message") or tool_result.get("error_type") or "Odoo call failed", tool_result)
-    if isinstance(tool_result, dict) and "result" in tool_result:
-        return tool_result["result"]
-    return tool_result
-
-
-def _method_options(fields=None, limit=None, offset=None, order=None, **kwargs):
-    options = dict(kwargs)
-    if fields is not None:
-        options["fields"] = fields
-    if limit is not None:
-        options["limit"] = limit
-    if offset not in (None, 0):
-        options["offset"] = offset
-    if order:
-        options["order"] = order
-    return options
-
-
-def execute_kw(model, method, args=None, kwargs=None):
-    """Call an Odoo model method and return the raw Odoo result."""
-    tool_result = _platform_call("odoo", {
-        "model": model,
-        "method": method,
-        "args": args or [],
-        "kwargs": kwargs or {},
-    })
-    return _unwrap_odoo_result(tool_result)
-
-
-def call(model, method=None, *method_args, **method_kwargs):
-    """Natural Odoo helper.
-
-    Examples:
-        call("account.move", "search_read", domain=[...], fields=[...], limit=100)
-        call("res.partner", "write", [ids], {"name": "New name"})
-        call({"model": "account.move", "method": "search_count", "args": [[]]})
-    """
-    if isinstance(model, dict) and method is None:
-        return _unwrap_odoo_result(_platform_call("odoo", model))
-    if not method:
-        raise TypeError("Odoo call requires model and method.")
-
-    explicit_args = method_kwargs.pop("args", None)
-    explicit_kwargs = method_kwargs.pop("kwargs", None)
-    if explicit_args is not None and method_args:
-        raise TypeError("Pass Odoo positional arguments either positionally or with args=, not both.")
-    args = list(explicit_args) if explicit_args is not None else list(method_args)
-    kwargs = dict(explicit_kwargs or {})
-
-    domain = method_kwargs.pop("domain", None)
-    ids = method_kwargs.pop("ids", None)
-    fields = method_kwargs.pop("fields", None)
-    limit = method_kwargs.pop("limit", None)
-    offset = method_kwargs.pop("offset", None)
-    order = method_kwargs.pop("order", None)
-
-    if method in {"search", "search_read", "search_count", "read_group"} and domain is not None and not args:
-        args.append(domain)
-    if method == "read" and ids is not None and not args:
-        args.append(ids)
-
-    kwargs.update(_method_options(fields=fields, limit=limit, offset=offset, order=order, **method_kwargs))
-    return execute_kw(model, method, args, kwargs)
-
-
-def search(model, domain=None, limit=None, offset=0, order=None, **kwargs):
-    return execute_kw(model, "search", [domain or []], _method_options(limit=limit, offset=offset, order=order, **kwargs))
-
-
-def read(model, ids, fields=None, **kwargs):
-    return execute_kw(model, "read", [ids], _method_options(fields=fields, **kwargs))
-
-
-def search_read(model, domain=None, fields=None, limit=None, offset=0, order=None, **kwargs):
-    return execute_kw(model, "search_read", [domain or []], _method_options(fields=fields, limit=limit, offset=offset, order=order, **kwargs))
-
-
-def search_count(model, domain=None, **kwargs):
-    return execute_kw(model, "search_count", [domain or []], kwargs)
-
-
-def read_group(model, domain=None, fields=None, groupby=None, **kwargs):
-    return execute_kw(model, "read_group", [domain or [], fields or [], groupby or []], kwargs)
-
-
-def batch(calls, continue_on_error=False):
-    """Run ordered raw Odoo calls through one broker call."""
-    return _platform_call("odoo", {"calls": calls, "continue_on_error": continue_on_error})
-'''
-    (workdir / "ai_platform_odoo.py").write_text(textwrap.dedent(odoo_helper).strip() + "\n", encoding="utf-8")
-
-    cli = f'''#!{sys.executable}
+    cli = '''#!/usr/bin/env python3
 import json
 import sys
 
-from ai_platform_tools import PlatformToolError, call
+from ai_platform_tools import call_raw
 
 
 def _usage():
@@ -405,16 +354,19 @@ def main():
     raw = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
     raw = raw.strip()
     try:
-        arguments = json.loads(raw) if raw else {{}}
+        arguments = json.loads(raw) if raw else {}
     except Exception as exc:
-        print(f"Invalid JSON arguments: {{exc}}", file=sys.stderr)
+        print(f"Invalid JSON arguments: {exc}", file=sys.stderr)
         return 2
     try:
-        result = call(tool_name, arguments)
-    except PlatformToolError as exc:
-        print(json.dumps(exc.payload or {{"error": True, "message": str(exc)}}, ensure_ascii=False, default=str), file=sys.stderr)
+        response = call_raw(tool_name, arguments)
+    except Exception as exc:
+        print(json.dumps({"error": True, "message": str(exc), "error_type": type(exc).__name__}, ensure_ascii=False, default=str), file=sys.stderr)
         return 1
-    print(json.dumps(result, ensure_ascii=False, default=str))
+    if response.get("error"):
+        print(json.dumps(response, ensure_ascii=False, default=str), file=sys.stderr)
+        return 1
+    print(json.dumps(response.get("result"), ensure_ascii=False, default=str))
     return 0
 
 
@@ -481,13 +433,28 @@ def _collect_files(workdir: Path) -> list[dict[str, Any]]:
     return files
 
 
+def _read_final_answer(workdir: Path) -> Any:
+    path = workdir / ".ai_platform_final.json"
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, dict) and "answer" in payload:
+        return payload.get("answer")
+    return None
+
+
 async def _run_python(workdir: Path, code: str, timeout_seconds: int) -> tuple[int | None, str, str, bool]:
     script = workdir / "main.py"
+    runner = workdir / "__ai_platform_runner.py"
     script.write_text(code, encoding="utf-8")
+    runner.write_text(textwrap.dedent(PYTHON_RUNNER).strip() + "\n", encoding="utf-8")
     preexec_fn = (lambda: _limit_child_process(timeout_seconds)) if os.name == "posix" else None
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(script),
+        str(runner),
         cwd=str(workdir),
         env=_clean_env(workdir),
         stdout=asyncio.subprocess.PIPE,
@@ -541,69 +508,103 @@ def _normalize_language(value: Any) -> str:
     return language
 
 
-def _tool_executor_from_odoo(odoo_executor: WorkspaceOdooExecutor | None) -> WorkspaceToolExecutor | None:
-    if odoo_executor is None:
-        return None
-
-    async def execute(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if tool_name != "odoo":
-            return {
-                "status": "failed",
-                "error": True,
-                "error_type": "workspace_tool_not_available",
-                "message": f"{tool_name} is not available in this workspace.",
-            }
-        model = str(arguments.get("model") or "")
-        method = str(arguments.get("method") or "")
-        args = arguments.get("args") if isinstance(arguments.get("args"), list) else []
-        kwargs = arguments.get("kwargs") if isinstance(arguments.get("kwargs"), dict) else {}
-        return await odoo_executor(model, method, args, kwargs)
-
-    return execute
-
-
 async def run_workspace(
     arguments: dict[str, Any],
     *,
     tool_executor: WorkspaceToolExecutor | None = None,
-    odoo_executor: WorkspaceOdooExecutor | None = None,
 ) -> dict[str, Any]:
-    language = _normalize_language(arguments.get("language"))
-    if language not in SUPPORTED_LANGUAGES:
-        return {
-            "status": "failed",
-            "error": True,
-            "error_type": "unsupported_workspace_language",
-            "message": "Workspace supports language='python', 'shell', 'bash', 'sh', or 'terminal'.",
-        }
+    async with WorkspaceSession(tool_executor=tool_executor) as session:
+        return await session.run(arguments)
 
-    try:
-        code = _validate_code(arguments, language)
-        timeout_seconds = _validate_timeout(arguments.get("timeout"))
-    except ValueError as exc:
-        return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
 
-    workspace_id = uuid.uuid4().hex
-    workdir = _workspace_root() / workspace_id
-    workdir.mkdir(parents=True, exist_ok=False)
+class WorkspaceSession:
+    """Persistent workspace directory and broker for one chat tool loop."""
 
-    try:
-        input_files = _write_input_files(workdir, arguments.get("files"))
-        executor = tool_executor or _tool_executor_from_odoo(odoo_executor)
-        async with WorkspaceToolBroker(executor, workdir) as broker:
-            _write_tool_helpers(workdir, broker)
-            if language in PYTHON_LANGUAGES:
-                exit_code, stdout, stderr, timed_out = await _run_python(workdir, code, timeout_seconds)
-            else:
-                exit_code, stdout, stderr, timed_out = await _run_shell(workdir, code, timeout_seconds, language)
-            files = _collect_files(workdir)
-            status = "failed" if timed_out or exit_code not in (0, None) else "success"
-            if timed_out:
-                status = "failed"
+    def __init__(
+        self,
+        *,
+        tool_executor: WorkspaceToolExecutor | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
+        self.tool_executor = tool_executor
+        self.workspace_id = workspace_id or uuid.uuid4().hex
+        self.workdir = _workspace_root() / self.workspace_id
+        self._broker: WorkspaceToolBroker | None = None
+        self._entered = False
+        self._run_index = 0
+
+    async def __aenter__(self) -> "WorkspaceSession":
+        self.workdir.mkdir(parents=True, exist_ok=False)
+        broker = WorkspaceToolBroker(self.tool_executor, self.workdir)
+        self._broker = await broker.__aenter__()
+        _write_tool_helpers(self.workdir, self._broker)
+        self._entered = True
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        try:
+            if self._broker:
+                await self._broker.__aexit__(*exc)
+        finally:
+            self._entered = False
+            if os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
+                shutil.rmtree(self.workdir, ignore_errors=True)
+
+    async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not self._entered or self._broker is None:
             return {
+                "status": "failed",
+                "error": True,
+                "error_type": "workspace_session_not_started",
+                "message": "Workspace session has not been started.",
+            }
+
+        language = _normalize_language(arguments.get("language"))
+        if language not in SUPPORTED_LANGUAGES:
+            return {
+                "status": "failed",
+                "error": True,
+                "error_type": "unsupported_workspace_language",
+                "message": "Workspace supports language='python', 'shell', 'bash', 'sh', or 'terminal'.",
+            }
+
+        try:
+            code = _validate_code(arguments, language)
+            timeout_seconds = _validate_timeout(arguments.get("timeout"))
+        except ValueError as exc:
+            return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
+
+        self._run_index += 1
+        before_calls = self._broker.calls
+        before_call_counts = dict(self._broker.call_counts)
+        before_error_counts = dict(self._broker.error_counts)
+        final_path = self.workdir / ".ai_platform_final.json"
+        final_path.unlink(missing_ok=True)
+
+        try:
+            input_files = _write_input_files(self.workdir, arguments.get("files"))
+            if language in PYTHON_LANGUAGES:
+                exit_code, stdout, stderr, timed_out = await _run_python(self.workdir, code, timeout_seconds)
+            else:
+                exit_code, stdout, stderr, timed_out = await _run_shell(self.workdir, code, timeout_seconds, language)
+            files = _collect_files(self.workdir)
+            final_answer = _read_final_answer(self.workdir)
+            status = "failed" if timed_out or exit_code not in (0, None) else "success"
+            connector_calls = {
+                tool_name: count - before_call_counts.get(tool_name, 0)
+                for tool_name, count in self._broker.call_counts.items()
+                if count - before_call_counts.get(tool_name, 0) > 0
+            }
+            connector_error_calls = {
+                tool_name: count - before_error_counts.get(tool_name, 0)
+                for tool_name, count in self._broker.error_counts.items()
+                if count - before_error_counts.get(tool_name, 0) > 0
+            }
+            response = {
                 "status": status,
                 "backend": WORKSPACE_BACKEND,
-                "workspace_id": workspace_id,
+                "workspace_id": self.workspace_id,
+                "run_index": self._run_index,
                 "language": language,
                 "exit_code": exit_code,
                 "timed_out": timed_out,
@@ -612,16 +613,20 @@ async def run_workspace(
                 "stderr": _truncate_text(stderr),
                 "files": files,
                 "input_files": input_files,
-                "tool_calls": broker.calls,
-                "connector_calls": dict(broker.call_counts),
-                "odoo_calls": broker.call_counts.get("odoo", 0),
-                "helper_modules": ["ai_platform_tools", "ai_platform_odoo"],
+                "tool_calls": self._broker.calls - before_calls,
+                "connector_calls": connector_calls,
+                "connector_error_calls": connector_error_calls,
+                "odoo_calls": connector_calls.get("odoo", 0),
+                "workspace_tool_calls_total": self._broker.calls,
+                "connector_calls_total": dict(self._broker.call_counts),
+                "connector_error_calls_total": dict(self._broker.error_counts),
+                "helper_modules": ["ai_platform_tools"],
                 "helper_commands": ["ai-platform-tool"],
                 "error": bool(status == "failed"),
                 "message": "Workspace execution failed." if status == "failed" else "Workspace execution completed.",
             }
-    except ValueError as exc:
-        return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
-    finally:
-        if os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if final_answer is not None:
+                response["final_answer"] = final_answer
+            return response
+        except ValueError as exc:
+            return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}

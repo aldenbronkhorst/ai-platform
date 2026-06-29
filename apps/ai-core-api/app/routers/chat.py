@@ -515,61 +515,38 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _named_value(value: Any) -> str:
-    if isinstance(value, dict):
-        return str(value.get("name") or value.get("display_name") or value.get("id") or "")
-    if isinstance(value, list) and len(value) >= 2:
-        return str(value[1] or value[0] or "")
-    return str(value or "")
-
-
-def _compact_odoo_tool_fact(tool_result: dict[str, Any], line_budget: int) -> list[str]:
-    if line_budget <= 0 or tool_result.get("tool_name") != "odoo":
+def _compact_workspace_tool_fact(tool_result: dict[str, Any], line_budget: int) -> list[str]:
+    if line_budget <= 0 or tool_result.get("tool_name") != "workspace":
         return []
     result = tool_result.get("result")
-    if not isinstance(result, dict):
-        return []
-    model = str(result.get("model") or (tool_result.get("arguments") or {}).get("model") or "")
-    records = result.get("records") or result.get("result")
-    if not isinstance(records, list):
+    arguments = tool_result.get("arguments")
+    if not isinstance(result, dict) or not isinstance(arguments, dict):
         return []
 
-    lines: list[str] = []
-    for record in records:
-        if not isinstance(record, dict) or len(lines) >= line_budget:
-            break
-        if model == "account.move":
-            lines.append(
-                "account.move "
-                f"id={record.get('id')} name={record.get('name')} state={record.get('state')} "
-                f"payment_state={record.get('payment_state')} amount_total={record.get('amount_total')} "
-                f"amount_tax={record.get('amount_tax')}"
-            )
-        elif model == "account.partial.reconcile":
-            lines.append(
-                "account.partial.reconcile "
-                f"id={record.get('id')} amount={record.get('amount')} "
-                f"debit_move={_named_value(record.get('debit_move_id'))} "
-                f"credit_move={_named_value(record.get('credit_move_id'))}"
-            )
-        elif model == "account.move.line":
-            lines.append(
-                "account.move.line "
-                f"id={record.get('id')} move={_named_value(record.get('move_id'))} "
-                f"account={_named_value(record.get('account_id'))} name={record.get('name') or record.get('display_name')} "
-                f"debit={record.get('debit')} credit={record.get('credit')} reconciled={record.get('reconciled')} "
-                f"tax_ids={record.get('tax_ids')}"
-            )
-        elif model == "account.tax":
-            lines.append(
-                "account.tax "
-                f"id={record.get('id')} name={record.get('name')} description={record.get('description')} "
-                f"amount={record.get('amount')}"
-            )
-    return lines
+    purpose = str(arguments.get("purpose") or "").strip()
+    status = str(result.get("status") or "").strip() or "unknown"
+    connector_calls = result.get("connector_calls")
+    connector_text = ""
+    if isinstance(connector_calls, dict) and connector_calls:
+        connector_text = " connector_calls=" + ", ".join(
+            f"{key}:{value}" for key, value in sorted(connector_calls.items())
+        )
+    lines = [
+        f"workspace purpose={purpose or 'unspecified'} status={status}{connector_text}"
+    ]
+    if len(lines) >= line_budget:
+        return lines
+
+    stdout = result.get("stdout")
+    if isinstance(stdout, str) and stdout.strip():
+        compact_stdout = re.sub(r"\s+", " ", stdout.strip())
+        if len(compact_stdout) > 500:
+            compact_stdout = compact_stdout[:500].rstrip() + "..."
+        lines.append(f"workspace stdout={compact_stdout}")
+    return lines[:line_budget]
 
 
-def _recent_verified_odoo_facts(history_messages: list[AIChatMessage]) -> str:
+def _recent_verified_tool_facts(history_messages: list[AIChatMessage]) -> str:
     lines: list[str] = []
     for message in reversed(history_messages[-8:]):
         tool_calls = _json_value(message.tool_call_json)
@@ -579,7 +556,7 @@ def _recent_verified_odoo_facts(history_messages: list[AIChatMessage]) -> str:
             if not isinstance(tool_result, dict):
                 continue
             remaining = 30 - len(lines)
-            lines.extend(_compact_odoo_tool_fact(tool_result, remaining))
+            lines.extend(_compact_workspace_tool_fact(tool_result, remaining))
             if len(lines) >= 30:
                 break
         if len(lines) >= 30:
@@ -588,11 +565,12 @@ def _recent_verified_odoo_facts(history_messages: list[AIChatMessage]) -> str:
         return ""
     unique_lines = list(dict.fromkeys(reversed(lines)))
     return (
-        "Active chat context from recent verified Odoo tool results. If the user refers to the previous "
+        "Active chat context from recent verified tool results. If the user refers to the previous "
         "answer, those items, those invoices, that payment, or similar follow-up wording, resolve it "
         "against these facts and the immediately previous assistant reply. Reuse these exact ids, names, "
-        "payments, taxes, and reconciliation references when they match the user's current request; do not "
-        "rediscover the same facts with broad searches:\n"
+        "payments, taxes, reconciliation references, and workspace summaries when they match the user's current request. "
+        "If the user asks how the previous answer was produced, answer from these summaries and the previous assistant "
+        "reply; do not rediscover the same facts with broad searches:\n"
         + "\n".join(f"- {line}" for line in unique_lines[:30])
     )
 
@@ -609,9 +587,9 @@ async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: A
         for msg in history_messages
         if msg.id != user_msg.id and _is_valid_history_message(msg)
     ]
-    odoo_facts = _recent_verified_odoo_facts(history_messages)
-    if odoo_facts:
-        messages.append({"role": "system", "content": odoo_facts})
+    tool_facts = _recent_verified_tool_facts(history_messages)
+    if tool_facts:
+        messages.append({"role": "system", "content": tool_facts})
     messages.append({"role": "user", "content": content})
     return messages
 
@@ -746,7 +724,12 @@ async def _run_model_router(
 
 
 def _blank_tool_error_details(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    errors = [item for item in tool_calls if isinstance(item.get("result"), dict) and item["result"].get("error")]
+    errors = [
+        item
+        for item in tool_calls
+        if isinstance(item.get("result"), dict)
+        and item["result"].get("error")
+    ]
     return [
         {
             "tool_name": item.get("tool_name"),

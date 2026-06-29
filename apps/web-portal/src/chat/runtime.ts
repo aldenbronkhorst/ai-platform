@@ -2,6 +2,8 @@ import type { ChatMessage, ChatSession } from "../types";
 import { isAbortError } from "../hooks/useApi";
 
 export const CHAT_STREAM_INACTIVITY_TIMEOUT_MS = 120_000;
+export const CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS = 2_500;
+export const CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS = 180_000;
 
 const CHAT_SESSIONS_CACHE_PREFIX = "ai-platform.chatSessions.";
 const CONNECTOR_PROGRESS_HINTS = [

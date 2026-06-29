@@ -1,4 +1,4 @@
-"""Canonical model-facing tool registry for connected accounts."""
+"""Canonical tool registry for connected accounts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from typing import Mapping
 
 from app.services.tool_definitions import CANONICAL_TOOL_DEFINITIONS
 
+CANONICAL_TOOL_NAMES = frozenset(str(tool["name"]) for tool in CANONICAL_TOOL_DEFINITIONS)
 MICROSOFT_NATIVE_CONNECTOR_SYSTEMS = (
     "azure_cli",
     "microsoft_graph",
@@ -41,11 +42,12 @@ MICROSOFT_NATIVE_TOOL_NAMES = frozenset(
 def is_model_facing_tool(name: str, target_system: str) -> bool:
     """Return whether an AITool row should be exposed by default.
 
-    Connector tools are intentionally broad model-facing surfaces. Odoo uses one
-    API/RPC runner; Microsoft exposes its native admin interfaces separately.
-    Other connector-scoped AITool rows are internal/configuration debt and
-    should not be shown to the model, context endpoint, or default tools list.
+    Connectors are broker targets, not chat tools. The model gets the platform
+    workspace and other built-in tools; workspace code can call every connected
+    connector through the broker using the signed-in user's credentials.
     """
+    if name not in CANONICAL_TOOL_NAMES:
+        return False
     if target_system not in CONNECTOR_SYSTEMS:
         return True
-    return name in CONNECTOR_TOOLS_BY_SYSTEM[target_system]
+    return False

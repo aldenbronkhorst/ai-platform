@@ -8,6 +8,8 @@ import {
   chatFailureFromDetail,
   chatFailureFromNetwork,
   chatFailureFromResponse,
+  CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS,
+  CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS,
   CHAT_STREAM_INACTIVITY_TIMEOUT_MS,
   type ChatFailurePayload,
   mergeStreamMetadata,
@@ -58,6 +60,14 @@ function mergeChatMessages(persistedMessages: ChatMessage[], localMessages: Chat
 
 function removeRequestMessages(messages: ChatMessage[], requestId: string) {
   return messages.filter(message => messageRequestId(message) !== requestId);
+}
+
+function wait(ms: number) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function hasPersistedAssistantMessage(messages: ChatMessage[], requestId: string) {
+  return messages.some(message => message.role === "assistant" && messageRequestId(message) === requestId);
 }
 
 export function useChatController({ accessToken, activeUserEmail, onOpenChat }: UseChatControllerOptions) {
@@ -301,15 +311,16 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     return null;
   }, [accessToken, getHeaders, onOpenChat, upsertChatSession]);
 
-  const fetchSessionMessages = useCallback(async (sid: string, showLoading = true) => {
+  const fetchSessionMessages = useCallback(async (sid: string, showLoading = true): Promise<ChatMessage[] | null> => {
     if (showLoading) setIsMessagesLoading(true);
     try {
       const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
       if (res.ok) {
-        const data = await res.json() as ChatMessage[];
+        const data = (await res.json() as ChatMessage[]).map(normalizeChatMessage);
         if (activeSessionIdRef.current === sid) {
           setChatMessages(mergeChatMessages(data, localMessagesBySessionRef.current[sid] || []));
         }
+        return data;
       }
     } catch (err) {
       console.error("Failed to fetch messages:", err);
@@ -318,6 +329,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         setIsMessagesLoading(false);
       }
     }
+    return null;
   }, [getHeaders]);
 
   const deleteChatSession = useCallback(async (sid: string) => {
@@ -378,6 +390,19 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       ));
     }
   }, [updateLocalMessage]);
+
+  const waitForPersistedAssistantMessage = useCallback(async (sessionId: string, requestId: string) => {
+    const deadline = Date.now() + CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS;
+    while (Date.now() <= deadline) {
+      const messages = await fetchSessionMessages(sessionId, false);
+      if (messages && hasPersistedAssistantMessage(messages, requestId)) {
+        clearLocalRequestMessages(sessionId, requestId);
+        return true;
+      }
+      await wait(CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS);
+    }
+    return false;
+  }, [clearLocalRequestMessages, fetchSessionMessages]);
 
   const postChatMessage = useCallback(async (
     session: ChatSession,
@@ -466,6 +491,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         }
 
         if (streamFailure) {
+          if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
           markAssistantFailed(session.id, pendingMessageId, streamFailure);
         } else if (finalMessage) {
           clearLocalRequestMessages(session.id, requestId);
@@ -473,6 +499,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? finalMessage : m));
           }
         } else {
+          if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
           markAssistantFailed(session.id, pendingMessageId, {
             requestId,
             errorType: "stream_error",
@@ -484,6 +511,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         markAssistantFailed(session.id, pendingMessageId, await chatFailureFromResponse(res, requestId));
       }
     } catch (err: unknown) {
+      if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
       markAssistantFailed(session.id, pendingMessageId, chatFailureFromNetwork(err, requestId));
     } finally {
       clearStreamTimeout();
@@ -507,6 +535,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     refreshChatSession,
     unmarkSessionSending,
     updateLocalMessage,
+    waitForPersistedAssistantMessage,
   ]);
 
   const handleSendMessage = useCallback(async (e: FormEvent) => {

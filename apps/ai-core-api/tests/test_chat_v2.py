@@ -90,53 +90,45 @@ class TestArtifactDownloadSurface:
 
 
 class TestChatResponseGuards:
-    def test_recent_verified_odoo_facts_compacts_previous_tool_results(self):
-        from app.routers.chat import _recent_verified_odoo_facts
+    def test_recent_verified_tool_facts_compacts_previous_tool_results(self):
+        from app.routers.chat import _recent_verified_tool_facts
 
-        facts = _recent_verified_odoo_facts([
+        facts = _recent_verified_tool_facts([
             SimpleNamespace(
                 tool_call_json=[
                     {
                         "tool_name": "odoo",
                         "arguments": {"model": "account.move"},
-                        "result": {
-                            "model": "account.move",
-                            "records": [
-                                {
-                                    "id": 56137,
-                                    "name": "INV-2026-02128",
-                                    "state": "draft",
-                                    "payment_state": "not_paid",
-                                    "amount_total": 5206.75,
-                                    "amount_tax": 0.0,
-                                }
-                            ],
-                        },
+                        "result": {"model": "account.move", "result": [{"id": 56137, "name": "INV-2026-02128"}]},
                     },
                     {
                         "tool_name": "odoo",
                         "arguments": {"model": "account.partial.reconcile"},
+                        "result": {"model": "account.partial.reconcile", "result": [{"id": 47647, "amount": 5206.75}]},
+                    },
+                    {
+                        "tool_name": "workspace",
+                        "arguments": {
+                            "purpose": "Lookup an Odoo system total",
+                        },
                         "result": {
-                            "model": "account.partial.reconcile",
-                            "records": [
-                                {
-                                    "id": 47647,
-                                    "debit_move_id": {"id": 230003, "name": "INV-2026-02128 SO-2026-02259"},
-                                    "credit_move_id": {"id": 223707, "name": "BNK01-2026-02619 R026S0Z8Q0 ELAINE WALTERS"},
-                                    "amount": 5206.75,
-                                }
-                            ],
+                            "status": "success",
+                            "connector_calls": {"odoo": 1},
+                            "stdout": "system total: 42",
                         },
                     },
                 ]
             )
         ])
 
-        assert "Active chat context from recent verified Odoo tool results" in facts
+        assert "Active chat context from recent verified tool results" in facts
         assert "immediately previous assistant reply" in facts
-        assert "account.move id=56137 name=INV-2026-02128" in facts
-        assert "account.partial.reconcile id=47647 amount=5206.75" in facts
-        assert "BNK01-2026-02619" in facts
+        assert "how the previous answer was produced" in facts
+        assert "workspace purpose=Lookup an Odoo system total" in facts
+        assert "connector_calls=odoo:1" in facts
+        assert "system total: 42" in facts
+        assert "account.move id=56137" not in facts
+        assert "account.partial.reconcile id=47647" not in facts
         assert "records" not in facts
 
     def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):

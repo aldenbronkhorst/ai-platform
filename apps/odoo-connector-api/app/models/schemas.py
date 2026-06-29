@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
@@ -9,10 +9,6 @@ class OdooCredentialsRequest(BaseModel):
     db: str = Field(..., description="Odoo database name")
     username: str = Field(..., description="Odoo username")
     api_key: str = Field(..., description="Odoo API key or password")
-    transport: Literal["auto", "jsonrpc", "xmlrpc"] = Field(
-        default="auto",
-        description="Transport: auto, jsonrpc, xmlrpc. Auto uses Odoo JSON-RPC.",
-    )
 
     @field_validator("url")
     @classmethod

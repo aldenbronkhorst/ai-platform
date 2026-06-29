@@ -1,10 +1,9 @@
 import logging
 import re
-import xmlrpc.client
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
-from app.core.odoo_client import OdooError, OdooAuthError, compact_odoo_rpc_error
+from app.core.odoo_client import OdooError, OdooAuthError
 from app.core.middleware import CorrelationIdMiddleware
 from app.routers import health
 from app.routers import orm_runner as orm_runner_router
@@ -96,9 +95,7 @@ async def odoo_error_handler(request: Request, exc: OdooError):
     else:
         message = raw_message
         error_type = "odoo_error"
-        if message.startswith("Both Odoo API transports failed"):
-            message = "Odoo returned an internal error while processing the request."
-        elif "Traceback" in message:
+        if "Traceback" in message:
             prefix = message.split("Traceback", 1)[0].strip(" ;:\n")
             message = (
                 prefix
@@ -111,33 +108,6 @@ async def odoo_error_handler(request: Request, exc: OdooError):
                 + f"... [truncated {len(raw_message) - MAX_CONNECTOR_ERROR_CHARS} chars]"
             )
         error_type = _classify_odoo_error_message(message, error_type)
-    return JSONResponse(
-        status_code=400,
-        content={
-            "error": error_type,
-            "error_type": error_type,
-            "message": message,
-            "correlation_id": getattr(request.state, "correlation_id", None),
-        },
-    )
-
-
-@app.exception_handler(xmlrpc.client.ProtocolError)
-async def xmlrpc_protocol_error_handler(request: Request, exc: xmlrpc.client.ProtocolError):
-    return JSONResponse(
-        status_code=502,
-        content={
-            "error": "odoo_transport_error",
-            "message": f"XML-RPC protocol error: {exc.errcode} {exc.errmsg}",
-            "correlation_id": getattr(request.state, "correlation_id", None),
-        },
-    )
-
-
-@app.exception_handler(xmlrpc.client.Fault)
-async def xmlrpc_fault_error_handler(request: Request, exc: xmlrpc.client.Fault):
-    message = compact_odoo_rpc_error(exc.faultString)
-    error_type = _classify_odoo_error_message(message, "odoo_rpc_fault")
     return JSONResponse(
         status_code=400,
         content={
