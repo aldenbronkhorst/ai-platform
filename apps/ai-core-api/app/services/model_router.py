@@ -31,14 +31,14 @@ logger = logging.getLogger(__name__)
 
 ROUTE_NOT_CONFIGURED_MESSAGE = "AI chat is not configured yet. Please ask an administrator to configure AI Providers."
 MAX_TOOL_RESULT_STRING_CHARS = 600
-MAX_TOOL_STDIO_STRING_CHARS = 8000
+MAX_TOOL_STDIO_STRING_CHARS = 20000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_RECORD_ITEMS = 120
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 350000
 TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "3000"))
 TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
-MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "8"))
+MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "20"))
 TOOL_ERROR_SUMMARY_LIMIT = 8
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
@@ -120,8 +120,6 @@ DEFAULT_PLATFORM_TIMEZONE = os.environ.get("PLATFORM_TIMEZONE", "Africa/Johannes
 class InjectedContext:
     system_prompt: str
     memories: list[Any] = field(default_factory=list)
-    currency_source: str = "none"
-    currency_text: str | None = None
 
 
 @dataclass
@@ -871,20 +869,16 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace Guidance\n"
             "Workspace is the platform cloud-computer surface. It runs Python or shell code in a temporary directory. "
-            "Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, and `call_checked(tool_name, arguments)` available "
-            "by default; they can also be imported from `ai_platform_tools`. Shell scripts can call "
+            "Python has `call(tool_name, arguments)` available by default. Shell scripts can call "
             "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
             "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
-            "`github_cli`; connected account permissions decide what succeeds. Odoo broker calls use raw "
-            "`model`, `method`, `args`, and `kwargs`, or `calls` for ordered raw calls. "
-            "`call(...)` returns connector errors as data with `error: true`; inspect those errors and continue "
-            "inside the same script when discovering the right API shape. Use `call_checked(...)` only when a "
-            "connector error should stop the script. For connected-system work, run one compact end-to-end script "
+            "`github_cli`; connected account permissions decide what succeeds. "
+            "`call(...)` returns connector errors as data with `error: true`; inspect those errors in the same "
+            "script when discovering the right API shape. For connected-system work, run one compact end-to-end script "
             "where practical instead of one workspace call per discovery step and print concise facts for the next "
-            "model step to answer from. Prefer set-based and batch calls over per-record connector loops. "
-            "When the user asks for a report, dashboard, or other system-calculated value, query the source "
-            "system object/API for that value instead of rebuilding it from lower-level records unless the source "
-            "is unavailable. Do not present business-system behavior as verified unless the script actually checked it."
+            "model step to answer from. Prefer source-system results and bulk queries over manually rebuilding data "
+            "or calling connectors inside per-record loops. Do not present business-system behavior as verified "
+            "unless the script actually checked it."
         )
     if "document_reader" in available_names:
         guidance_parts.append(
@@ -932,34 +926,6 @@ async def _select_tools_for_model(
     return tools, tool_definitions, _append_tool_guidance(system_prompt, tools, tool_definitions)
 
 
-async def _odoo_currency_context(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    snapshot: Optional[ConnectedAccountsSnapshot] = None,
-) -> tuple[str, str, str | None]:
-    if not user_id:
-        return "", "none", None
-    if snapshot is None:
-        acct_result = await db.execute(
-            select(AIConnectedAccount).where(
-                AIConnectedAccount.user_id == user_id,
-                AIConnectedAccount.provider == "odoo",
-                or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-            )
-        )
-        account = acct_result.scalars().first()
-    else:
-        account = snapshot.first_connected("odoo")
-    if not account or not account.odoo_currency_code:
-        return "", "none", None
-
-    code = account.odoo_currency_code
-    symbol = account.odoo_currency_symbol or code
-    company = account.odoo_company_name or "your company"
-    currency_text = f"{company} uses {code} ({symbol})"
-    return f"## Connected Odoo Currency\n{currency_text}", "odoo_connected_account", currency_text
-
-
 async def _memory_context(db: AsyncSession, user_id: Optional[UUID]) -> tuple[str, list[Any]]:
     if not user_id:
         return "", []
@@ -1000,22 +966,15 @@ async def _inject_context_sections(
     injected = InjectedContext(system_prompt=system_prompt)
 
     try:
-        section, injected.currency_source, injected.currency_text = await _odoo_currency_context(db, user_id, snapshot)
-        injected.system_prompt = _append_context_section(injected.system_prompt, section)
-    except Exception as exc:
-        logger.warning("Failed to inject Odoo currency context: %s", exc)
-
-    try:
         section, injected.memories = await _memory_context(db, user_id)
         injected.system_prompt = _append_context_section(injected.system_prompt, section)
     except Exception as exc:
         logger.warning("Failed to inject memories: %s", exc)
 
     logger.info(
-        "Context injected | memories=%d user_id=%s currency=%s",
+        "Context injected | memories=%d user_id=%s",
         len(injected.memories),
         user_id,
-        injected.currency_text or "none",
     )
     return injected
 
@@ -1450,7 +1409,6 @@ def _raise_if_provider_failed(
 def _context_metadata(injected: InjectedContext, state: ModelCallState, policy: dict[str, Any]) -> dict[str, Any]:
     return {
         "memories_injected": [{"id": str(memory.id), "title": memory.title, "type": memory.type} for memory in injected.memories],
-        "currency_source": injected.currency_source,
         "current_date": _platform_now().date().isoformat(),
         "model": {
             "route": "general_chat",

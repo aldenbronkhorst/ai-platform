@@ -817,7 +817,6 @@ class TestToolDefinitions:
         assert "`ms_graph`" in system_prompt
         assert "`github_cli`" in system_prompt
         assert "connected account permissions decide what succeeds" in system_prompt
-        assert "report, dashboard, or other system-calculated value" in system_prompt
         assert "one workspace call per discovery step" in system_prompt
         assert "router infers mode" not in system_prompt
 
@@ -836,12 +835,11 @@ class TestToolDefinitions:
 
         system_prompt = _append_tool_guidance("Base prompt.", tools, _build_tool_definitions(tools))
 
-        assert "Prefer set-based and batch calls" in system_prompt
+        assert "Prefer source-system results and bulk queries" in system_prompt
         assert "available by default" in system_prompt
-        assert "imported from `ai_platform_tools`" in system_prompt
         assert "returns connector errors as data" in system_prompt
         assert "Broker targets include" in system_prompt
-        assert "query the source system object/API" in system_prompt
+        assert "calling connectors inside per-record loops" in system_prompt
         assert "prefer the direct `odoo` tool" not in system_prompt
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
@@ -1489,7 +1487,7 @@ class TestToolExecution:
     def test_tool_result_compaction_marks_huge_stdout_incomplete(self):
         from app.services.model_router import _compact_tool_result_for_model
 
-        huge_stdout = "resource-name\n" * 1000
+        huge_stdout = "resource-name\n" * 2000
         compacted = _compact_tool_result_for_model({
             "stdout": huge_stdout,
             "stderr": "",
