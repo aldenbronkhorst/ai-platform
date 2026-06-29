@@ -1066,73 +1066,7 @@ class TestToolExecution:
 
         assert not hasattr(model_router, "detect_odoo_report_intent")
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
-
-    @pytest.mark.asyncio
-    async def test_odoo_missing_raw_call_shape_is_handled_before_connector(self):
-        from app.services.model_router import _execute_tool_call_impl
-
-        db = MockSession(has_config=True)
-        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
-
-        with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=mock_credentials,
-        ):
-            result = await _execute_tool_call_impl(db, uuid.uuid4(), "odoo", {})
-
-        assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert result["missing"] == ["model", "method"]
-        mock_credentials.assert_not_awaited()
-
-    def test_odoo_non_raw_keys_are_rejected_not_stripped(self):
-        from app.services.model_router import _validate_odoo_arguments
-
-        result = _validate_odoo_arguments({
-            "mode": "orm",
-            "model": "account.move",
-            "method": "search_read",
-            "domain": [["name", "=", "INV/001"]],
-            "fields": ["id", "name"],
-            "limit": 1,
-            "extra_payload": {"domain": []},
-        })
-
-        assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert "unsupported keys" in result["message"]
-        assert result["missing"] == ["args", "kwargs"]
-
-    def test_odoo_validation_accepts_raw_model_method(self):
-        from app.services.model_router import _validate_odoo_arguments
-
-        result = _validate_odoo_arguments({
-            "model": "account.move",
-            "method": "search_read",
-            "args": [[["name", "=", "INV/001"]]],
-            "kwargs": {"fields": ["id", "name"], "limit": 1},
-        })
-
-        assert result is None
-
-    def test_odoo_validation_accepts_raw_calls(self):
-        from app.services.model_router import _validate_odoo_arguments
-
-        result = _validate_odoo_arguments({
-            "calls": [
-                {
-                    "model": "account.move",
-                    "method": "search_read",
-                    "args": [[["name", "=", "INV/001"]]],
-                }
-            ],
-        })
-
-        assert result is None
+        assert not hasattr(model_router, "_validate_odoo_arguments")
 
     @pytest.mark.asyncio
     async def test_odoo_raw_orm_posts_to_raw_endpoint(self):
@@ -1180,6 +1114,7 @@ class TestToolExecution:
                 uuid.uuid4(),
                 "odoo",
                 {
+                    "mode": "raw_marker",
                     "model": "account.move",
                     "method": "search_read",
                     "args": [[["name", "=", "INV/001"]]],
@@ -1188,65 +1123,9 @@ class TestToolExecution:
             )
 
         assert posted["url"] == "http://mock-connector:8000/odoo/orm/run"
-        assert "mode" not in posted["payload"]
+        assert posted["payload"]["mode"] == "raw_marker"
         assert posted["payload"]["model"] == "account.move"
         assert result == []
-
-    @pytest.mark.asyncio
-    async def test_odoo_legacy_feature_shape_without_method_is_rejected_before_connector(self):
-        from app.services.model_router import _execute_tool_call_impl
-
-        db = MockSession(has_config=True)
-        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
-
-        with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=mock_credentials,
-        ):
-            result = await _execute_tool_call_impl(
-                db,
-                uuid.uuid4(),
-                "odoo",
-                {"mode": "attachment", "model": "account.move", "ids": [57508]},
-            )
-
-        assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert "unsupported keys" in result["message"]
-        mock_credentials.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_odoo_legacy_extra_keys_never_reach_connector(self):
-        from app.services.model_router import _execute_tool_call_impl
-
-        mock_credentials = AsyncMock(side_effect=AssertionError("credentials should not be resolved"))
-
-        with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
-            new=mock_credentials,
-        ):
-            result = await _execute_tool_call_impl(
-                MockSession(has_config=True),
-                uuid.uuid4(),
-                "odoo",
-                {
-                    "mode": "execute",
-                    "model": "mail.activity",
-                    "method": "action_feedback",
-                    "ids": [2180],
-                    "operation": "legacy_action",
-                    "kwargs": {"feedback": "Receipt corrected"},
-                },
-            )
-
-        assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert "unsupported keys" in result["message"]
-        mock_credentials.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
@@ -1295,7 +1174,7 @@ class TestToolExecution:
         assert result["extraction_source"] == "native_pdf"
 
     @pytest.mark.asyncio
-    async def test_odoo_schema_mode_is_rejected_for_trace(self):
+    async def test_odoo_connector_error_is_recorded_for_trace(self):
         from app.services.model_router import _execute_tool_call
 
         class FakeResponse:
@@ -1336,7 +1215,7 @@ class TestToolExecution:
                 self.ended = {"span_id": span_id, **kwargs}
 
             def span_error(self, *args, **kwargs):
-                raise AssertionError("handled schema errors should not call span_error")
+                raise AssertionError("connector HTTP errors should finish the span, not raise")
 
         db = MockSession(has_config=True)
         trace = TraceRecorder()
@@ -1363,15 +1242,15 @@ class TestToolExecution:
             )
 
         assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert "unsupported keys: mode" in result["message"]
-        assert trace.ended["status"] == "warning"
-        assert trace.ended["error_type"] == "invalid_tool_arguments"
+        assert result["status_code"] == 400
+        assert result["error_type"] == "odoo_error"
+        assert result["message"] == "Odoo returned an internal error while processing the request."
+        assert result["connector_error"]["correlation_id"] == "corr-123"
+        assert trace.ended["status"] == "failed"
+        assert trace.ended["error_type"] == "odoo_error"
 
     @pytest.mark.asyncio
-    async def test_odoo_mutation_mode_is_rejected_for_trace(self):
+    async def test_odoo_connector_mutation_error_is_recorded_for_trace(self):
         from app.services.model_router import _execute_tool_call
 
         blocked_message = (
@@ -1443,18 +1322,14 @@ class TestToolExecution:
             )
 
         assert result["error"] is True
-        assert result["handled"] is True
-        assert result["status"] == "skipped"
-        assert result["error_type"] == "invalid_tool_arguments"
-        assert "unsupported keys" in result["message"]
-        assert "ids" in result["message"]
-        assert "mode" in result["message"]
-        assert "operation" in result["message"]
-        assert result["missing"] == ["args", "kwargs"]
-        assert trace.ended["status"] == "warning"
-        assert trace.ended["error_type"] == "invalid_tool_arguments"
+        assert result["status_code"] == 400
+        assert result["error_type"] == "odoo_delete_blocked_active_pos_session"
+        assert result["message"] == blocked_message
+        assert result["connector_error"]["correlation_id"] == "corr-pos"
+        assert trace.ended["status"] == "failed"
+        assert trace.ended["error_type"] == "odoo_delete_blocked_active_pos_session"
 
-    def test_tool_result_error_summary_captures_handled_odoo_issue(self):
+    def test_tool_result_error_summary_captures_odoo_connector_issue(self):
         from app.services.model_router import _tool_result_error_summary
 
         summary = _tool_result_error_summary([
@@ -1467,8 +1342,7 @@ class TestToolExecution:
                 },
                 "result": {
                     "error": True,
-                    "handled": True,
-                    "status": "skipped",
+                    "status": "failed",
                     "error_type": "model_unavailable",
                     "message": "Odoo model 'auditlog.log' is not installed.",
                 },
@@ -1479,8 +1353,7 @@ class TestToolExecution:
             {
                 "index": 1,
                 "tool_name": "odoo",
-                "status": "skipped",
-                "handled": True,
+                "status": "failed",
                 "error_type": "model_unavailable",
                 "message": "Odoo model 'auditlog.log' is not installed.",
                 "arguments": {"model": "auditlog.log"},
@@ -1833,8 +1706,8 @@ class TestToolExecution:
         assert client.chat_completion.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_execute_chat_stops_at_tool_loop_limit_without_forced_final_fallback(self):
-        """The loop limit should stop honestly instead of running a hidden final-answer retry."""
+    async def test_execute_chat_answers_without_tools_at_tool_loop_limit(self):
+        """The loop limit should answer from gathered results instead of returning a platform stop message."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -1931,10 +1804,11 @@ class TestToolExecution:
         ):
             result = await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
 
-        assert "tool calls after the allowed tool steps" in result["content"]
-        assert result["finish_reason"] == "tool_loop_limit"
+        assert result["content"] == "I found INV-2026-02128 from the gathered Odoo result. I did not run the extra lookup."
+        assert result["finish_reason"] == "stop"
         assert result["tool_calls"] is not None
-        assert client.chat_completion.call_count == 2
+        assert client.chat_completion.call_count == 3
+        assert client.chat_completion.call_args_list[-1].kwargs["tools"] is None
         execute_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
