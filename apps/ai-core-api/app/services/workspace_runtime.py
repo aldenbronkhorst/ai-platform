@@ -51,11 +51,10 @@ INTERNAL_WORKSPACE_FILES = {
     "__ai_platform_runner.py",
     "ai_platform_tools.py",
     "ai-platform-tool",
-    ".ai_platform_final.json",
 }
 
 PYTHON_RUNNER = """
-from ai_platform_tools import PlatformToolError, call, call_checked, call_raw, final
+from ai_platform_tools import PlatformToolError, call, call_checked, call_raw
 
 namespace = {
     "__name__": "__main__",
@@ -64,7 +63,6 @@ namespace = {
     "call": call,
     "call_checked": call_checked,
     "call_raw": call_raw,
-    "final": final,
 }
 with open("main.py", "r", encoding="utf-8") as handle:
     source = handle.read()
@@ -261,7 +259,6 @@ _HOST = {broker.host!r}
 _PORT = {broker.port!r}
 _SOCKET_PATH = {broker.socket_path!r}
 _TOKEN = {broker.token!r}
-_FINAL_PATH = ".ai_platform_final.json"
 
 
 class PlatformToolError(RuntimeError):
@@ -317,19 +314,6 @@ def call(tool_name, arguments=None, raise_on_error=False):
 def call_checked(tool_name, arguments=None):
     """Call a platform tool/connector and raise PlatformToolError on failure."""
     return call(tool_name, arguments, raise_on_error=True)
-
-
-def final(answer):
-    """Mark the workspace result as the final answer for the chat turn."""
-    payload = {{"answer": answer}}
-    with open(_FINAL_PATH, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, default=str)
-    if isinstance(answer, str):
-        print("FINAL: " + answer)
-    else:
-        print("FINAL: " + json.dumps(answer, ensure_ascii=False, default=str))
-    return answer
-
 
 '''
     (workdir / "ai_platform_tools.py").write_text(textwrap.dedent(tools_helper).strip() + "\n", encoding="utf-8")
@@ -431,19 +415,6 @@ def _collect_files(workdir: Path) -> list[dict[str, Any]]:
             item["message"] = "File is too large to include in the workspace result."
         files.append(item)
     return files
-
-
-def _read_final_answer(workdir: Path) -> Any:
-    path = workdir / ".ai_platform_final.json"
-    if not path.exists() or not path.is_file():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if isinstance(payload, dict) and "answer" in payload:
-        return payload.get("answer")
-    return None
 
 
 async def _run_python(workdir: Path, code: str, timeout_seconds: int) -> tuple[int | None, str, str, bool]:
@@ -578,8 +549,6 @@ class WorkspaceSession:
         before_calls = self._broker.calls
         before_call_counts = dict(self._broker.call_counts)
         before_error_counts = dict(self._broker.error_counts)
-        final_path = self.workdir / ".ai_platform_final.json"
-        final_path.unlink(missing_ok=True)
 
         try:
             input_files = _write_input_files(self.workdir, arguments.get("files"))
@@ -588,7 +557,6 @@ class WorkspaceSession:
             else:
                 exit_code, stdout, stderr, timed_out = await _run_shell(self.workdir, code, timeout_seconds, language)
             files = _collect_files(self.workdir)
-            final_answer = _read_final_answer(self.workdir)
             status = "failed" if timed_out or exit_code not in (0, None) else "success"
             connector_calls = {
                 tool_name: count - before_call_counts.get(tool_name, 0)
@@ -625,8 +593,6 @@ class WorkspaceSession:
                 "error": bool(status == "failed"),
                 "message": "Workspace execution failed." if status == "failed" else "Workspace execution completed.",
             }
-            if final_answer is not None:
-                response["final_answer"] = final_answer
             return response
         except ValueError as exc:
             return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
