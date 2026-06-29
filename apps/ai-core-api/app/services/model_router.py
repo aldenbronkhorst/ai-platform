@@ -64,6 +64,14 @@ TOOL_LOOP_CONTINUE_LENGTH_MESSAGE = {
         "Do not call tools. Do not include reasoning or analysis."
     ),
 }
+TOOL_LOOP_LIMIT_ANSWER_MESSAGE = {
+    "role": "system",
+    "content": (
+        "The tool step limit has been reached. Do not call more tools. "
+        "Answer the user from the successful tool results already present. "
+        "If the gathered results are insufficient, say exactly what is missing without guessing."
+    ),
+}
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -312,93 +320,6 @@ def _connector_error_payload(raw_detail: Any, default_message: str = "") -> dict
     return safe
 
 
-def _handled_tool_argument_error(message: str, missing: list[str] | None = None, suggestion: str | None = None) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "error": True,
-        "handled": True,
-        "status": "skipped",
-        "error_type": "invalid_tool_arguments",
-        "message": message,
-    }
-    if missing:
-        result["missing"] = missing
-    if suggestion:
-        result["suggestion"] = suggestion
-    return result
-
-
-ODOO_RAW_TOOL_KEYS = {"model", "method", "args", "kwargs", "calls", "continue_on_error"}
-ODOO_RAW_CALL_KEYS = {"name", "model", "method", "args", "kwargs"}
-
-
-def _raw_odoo_shape_suggestion() -> str:
-    return (
-        "Use raw Odoo RPC shape: "
-        '{"model": "res.partner", "method": "search_read", '
-        '"args": [[[...domain...]]], "kwargs": {"fields": ["id", "name"], "limit": 5}}.'
-    )
-
-
-def _validate_odoo_raw_call(call: Any, index: int | None = None) -> dict[str, Any] | None:
-    if not isinstance(call, dict):
-        return _handled_tool_argument_error(
-            "Each Odoo call must be an object with model, method, args, and kwargs.",
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    unexpected = sorted(key for key in call.keys() if key not in ODOO_RAW_CALL_KEYS)
-    if unexpected:
-        where = f" in calls[{index}]" if index is not None else ""
-        return _handled_tool_argument_error(
-            f"Odoo raw RPC call{where} has unsupported keys: {', '.join(unexpected)}.",
-            missing=["args", "kwargs"] if any(key in unexpected for key in ("domain", "fields", "limit", "order", "ids", "values")) else None,
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    missing = [key for key in ("model", "method") if not call.get(key)]
-    if missing:
-        return _handled_tool_argument_error(
-            "Odoo raw RPC calls require model and method.",
-            missing=missing,
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    if "args" in call and call.get("args") is not None and not isinstance(call.get("args"), list):
-        return _handled_tool_argument_error(
-            "Odoo raw RPC args must be an array.",
-            missing=["args"],
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    if "kwargs" in call and call.get("kwargs") is not None and not isinstance(call.get("kwargs"), dict):
-        return _handled_tool_argument_error(
-            "Odoo raw RPC kwargs must be an object.",
-            missing=["kwargs"],
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    return None
-
-
-def _validate_odoo_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
-    unexpected = sorted(key for key in arguments.keys() if key not in ODOO_RAW_TOOL_KEYS)
-    if unexpected:
-        return _handled_tool_argument_error(
-            f"Odoo raw RPC call has unsupported keys: {', '.join(unexpected)}.",
-            missing=["args", "kwargs"] if any(key in unexpected for key in ("domain", "fields", "limit", "order", "ids", "values")) else None,
-            suggestion=_raw_odoo_shape_suggestion(),
-        )
-    if "calls" in arguments:
-        calls = arguments.get("calls")
-        if isinstance(calls, list):
-            for index, call in enumerate(calls):
-                validation_error = _validate_odoo_raw_call(call, index=index)
-                if validation_error:
-                    return validation_error
-            return None
-        return _handled_tool_argument_error(
-            "The Odoo raw call list must be an array.",
-            missing=["calls"],
-            suggestion="Retry with calls=[{model, method, args, kwargs}].",
-        )
-    return _validate_odoo_raw_call(arguments)
-
-
 async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
     """Resolve Odoo credentials for a given user (internal tool-execution path)."""
     result = await db.execute(
@@ -554,9 +475,6 @@ async def _execute_tool_call_impl(
         return await _execute_document_reader_tool(db, user_id, arguments)
 
     if tool_name == "odoo":
-        validation_error = _validate_odoo_arguments(arguments)
-        if validation_error:
-            return validation_error
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         payload = {
             "credentials": credentials,
@@ -649,10 +567,9 @@ async def _execute_tool_call(
 
     if trace_svc and span_id:
         has_result_error = isinstance(result, dict) and bool(result.get("error") or result.get("status") == "failed")
-        handled = isinstance(result, dict) and bool(result.get("handled"))
         span_status = "success"
         if has_result_error:
-            span_status = "warning" if handled else "failed"
+            span_status = "failed"
         error_type = result.get("error_type") if isinstance(result, dict) else None
         error_message = (result.get("message") or result.get("error")) if isinstance(result, dict) else None
         trace_svc.end_span(
@@ -815,8 +732,7 @@ def _tool_result_error_summary(tool_results: list[dict[str, Any]]) -> list[dict[
 
         result_status = str(result.get("status") or "").strip().lower()
         has_error = bool(result.get("error") or result_status == "failed")
-        is_skipped = result_status == "skipped"
-        if not has_error and not is_skipped:
+        if not has_error:
             continue
 
         arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
@@ -825,7 +741,6 @@ def _tool_result_error_summary(tool_results: list[dict[str, Any]]) -> list[dict[
             "index": index,
             "tool_name": tool_result.get("tool_name"),
             "status": result_status or ("failed" if has_error else "unknown"),
-            "handled": bool(result.get("handled")),
             "error_type": str(result.get("error_type") or "tool_error"),
             "message": _truncate_tool_text(message, 500),
             "arguments": _safe_tool_error_arguments(arguments),
@@ -1411,20 +1326,27 @@ async def _run_tool_loop(
             )
         else:
             if state.result.get("tool_calls"):
-                state.result = {
-                    "error": False,
-                    "content": (
-                        "The operation stopped because the model requested more tool calls after the allowed tool steps. "
-                        "No further tools were run, so I did not guess or continue with an incomplete action."
-                    ),
-                    "finish_reason": "tool_loop_limit",
-                    "tool_calls": None,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "latency_ms": 0,
-                    "model": state.result.get("model"),
-                }
+                limit_messages = messages + [TOOL_LOOP_LIMIT_ANSWER_MESSAGE]
+                result, client = await _call_model(
+                    state.used_model,
+                    state.used_provider,
+                    limit_messages,
+                    temperature,
+                    max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
+                    [],
+                    trace_svc=trace_svc,
+                    attempt_reason="tool_loop_limit_answer",
+                )
+                state.result = result
+                state.client = client
+                state.stats.add_result(state.result)
+                await _complete_length_limited_tool_answer(
+                    state,
+                    limit_messages,
+                    temperature,
+                    max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
+                    trace_svc=trace_svc,
+                )
     finally:
         if workspace_session is not None:
             await workspace_session.__aexit__(None, None, None)

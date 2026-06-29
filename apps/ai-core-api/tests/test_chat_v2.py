@@ -136,8 +136,7 @@ class TestChatResponseGuards:
 
         summary = [{
             "tool_name": "odoo",
-            "status": "skipped",
-            "handled": True,
+            "status": "failed",
             "error_type": "model_unavailable",
             "message": "Odoo model 'auditlog.log' is not installed.",
         }]
