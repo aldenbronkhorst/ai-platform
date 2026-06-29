@@ -27,6 +27,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
+RECENT_WORKSPACE_STDOUT_CHARS = 4000
 
 
 def _utcnow() -> datetime:
@@ -538,10 +539,12 @@ def _compact_workspace_tool_fact(tool_result: dict[str, Any], line_budget: int) 
         return lines
 
     stdout = result.get("stdout")
+    if isinstance(stdout, dict):
+        stdout = stdout.get("preview")
     if isinstance(stdout, str) and stdout.strip():
-        compact_stdout = re.sub(r"\s+", " ", stdout.strip())
-        if len(compact_stdout) > 500:
-            compact_stdout = compact_stdout[:500].rstrip() + "..."
+        compact_stdout = stdout.strip()
+        if len(compact_stdout) > RECENT_WORKSPACE_STDOUT_CHARS:
+            compact_stdout = compact_stdout[:RECENT_WORKSPACE_STDOUT_CHARS].rstrip() + "..."
         lines.append(f"workspace stdout={compact_stdout}")
     return lines[:line_budget]
 
@@ -565,12 +568,9 @@ def _recent_verified_tool_facts(history_messages: list[AIChatMessage]) -> str:
         return ""
     unique_lines = list(dict.fromkeys(reversed(lines)))
     return (
-        "Active chat context from recent verified tool results. If the user refers to the previous "
-        "answer, those items, those invoices, that payment, or similar follow-up wording, resolve it "
-        "against these facts and the immediately previous assistant reply. Reuse these exact ids, names, "
-        "payments, taxes, reconciliation references, and workspace summaries when they match the user's current request. "
-        "If the user asks how the previous answer was produced, answer from these summaries and the previous assistant "
-        "reply; do not rediscover the same facts with broad searches:\n"
+        "Recent verified tool results from this chat. If the user asks a follow-up about the previous answer "
+        "or how it was produced, answer from these facts and the immediately previous assistant reply when they "
+        "are sufficient; do not rediscover the same facts with broad searches:\n"
         + "\n".join(f"- {line}" for line in unique_lines[:30])
     )
 

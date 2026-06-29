@@ -121,9 +121,9 @@ class TestChatResponseGuards:
             )
         ])
 
-        assert "Active chat context from recent verified tool results" in facts
+        assert "Recent verified tool results from this chat" in facts
         assert "immediately previous assistant reply" in facts
-        assert "how the previous answer was produced" in facts
+        assert "how it was produced" in facts
         assert "workspace purpose=Lookup an Odoo system total" in facts
         assert "connector_calls=odoo:1" in facts
         assert "system total: 42" in facts
