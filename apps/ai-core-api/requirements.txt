@@ -11,6 +11,6 @@ azure-keyvault-secrets==4.11.0
 azure-storage-blob==12.30.0
 python-multipart==0.0.32
 httpx==0.28.1
-PyMuPDF==1.27.2.3
+PyMuPDF==1.28.0
 azure-ai-documentintelligence==1.0.2
 msal==1.37.0
