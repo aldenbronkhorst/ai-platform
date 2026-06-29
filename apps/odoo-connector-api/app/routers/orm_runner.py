@@ -30,11 +30,10 @@ def _get_client(creds: OdooCredentialsRequest) -> OdooClient:
             username=creds.username,
             password_or_api_key=creds.api_key,
         ),
-        transport=creds.transport,
     )
 
 
-def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = None) -> dict[str, Any]:
+def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = None) -> Any:
     model = call.get("model")
     method = call.get("method")
     if not model or not method:
@@ -47,7 +46,7 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
         raise HTTPException(status_code=400, detail=detail)
 
     try:
-        result = client.call_with_transport(
+        result = client.execute_kw(
             model,
             method,
             args=call.get("args") or [],
@@ -64,14 +63,10 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
         if index is not None:
             detail["index"] = index
         raise HTTPException(status_code=400, detail=detail) from exc
-    response = {
-        "model": model,
-        "method": method,
-        "transport": client.last_transport,
-        "result": result,
-    }
-    if index is not None:
-        response["index"] = index
+    if index is None:
+        return result
+
+    response: dict[str, Any] = {"index": index, "result": result}
     if call.get("name"):
         response["name"] = call["name"]
     return response

@@ -191,7 +191,12 @@ function argumentDetail(input: Record<string, unknown>) {
   return [action, mode && `mode ${mode}`, model && `on ${model}`, query && query.slice(0, 80)].filter(Boolean).join(" · ");
 }
 
-function stepFromActivity(event: ActivityEvent): WorkStep | null {
+function turnFailed(message: ChatMessage) {
+  const metadata = metadataRecord(message);
+  return message.status === "failed" || metadata.failed === true;
+}
+
+function stepFromActivity(event: ActivityEvent, message: ChatMessage): WorkStep | null {
   const input = event.input_summary || {};
   const output = event.output_summary || {};
   const status = event.status === "failed" ? "failed" : event.status === "warning" ? "warning" : event.event === "span_finished" ? "success" : "running";
@@ -218,6 +223,9 @@ function stepFromActivity(event: ActivityEvent): WorkStep | null {
     const toolName = textValue(input.tool_name || event.span_name);
     const label = connectorLabel(textValue(input.connector) || toolName);
     if (event.event === "span_finished") {
+      if (status === "failed" && !turnFailed(message)) {
+        return { icon: CheckCircle2, title: `${label} checked`, detail: "Continuing with available context.", status: "success" };
+      }
       return { icon: status === "failed" ? AlertTriangle : CheckCircle2, title: `${label} finished`, detail: resultDetail(output), status };
     }
     return { icon: iconForConnector(label), title: `Using ${label}`, detail: argumentDetail(input), status };
@@ -226,9 +234,9 @@ function stepFromActivity(event: ActivityEvent): WorkStep | null {
   return null;
 }
 
-function stepFromStreamItem(item: StreamWorkItem, index: number, total: number, live: boolean): WorkStep | null {
+function stepFromStreamItem(item: StreamWorkItem, index: number, total: number, live: boolean, message: ChatMessage): WorkStep | null {
   if (item.kind === "activity" && isRecord(item.event)) {
-    return stepFromActivity(item.event as ActivityEvent);
+    return stepFromActivity(item.event as ActivityEvent, message);
   }
   if (item.kind === "thinking") {
     const source = [item.provider, item.model].filter(Boolean).join(" · ");
@@ -254,16 +262,16 @@ function stepFromStreamItem(item: StreamWorkItem, index: number, total: number, 
   return null;
 }
 
-function activitySteps(events: ActivityEvent[]) {
-  return events.map(stepFromActivity).filter((step): step is WorkStep => Boolean(step));
+function activitySteps(events: ActivityEvent[], message: ChatMessage) {
+  return events.map(event => stepFromActivity(event, message)).filter((step): step is WorkStep => Boolean(step));
 }
 
 function workSteps(message: ChatMessage, events: ActivityEvent[], variant: AgentWorkLogProps["variant"]) {
   const streamItems = streamWorkItems(message);
   const live = variant === "live";
   const steps = streamItems.length
-    ? streamItems.map((item, index) => stepFromStreamItem(item, index, streamItems.length, live)).filter((step): step is WorkStep => Boolean(step))
-    : activitySteps(events);
+    ? streamItems.map((item, index) => stepFromStreamItem(item, index, streamItems.length, live, message)).filter((step): step is WorkStep => Boolean(step))
+    : activitySteps(events, message);
   return (live ? steps.slice(-14) : steps).slice(-30);
 }
 

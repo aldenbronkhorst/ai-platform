@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     odoo_db: str = os.environ.get("ODOO_DB", "")
     odoo_username: str = os.environ.get("ODOO_USERNAME", "")
     odoo_api_key: str = os.environ.get("ODOO_API_KEY", "")
-    odoo_api_transport: str = os.environ.get("ODOO_API_TRANSPORT", "auto")
     odoo_api_timeout_seconds: float = float(os.environ.get("ODOO_API_TIMEOUT_SECONDS", "120.0"))
     odoo_ssl_verify: bool = os.environ.get("ODOO_SSL_VERIFY", "true").lower() == "true"
 

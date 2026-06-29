@@ -61,8 +61,6 @@ def _classify_odoo_error(error_str: str, status_code: int = 400) -> str:
         return "odoo_ssl_error"
     if "timeout" in lower:
         return "odoo_timeout"
-    if "transport" in lower:
-        return "odoo_transport_error"
     return "unknown_odoo_error"
 
 
@@ -173,7 +171,6 @@ async def _fetch_odoo_company_metadata(url: str, db: str, username: str, api_key
                 "db": db,
                 "username": username,
                 "api_key": api_key,
-                "transport": "auto",
             },
             "model": "res.company",
             "method": "search_read",
@@ -307,7 +304,6 @@ def _odoo_verify_payload(url: str, db: str, username: str, api_key: str) -> dict
             "db": db,
             "username": username,
             "api_key": api_key,
-            "transport": "auto"
         },
         "model": "res.partner",
         "method": "search_read",

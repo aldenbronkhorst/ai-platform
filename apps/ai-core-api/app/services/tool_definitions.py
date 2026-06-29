@@ -12,10 +12,16 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Cloud workspace with Python and shell/terminal execution, file scratch work, and multi-step analysis. "
             "Use when a task needs scripting, command-line work, iteration, aggregation, data cleanup, calculations, "
-            "or temporary files. The workspace can import ai_platform_tools and call any platform tool/connector by "
-            "name through the connected user's credentials, without exposing connector secrets. It also includes "
-            "ai_platform_odoo as a convenience wrapper around the raw Odoo tool. For Odoo, prefer bulk domains, "
-            "batch reads, and read_group instead of connector calls inside per-record loops."
+            "temporary files, or connected-system access. Workspace Python has call(tool_name, arguments), "
+            "call_raw(tool_name, arguments), call_checked(tool_name, arguments), and final(answer); they can also "
+            "be imported from ai_platform_tools. call() returns connector errors as {'error': true, ...} data so "
+            "scripts can inspect and continue; use call_checked() only when the script should stop on tool failure. "
+            "It can call broker targets by name through the "
+            "connected user's credentials, without exposing connector secrets. Broker target names include odoo, "
+            "ms_azure_cli, ms_graph, ms_exchange_powershell, ms_teams_powershell, ms_sharepoint_pnp_powershell, and "
+            "github_cli. Odoo broker calls use raw model/method/args/kwargs, or calls for ordered raw calls. "
+            "For connected systems, prefer bulk queries and batch calls instead of connector calls inside "
+            "per-record loops."
         ),
         "target_system": "ai-platform",
         "input_schema": {
@@ -44,7 +50,11 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "odoo",
         "display_name": "Odoo",
-        "description": "Direct Odoo RPC access using the connected account. Call any Odoo model method with model, method, args, and kwargs, or provide calls for ordered raw calls. The connector injects credentials and uses the connected Odoo user's permissions.",
+        "description": (
+            "Direct Odoo RPC access using the connected account. Call any Odoo model method with model, method, "
+            "args, and kwargs, or provide calls for ordered raw calls. The connector injects credentials and uses "
+            "the connected Odoo user's permissions."
+        ),
         "target_system": "odoo",
         "input_schema": {
             "type": "object",

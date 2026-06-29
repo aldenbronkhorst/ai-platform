@@ -299,6 +299,8 @@ def test_pending_activity_uses_chronological_work_log():
     assert "isTableLikeLine" in work_log
     assert "collapseRepeatedWords" in work_log
     assert "Worked for" in work_log
+    assert "Continuing with available context." in work_log
+    assert "status === \"failed\" && !turnFailed(message)" in work_log
     assert "Checking connected apps" not in pending + work_log
     assert "Writing the reply" not in pending + work_log
     assert "toolDetail" not in pending + work_log
