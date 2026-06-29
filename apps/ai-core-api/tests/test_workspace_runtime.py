@@ -29,16 +29,15 @@ async def test_workspace_runs_python_and_collects_files():
 
 
 @pytest.mark.asyncio
-async def test_workspace_final_helper_sets_final_answer():
+async def test_workspace_does_not_expose_final_answer_helper():
     result = await run_workspace({
-        "code": "final({'answer': 'done', 'value': 42})",
+        "code": "from ai_platform_tools import final\nfinal('done')",
         "timeout": 10,
     })
 
-    assert result["status"] == "success"
-    assert result["final_answer"] == {"answer": "done", "value": 42}
-    assert result["stdout"].strip() == 'FINAL: {"answer": "done", "value": 42}'
-    assert all(item.get("path") != ".ai_platform_final.json" for item in result["files"])
+    assert result["status"] == "failed"
+    assert "ImportError" in result["stderr"]
+    assert "final_answer" not in result
 
 
 @pytest.mark.asyncio

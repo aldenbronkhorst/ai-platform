@@ -1783,7 +1783,7 @@ class TestToolExecution:
                         "function": {
                             "name": "workspace",
                             "arguments": json.dumps({
-                                "code": "value = open('state.txt', encoding='utf-8').read()\nfinal(f'state={value}')",
+                                "code": "value = open('state.txt', encoding='utf-8').read()\nprint(f'state={value}')",
                                 "timeout": 10,
                             }),
                         },
@@ -1792,6 +1792,16 @@ class TestToolExecution:
                     "completion_tokens": 8,
                     "total_tokens": 28,
                     "latency_ms": 200,
+                    "error": False,
+                },
+                {
+                    "content": "state=42",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 15,
+                    "completion_tokens": 4,
+                    "total_tokens": 19,
+                    "latency_ms": 120,
                     "error": False,
                 },
             ])
@@ -1812,7 +1822,7 @@ class TestToolExecution:
             )
 
         assert result["content"] == "state=42"
-        assert result["finish_reason"] == "workspace_final_answer"
+        assert result["finish_reason"] == "stop"
         assert result["tool_call_count"] == 2
         assert result["tool_calls"] is not None
         assert len(result["tool_calls"]) == 2
@@ -1820,7 +1830,7 @@ class TestToolExecution:
         assert workspace_ids[0] == workspace_ids[1]
         assert result["tool_calls"][0]["result"]["run_index"] == 1
         assert result["tool_calls"][1]["result"]["run_index"] == 2
-        assert client.chat_completion.call_count == 2
+        assert client.chat_completion.call_count == 3
 
     @pytest.mark.asyncio
     async def test_execute_chat_stops_at_tool_loop_limit_without_forced_final_fallback(self):
@@ -2128,60 +2138,6 @@ class TestToolExecution:
         continuation_call = client.chat_completion.call_args_list[2]
         assert continuation_call.kwargs["tools"] is None
         assert "Continue the visible answer exactly where it stopped" in continuation_call.kwargs["messages"][-1]["content"]
-
-    def test_workspace_final_answer_finalizes_stdout_marker(self):
-        from app.services.model_router import _workspace_final_answer
-
-        answer = _workspace_final_answer(
-            [
-                {
-                    "tool_name": "workspace",
-                    "result": {
-                        "status": "success",
-                        "stdout": "debug line\nFINAL: The requested value is 42.\n",
-                    },
-                }
-            ],
-        )
-
-        assert answer == "The requested value is 42."
-
-    def test_workspace_final_answer_finalizes_explicit_field(self):
-        from app.services.model_router import _workspace_final_answer
-
-        answer = _workspace_final_answer(
-            [
-                {
-                    "tool_name": "workspace",
-                    "result": {
-                        "status": "success",
-                        "stdout": "debug output\n",
-                        "final_answer": {"value": "R 6,619,093.31"},
-                    },
-                }
-            ],
-        )
-
-        assert answer == '{"value": "R 6,619,093.31"}'
-
-    def test_workspace_final_answer_ignores_runs_with_connector_errors(self):
-        from app.services.model_router import _workspace_final_answer
-
-        answer = _workspace_final_answer(
-            [
-                {
-                    "tool_name": "workspace",
-                    "result": {
-                        "status": "success",
-                        "stdout": "FINAL: I could not find the report.\n",
-                        "final_answer": "I could not find the report.",
-                        "connector_error_calls": {"odoo": 1},
-                    },
-                }
-            ],
-        )
-
-        assert answer is None
 
 # ── Security Tests ──
 

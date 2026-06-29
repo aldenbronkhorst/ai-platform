@@ -785,34 +785,6 @@ def _tool_message_content(compacted_result: Any) -> str:
     return json.dumps(compacted_result, ensure_ascii=False, default=str)
 
 
-def _workspace_final_answer(tool_results: list[dict[str, Any]]) -> str | None:
-    for tool_result in reversed(tool_results):
-        if tool_result.get("tool_name") != WORKSPACE_TOOL_NAME:
-            continue
-        result = tool_result.get("result")
-        if not isinstance(result, dict):
-            continue
-        if result.get("error") or str(result.get("status") or "").lower() != "success":
-            continue
-        connector_error_calls = result.get("connector_error_calls")
-        if isinstance(connector_error_calls, dict) and connector_error_calls:
-            continue
-        if "final_answer" in result:
-            answer = result.get("final_answer")
-            if isinstance(answer, str):
-                return answer.strip()
-            return json.dumps(answer, ensure_ascii=False, default=str)
-        stdout = result.get("stdout")
-        if not isinstance(stdout, str) or not stdout.strip():
-            continue
-        for line in stdout.splitlines():
-            stripped = line.strip()
-            if stripped.lower().startswith("final:"):
-                answer = stripped.split(":", 1)[1].strip()
-                return answer or stdout.strip()
-    return None
-
-
 def _safe_tool_error_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "operation", "method", "resource",
@@ -984,7 +956,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace Guidance\n"
             "Workspace is the platform cloud-computer surface. It runs Python or shell code in a temporary directory. "
-            "Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, and `final(answer)` available "
+            "Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, and `call_checked(tool_name, arguments)` available "
             "by default; they can also be imported from `ai_platform_tools`. Shell scripts can call "
             "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
             "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
@@ -993,9 +965,9 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "`call(...)` returns connector errors as data with `error: true`; inspect those errors and continue "
             "inside the same script when discovering the right API shape. Use `call_checked(...)` only when a "
             "connector error should stop the script. For connected-system work, run one compact end-to-end script "
-            "where practical instead of one workspace call per discovery step, inspect real returned data, and call "
-            "`final(answer)` with the user-facing answer. Prefer set-based and batch calls over per-record connector "
-            "loops. When the user asks for a report, dashboard, or other system-calculated value, query the source "
+            "where practical instead of one workspace call per discovery step and print concise facts for the next "
+            "model step to answer from. Prefer set-based and batch calls over per-record connector loops. "
+            "When the user asks for a report, dashboard, or other system-calculated value, query the source "
             "system object/API for that value instead of rebuilding it from lower-level records unless the source "
             "is unavailable. Do not present business-system behavior as verified unless the script actually checked it."
         )
@@ -1413,21 +1385,6 @@ async def _run_tool_loop(
                     "tool_call_id": call.get("id", ""),
                     "content": _tool_message_content(compact_result),
                 })
-
-            workspace_answer = _workspace_final_answer(tool_results)
-            if workspace_answer:
-                state.result = {
-                    "error": False,
-                    "content": workspace_answer,
-                    "finish_reason": "workspace_final_answer",
-                    "tool_calls": None,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
-                    "latency_ms": 0,
-                    "model": state.result.get("model"),
-                }
-                break
 
             followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
             followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)

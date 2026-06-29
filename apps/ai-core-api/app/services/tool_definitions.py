@@ -13,7 +13,7 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Cloud workspace with Python and shell/terminal execution, file scratch work, and multi-step analysis. "
             "Use when a task needs scripting, command-line work, iteration, aggregation, data cleanup, calculations, "
             "temporary files, or connected-system access. Workspace Python has call(tool_name, arguments), "
-            "call_raw(tool_name, arguments), call_checked(tool_name, arguments), and final(answer); they can also "
+            "call_raw(tool_name, arguments), and call_checked(tool_name, arguments); they can also "
             "be imported from ai_platform_tools. call() returns connector errors as {'error': true, ...} data so "
             "scripts can inspect and continue; use call_checked() only when the script should stop on tool failure. "
             "It can call broker targets by name through the "
