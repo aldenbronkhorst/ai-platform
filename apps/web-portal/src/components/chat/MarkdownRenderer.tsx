@@ -204,6 +204,13 @@ const REVEAL_DRAIN_MS = 500;
 const REVEAL_MAX_CHARS_PER_FRAME = 30;
 const REVEAL_MIN_COMMIT_MS = 33;
 
+function commonPrefixLength(left: string, right: string) {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < max && left[index] === right[index]) index += 1;
+  return index;
+}
+
 function useSmoothReveal(text: string, isRunning: boolean): string {
   const [displayed, setDisplayed] = useState(isRunning ? "" : text);
   const targetRef = useRef(text);
@@ -222,7 +229,8 @@ function useSmoothReveal(text: string, isRunning: boolean): string {
     if (typeof window === "undefined") return;
 
     if (!targetRef.current.startsWith(shownRef.current)) {
-      shownRef.current = isRunning ? "" : targetRef.current;
+      const prefixLength = commonPrefixLength(shownRef.current, targetRef.current);
+      shownRef.current = isRunning ? targetRef.current.slice(0, prefixLength) : targetRef.current;
       setDisplayed(shownRef.current);
     }
 

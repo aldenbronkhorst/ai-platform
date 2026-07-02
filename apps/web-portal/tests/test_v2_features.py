@@ -481,6 +481,8 @@ def test_reasoning_stream_matches_hermes_message_part_rules():
     assert "EMPTY_THINKING_PLACEHOLDER_RE" in runtime
     assert "function coerceThinkingText" in runtime
     assert "function appendTextPart" in runtime
+    assert "function mergeStreamText" in runtime
+    assert "content = mergeStreamText(content, delta)" in runtime
     assert 'part.type === "tool-call"' in runtime
     assert 'type === "thinking.delta"' in runtime
     assert 'type === "reasoning.delta" || type === "reasoning.available"' in runtime
@@ -505,6 +507,8 @@ def test_live_reasoning_reveal_keeps_hermes_ref_sync():
 
     assert "shownRef.current = displayed;" in renderer
     assert "targetRef.current = text;" in renderer
+    assert "function commonPrefixLength" in renderer
+    assert "targetRef.current.slice(0, prefixLength)" in renderer
     assert "}, [text, isRunning]);" in renderer
     assert "}, [text, isRunning, displayed]);" not in renderer
     assert "const revealed = useSmoothReveal(text, isRunning)" in renderer
@@ -524,6 +528,8 @@ def test_stream_updates_apply_each_chunk_once():
     assert "pendingStreamMessage = updatedMessage;" in controller
     assert "replaceOrAppendMessage(prev, pendingMessageId, updatedMessage)" in controller
     assert "upsertLocalMessage(session.id, updatedMessage)" in controller
+    assert "/cancel`" in controller
+    assert "keepalive: true" in controller
     assert "messagePartsFrom(metadata.message_parts)" in runtime
     assert "metadata.message_parts = messageParts" in runtime
     assert "stream_work_items" not in runtime

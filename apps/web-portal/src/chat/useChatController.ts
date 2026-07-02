@@ -646,8 +646,13 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     const activeStream = streamControllersRef.current[activeSessionId];
     if (!activeStream) return;
     stoppedRequestIdsRef.current.add(activeStream.requestId);
+    void fetch(`${API_BASE_URL}/chat/sessions/${activeSessionId}/messages/${activeStream.requestId}/cancel`, {
+      method: "POST",
+      headers: getHeaders(),
+      keepalive: true,
+    }).catch(() => undefined);
     activeStream.controller.abort();
-  }, [activeSessionId]);
+  }, [activeSessionId, getHeaders]);
 
   const handleSendMessage = useCallback(async (e: FormEvent) => {
     e.preventDefault();
