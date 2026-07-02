@@ -602,17 +602,17 @@ function ThinkingDisclosure({
           )}
         </span>
       </DisclosureRow>
-      {open && (
-        <div
-          className={cn(
-            "mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1",
-            isPreview && "thinking-preview max-h-40",
-          )}
-          ref={scrollRef}
-        >
-          <div ref={contentRef}>{children}</div>
-        </div>
-      )}
+      <div
+        aria-hidden={!open}
+        className={cn(
+          "mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1",
+          isPreview && "thinking-preview max-h-40",
+          !open && "hidden",
+        )}
+        ref={scrollRef}
+      >
+        <div ref={contentRef}>{children}</div>
+      </div>
     </div>
   );
 }

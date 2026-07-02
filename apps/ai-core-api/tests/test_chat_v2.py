@@ -204,9 +204,12 @@ class TestChatResponseGuards:
         parts = []
         _append_message_text_part(parts, "reasoning", "Checking ")
         _append_message_text_part(parts, "reasoning", "Odoo")
+        _append_message_text_part(parts, "reasoning", "Checking Odoo records")
+        _append_message_text_part(parts, "reasoning", " and reports")
+        _append_message_text_part(parts, "reasoning", "Checking Odoo records and reports")
 
         assert [part["type"] for part in parts] == ["reasoning"]
-        assert parts[0]["text"] == "Checking Odoo"
+        assert parts[0]["text"] == "Checking Odoo records and reports"
 
         _upsert_tool_call_part(parts, {
             "type": "tool.start",
@@ -225,6 +228,18 @@ class TestChatResponseGuards:
         _replace_message_text_part(parts, "reasoning", "Final after tool")
 
         assert parts[-1]["text"] == "Final after tool"
+
+    def test_stream_disconnect_does_not_cancel_background_turn(self):
+        import inspect
+        from app.routers import chat
+
+        stream_source = inspect.getsource(chat.stream_chat_message)
+        cancel_source = inspect.getsource(chat.cancel_stream_chat_message)
+
+        assert "ACTIVE_STREAM_TURNS" in cancel_source
+        assert "task.cancel()" in cancel_source
+        assert "allowing turn to finish" in stream_source
+        assert "task.cancel()" not in stream_source
 
     def test_final_message_parts_preserve_markdown_line_breaks(self):
         from app.routers.chat import _message_parts_with_final_text

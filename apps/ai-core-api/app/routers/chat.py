@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import binascii
-from contextlib import suppress
 import json
 import uuid
 import logging
@@ -32,6 +31,7 @@ DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
 RECENT_WORKSPACE_STDOUT_CHARS = 4000
+ACTIVE_STREAM_TURNS: dict[str, tuple[UUID, UUID, asyncio.Task[None]]] = {}
 
 
 def _utcnow() -> datetime:
@@ -1043,6 +1043,29 @@ def _compact_message_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]] 
     return compact or None
 
 
+def _stream_text_overlap(existing: str, incoming: str) -> int:
+    max_len = min(len(existing), len(incoming))
+    for size in range(max_len, 0, -1):
+        if existing.endswith(incoming[:size]):
+            return size
+    return 0
+
+
+def _merged_stream_text(existing: str, incoming: str) -> str:
+    if not incoming:
+        return existing
+    if not existing:
+        return incoming
+    if incoming == existing or existing.endswith(incoming):
+        return existing
+    if incoming.startswith(existing):
+        return incoming
+    overlap = _stream_text_overlap(existing, incoming)
+    if overlap >= 12:
+        return f"{existing}{incoming[overlap:]}"
+    return f"{existing}{incoming}"
+
+
 def _append_message_text_part(parts: list[dict[str, Any]], part_type: str, text: str) -> None:
     if not text:
         return
@@ -1050,8 +1073,9 @@ def _append_message_text_part(parts: list[dict[str, Any]], part_type: str, text:
     for index in range(len(parts) - 1, -1, -1):
         part = parts[index]
         if part.get("type") == part_type:
+            existing = str(part.get("text") or "")
             part["type"] = part_type
-            part["text"] = re.sub(r"\n{4,}", "\n\n\n", f"{part.get('text') or ''}{text}")[:24000]
+            part["text"] = re.sub(r"\n{4,}", "\n\n\n", _merged_stream_text(existing, text))[:24000]
             return
         if part.get("type") not in {"text", "reasoning"}:
             break
@@ -1498,6 +1522,43 @@ def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, An
     return payload
 
 
+def _stream_task_done(request_id: str, session_id: UUID, task: asyncio.Task[None]) -> None:
+    active = ACTIVE_STREAM_TURNS.get(request_id)
+    if active and active[0] == session_id and active[2] is task:
+        ACTIVE_STREAM_TURNS.pop(request_id, None)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error(
+            "Detached chat stream turn failed | request_id=%s session_id=%s",
+            request_id,
+            session_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+
+@router.post("/sessions/{session_id}/messages/{request_id}/cancel")
+async def cancel_stream_chat_message(
+    session_id: UUID,
+    request_id: str,
+    auth: dict = Depends(api_key_auth),
+):
+    user_id = auth["user_id"]
+    active = ACTIVE_STREAM_TURNS.get(request_id)
+    if not active:
+        return {"cancelled": False}
+
+    active_session_id, active_user_id, task = active
+    if active_session_id != session_id or active_user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat turn not found")
+
+    if not task.done():
+        task.cancel()
+        return {"cancelled": True}
+    return {"cancelled": False}
+
+
 @router.post("/sessions/{session_id}/messages/stream")
 async def stream_chat_message(
     session_id: UUID,
@@ -1510,13 +1571,18 @@ async def stream_chat_message(
     user_id = auth["user_id"]
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     stream_started_at = _utcnow()
+    stream_open = True
+
+    def emit_stream_event(event_type: str, payload: Any) -> None:
+        if stream_open:
+            queue.put_nowait({"type": event_type, "payload": payload})
 
     def collect_activity(event: dict[str, Any]) -> None:
-        queue.put_nowait({"type": "activity", "payload": event})
+        emit_stream_event("activity", event)
 
     def collect_agent_event(event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "status.update")
-        queue.put_nowait({"type": event_type, "payload": event})
+        emit_stream_event(event_type, event)
 
     async def run_turn() -> None:
         cancelled = False
@@ -1532,19 +1598,16 @@ async def stream_chat_message(
                     collect_agent_event,
                 )
                 attachments_by_message = await _attachments_by_message(db, [assistant_msg.id])
-                await queue.put({
-                    "type": "message.complete",
-                    "payload": _chat_message_payload(assistant_msg, attachments_by_message.get(assistant_msg.id, [])),
-                })
+                emit_stream_event("message.complete", _chat_message_payload(assistant_msg, attachments_by_message.get(assistant_msg.id, [])))
                 title = await _refresh_session_title(session_id)
                 if title:
-                    await queue.put({
-                        "type": "session.title",
-                        "payload": {
+                    emit_stream_event(
+                        "session.title",
+                        {
                             "session_id": str(session_id),
                             "title": title,
                         },
-                    })
+                    )
             except asyncio.CancelledError:
                 cancelled = True
                 await db.rollback()
@@ -1556,26 +1619,29 @@ async def stream_chat_message(
                 raise
             except HTTPException as exc:
                 await db.rollback()
-                await queue.put({"type": "error", "payload": exc.detail})
+                emit_stream_event("error", exc.detail)
             except Exception as exc:
                 await db.rollback()
                 logger.exception("Streaming chat turn failed | request_id=%s", request_id)
-                await queue.put({
-                    "type": "error",
-                    "payload": {
+                emit_stream_event(
+                    "error",
+                    {
                         "request_id": request_id,
                         "error_type": "server_error",
                         "error_message": "Something went wrong while generating the response. Please try again.",
                         "technical_detail": str(exc),
                     },
-                })
+                )
             finally:
                 if cancelled:
                     return
-                await queue.put({"type": "done", "payload": {"request_id": request_id}})
+                emit_stream_event("done", {"request_id": request_id})
 
     async def event_stream():
+        nonlocal stream_open
         task = asyncio.create_task(run_turn())
+        ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
+        task.add_done_callback(lambda done_task: _stream_task_done(request_id, session_id, done_task))
         yield _sse("started", {"request_id": request_id})
         try:
             while True:
@@ -1588,15 +1654,13 @@ async def stream_chat_message(
                 if item["type"] == "done":
                     break
         finally:
+            stream_open = False
             if not task.done():
                 logger.info(
-                    "Chat stream client disconnected; cancelling turn | request_id=%s session_id=%s",
+                    "Chat stream client disconnected; allowing turn to finish | request_id=%s session_id=%s",
                     request_id,
                     session_id,
                 )
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
 
     return StreamingResponse(
         event_stream(),

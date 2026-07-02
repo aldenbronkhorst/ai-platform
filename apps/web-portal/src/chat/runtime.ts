@@ -209,6 +209,24 @@ function eventNumber(event: Record<string, unknown>, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function streamTextOverlap(existing: string, incoming: string) {
+  const max = Math.min(existing.length, incoming.length);
+  for (let size = max; size > 0; size -= 1) {
+    if (existing.endsWith(incoming.slice(0, size))) return size;
+  }
+  return 0;
+}
+
+function mergeStreamText(existing: string, incoming: string) {
+  if (!incoming) return existing;
+  if (!existing) return incoming;
+  if (incoming === existing || existing.endsWith(incoming)) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  const overlap = streamTextOverlap(existing, incoming);
+  if (overlap >= 12) return `${existing}${incoming.slice(overlap)}`;
+  return `${existing}${incoming}`;
+}
+
 function messagePartsFrom(value: unknown): StoredMessagePart[] {
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord).flatMap((part): StoredMessagePart[] => {
@@ -256,7 +274,7 @@ function appendStreamPart(
     const part = next[i];
 
     if (part.type === type) {
-      next[i] = { ...part, text: `${part.text}${delta}` };
+      next[i] = { ...part, text: mergeStreamText(part.text, delta) };
       return next;
     }
 
@@ -324,7 +342,7 @@ export function appendMessagePartEvent(message: ChatMessage, event: unknown): Ch
   if (type === "message.delta") {
     const delta = coerceGatewayText(event.delta ?? event.text);
     if (delta) {
-      content += delta;
+      content = mergeStreamText(content, delta);
       messageParts = appendTextPart(messageParts, delta).slice(-240);
       status = "streaming";
     }
