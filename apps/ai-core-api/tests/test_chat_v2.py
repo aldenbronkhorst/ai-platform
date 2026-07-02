@@ -1,4 +1,5 @@
 import os
+import uuid
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -171,6 +172,134 @@ class TestChatResponseGuards:
         assert "stream_work_items" not in metadata
         assert "reasoning_content" not in metadata
 
+    def test_assistant_metadata_includes_message_parts(self):
+        from app.routers.chat import _assistant_metadata
+
+        message_parts = [
+            {"type": "reasoning", "text": "Checking connected data."},
+            {
+                "type": "tool-call",
+                "toolCallId": "tool:1",
+                "toolName": "workspace",
+                "args": {"language": "python"},
+                "argsText": '{"language": "python"}',
+                "result": {"stdout": "Done"},
+            },
+        ]
+
+        metadata = _assistant_metadata(
+            {"content": "I answered."},
+            "req-123",
+            "trace_123",
+            message_parts=message_parts,
+        )
+
+        assert metadata["message_parts"] == message_parts
+        assert "agent_trail" not in metadata
+        assert set(metadata) == {"request_id", "trace_id", "message_parts"}
+
+    def test_message_parts_keep_stable_live_stream_shape(self):
+        from app.routers.chat import _append_message_text_part, _replace_message_text_part, _upsert_tool_call_part
+
+        parts = []
+        _append_message_text_part(parts, "reasoning", "Checking ")
+        _append_message_text_part(parts, "reasoning", "Odoo")
+
+        assert [part["type"] for part in parts] == ["reasoning"]
+        assert parts[0]["text"] == "Checking Odoo"
+
+        _upsert_tool_call_part(parts, {
+            "type": "tool.start",
+            "id": "tool:1",
+            "name": "workspace",
+            "args": {"language": "python"},
+            "verboseArgs": '{"language": "python"}',
+        })
+        _append_message_text_part(parts, "reasoning", "After tool")
+
+        assert [part["type"] for part in parts] == ["reasoning", "tool-call", "reasoning"]
+        assert parts[1]["toolCallId"] == "tool:1"
+        assert parts[1]["toolName"] == "workspace"
+        assert parts[-1]["text"] == "After tool"
+
+        _replace_message_text_part(parts, "reasoning", "Final after tool")
+
+        assert parts[-1]["text"] == "Final after tool"
+
+    def test_final_message_parts_preserve_markdown_line_breaks(self):
+        from app.routers.chat import _message_parts_with_final_text
+
+        content = "Summary\n\n---\n\n### GRV table\n\n| GRV | Total |\n| --- | --- |\n| 141814 | R6,614.77 |"
+
+        parts = _message_parts_with_final_text([], content)
+
+        assert parts is not None
+        assert parts[-1]["type"] == "text"
+        assert parts[-1]["text"] == content
+        assert parts[-1]["text"].count("\n") == content.count("\n")
+
+    def test_activity_event_maps_to_agent_tool_event(self):
+        from app.routers.chat import _agent_event_from_activity
+
+        event = {
+            "event": "span_started",
+            "span_id": "span_1",
+            "span_type": "tool_call",
+            "span_name": "workspace",
+            "started_at": "2026-06-30T10:00:00+00:00",
+            "input_summary": {
+                "tool_name": "workspace",
+                "arguments": {"task": "Inspect the account.move fields"},
+            },
+        }
+
+        agent_event = _agent_event_from_activity(event)
+
+        assert agent_event is not None
+        assert agent_event["type"] == "tool.start"
+        assert agent_event["id"] == "span_1"
+        assert agent_event["name"] == "workspace"
+        assert agent_event["context"] == "Run Python: Inspect the account.move fields"
+        assert agent_event["startedAt"] == "2026-06-30T10:00:00+00:00"
+        assert agent_event["args"] == {"task": "Inspect the account.move fields"}
+        assert '"task": "Inspect the account.move fields"' in agent_event["verboseArgs"]
+        assert "created_at" in agent_event
+
+    def test_finished_activity_maps_to_structured_tool_payload(self):
+        from app.routers.chat import _agent_event_from_activity
+
+        event = {
+            "event": "span_finished",
+            "span_id": "span_1",
+            "span_type": "tool_call",
+            "span_name": "workspace",
+            "duration_ms": 1250,
+            "ended_at": "2026-06-30T10:00:01+00:00",
+            "status": "success",
+            "input_summary": {
+                "tool_name": "workspace",
+                "arguments": {"language": "python", "task": "Read P&L report"},
+            },
+            "output_summary": {
+                "result": {
+                    "message": "Completed",
+                    "stdout": "Revenue: R 5,890,107.02",
+                },
+            },
+        }
+
+        agent_event = _agent_event_from_activity(event)
+
+        assert agent_event is not None
+        assert agent_event["type"] == "tool.complete"
+        assert agent_event["name"] == "workspace"
+        assert agent_event["error"] is False
+        assert agent_event["isError"] is False
+        assert agent_event["args"] == {"language": "python", "task": "Read P&L report"}
+        assert agent_event["result"] == {"message": "Completed", "stdout": "Revenue: R 5,890,107.02"}
+        assert agent_event["durationMs"] == 1250
+        assert "line" not in agent_event
+
     def test_unprocessed_textual_tool_call_is_rejected(self):
         import uuid
         from fastapi import HTTPException
@@ -282,8 +411,80 @@ class TestChatAttachments:
         assert "statement.csv" in content
 
     @pytest.mark.asyncio
+    async def test_persist_generated_files_creates_linked_artifacts(self, monkeypatch):
+        from app.routers import chat
+
+        created = []
+
+        class FakeArtifactService:
+            def __init__(self, db):
+                self.db = db
+
+            async def create_from_bytes(self, *, filename, mime_type, content, artifact_type, created_by_user_id):
+                created.append({
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "content": content,
+                    "artifact_type": artifact_type,
+                    "created_by_user_id": created_by_user_id,
+                })
+                return SimpleNamespace(id=uuid.uuid4(), filename=filename, mime_type=mime_type)
+
+        class FakeDb:
+            def __init__(self):
+                self.added = []
+
+            def add(self, value):
+                self.added.append(value)
+
+        fake_db = FakeDb()
+        session_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        assistant_msg = SimpleNamespace(id=uuid.uuid4())
+        monkeypatch.setattr(chat, "ArtifactService", FakeArtifactService)
+
+        await chat._persist_generated_files(
+            fake_db,
+            session_id,
+            assistant_msg,
+            user_id,
+            [
+                {
+                    "filename": "analysis.xlsx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "sha256": "same-file",
+                    "content_base64": "ZXhjZWw=",
+                },
+                {
+                    "filename": "analysis.xlsx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "sha256": "same-file",
+                    "content_base64": "ZXhjZWw=",
+                },
+                {
+                    "filename": "broken.txt",
+                    "mime_type": "text/plain",
+                    "content_base64": "not valid base64",
+                },
+            ],
+        )
+
+        assert created == [
+            {
+                "filename": "analysis.xlsx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "content": b"excel",
+                "artifact_type": "chat-generated",
+                "created_by_user_id": user_id,
+            }
+        ]
+        assert len(fake_db.added) == 1
+        link = fake_db.added[0]
+        assert link.chat_session_id == session_id
+        assert link.linked_message_id == assistant_msg.id
+
+    @pytest.mark.asyncio
     async def test_owned_artifacts_rejects_missing_or_foreign_ids(self):
-        import uuid
         from fastapi import HTTPException
         from app.routers.chat import _owned_artifacts_for_chat
 
@@ -332,6 +533,61 @@ class TestChatAttachments:
         assert "statement.csv" in context
         assert "uploaded,csv,text" in context
         assert "user-provided content" in context
+
+    @pytest.mark.asyncio
+    async def test_attachment_context_does_not_ocr_pending_pdf_hidden_in_context(self, monkeypatch):
+        import uuid
+        from app.models.models import AIArtifact
+        from app.routers import chat
+
+        class FakeArtifactService:
+            def __init__(self, _db):
+                pass
+
+            async def text_preview(self, _artifact, max_chars=12_000):
+                raise AssertionError("pending PDFs should be read through document_reader, not hidden context OCR")
+
+        monkeypatch.setattr(chat, "ArtifactService", FakeArtifactService)
+
+        artifact = AIArtifact(
+            id=uuid.uuid4(),
+            artifact_type="chat-upload",
+            filename="COSMETIC CONNECTION GRV141814.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/job-files/standalone/grv.pdf",
+            extraction_status="pending",
+        )
+
+        context = await chat._attachment_context(object(), [artifact])
+
+        assert "COSMETIC CONNECTION GRV141814.pdf" in context
+        assert "Use document_reader mode='tables' for tabular documents" in context
+        assert "mode='read' for text" in context
+        assert "extraction_status=pending" in context
+
+    def test_artifact_manifest_context_exposes_previous_upload_ids(self):
+        import uuid
+        from app.models.models import AIArtifact
+        from app.routers.chat import _artifact_manifest_context
+
+        artifact = AIArtifact(
+            id=uuid.uuid4(),
+            artifact_type="chat-upload",
+            filename="COSMETIC CONNECTION GRV141814.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/chat-uploads/grv.pdf",
+            extraction_status="ready",
+            extraction_source="azure_document_intelligence:prebuilt-read",
+            extracted_text="ocr text",
+        )
+
+        context = _artifact_manifest_context([artifact])
+
+        assert "[Available files in this chat]" in context
+        assert "COSMETIC CONNECTION GRV141814.pdf" in context
+        assert f"id={artifact.id}" in context
+        assert "document_reader" in context
+        assert "text_chars=8" in context
 
 
 class TestChatStreaming:

@@ -56,8 +56,8 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
       }}
       className="w-full"
     >
-      <div className="glass-composer">
-        <div className={isExpanded ? "flex flex-col gap-1 p-1 sm:p-1.5" : "flex items-center gap-1 p-1 sm:p-1.5"}>
+      <div className="composer-surface" data-slot="composer-surface">
+        <div className={isExpanded ? "flex flex-col gap-1 px-2 py-1.5" : "flex items-center gap-1 px-2 py-1.5"}>
           <textarea
             ref={textareaRef}
             value={value}
@@ -65,15 +65,16 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
             onKeyDown={handleKeyDown}
             disabled={isSaving}
             rows={1}
-            className={`${isExpanded ? "w-full" : "flex-1"} min-h-9 bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-sm text-default placeholder-soft px-1 py-[7px] resize-none max-h-28 sm:max-h-[160px] leading-5 disabled:opacity-70`}
+            data-slot="composer-rich-input"
+            className={`${isExpanded ? "w-full" : "flex-1"} min-h-[1.625rem] bg-transparent border-0 focus:outline-none focus:ring-0 text-base sm:text-[0.8125rem] text-foreground placeholder:text-[var(--ui-text-tertiary)] px-1 py-1 resize-none max-h-28 sm:max-h-[9.375rem] leading-normal disabled:opacity-70`}
           />
 
-          <div className={isExpanded ? "flex min-h-9 items-center justify-between gap-2" : "flex items-center gap-1 shrink-0"}>
+          <div className={isExpanded ? "flex min-h-[1.625rem] items-center justify-between gap-2" : "flex items-center gap-1 shrink-0"}>
             <button
               type="button"
               onClick={onCancel}
               disabled={isSaving}
-              className="h-9 inline-flex items-center justify-center rounded-lg px-3 text-sm font-medium text-muted transition-all hover-bg-surface hover-text-default disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-6 inline-flex items-center justify-center rounded-md px-2 text-[0.75rem] font-medium text-[var(--ui-text-secondary)] transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title="Cancel"
             >
               <span className="hidden sm:inline">Cancel</span>
@@ -82,14 +83,14 @@ export function EditMessage({ initialContent, onSave, onCancel, isSaving }: Edit
             <button
               type="submit"
               disabled={!canSave}
-              className={`h-9 w-9 inline-flex items-center justify-center rounded-full transition-all ${
+              className={`h-[1.625rem] w-[1.625rem] inline-flex items-center justify-center rounded-full transition-colors ${
                 canSave
-                  ? "border border-subtle bg-surface text-muted hover-text-default hover-bg-surface hover-border-default"
-                  : "border border-subtle bg-surface text-soft"
+                  ? "border border-[var(--ui-stroke-tertiary)] bg-[var(--dt-card)] text-[var(--ui-text-secondary)] hover:border-[var(--ui-stroke-secondary)] hover:text-foreground"
+                  : "border border-[var(--ui-stroke-tertiary)] bg-[var(--dt-card)] text-[var(--ui-text-tertiary)]"
               } disabled:cursor-not-allowed`}
               title="Send edited message"
             >
-              <ArrowUp className="h-[26px] w-[26px]" />
+              <ArrowUp className="h-[18px] w-[18px]" />
             </button>
           </div>
         </div>

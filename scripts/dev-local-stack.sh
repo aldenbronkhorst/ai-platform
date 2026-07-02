@@ -17,6 +17,7 @@ POSTGRES_HOST="${POSTGRES_HOST:-$POSTGRES_SERVER_NAME.postgres.database.azure.co
 POSTGRES_DB="${POSTGRES_DB:-aicore}"
 POSTGRES_USER="${POSTGRES_USER:-aiplatformadmin}"
 LOCAL_POSTGRES_FIREWALL="${LOCAL_POSTGRES_FIREWALL:-true}"
+POSTGRES_FIREWALL_REFRESH_SECONDS="${POSTGRES_FIREWALL_REFRESH_SECONDS:-60}"
 LOCAL_USER="$(whoami | tr -cd '[:alnum:]_-')"
 POSTGRES_FIREWALL_RULE_NAME="${POSTGRES_FIREWALL_RULE_NAME:-LocalDev-${LOCAL_USER:-user}}"
 KEY_VAULT_URI="${KEY_VAULT_URI:-https://kvaiplatformprodsan001.vault.azure.net/}"
@@ -25,6 +26,10 @@ ENTRA_TENANT_ID="${ENTRA_TENANT_ID:-03af606c-d85a-48ff-ad4b-a5a8895a6d98}"
 ENTRA_CLIENT_ID="${ENTRA_CLIENT_ID:-fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208}"
 PORTAL_CLIENT_ID="${PORTAL_CLIENT_ID:-ff6a9526-c27a-42a6-b317-56060d11b14e}"
 MICROSOFT_ADMIN_CLIENT_ID="${MICROSOFT_ADMIN_CLIENT_ID:-8a178920-de9e-41cf-af4e-c3012fc3bbd2}"
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT:-https://fr-ai-platform-prod-san-001.cognitiveservices.azure.com/}"
+DOCUMENT_OCR_PROVIDER="${DOCUMENT_OCR_PROVIDER:-azure_document_intelligence}"
+DOCUMENT_OCR_READ_MODEL_ID="${DOCUMENT_OCR_READ_MODEL_ID:-prebuilt-read}"
+DOCUMENT_OCR_LAYOUT_MODEL_ID="${DOCUMENT_OCR_LAYOUT_MODEL_ID:-prebuilt-layout}"
 
 LOG_DIR="$ROOT_DIR/.local/logs"
 mkdir -p "$LOG_DIR"
@@ -43,9 +48,11 @@ port_in_use() {
 require_free_port() {
   local port="$1"
   local name="$2"
+  local env_name
+  env_name="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
   if port_in_use "$port"; then
     echo "Port $port is already in use; cannot start $name." >&2
-    echo "Stop the existing process or rerun with ${name^^}_PORT set to another port." >&2
+    echo "Stop the existing process or rerun with ${env_name}_PORT set to another port." >&2
     exit 1
   fi
 }
@@ -102,6 +109,10 @@ is_truthy() {
   [[ "${1:-}" =~ ^(1|true|yes|on)$ ]]
 }
 
+current_public_ip() {
+  curl -fsS https://api.ipify.org
+}
+
 UVICORN_RELOAD_ARG=""
 if is_truthy "$UVICORN_RELOAD"; then
   UVICORN_RELOAD_ARG="--reload"
@@ -109,10 +120,10 @@ fi
 
 ensure_postgres_firewall_access() {
   local current_ip
-  current_ip="$(curl -fsS https://api.ipify.org)"
+  current_ip="$(current_public_ip)"
   if [[ ! "$current_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Could not determine a valid public IPv4 address for PostgreSQL firewall access." >&2
-    exit 1
+    return 1
   fi
 
   echo "Ensuring PostgreSQL firewall allows this Mac ($current_ip)..."
@@ -140,6 +151,60 @@ ensure_postgres_firewall_access() {
       --only-show-errors \
       -o none
   fi
+
+  LAST_POSTGRES_FIREWALL_IP="$current_ip"
+}
+
+postgres_firewall_watch() {
+  local current_ip
+  LAST_POSTGRES_FIREWALL_IP="${LAST_POSTGRES_FIREWALL_IP:-}"
+  while sleep "$POSTGRES_FIREWALL_REFRESH_SECONDS"; do
+    current_ip="$(current_public_ip 2>/dev/null || true)"
+    if [[ ! "$current_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      continue
+    fi
+    if [[ "$current_ip" != "$LAST_POSTGRES_FIREWALL_IP" ]]; then
+      echo "Public IP changed; refreshing PostgreSQL firewall access..."
+      ensure_postgres_firewall_access || true
+    fi
+  done
+}
+
+wait_for_postgres() {
+  local attempts="${1:-60}"
+  for _ in $(seq 1 "$attempts"); do
+    if (
+      cd "$ROOT_DIR/apps/ai-core-api"
+      .venv/bin/python - <<'PY'
+import asyncio
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from app.core.config import get_settings
+
+
+async def main():
+    engine = create_async_engine(get_settings().database_url, connect_args={"timeout": 8})
+    try:
+        async def probe():
+            async with engine.connect() as conn:
+                await conn.execute(text("select 1"))
+
+        await asyncio.wait_for(probe(), timeout=12)
+    finally:
+        await engine.dispose()
+
+
+asyncio.run(main())
+PY
+    ) >/dev/null 2>&1; then
+      echo "PostgreSQL is reachable."
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "PostgreSQL did not become reachable." >&2
+  return 1
 }
 
 cleanup() {
@@ -170,7 +235,7 @@ echo "Checking Azure login..."
 az account show >/dev/null
 
 if is_truthy "$LOCAL_POSTGRES_FIREWALL"; then
-  ensure_postgres_firewall_access
+  ensure_postgres_firewall_access || exit 1
 fi
 
 echo "Checking Microsoft localhost redirect..."
@@ -193,23 +258,33 @@ echo "Fetching live configuration from Azure Container Apps..."
 API_KEY="$(secret api-key)"
 POSTGRES_PASSWORD="$(secret keyvault-dsn)"
 ODOO_CONNECTOR_API_KEY="$(secret odoo-connector-api-key)"
+AZURE_STORAGE_ACCOUNT_KEY="${AZURE_STORAGE_ACCOUNT_KEY:-$(az storage account keys list --resource-group "$RESOURCE_GROUP" --account-name "$STORAGE_ACCOUNT_NAME" --query '[0].value' -o tsv)}"
 
 export APP_ENV=development
 export DEBUG=false
 export POSTGRES_HOST POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
 export POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 export KEY_VAULT_URI STORAGE_ACCOUNT_NAME
+export AZURE_STORAGE_ACCOUNT_KEY
 export API_KEY
 export ODOO_CONNECTOR_URL="http://127.0.0.1:$ODOO_PORT"
 export ODOO_CONNECTOR_API_KEY
 export ENTRA_TENANT_ID ENTRA_CLIENT_ID
 export MICROSOFT_ADMIN_CLIENT_ID
 export MICROSOFT_ADMIN_APP_DISPLAY_NAME="${MICROSOFT_ADMIN_APP_DISPLAY_NAME:-AI Platform Microsoft Admin}"
+export AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT DOCUMENT_OCR_PROVIDER DOCUMENT_OCR_READ_MODEL_ID DOCUMENT_OCR_LAYOUT_MODEL_ID
 export AZURE_SEARCH_ENABLE="${AZURE_SEARCH_ENABLE:-false}"
 export HEALTH_CHECK_DEEP="${HEALTH_CHECK_DEEP:-false}"
 
+wait_for_postgres 60
+
 PIDS=()
 trap cleanup INT TERM EXIT
+
+if is_truthy "$LOCAL_POSTGRES_FIREWALL"; then
+  postgres_firewall_watch >"$LOG_DIR/postgres-firewall-watch.log" 2>&1 &
+  PIDS+=("$!")
+fi
 
 echo "Starting local Odoo connector on http://127.0.0.1:$ODOO_PORT ..."
 (

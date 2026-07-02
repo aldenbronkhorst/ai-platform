@@ -5,6 +5,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.core.guidance import guidance_payload
 from app.core.odoo_client import OdooClient, OdooCredentials, OdooError
 from app.core.security import internal_api_key_auth
 from app.models.schemas import OdooCredentialsRequest
@@ -13,7 +14,8 @@ router = APIRouter()
 
 
 class OdooRunRequest(BaseModel):
-    credentials: OdooCredentialsRequest
+    credentials: Optional[OdooCredentialsRequest] = None
+    operation: Optional[str] = None
     model: Optional[str] = None
     method: Optional[str] = None
     args: Optional[list[Any]] = None
@@ -74,6 +76,18 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
 
 @router.post("/run")
 def odoo_runner(req: OdooRunRequest, _auth: dict = Depends(internal_api_key_auth)):
+    if req.operation == "guidance":
+        return guidance_payload()
+
+    if req.credentials is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "odoo_credentials_required",
+                "message": "Odoo credentials are required for Odoo model calls.",
+            },
+        )
+
     client = _get_client(req.credentials)
     if req.calls is not None:
         results = []

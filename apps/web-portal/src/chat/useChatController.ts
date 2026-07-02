@@ -5,6 +5,7 @@ import { API_BASE_URL, fetchWithTimeout } from "../hooks/useApi";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import {
   appendActivityEvent,
+  appendMessagePartEvent,
   chatFailureFromDetail,
   chatFailureFromNetwork,
   chatFailureFromResponse,
@@ -62,6 +63,12 @@ function removeRequestMessages(messages: ChatMessage[], requestId: string) {
   return messages.filter(message => messageRequestId(message) !== requestId);
 }
 
+function replaceOrAppendMessage(messages: ChatMessage[], messageId: string, replacement: ChatMessage) {
+  const index = messages.findIndex(message => message.id === messageId);
+  if (index === -1) return [...messages, replacement];
+  return messages.map(message => message.id === messageId ? replacement : message);
+}
+
 function wait(ms: number) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
@@ -70,12 +77,23 @@ function hasPersistedAssistantMessage(messages: ChatMessage[], requestId: string
   return messages.some(message => message.role === "assistant" && messageRequestId(message) === requestId);
 }
 
+function isAbortError(err: unknown) {
+  return err instanceof DOMException
+    ? err.name === "AbortError"
+    : err instanceof Error && err.name === "AbortError";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function useChatController({ accessToken, activeUserEmail, onOpenChat }: UseChatControllerOptions) {
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isMessagesLoading, setIsMessagesLoading] = useState(false);
+  const [isDraftChat, setIsDraftChat] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
   const [localMessagesBySession, setLocalMessagesBySession] = useState<Record<string, ChatMessage[]>>({});
@@ -83,7 +101,11 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeSessionId = activeSession?.id ?? null;
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
+  const isDraftChatRef = useRef(isDraftChat);
   const localMessagesBySessionRef = useRef<Record<string, ChatMessage[]>>({});
+  const streamControllersRef = useRef<Record<string, { controller: AbortController; requestId: string }>>({});
+  const stoppedRequestIdsRef = useRef<Set<string>>(new Set());
+  const messageLoadSeqRef = useRef(0);
 
   const handleTranscript = useCallback((transcript: string) => {
     setChatInput(prev => (prev ? prev + " " + transcript : transcript));
@@ -129,6 +151,10 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    isDraftChatRef.current = isDraftChat;
+  }, [isDraftChat]);
 
   useEffect(() => {
     localMessagesBySessionRef.current = localMessagesBySession;
@@ -188,6 +214,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           return merged;
         });
         setActiveSession(prev => {
+          if (isDraftChatRef.current) return null;
           if (prev) {
             const updatedActive = data.find(session => session.id === prev.id);
             if (updatedActive) return updatedActive;
@@ -252,6 +279,16 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     }));
   }, []);
 
+  const upsertLocalMessage = useCallback((sessionId: string, message: ChatMessage) => {
+    setLocalMessagesBySession(prev => {
+      const current = prev[sessionId] || [];
+      return {
+        ...prev,
+        [sessionId]: replaceOrAppendMessage(current, message.id, message),
+      };
+    });
+  }, []);
+
   const updateLocalMessage = useCallback((sessionId: string, messageId: string, patch: Partial<ChatMessage>) => {
     setLocalMessagesBySession(prev => {
       const current = prev[sessionId] || [];
@@ -277,6 +314,23 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     });
   }, []);
 
+  const removeLocalMessage = useCallback((sessionId: string, messageId: string) => {
+    setLocalMessagesBySession(prev => {
+      const current = prev[sessionId] || [];
+      if (current.length === 0) return prev;
+      const nextMessages = current.filter(message => message.id !== messageId);
+      if (nextMessages.length === current.length) return prev;
+
+      const next = { ...prev };
+      if (nextMessages.length > 0) next[sessionId] = nextMessages;
+      else delete next[sessionId];
+      return next;
+    });
+    if (activeSessionIdRef.current === sessionId) {
+      setChatMessages(prev => prev.filter(message => message.id !== messageId));
+    }
+  }, []);
+
   const markSessionSending = useCallback((sessionId: string) => {
     setSendingSessionIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
   }, []);
@@ -285,7 +339,19 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     setSendingSessionIds(prev => prev.filter(id => id !== sessionId));
   }, []);
 
-  const createNewChat = useCallback(async (): Promise<ChatSession | null> => {
+  const startNewChat = useCallback(() => {
+    messageLoadSeqRef.current += 1;
+    isDraftChatRef.current = true;
+    setIsDraftChat(true);
+    setActiveSession(null);
+    setChatMessages([]);
+    setIsMessagesLoading(false);
+    setChatInput("");
+    setAttachedFiles([]);
+    onOpenChat();
+  }, [onOpenChat]);
+
+  const createPersistedChatSession = useCallback(async (): Promise<ChatSession | null> => {
     if (!accessToken) return null;
     try {
       const res = await fetch(`${API_BASE_URL}/chat/sessions`, {
@@ -295,6 +361,8 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       });
       if (res.ok) {
         const newSession = await res.json() as ChatSession;
+        isDraftChatRef.current = false;
+        setIsDraftChat(false);
         upsertChatSession(newSession);
         setActiveSession(newSession);
         onOpenChat();
@@ -312,7 +380,12 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   }, [accessToken, getHeaders, onOpenChat, upsertChatSession]);
 
   const fetchSessionMessages = useCallback(async (sid: string, showLoading = true): Promise<ChatMessage[] | null> => {
-    if (showLoading) setIsMessagesLoading(true);
+    const loadSeq = showLoading ? messageLoadSeqRef.current + 1 : messageLoadSeqRef.current;
+    if (showLoading) {
+      messageLoadSeqRef.current = loadSeq;
+      setChatMessages([]);
+      setIsMessagesLoading(true);
+    }
     try {
       const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
       if (res.ok) {
@@ -325,7 +398,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     } catch (err) {
       console.error("Failed to fetch messages:", err);
     } finally {
-      if (showLoading && activeSessionIdRef.current === sid) {
+      if (showLoading && messageLoadSeqRef.current === loadSeq) {
         setIsMessagesLoading(false);
       }
     }
@@ -333,7 +406,6 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   }, [getHeaders]);
 
   const deleteChatSession = useCallback(async (sid: string) => {
-    if (!confirm("Archive/delete this chat session?")) return;
     try {
       await fetch(`${API_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: getHeaders() });
       setChatSessions(prev => prev.filter(s => s.id !== sid));
@@ -354,6 +426,8 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       }
 
       const cached = readCachedChatSessions(activeUserEmail);
+      isDraftChatRef.current = false;
+      setIsDraftChat(false);
       setChatSessions(cached);
       setActiveSession(cached[0] || null);
       setChatMessages([]);
@@ -374,6 +448,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       if (activeSessionId && accessToken) {
         void fetchSessionMessages(activeSessionId);
       } else {
+        messageLoadSeqRef.current += 1;
         setChatMessages([]);
         setIsMessagesLoading(false);
       }
@@ -412,7 +487,9 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     requestId: string,
   ) => {
     const abortController = new AbortController();
+    streamControllersRef.current[session.id] = { controller: abortController, requestId };
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let pendingStreamMessage: ChatMessage | null = null;
     const resetStreamTimeout = () => {
       if (timeoutId) clearTimeout(timeoutId);
       timeoutId = setTimeout(() => abortController.abort(), CHAT_STREAM_INACTIVITY_TIMEOUT_MS);
@@ -446,7 +523,6 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         let buffer = "";
         let finalMessage: ChatMessage | null = null;
         let streamFailure: ChatFailurePayload | null = null;
-        let pendingStreamMessage: ChatMessage | null = null;
         const createPendingStreamMessage = (): ChatMessage => ({
           id: pendingMessageId,
           chat_session_id: session.id,
@@ -461,9 +537,9 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             || createPendingStreamMessage();
           const updatedMessage = updater(localMessage);
           pendingStreamMessage = updatedMessage;
-          updateLocalMessage(session.id, pendingMessageId, updatedMessage);
+          upsertLocalMessage(session.id, updatedMessage);
           if (activeSessionIdRef.current === session.id) {
-            setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? updatedMessage : m));
+            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, updatedMessage));
           }
         };
 
@@ -478,12 +554,20 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           for (const item of parsed.events) {
             if (item.event === "activity") {
               updatePendingMessage(message => appendActivityEvent(message, item.data));
-            } else if (item.event === "message") {
+            } else if (["reasoning.delta", "reasoning.available", "thinking.delta", "tool.start", "tool.complete", "message.delta"].includes(item.event)) {
+              updatePendingMessage(message => appendMessagePartEvent(message, item.data));
+            } else if (item.event === "message" || item.event === "message.complete") {
               const pendingMessage = pendingStreamMessage
                 || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
                 || null;
               finalMessage = mergeStreamMetadata(normalizeChatMessage(item.data as ChatMessage), pendingMessage);
               finalMessage.status = "completed";
+            } else if (item.event === "session.title" && isRecord(item.data)) {
+              const title = typeof item.data.title === "string" ? item.data.title.trim() : "";
+              const titleSessionId = typeof item.data.session_id === "string" ? item.data.session_id : session.id;
+              if (title && titleSessionId === session.id) {
+                updateLocalChatSession(session.id, { title });
+              }
             } else if (item.event === "error") {
               streamFailure = chatFailureFromDetail(item.data, requestId, 502);
             }
@@ -496,7 +580,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         } else if (finalMessage) {
           clearLocalRequestMessages(session.id, requestId);
           if (activeSessionIdRef.current === session.id) {
-            setChatMessages(prev => prev.map(m => m.id === pendingMessageId ? finalMessage : m));
+            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, finalMessage));
           }
         } else {
           if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
@@ -511,32 +595,59 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         markAssistantFailed(session.id, pendingMessageId, await chatFailureFromResponse(res, requestId));
       }
     } catch (err: unknown) {
+      if (isAbortError(err) && stoppedRequestIdsRef.current.delete(requestId)) {
+        const stoppedPendingMessage = (localMessagesBySessionRef.current[session.id] || [])
+          .find(message => message.id === pendingMessageId) || null;
+        if (stoppedPendingMessage?.content.trim()) {
+          const metadata = isRecord(stoppedPendingMessage.metadata_json) ? stoppedPendingMessage.metadata_json : {};
+          const stoppedMessage: ChatMessage = {
+            ...stoppedPendingMessage,
+            status: "completed",
+            metadata_json: {
+              ...metadata,
+              stopped: true,
+            },
+          };
+          upsertLocalMessage(session.id, stoppedMessage);
+          if (activeSessionIdRef.current === session.id) {
+            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, stoppedMessage));
+          }
+        } else {
+          removeLocalMessage(session.id, pendingMessageId);
+        }
+        return;
+      }
       if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
       markAssistantFailed(session.id, pendingMessageId, chatFailureFromNetwork(err, requestId));
     } finally {
       clearStreamTimeout();
+      const activeController = streamControllersRef.current[session.id];
+      if (activeController?.requestId === requestId) {
+        delete streamControllersRef.current[session.id];
+      }
       unmarkSessionSending(session.id);
       void refreshChatSession(session.id);
-      if (activeSessionIdRef.current === session.id) {
-        window.setTimeout(() => {
-          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id, false);
-        }, 750);
-        window.setTimeout(() => {
-          if (activeSessionIdRef.current === session.id) void fetchSessionMessages(session.id, false);
-        }, 15_000);
-      }
     }
   }, [
     clearLocalRequestMessages,
-    fetchSessionMessages,
     getHeaders,
     markAssistantFailed,
     markSessionSending,
+    removeLocalMessage,
     refreshChatSession,
     unmarkSessionSending,
-    updateLocalMessage,
+    updateLocalChatSession,
+    upsertLocalMessage,
     waitForPersistedAssistantMessage,
   ]);
+
+  const handleStopActiveChat = useCallback(() => {
+    if (!activeSessionId) return;
+    const activeStream = streamControllersRef.current[activeSessionId];
+    if (!activeStream) return;
+    stoppedRequestIdsRef.current.add(activeStream.requestId);
+    activeStream.controller.abort();
+  }, [activeSessionId]);
 
   const handleSendMessage = useCallback(async (e: FormEvent) => {
     e.preventDefault();
@@ -554,7 +665,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       });
     const artifactIds = attachedArtifacts.map(artifact => artifact.id);
 
-    const currentSession = activeSession || await createNewChat();
+    const currentSession = activeSession || await createPersistedChatSession();
     if (!currentSession) return;
     setChatInput("");
     setAttachedFiles([]);
@@ -595,7 +706,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     addLocalMessages,
     attachedFiles,
     chatInput,
-    createNewChat,
+    createPersistedChatSession,
     postChatMessage,
     sendingSessionIds,
     touchChatSessionForMessage,
@@ -679,13 +790,23 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       alert("Please sign in again before uploading files.");
       return;
     }
-    for (const file of files) {
-      if (file.size > 15 * 1024 * 1024) {
-        alert(`File ${file.name} exceeds 15MB limit.`);
-        continue;
-      }
-      const tempId = crypto.randomUUID();
-      setAttachedFiles(prev => [...prev, { file, id: tempId, uploading: true }]);
+    const validFiles = files.filter(file => {
+      const isValid = file.size <= 15 * 1024 * 1024;
+      if (!isValid) alert(`File ${file.name} exceeds 15MB limit.`);
+      return isValid;
+    });
+    const uploads = validFiles.map(file => ({
+      file,
+      tempId: crypto.randomUUID(),
+    }));
+    if (uploads.length === 0) return;
+
+    setAttachedFiles(prev => [
+      ...prev,
+      ...uploads.map(({ file, tempId }) => ({ file, id: tempId, uploading: true })),
+    ]);
+
+    await Promise.all(uploads.map(async ({ file, tempId }) => {
       const formData = new FormData();
       formData.append("file", file);
       try {
@@ -718,14 +839,51 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           error: `Upload failed: ${errorMessage(err)}`,
         } : f));
       }
-    }
+    }));
   }, [accessToken]);
 
   const handleRemoveFile = useCallback((id: string) => {
     setAttachedFiles(prev => prev.filter(f => f.id !== id));
   }, []);
 
+  const handleOpenAttachment = useCallback(async (attachment: ChatAttachment) => {
+    if (!accessToken) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/artifacts/${attachment.id}/download`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!response.ok) {
+        throw new Error(await uploadFailureFromResponse(response, `Download failed with HTTP ${response.status}.`));
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const shouldPreview = attachment.mime_type.startsWith("image/")
+        || attachment.mime_type === "application/pdf"
+        || attachment.mime_type.startsWith("text/");
+
+      if (shouldPreview) {
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        return;
+      }
+
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = attachment.filename || "download";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5_000);
+    } catch (err) {
+      console.error("Open attachment failed:", err);
+      alert(errorMessage(err));
+    }
+  }, [accessToken]);
+
   const selectSession = useCallback((session: ChatSession) => {
+    isDraftChatRef.current = false;
+    setIsDraftChat(false);
     setActiveSession(session);
     onOpenChat();
   }, [onOpenChat]);
@@ -736,15 +894,16 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     chatInput,
     chatMessages,
     chatSessions,
-    createNewChat,
     deleteChatSession,
     fileInputRef,
     handleCopyMessage,
     handleEditResend,
     handleFileUpload,
+    handleOpenAttachment,
     handleRemoveFile,
     handleRetryMessage,
     handleSendMessage,
+    handleStopActiveChat,
     handleToggleVoice,
     isActiveChatSending,
     isMessagesLoading,
@@ -752,6 +911,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     renameChatSession,
     selectSession,
     setChatInput,
+    startNewChat,
     voiceInterimTranscript,
     voiceState,
   };

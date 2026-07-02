@@ -44,23 +44,44 @@ def test_production_build_cleanliness():
             assert "Blob Artifact ID" not in content
 
 
-def test_liquid_glass_design_system_presence():
-    """Verify that the new Liquid Glass design system classes and fallbacks are compiled in CSS."""
+def test_simplified_design_system_presence():
+    """Verify that the simplified token-based design system is compiled in CSS."""
     css_files = glob.glob(os.path.join(BUILD_DIR, "assets/*.css"))
-    
-    found_glass = False
+
+    found_tokens = False
     for css_path in css_files:
         with open(css_path, "r", encoding="utf-8") as f:
             content = f.read()
-            if "liquid-glass" in content or "backdrop-filter" in content:
-                found_glass = True
-                
+            if "--color-surface" in content and ".surface-panel" in content:
+                found_tokens = True
+
             # Verify reduced-motion support
             assert "prefers-reduced-motion" in content, "prefers-reduced-motion media query missing from compiled CSS"
-            # Verify backdrop-filter unsupported fallback
-            assert "backdrop-filter" in content or "background" in content
+            assert "liquid-glass" not in content
+            assert "glass-composer" not in content
+            assert "glass-panel" not in content
 
-    assert found_glass, "Liquid glass design system styles not compiled in CSS assets."
+    assert found_tokens, "Simplified design system styles not compiled in CSS assets."
+
+
+def test_app_shell_is_edge_flush_without_outer_bubble():
+    """The mounted app shell should match Hermes' edge-flush shell, not the old rounded glass frame."""
+    app_shell_path = os.path.join(SRC_DIR, "components", "layout", "AppShell.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+    with open(app_shell_path, "r", encoding="utf-8") as f:
+        app_shell = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert 'data-slot="app-shell" className="flex h-full min-h-0 w-full' in app_shell
+    assert 'className="flex h-screen min-h-0 w-screen' not in app_shell
+    assert 'className="flex h-full min-h-0 w-full overflow-hidden"' not in app_shell
+    assert "rounded-none" not in app_shell
+    assert "[data-slot='app-shell']" not in css
+    assert "#root {\n    isolation: isolate;" not in css
+    assert "html,\n  body,\n  #root" in css
+    assert "margin: 0;" in css
+    assert "overflow: hidden;" in css
 
 
 def test_portal_html_metatags():
@@ -99,7 +120,8 @@ def test_chat_upload_snapshots_file_list_before_reset():
     assert snapshot in content
     assert reset in content
     assert content.index(snapshot) < content.index(reset)
-    assert "for (const file of files)" in content
+    assert "const uploads = validFiles.map(file => ({" in content
+    assert "await Promise.all(uploads.map(async" in content
 
 
 def test_chat_session_refresh_preserves_active_local_session():
@@ -114,6 +136,30 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "export function mergeFetchedChatSessions" in runtime_content
     assert "if (activeSessionId && !byId.has(activeSessionId))" in runtime_content
     assert "return prev;" in chat_controller_content
+
+
+def test_new_chat_button_opens_draft_before_backend_session_create():
+    app_path = os.path.join(SRC_DIR, "App.tsx")
+    chat_controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
+    with open(app_path, "r", encoding="utf-8") as f:
+        app_content = f.read()
+    with open(chat_controller_path, "r", encoding="utf-8") as f:
+        controller = f.read()
+
+    start_index = controller.index("const startNewChat = useCallback")
+    persist_index = controller.index("const createPersistedChatSession = useCallback")
+    start_body = controller[start_index:persist_index]
+
+    assert "startNewChat" in app_content
+    assert "void createNewChat();" not in app_content
+    assert "isDraftChatRef.current = true;" in start_body
+    assert "setIsDraftChat(true);" in start_body
+    assert "setActiveSession(null);" in start_body
+    assert "setChatMessages([]);" in start_body
+    assert "fetch(`${API_BASE_URL}/chat/sessions`" not in start_body
+    assert "const currentSession = activeSession || await createPersistedChatSession();" in controller
+    assert "setIsDraftChat(false);" in controller[persist_index:]
+    assert "if (isDraftChatRef.current) return null;" in controller
 
 
 def test_voice_uses_server_transcription_without_browser_speech_recognition():
@@ -162,18 +208,110 @@ def test_voice_interim_text_is_visible_in_composer():
     assert "bg-[var(--color-warning)] text-white" in content
 
 
-def test_markdown_tables_preserve_escaped_pipes_inside_cells():
+def test_chat_composer_focuses_like_hermes_on_session_change():
+    composer_path = os.path.join(SRC_DIR, "components", "chat", "ChatComposer.tsx")
+    view_path = os.path.join(SRC_DIR, "components", "chat", "ChatView.tsx")
+    with open(composer_path, "r", encoding="utf-8") as f:
+        composer = f.read()
+    with open(view_path, "r", encoding="utf-8") as f:
+        view = f.read()
+
+    assert "focusKey?: string | null" in composer
+    assert "const focusInput = useCallback" in composer
+    assert "el.focus({ preventScroll: true })" in composer
+    assert "window.requestAnimationFrame(focus)" in composer
+    assert "window.setTimeout(focus, 0)" in composer
+    assert "}, [focusInput, focusKey]);" in composer
+    assert 'focusKey={activeSession?.id ?? "new"}' in view
+
+
+def test_chat_composer_stacks_from_measured_wrap_like_hermes():
+    composer_path = os.path.join(SRC_DIR, "components", "chat", "ChatComposer.tsx")
+    with open(composer_path, "r", encoding="utf-8") as f:
+        composer = f.read()
+
+    assert "const COMPOSER_STACK_BREAKPOINT_PX = 320;" in composer
+    assert "const COMPOSER_SINGLE_LINE_MAX_PX = 36;" in composer
+    assert "const rootRef = useRef<HTMLDivElement>(null);" in composer
+    assert "const surfaceRef = useRef<HTMLDivElement>(null);" in composer
+    assert "const lastTightRef = useRef<boolean | null>(null);" in composer
+    assert "const isStacked = isComposerExpanded || isComposerTight;" in composer
+    assert "data-stacked={isStacked ? \"\" : undefined}" in composer
+    assert "new ResizeObserver(syncComposerMetrics)" in composer
+    assert "textarea.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX" in composer
+    assert "chatInput.trimEnd().includes(\"\\n\")" in composer
+    assert "chatInput.length >" not in composer
+    assert "hasWrappedText" not in composer
+
+
+def test_attachment_filename_hover_uses_portal_tooltip_not_native_title():
+    attachment_path = os.path.join(SRC_DIR, "components", "chat", "FileAttachmentTile.tsx")
+    tooltip_path = os.path.join(SRC_DIR, "components", "ui", "tooltip.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+    with open(attachment_path, "r", encoding="utf-8") as f:
+        attachment = f.read()
+    with open(tooltip_path, "r", encoding="utf-8") as f:
+        tooltip = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert 'import { Tip } from "../ui/tooltip";' in attachment
+    assert "<Tip label={filename} side=\"top\">" in attachment
+    assert "TooltipPrimitive.Portal" in tooltip
+    assert "bg-[var(--color-surface-raised)]" in tooltip
+    assert "text-[var(--color-text)]" in tooltip
+    assert "border-[var(--color-border)]" in tooltip
+    assert "text-[var(--color-bg)]" not in tooltip
+    assert "text-background" not in tooltip
+    assert "title={filename}" not in attachment
+    assert "file-attachment-tooltip" not in attachment
+    assert ".file-attachment-tooltip" not in css
+
+
+def test_user_message_attachments_scroll_below_sticky_bubble():
+    messages_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(messages_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    root_start = content.index('<MessagePrimitive.Root\n        className="conversation-turn conversation-user-turn')
+    root_end = content.index("</MessagePrimitive.Root>", root_start)
+    sticky_root = content[root_start:root_end]
+
+    assert "function UserMessageAttachments" in content
+    assert 'data-slot="aui_user-message-attachments"' in content
+    assert "conversation-attachments" not in sticky_root
+    assert "<UserMessageAttachments attachments={attachments} onOpenAttachment={onOpenAttachment} />" in content[root_end:]
+
+
+def test_markdown_renderer_uses_streamdown_with_preprocessing():
     renderer_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
     with open(renderer_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "function isEscapedPipe" in content
-    assert 'char === "|" && !isEscapedPipe(trimmed, index)' in content
-    assert 'replace(/\\\\\\|/g, "|")' in content
-    assert "function normalizeTableRow" in content
-    assert "cells.length < headers.length" in content
-    assert "flexibleCellIndex(headers)" in content
-    assert "isTableLikeRow(lines[index])" in content
+    assert "@assistant-ui/react-streamdown" in content
+    assert "StreamdownTextPrimitive" in content
+    assert "TextMessagePartProvider" in content
+    assert "preprocessMarkdown(text)" in content
+    assert "tailBoundedRemend" in content
+    assert "parseMarkdownIntoBlocksCached" in content
+
+
+def test_markdown_preprocess_does_not_patch_pipe_table_delimiters():
+    preprocess_path = os.path.join(SRC_DIR, "lib", "markdown-preprocess.ts")
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    compact_markdown_path = os.path.join(SRC_DIR, "components", "chat", "CompactMarkdown.tsx")
+    with open(preprocess_path, "r", encoding="utf-8") as f:
+        preprocess = f.read()
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+    with open(compact_markdown_path, "r", encoding="utf-8") as f:
+        compact_markdown = f.read()
+
+    assert "repairPipeTableDelimiters" not in preprocess
+    assert "TABLE_DELIMITER_CELL_RE" not in preprocess
+    assert "CompactMarkdown" in assistant
+    assert "Streamdown" in compact_markdown
+    assert "MarkdownTable" in compact_markdown
 
 
 def test_ios_pwa_manifest_and_icons_are_declared():
@@ -279,31 +417,98 @@ def test_microsoft_native_device_login_uses_verification_url_directly():
     assert "targetWindow.location.href = targetUrl" in content
 
 
-def test_pending_activity_uses_chronological_work_log():
-    pending_path = os.path.join(SRC_DIR, "components", "chat", "PendingAssistant.tsx")
-    work_log_path = os.path.join(SRC_DIR, "components", "chat", "AgentWorkLog.tsx")
+def test_chat_uses_assistant_ui_message_parts_not_local_tool_trail():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    chat_view_path = os.path.join(SRC_DIR, "components", "chat", "ChatView.tsx")
     runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
-    with open(pending_path, "r", encoding="utf-8") as f:
-        pending = f.read()
-    with open(work_log_path, "r", encoding="utf-8") as f:
-        work_log = f.read()
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+    with open(chat_view_path, "r", encoding="utf-8") as f:
+        chat_view = f.read()
     with open(runtime_path, "r", encoding="utf-8") as f:
         runtime = f.read()
 
-    assert "AgentWorkLog" in pending
-    assert "stream_work_items" in work_log
-    assert "stream_work_items" in runtime
+    assert "MessageBubble" not in chat_view
+    assert "ToolTrail" not in chat_view + assistant
+    assert "PendingAssistant" not in chat_view + assistant
+    assert "AssistantRuntimeProvider" in assistant
+    assert "useIncrementalExternalStoreRuntime" in assistant
+    assert "ExportedMessageRepository.fromBranchableArray" in assistant
+    assert "ExportedMessageRepository.fromArray" not in assistant
+    assert "useExternalStoreRuntime" not in assistant
+    assert "ThreadPrimitive.MessageByIndex" in assistant
+    assert "useStickToBottom" in assistant
+    assert "MessagePrimitive.Parts" in assistant
+    assert "ReasoningGroup" in assistant
+    assert "ToolGroup" in assistant
+    assert "tools: { Fallback: ToolFallback }" in assistant
+    assert "message_parts" in runtime
+    assert "agent_trail" not in runtime
+    assert 'reasoning: ""' not in runtime
+    assert "appendReasoningPart" in runtime
+    assert "upsertToolCallPart" in runtime
+    assert "ThinkingDisclosure" in assistant
+    assert "ToolNode" not in assistant
+    assert "trail_events" not in runtime
+    assert "stream_work_items" not in runtime + assistant
     assert "stream_reasoning" not in runtime
-    assert "reasoning_content" not in work_log
-    assert "stream_reasoning" not in work_log
-    assert "isTableLikeLine" in work_log
-    assert "collapseRepeatedWords" in work_log
-    assert "Worked for" in work_log
-    assert "Continuing with available context." in work_log
-    assert "status === \"failed\" && !turnFailed(message)" in work_log
-    assert "Checking connected apps" not in pending + work_log
-    assert "Writing the reply" not in pending + work_log
-    assert "toolDetail" not in pending + work_log
+    assert "reasoning_content" not in assistant
+    assert "stream_reasoning" not in assistant
+    assert "Checking connected apps" not in assistant
+    assert "Writing the reply" not in assistant
+    assert "toolDetail" not in assistant
+
+
+def test_completed_assistant_messages_use_canonical_markdown_content():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+
+    assert 'if (!running && message.content.trim())' in assistant
+    assert '...parts.filter(part => part.type !== "text")' in assistant
+    assert '{ type: "text", text: message.content }' in assistant
+
+
+def test_reasoning_stream_matches_hermes_message_part_rules():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+    with open(runtime_path, "r", encoding="utf-8") as f:
+        runtime = f.read()
+
+    assert "THINKING_STATUS_PREFIX_RE" in runtime
+    assert "EMPTY_THINKING_PLACEHOLDER_RE" in runtime
+    assert "function coerceThinkingText" in runtime
+    assert "function appendTextPart" in runtime
+    assert 'part.type === "tool-call"' in runtime
+    assert 'type === "thinking.delta"' in runtime
+    assert 'type === "reasoning.delta" || type === "reasoning.available"' in runtime
+    assert "status chrome, not visible reasoning" in runtime
+    assert "coerceThinkingText(event.text ?? event.delta)" in runtime
+    assert "appendReasoningPart(messageParts, delta)" in runtime
+    assert 'status = "streaming";' in runtime
+    assert "replaceReasoningPart" in runtime
+    assert "function runtimePartsFromMetadata" in assistant
+    assert "text(part.text)" in assistant
+    assert "rawText(raw.reasoning)" not in assistant
+    assert "rawText(raw.thinking)" not in assistant
+    assert "trail.reasoning" not in assistant
+    assert "const displayText = value.trimStart();" in assistant
+    assert "live && index === orderedParts.length - 1" not in assistant
+
+
+def test_live_reasoning_reveal_keeps_hermes_ref_sync():
+    renderer_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
+    with open(renderer_path, "r", encoding="utf-8") as f:
+        renderer = f.read()
+
+    assert "shownRef.current = displayed;" in renderer
+    assert "targetRef.current = text;" in renderer
+    assert "}, [text, isRunning]);" in renderer
+    assert "}, [text, isRunning, displayed]);" not in renderer
+    assert "const revealed = useSmoothReveal(text, isRunning)" in renderer
+    assert "isRunning || revealed !== text" in renderer
 
 
 def test_stream_updates_apply_each_chunk_once():
@@ -317,5 +522,70 @@ def test_stream_updates_apply_each_chunk_once():
     assert "let pendingStreamMessage: ChatMessage | null = null;" in controller
     assert "const updatedMessage = updater(localMessage);" in controller
     assert "pendingStreamMessage = updatedMessage;" in controller
-    assert "m.id === pendingMessageId ? updatedMessage : m" in controller
-    assert "current.filter(isRecord).map(existing => ({ ...existing }))" in runtime
+    assert "replaceOrAppendMessage(prev, pendingMessageId, updatedMessage)" in controller
+    assert "upsertLocalMessage(session.id, updatedMessage)" in controller
+    assert "messagePartsFrom(metadata.message_parts)" in runtime
+    assert "metadata.message_parts = messageParts" in runtime
+    assert "stream_work_items" not in runtime
+
+
+def test_markdown_code_blocks_use_hermes_code_card_renderer():
+    markdown_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
+    highlighter_path = os.path.join(SRC_DIR, "components", "chat", "ShikiHighlighter.tsx")
+    code_card_path = os.path.join(SRC_DIR, "components", "chat", "CodeCard.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+
+    with open(markdown_path, "r", encoding="utf-8") as f:
+        markdown = f.read()
+    with open(highlighter_path, "r", encoding="utf-8") as f:
+        highlighter = f.read()
+    with open(code_card_path, "r", encoding="utf-8") as f:
+        code_card = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert 'import { SyntaxHighlighter } from "./ShikiHighlighter";' in markdown
+    assert "type SyntaxHighlighterProps" in markdown
+    assert "SyntaxHighlighter: (props: SyntaxHighlighterProps)" in markdown
+    assert "<SyntaxHighlighter {...props} defer={isStreaming} />" in markdown
+    assert "react-shiki" in highlighter
+    assert 'theme={SHIKI_THEME}' in highlighter
+    assert 'defaultColor="light-dark()"' in highlighter
+    assert "PlainCode" in highlighter
+    assert "isLikelyProseCodeBlock" in highlighter
+    assert 'data-slot="code-card"' in code_card
+    assert 'data-streamdown=\'code-block\'' in css
+    assert "[data-slot='code-card']" in css
+    assert ".aui-shiki" in css
+
+
+def test_user_messages_use_hermes_sticky_bubble_path_without_local_overlay():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    actions_path = os.path.join(SRC_DIR, "components", "chat", "MessageActions.tsx")
+    chat_view_path = os.path.join(SRC_DIR, "components", "chat", "ChatView.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+    with open(actions_path, "r", encoding="utf-8") as f:
+        actions = f.read()
+    with open(chat_view_path, "r", encoding="utf-8") as f:
+        chat_view = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert "ResizeObserver" in assistant
+    assert "clampInnerRef" in assistant
+    assert 'className="sticky-human-clamp"' in assistant
+    assert 'data-slot="aui_user-message-root"' in assistant
+    assert 'bg-[var(--ui-chat-surface-background)]' in assistant
+    assert "conversation-attachments" in assistant
+    assert 'aria-label="Edit message"' in assistant
+    assert 'role="user"' not in assistant.replace('data-role="user"', "")
+    assert "role === \"user\"" not in actions
+    assert "Pencil" not in actions
+    assert "isUserScrolledUp" not in chat_view
+    assert 'data-following={isAtBottom ? "true" : "false"}' in assistant
+    assert 'data-editing={editingMessageId ? "true" : undefined}' in assistant
+    assert "padding: 0.5rem 2.25rem" not in css
+    assert ".conversation-user-bubble:hover" in css

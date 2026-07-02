@@ -36,6 +36,37 @@ def _preview_text(value: Any, limit: int = TEXT_PREVIEW_CHARS) -> str:
     return text[: limit - 1].rstrip() + "..."
 
 
+def _code_preview(code: Any, limit: int = 120) -> str:
+    if not isinstance(code, str):
+        return ""
+    for line in code.splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("#"):
+            continue
+        return _preview_text(clean, limit)
+    return ""
+
+
+def _workspace_language(args: dict[str, Any]) -> str:
+    language = str(args.get("language") or "python").strip().lower()
+    if language in {"py"}:
+        return "python"
+    if language in {"sh", "bash", "terminal"}:
+        return "shell"
+    return language or "python"
+
+
+def _workspace_action(args: dict[str, Any]) -> str:
+    language = _workspace_language(args)
+    purpose = _preview_text(args.get("purpose") or args.get("task"))
+    code = _code_preview(args.get("code"))
+    language_label = "Shell" if language == "shell" else language.title()
+    detail = purpose or code
+    if detail:
+        return f"Run {language_label}: {detail}"
+    return f"Run {language_label}"
+
+
 def _tool_connector(tool_name: str) -> str:
     if tool_name == "workspace":
         return "Workspace"
@@ -68,9 +99,7 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
             return f"Odoo {model}.{method}"
         return "Odoo"
     if tool_name == "workspace":
-        language = _preview_text(args.get("language") or "python")
-        purpose = _preview_text(args.get("purpose"))
-        return f"Workspace {language}{f': {purpose}' if purpose else ''}"
+        return _workspace_action(args)
 
     command = _preview_text(args.get("command"))
     if command:
@@ -93,7 +122,7 @@ def _tool_action(tool_name: str, args: dict[str, Any]) -> str:
 def _safe_tool_arguments(args: dict[str, Any]) -> dict[str, Any]:
     allowed = {
         "command", "query", "model", "mode", "operation", "method", "resource",
-        "timeout", "fields", "limit", "order", "language", "purpose",
+        "timeout", "fields", "limit", "order", "language", "purpose", "task",
     }
     safe: dict[str, Any] = {}
     for key in allowed:
@@ -108,6 +137,14 @@ def _safe_tool_arguments(args: dict[str, Any]) -> dict[str, Any]:
             safe[key] = sorted(value.keys())[:8]
         else:
             safe[key] = value
+    if str(args.get("language") or "").strip().lower() in {"python", "py", "shell", "bash", "sh", "terminal"}:
+        code = args.get("code")
+        if isinstance(code, str) and code.strip():
+            safe["code"] = _preview_text(code, 4000)
+            if "purpose" not in safe and "task" not in safe:
+                preview = _code_preview(code)
+                if preview:
+                    safe["purpose"] = preview
     if safe:
         return safe
     return {"argument_keys": sorted(args.keys())[:8]}
@@ -266,6 +303,25 @@ def _activity_output_summary(span_type: str, data: dict[str, Any]) -> dict[str, 
     if span_type == "tool_call":
         result = data.get("result")
         if isinstance(result, dict):
+            if "workspace_id" in result:
+                return {
+                    "result": {
+                        "status": result.get("status"),
+                        "error": bool(result.get("error")),
+                        "error_type": result.get("error_type"),
+                        "message": _preview_text(result.get("message") or result.get("error")),
+                        "language": result.get("language"),
+                        "exit_code": result.get("exit_code"),
+                        "timed_out": result.get("timed_out"),
+                        "stdout": _preview_text(result.get("stdout"), 4000),
+                        "stderr": _preview_text(result.get("stderr"), 2000),
+                        "tool_calls": result.get("tool_calls"),
+                        "connector_calls": result.get("connector_calls") if isinstance(result.get("connector_calls"), dict) else {},
+                        "connector_error_calls": result.get("connector_error_calls") if isinstance(result.get("connector_error_calls"), dict) else {},
+                        "connector_error_details": result.get("connector_error_details") if isinstance(result.get("connector_error_details"), list) else [],
+                        "files": result.get("files") if isinstance(result.get("files"), list) else [],
+                    }
+                }
             count = _result_count(result)
             return {
                 "result": {
@@ -428,6 +484,7 @@ class TraceService:
             "started_at": span.started_at.isoformat() if span.started_at else None,
             "ended_at": now.isoformat(),
             "duration_ms": span.duration_ms,
+            "input_summary": span.input_summary_json or {},
             "output_summary": output_summary or {},
             "error_type": error_type,
             "error_message": error_message,

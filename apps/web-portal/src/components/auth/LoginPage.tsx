@@ -1,6 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import type { InteractionStatus } from "@azure/msal-browser";
-import { GlassButton } from "../ui/GlassButton";
+import { Button } from "../ui/Button";
 
 
 interface LoginPageProps {
@@ -27,7 +27,7 @@ export function LoginPage({
 
   return (
     <div className="flex h-[100dvh] bg-canvas text-default antialiased overflow-hidden items-center justify-center relative px-4">
-      <div className="relative z-10 max-w-md w-full glass-panel rounded-3xl p-8 text-center space-y-6">
+      <div className="surface-panel relative z-10 max-w-md w-full rounded-lg p-8 text-center space-y-6">
         <div>
           <h2 className="text-2xl font-extrabold text-default tracking-tight">
             AI Platform
@@ -38,7 +38,7 @@ export function LoginPage({
         </div>
 
         <div className="space-y-3 pt-4">
-          <GlassButton onClick={onSignIn} className="w-full py-3.5 text-sm font-extrabold">
+          <Button onClick={onSignIn} className="w-full py-3.5 text-sm font-extrabold">
             <div className="grid grid-cols-2 gap-0.5 shrink-0 w-4 h-4">
               <div className="bg-[#f25f22] w-1.5 h-1.5" />
               <div className="bg-[#7fba00] w-1.5 h-1.5" />
@@ -46,7 +46,7 @@ export function LoginPage({
               <div className="bg-[#ffb900] w-1.5 h-1.5" />
             </div>
             Sign in with Microsoft ID
-          </GlassButton>
+          </Button>
         </div>
       </div>
     </div>

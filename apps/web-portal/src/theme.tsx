@@ -20,48 +20,36 @@ function useTheme() {
 
 void useTheme;
 
-function resolveTheme(theme: Theme): "light" | "dark" {
-  if (theme === "light") return "light";
-  if (theme === "dark") return "dark";
+function resolveSystemTheme(): "light" | "dark" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function applyTheme(theme: Theme) {
-  const resolved = resolveTheme(theme);
+function applySystemTheme() {
+  const resolved = resolveSystemTheme();
   document.documentElement.setAttribute("data-theme", resolved);
+  document.documentElement.style.colorScheme = resolved;
   return resolved;
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>(() => {
-    const stored = localStorage.getItem("ai-platform-theme");
-    return (stored === "light" || stored === "dark") ? stored : "system";
-  });
-
-  const [resolved, setResolved] = useState<"light" | "dark">(() => applyTheme(theme));
+  const [resolved, setResolved] = useState<"light" | "dark">(() => applySystemTheme());
 
   useEffect(() => {
-    const resolvedTheme = applyTheme(theme);
-    queueMicrotask(() => setResolved(resolvedTheme));
-    localStorage.setItem("ai-platform-theme", theme);
-
-    if (theme === "system") {
-      const mq = window.matchMedia("(prefers-color-scheme: dark)");
-      const handler = () => {
-        const r = applyTheme("system");
-        setResolved(r);
-      };
-      mq.addEventListener("change", handler);
-      return () => mq.removeEventListener("change", handler);
-    }
-  }, [theme]);
+    localStorage.removeItem("ai-platform-theme");
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => setResolved(applySystemTheme());
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
 
   const setTheme = useCallback((t: Theme) => {
-    setThemeState(t);
+    void t;
+    setResolved(applySystemTheme());
   }, []);
 
   return (
-    <ThemeContext.Provider value={{ theme, resolved, setTheme }}>
+    <ThemeContext.Provider value={{ theme: "system", resolved, setTheme }}>
       {children}
     </ThemeContext.Provider>
   );

@@ -1,6 +1,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 os.environ["DEBUG"] = "true"
@@ -31,20 +32,75 @@ def test_health_exposes_only_raw_odoo_capability():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["capabilities"] == ["odoo.run"]
+    assert data["capabilities"] == ["odoo.run", "odoo.guidance"]
 
 
 def test_capabilities_exposes_only_raw_odoo_endpoint():
     response = client.get("/capabilities", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
-    assert response.json()["endpoints"] == [
+    data = response.json()
+    assert data["endpoints"] == [
         {
             "path": "/odoo/orm/run",
             "method": "POST",
             "description": "Run direct Odoo calls",
-        }
+        },
+        {
+            "path": "/odoo/guidance",
+            "method": "GET",
+            "description": "Return Odoo connector guidance",
+        },
+        {
+            "path": "/odoo/manifest",
+            "method": "GET",
+            "description": "Return Odoo connector package manifest",
+        },
     ]
+    assert data["guidance_version"] == "2.3.0"
+
+
+def test_connector_serves_its_own_manifest_and_skill():
+    manifest_response = client.get("/odoo/manifest", headers=AUTH_HEADERS)
+    guidance_response = client.get("/odoo/guidance", headers=AUTH_HEADERS)
+
+    assert manifest_response.status_code == 200
+    manifest = manifest_response.json()
+    assert manifest["id"] == "odoo"
+    assert manifest["broker_target"] == "odoo"
+    assert manifest["skills"][0]["path"] == "skills/odoo-api/SKILL.md"
+
+    assert guidance_response.status_code == 200
+    guidance = guidance_response.json()
+    assert guidance["connector"] == "odoo"
+    assert guidance["version"] == "2.3.0"
+    assert guidance["source"].endswith("apps/odoo-connector-api/skills/odoo-api/SKILL.md")
+    assert "Direct integration with Odoo ERP via JSON-RPC" in guidance["content"]
+    assert "call(\"odoo\"" in guidance["content"]
+
+
+def test_raw_odoo_endpoint_can_return_connector_guidance():
+    response = client.post(
+        "/odoo/orm/run",
+        json={"operation": "guidance"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["connector"] == "odoo"
+    assert data["manifest"]["id"] == "odoo"
+
+
+def test_raw_odoo_endpoint_requires_credentials_for_model_calls():
+    response = client.post(
+        "/odoo/orm/run",
+        json={"model": "res.partner", "method": "search_count", "args": [[]]},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "odoo_credentials_required"
 
 
 def test_execute_kw_authenticates_and_calls_through_jsonrpc():
@@ -104,6 +160,78 @@ def test_execute_kw_authenticates_and_calls_through_jsonrpc():
     assert posted_payloads[0]["params"]["method"] == "authenticate"
     assert posted_payloads[1]["params"]["service"] == "object"
     assert posted_payloads[1]["params"]["method"] == "execute_kw"
+
+
+def test_jsonrpc_retries_transient_gateway_errors():
+    posted_payloads = []
+    request = httpx.Request("POST", "https://example.odoo.com/jsonrpc")
+
+    class GatewayResponse:
+        status_code = 502
+        headers = {"content-type": "text/html"}
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError(
+                "Server error '502 BAD GATEWAY'",
+                request=request,
+                response=httpx.Response(502, request=request),
+            )
+
+    class OkResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        responses = [
+            GatewayResponse(),
+            OkResponse({"result": 7}),
+            OkResponse({"result": [{"id": 1, "name": "EXCH-2026-03-0004"}]}),
+        ]
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            posted_payloads.append(kwargs["json"])
+            return self.responses.pop(0)
+
+    odoo = OdooClient(
+        OdooCredentials(
+            url="https://example.odoo.com",
+            db="test",
+            username="test",
+            password_or_api_key="test",
+        ),
+        retry_backoff_seconds=0,
+    )
+
+    with patch("app.core.odoo_client.httpx.Client", FakeClient):
+        result = odoo.execute_kw(
+            "account.move",
+            "search_read",
+            args=[[["name", "=", "EXCH-2026-03-0004"]]],
+            kwargs={"fields": ["id", "name"]},
+        )
+
+    assert result == [{"id": 1, "name": "EXCH-2026-03-0004"}]
+    assert len(posted_payloads) == 3
+    assert posted_payloads[0] == posted_payloads[1]
+    assert posted_payloads[2]["params"]["method"] == "execute_kw"
 
 
 def test_jsonrpc_error_compacts_debug_traceback():

@@ -25,6 +25,7 @@ from app.services.tool_registry import (
     MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
     MICROSOFT_NATIVE_TOOL_NAMES,
 )
+from app.services.tool_guidance import tool_guidance_payload, tool_skill_markdown
 from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,20 @@ MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_RECORD_ITEMS = 120
 MAX_TOOL_RESULT_DICT_KEYS = 60
 MAX_TOOL_RESULT_JSON_CHARS = 350000
+DOCUMENT_READER_DEFAULT_LIMIT = 500
+DOCUMENT_READER_MAX_LIMIT = 2000
+DOCUMENT_READER_MAX_CHARS = 100000
+DOCUMENT_READER_DEFAULT_TABLE_LIMIT = 20
+DOCUMENT_READER_MAX_TABLE_LIMIT = 100
+DOCUMENT_READER_DEFAULT_PAGE_LIMIT = 20
+DOCUMENT_READER_MAX_PAGE_LIMIT = 100
 TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "3000"))
 TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
 MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "20"))
 TOOL_ERROR_SUMMARY_LIMIT = 8
+CONNECTOR_SKILL_MAX_CHARS = int(os.environ.get("CONNECTOR_SKILL_MAX_CHARS", "24000"))
+TOOL_SKILL_MAX_CHARS = int(os.environ.get("TOOL_SKILL_MAX_CHARS", "20000"))
+CONNECTOR_SKILL_TIMEOUT_SECONDS = float(os.environ.get("CONNECTOR_SKILL_TIMEOUT_SECONDS", "8"))
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
@@ -295,6 +306,109 @@ MICROSOFT_TOOL_PROVIDER_BY_NAME = {
     "ms_teams_powershell": "teams_admin",
     "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
 }
+
+
+def _truncate_connector_skill(content: str) -> str:
+    if len(content) <= CONNECTOR_SKILL_MAX_CHARS:
+        return content
+    omitted = len(content) - CONNECTOR_SKILL_MAX_CHARS
+    return content[:CONNECTOR_SKILL_MAX_CHARS].rstrip() + f"\n\n[connector skill truncated by {omitted} characters]"
+
+
+def _truncate_tool_skill(content: str) -> str:
+    if len(content) <= TOOL_SKILL_MAX_CHARS:
+        return content
+    omitted = len(content) - TOOL_SKILL_MAX_CHARS
+    return content[:TOOL_SKILL_MAX_CHARS].rstrip() + f"\n\n[tool skill truncated by {omitted} characters]"
+
+
+def _selected_tool_names(tools: list[AITool]) -> set[str]:
+    return {str(tool.name or "") for tool in tools}
+
+
+def _selected_connector_skill_systems(connected_systems: set[str], tools: list[AITool]) -> list[str]:
+    tool_names = _selected_tool_names(tools)
+    if WORKSPACE_TOOL_NAME not in tool_names and "odoo" not in tool_names:
+        return []
+    systems: list[str] = []
+    if "odoo" in connected_systems:
+        systems.append("odoo")
+    return systems
+
+
+async def _fetch_odoo_connector_skill() -> str | None:
+    if not ODOO_CONNECTOR_URL:
+        return None
+    url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/guidance"
+    headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY}
+    async with httpx.AsyncClient(timeout=CONNECTOR_SKILL_TIMEOUT_SECONDS) as client:
+        response = await client.get(url, headers=headers)
+    if response.status_code >= 400:
+        logger.warning("Odoo connector skill fetch failed with status %s", response.status_code)
+        return None
+    payload = response.json()
+    if not isinstance(payload, dict):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    version = str(payload.get("version") or "unknown")
+    source = str(payload.get("source") or "connector package")
+    return (
+        "### Odoo Connector Skill\n"
+        f"Version: {version}\n"
+        f"Source: {source}\n\n"
+        f"{_truncate_connector_skill(content)}"
+    )
+
+
+async def _connector_skill_context(connected_systems: set[str], tools: list[AITool]) -> str:
+    systems = _selected_connector_skill_systems(connected_systems, tools)
+    if not systems:
+        return ""
+
+    sections: list[str] = []
+    for system in systems:
+        try:
+            skill = await _fetch_odoo_connector_skill() if system == "odoo" else None
+        except Exception as exc:
+            logger.warning("Failed to fetch %s connector skill: %s", system, exc)
+            skill = None
+        if skill:
+            sections.append(skill)
+
+    if not sections:
+        return ""
+    return (
+        "## Connector Skills\n"
+        "The following skill text is owned by the connector package. Use it with Workspace and the connector broker target; "
+        "do not invent connector-specific API flows when the skill gives the raw method flow.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+def _tool_skill_context(tools: list[AITool]) -> str:
+    sections: list[str] = []
+    for tool in tools:
+        name = str(tool.name or "")
+        content = tool_skill_markdown(name)
+        if not content:
+            continue
+        sections.append(
+            f"### {tool.display_name or name} Tool Skill\n"
+            f"Source: app/tools/{name}/SKILL.md\n\n"
+            f"{_truncate_tool_skill(content)}"
+        )
+    if not sections:
+        return ""
+    return (
+        "## Tool Skills\n"
+        "The following skill text is owned by selected platform tools. Use it with the tool directly or from Workspace; "
+        "do not replace it with ad hoc prompt rules.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
 def _connector_error_payload(raw_detail: Any, default_message: str = "") -> dict[str, Any]:
     detail = raw_detail.get("detail") if isinstance(raw_detail, dict) and "detail" in raw_detail else raw_detail
     if not isinstance(detail, dict):
@@ -371,6 +485,20 @@ async def _execute_document_reader_tool(
             "message": "Document Reader requires an authenticated user.",
         }
 
+    mode = str(arguments.get("mode") or "read").strip().lower()
+    if mode == "guidance":
+        payload = tool_guidance_payload("document_reader")
+        if payload:
+            return {"status": "success", "tool_name": "document_reader", "mode": "guidance", **payload}
+        return {
+            "error": True,
+            "status": "failed",
+            "tool_name": "document_reader",
+            "mode": "guidance",
+            "error_type": "guidance_not_found",
+            "message": "Document Reader guidance was not found.",
+        }
+
     raw_artifact_id = str(arguments.get("artifact_id") or "").strip()
     if not raw_artifact_id:
         return {
@@ -390,20 +518,19 @@ async def _execute_document_reader_tool(
             "message": "artifact_id must be a valid UUID.",
         }
 
-    mode = str(arguments.get("mode") or "preview").strip().lower()
-    if mode not in {"status", "preview", "extract"}:
+    if mode not in {"status", "preview", "extract", "read", "tables", "layout"}:
         return {
             "error": True,
             "status": "failed",
             "error_type": "invalid_tool_arguments",
-            "message": "mode must be one of: status, preview, extract.",
+            "message": "mode must be one of: guidance, status, preview, extract, read, tables, layout.",
         }
 
     try:
         max_chars = int(arguments.get("max_chars") or 12000)
     except (TypeError, ValueError):
         max_chars = 12000
-    max_chars = max(1000, min(max_chars, 50000))
+    max_chars = max(1000, min(max_chars, DOCUMENT_READER_MAX_CHARS))
 
     result = await db.execute(
         select(AIArtifact).where(
@@ -420,6 +547,28 @@ async def _execute_document_reader_tool(
             "message": "Uploaded artifact was not found for this user.",
         }
 
+    def metadata_summary(metadata: Any) -> Any:
+        if not isinstance(metadata, dict):
+            return metadata
+        summary = {key: value for key, value in metadata.items() if key != "layout"}
+        layout = metadata.get("layout")
+        if isinstance(layout, dict):
+            summary["layout"] = {
+                "page_count": layout.get("page_count"),
+                "table_count": layout.get("table_count"),
+                "stored_table_count": len(layout.get("tables") or []),
+                "lines_truncated": layout.get("lines_truncated"),
+                "tables_truncated": layout.get("tables_truncated"),
+            }
+        return summary
+
+    def layout_from_artifact() -> dict[str, Any]:
+        metadata = getattr(artifact, "extraction_metadata_json", None)
+        if not isinstance(metadata, dict):
+            return {}
+        layout = metadata.get("layout")
+        return layout if isinstance(layout, dict) else {}
+
     payload: dict[str, Any] = {
         "status": "success",
         "tool_name": "document_reader",
@@ -428,7 +577,7 @@ async def _execute_document_reader_tool(
         "mime_type": artifact.mime_type,
         "extraction_status": getattr(artifact, "extraction_status", None),
         "extraction_source": getattr(artifact, "extraction_source", None),
-        "extraction_metadata": getattr(artifact, "extraction_metadata_json", None),
+        "extraction_metadata": metadata_summary(getattr(artifact, "extraction_metadata_json", None)),
         "extraction_error": getattr(artifact, "extraction_error", None),
     }
     if mode == "status":
@@ -436,12 +585,159 @@ async def _execute_document_reader_tool(
 
     from app.services.artifact import ArtifactService
 
-    preview = await ArtifactService(db).text_preview(artifact, max_chars=max_chars)
+    artifact_svc = ArtifactService(db)
+    if mode == "read":
+        try:
+            offset = int(arguments.get("offset") or 1)
+        except (TypeError, ValueError):
+            offset = 1
+        try:
+            limit = int(arguments.get("limit") or DOCUMENT_READER_DEFAULT_LIMIT)
+        except (TypeError, ValueError):
+            limit = DOCUMENT_READER_DEFAULT_LIMIT
+        offset = max(1, offset)
+        limit = max(1, min(limit, DOCUMENT_READER_MAX_LIMIT))
+
+        text = await artifact_svc.readable_text(artifact)
+        lines = (text or "").splitlines()
+        total_lines = len(lines)
+        end_line = min(total_lines, offset + limit - 1)
+        selected = lines[offset - 1:end_line] if offset <= total_lines else []
+        content = "\n".join(
+            f"{line_number}|{line}"
+            for line_number, line in enumerate(selected, start=offset)
+        )
+        truncated = end_line < total_lines
+        payload.update(
+            {
+                "mode": "read",
+                "content": content,
+                "offset": offset,
+                "limit": limit,
+                "total_lines": total_lines,
+                "character_count": len(text or ""),
+                "truncated": truncated,
+            }
+        )
+        if truncated:
+            payload["next_offset"] = end_line + 1
+            payload["hint"] = (
+                f"Use offset={end_line + 1} to continue reading "
+                f"(showing {offset}-{end_line} of {total_lines} lines)."
+            )
+        if text is None:
+            payload["message"] = "No readable text is available for this artifact."
+        return payload
+
+    if mode == "tables":
+        try:
+            table_offset = int(arguments.get("table_offset") or 1)
+        except (TypeError, ValueError):
+            table_offset = 1
+        try:
+            table_limit = int(arguments.get("table_limit") or DOCUMENT_READER_DEFAULT_TABLE_LIMIT)
+        except (TypeError, ValueError):
+            table_limit = DOCUMENT_READER_DEFAULT_TABLE_LIMIT
+        table_offset = max(1, table_offset)
+        table_limit = max(1, min(table_limit, DOCUMENT_READER_MAX_TABLE_LIMIT))
+
+        text = await artifact_svc.readable_text(artifact, require_layout=True)
+        layout = layout_from_artifact()
+        tables = layout.get("tables") if isinstance(layout.get("tables"), list) else []
+        total_tables = len(tables)
+        end_index = min(total_tables, table_offset + table_limit - 1)
+        selected = tables[table_offset - 1:end_index] if table_offset <= total_tables else []
+        truncated = end_index < total_tables
+
+        payload.update(
+            {
+                "mode": "tables",
+                "extraction_status": getattr(artifact, "extraction_status", None),
+                "extraction_source": getattr(artifact, "extraction_source", None),
+                "extraction_metadata": metadata_summary(getattr(artifact, "extraction_metadata_json", None)),
+                "extraction_error": getattr(artifact, "extraction_error", None),
+                "table_offset": table_offset,
+                "table_limit": table_limit,
+                "total_tables": total_tables,
+                "tables": selected,
+                "character_count": len(text or ""),
+                "truncated": truncated,
+            }
+        )
+        if truncated:
+            payload["next_table_offset"] = end_index + 1
+            payload["hint"] = (
+                f"Use table_offset={end_index + 1} to continue reading tables "
+                f"(showing {table_offset}-{end_index} of {total_tables})."
+            )
+        if not selected:
+            payload["message"] = (
+                "No structured tables were detected for this artifact. "
+                "Use mode='layout' for page lines or mode='read' for raw OCR text."
+            )
+        return payload
+
+    if mode == "layout":
+        try:
+            page_offset = int(arguments.get("page_offset") or 1)
+        except (TypeError, ValueError):
+            page_offset = 1
+        try:
+            page_limit = int(arguments.get("page_limit") or DOCUMENT_READER_DEFAULT_PAGE_LIMIT)
+        except (TypeError, ValueError):
+            page_limit = DOCUMENT_READER_DEFAULT_PAGE_LIMIT
+        page_offset = max(1, page_offset)
+        page_limit = max(1, min(page_limit, DOCUMENT_READER_MAX_PAGE_LIMIT))
+
+        text = await artifact_svc.readable_text(artifact, require_layout=True)
+        layout = layout_from_artifact()
+        pages = layout.get("pages") if isinstance(layout.get("pages"), list) else []
+        total_pages = len(pages)
+        end_index = min(total_pages, page_offset + page_limit - 1)
+        selected = pages[page_offset - 1:end_index] if page_offset <= total_pages else []
+        truncated = end_index < total_pages
+
+        payload.update(
+            {
+                "mode": "layout",
+                "extraction_status": getattr(artifact, "extraction_status", None),
+                "extraction_source": getattr(artifact, "extraction_source", None),
+                "extraction_metadata": metadata_summary(getattr(artifact, "extraction_metadata_json", None)),
+                "extraction_error": getattr(artifact, "extraction_error", None),
+                "page_offset": page_offset,
+                "page_limit": page_limit,
+                "total_pages": total_pages,
+                "pages": selected,
+                "table_count": layout.get("table_count", 0),
+                "tables": [
+                    {
+                        "table_index": table.get("table_index"),
+                        "row_count": table.get("row_count"),
+                        "column_count": table.get("column_count"),
+                        "cell_count": table.get("cell_count"),
+                    }
+                    for table in (layout.get("tables") or [])
+                    if isinstance(table, dict)
+                ],
+                "character_count": len(text or ""),
+                "truncated": truncated,
+            }
+        )
+        if truncated:
+            payload["next_page_offset"] = end_index + 1
+            payload["hint"] = (
+                f"Use page_offset={end_index + 1} to continue reading layout pages "
+                f"(showing {page_offset}-{end_index} of {total_pages})."
+            )
+        return payload
+
+    preview = await artifact_svc.text_preview(artifact, max_chars=max_chars)
     payload.update(
         {
+            "mode": mode,
             "extraction_status": getattr(artifact, "extraction_status", None),
             "extraction_source": getattr(artifact, "extraction_source", None),
-            "extraction_metadata": getattr(artifact, "extraction_metadata_json", None),
+            "extraction_metadata": metadata_summary(getattr(artifact, "extraction_metadata_json", None)),
             "extraction_error": getattr(artifact, "extraction_error", None),
             "text": preview or "",
             "character_count": len(preview or ""),
@@ -473,6 +769,28 @@ async def _execute_tool_call_impl(
         return await _execute_document_reader_tool(db, user_id, arguments)
 
     if tool_name == "odoo":
+        if arguments.get("operation") == "guidance":
+            url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/guidance" if ODOO_CONNECTOR_URL else ""
+            if not url:
+                return {"error": "Odoo connector URL not configured"}
+            headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY}
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+            if response.status_code >= 400:
+                try:
+                    raw_detail = response.json()
+                except Exception:
+                    raw_detail = {"error_type": "connector_http_error", "message": response.text}
+                detail = _connector_error_payload(raw_detail, response.text)
+                return {
+                    "error": True,
+                    "status_code": response.status_code,
+                    "connector_error": detail,
+                    "error_type": detail.get("error_type") or "connector_error",
+                    "message": detail.get("message") or "Connector returned an error.",
+                }
+            return response.json()
+
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         payload = {
             "credentials": credentials,
@@ -683,7 +1001,76 @@ def _compact_tool_value(value: Any, key: str = "", depth: int = 0) -> Any:
     return value
 
 
+def _compact_document_reader_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Preserve document read output like Hermes preserves read_file output.
+
+    The generic connector compactor intentionally crushes ordinary string
+    fields to small previews. File/document reads are different: their purpose
+    is to place bounded text in the tool context so the model can reason over
+    it, then page forward with offset/limit when more is needed.
+    """
+    document_list_limits = {
+        "tables": DOCUMENT_READER_MAX_TABLE_LIMIT,
+        "pages": DOCUMENT_READER_MAX_PAGE_LIMIT,
+        "rows": 1000,
+        "cells": 5000,
+        "values": 200,
+    }
+
+    def compact_document_value(value: Any, key: str = "", depth: int = 0) -> Any:
+        if depth > 10:
+            return {"truncated": True, "reason": "max_depth"}
+
+        if isinstance(value, str):
+            if key in {"content", "text"}:
+                return _truncate_tool_text(value, DOCUMENT_READER_MAX_CHARS)
+            if key == "markdown":
+                return _truncate_tool_text(value, DOCUMENT_READER_MAX_CHARS)
+            return _truncate_tool_text(value)
+
+        if isinstance(value, list):
+            key_lower = key.lower()
+            item_limit = document_list_limits.get(key_lower, MAX_TOOL_RESULT_LIST_ITEMS)
+            compact_items = [
+                compact_document_value(item, key_lower, depth + 1)
+                for item in value[:item_limit]
+            ]
+            if len(value) <= item_limit:
+                return compact_items
+            return {
+                "items": compact_items,
+                "total_items": len(value),
+                "truncated_items": len(value) - item_limit,
+            }
+
+        if isinstance(value, dict):
+            compact: dict[str, Any] = {}
+            items = list(value.items())
+            for child_key, child_value in items[:MAX_TOOL_RESULT_DICT_KEYS]:
+                compact[child_key] = compact_document_value(child_value, child_key, depth + 1)
+            if len(items) > MAX_TOOL_RESULT_DICT_KEYS:
+                compact["_truncated_keys"] = len(items) - MAX_TOOL_RESULT_DICT_KEYS
+            return compact
+
+        return value
+
+    compact: dict[str, Any] = {}
+    for key, value in result.items():
+        if key in {"content", "text"} and isinstance(value, str):
+            compact[key] = _truncate_tool_text(value, DOCUMENT_READER_MAX_CHARS)
+            if len(value) > DOCUMENT_READER_MAX_CHARS:
+                compact[f"{key}_truncated"] = True
+                compact[f"{key}_chars"] = len(value)
+                compact[f"{key}_hint"] = "Use document_reader mode='read' with offset and limit to read a narrower page."
+            continue
+        compact[key] = compact_document_value(value, key, 1)
+    return json.loads(json.dumps(compact, ensure_ascii=False, default=str))
+
+
 def _compact_tool_result_for_model(result: Any) -> Any:
+    if isinstance(result, dict) and result.get("tool_name") == "document_reader":
+        return _compact_document_reader_result(result)
+
     compacted = _compact_tool_value(result)
     payload = json.dumps(compacted, ensure_ascii=False, default=str)
     serializable = json.loads(payload)
@@ -746,6 +1133,35 @@ def _tool_result_error_summary(tool_results: list[dict[str, Any]]) -> list[dict[
         if len(summary) >= TOOL_ERROR_SUMMARY_LIMIT:
             break
     return summary
+
+
+def _workspace_generated_files(result: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(result, dict) or "workspace_id" not in result:
+        return []
+    input_paths = {
+        str(item.get("path") or "")
+        for item in result.get("input_files") or []
+        if isinstance(item, dict)
+    }
+    generated: list[dict[str, Any]] = []
+    for item in result.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        content_base64 = item.get("content_base64")
+        if not path or path in input_paths or not isinstance(content_base64, str) or not content_base64:
+            continue
+        generated.append({
+            "path": path,
+            "filename": path.rsplit("/", 1)[-1],
+            "mime_type": item.get("mime_type") or "application/octet-stream",
+            "bytes": item.get("bytes"),
+            "sha256": item.get("sha256"),
+            "content_base64": content_base64,
+            "workspace_id": result.get("workspace_id"),
+            "run_index": result.get("run_index"),
+        })
+    return generated
 
 
 def _tool_error_summary_message(tool_error_summary: list[dict[str, Any]]) -> str | None:
@@ -867,23 +1283,22 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
     guidance_parts: list[str] = []
     if WORKSPACE_TOOL_NAME in available_names:
         guidance_parts.append(
-            "\n\n### Workspace Guidance\n"
-            "Workspace is the platform cloud-computer surface. It runs Python or shell code in a temporary directory. "
-            "Python has `call(tool_name, arguments)` available by default. Shell scripts can call "
+            "\n\n### Workspace\n"
+            "Workspace is the platform cloud-computer surface. It runs Python or shell/terminal code in a temporary "
+            "directory. Python has `call(tool_name, arguments)` available by default. Shell scripts can call "
             "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
             "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
-            "`github_cli`; connected account permissions decide what succeeds. "
-            "`call(...)` returns connector errors as data with `error: true`; inspect those errors in the same "
-            "script when discovering the right API shape. For connected-system work, run one compact end-to-end script "
-            "where practical instead of one workspace call per discovery step and print concise facts for the next "
-            "model step to answer from. Prefer source-system results and bulk queries over manually rebuilding data "
-            "or calling connectors inside per-record loops. Do not present business-system behavior as verified "
-            "unless the script actually checked it."
+            "`github_cli`. Calls use the user's connected accounts; those account permissions decide what succeeds. "
+            "When connector-owned skill text is included in the system context, follow that skill for the connector API shape. "
+            "Use Workspace when live connected-system data, code execution, terminal work, files, or calculations are "
+            "needed. If a live system fact matters, check it in Workspace and answer from the tool result."
         )
     if "document_reader" in available_names:
         guidance_parts.append(
-            "Documents: use `document_reader` for uploaded PDFs/images when the injected attachment preview is missing "
-            "or insufficient. It is read-only; use the artifact id from the attachment context."
+            "Documents: use `document_reader` for uploaded PDFs/images when the injected attachment or available-file "
+            "preview is missing or insufficient. It is read-only; use the artifact id from the file context. "
+            "The Document Reader tool owns detailed SKILL.md guidance, and `mode='guidance'` can return it. "
+            "Workspace scripts can call it with `call('document_reader', {'artifact_id': id, 'mode': 'tables'})`."
         )
     return system_prompt + "\n".join(guidance_parts) if guidance_parts else system_prompt
 
@@ -1008,8 +1423,71 @@ def _provider_response_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _discard_provider_stream_event(_event: dict[str, Any]) -> None:
-    """Consume provider streaming internally without exposing raw deltas to chat."""
+    """Consume provider streaming when the caller does not need live turn events."""
     return None
+
+
+def _agent_stream_event(
+    event: dict[str, Any],
+    *,
+    provider: AIProvider,
+    model: AIModel,
+    attempt_reason: str,
+) -> dict[str, Any] | None:
+    delta = event.get("delta")
+    if not isinstance(delta, str) or not delta:
+        return None
+    event_type = event.get("type")
+    if event_type in {"reasoning_delta", "thinking_delta"}:
+        return {
+            "type": "reasoning.delta",
+            "provider": provider.name,
+            "model": model.display_name,
+            "attempt_reason": attempt_reason,
+            "text": delta,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    if event_type == "content_delta":
+        return {
+            "type": "message.delta",
+            "provider": provider.name,
+            "model": model.display_name,
+            "attempt_reason": attempt_reason,
+            "text": delta,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return None
+
+
+def _json_safe_copy(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _assistant_tool_call_message(result: dict[str, Any]) -> dict[str, Any]:
+    provider_message = result.get("assistant_message")
+    if isinstance(provider_message, dict):
+        message = _json_safe_copy(provider_message)
+        if not isinstance(message, dict):
+            message = {}
+        message["role"] = "assistant"
+        if "content" not in message:
+            message["content"] = result.get("content") or None
+        if "tool_calls" not in message:
+            message["tool_calls"] = _json_safe_copy(result.get("tool_calls") or [])
+        return message
+
+    message = {
+        "role": "assistant",
+        "content": result.get("content") or None,
+        "tool_calls": _json_safe_copy(result.get("tool_calls") or []),
+    }
+    reasoning_content = result.get("reasoning_content")
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    return message
 
 
 async def _call_model(
@@ -1022,6 +1500,7 @@ async def _call_model(
     trace_svc: Any = None,
     attempt_reason: str = "chat",
     client: Optional[ModelProviderClient] = None,
+    stream_event_sink: Optional[Any] = None,
 ) -> tuple[dict[str, Any], ModelProviderClient]:
     span_id = None
     if trace_svc:
@@ -1059,13 +1538,39 @@ async def _call_model(
         if client is None:
             client = await build_model_client(provider, model)
 
+        streamed_reasoning = False
+
+        def forward_stream_event(event: dict[str, Any]) -> None:
+            nonlocal streamed_reasoning
+            agent_event = _agent_stream_event(
+                event,
+                provider=provider,
+                model=model,
+                attempt_reason=attempt_reason,
+            )
+            if agent_event and stream_event_sink:
+                if agent_event.get("type") == "reasoning.delta":
+                    streamed_reasoning = True
+                stream_event_sink(agent_event)
+
         result = await client.chat_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             tools=tool_definitions if tool_definitions else None,
-            stream_event_sink=_discard_provider_stream_event,
+            stream_event_sink=forward_stream_event if stream_event_sink else _discard_provider_stream_event,
         )
+        if stream_event_sink and not streamed_reasoning:
+            reasoning_text = result.get("reasoning_content")
+            if isinstance(reasoning_text, str) and reasoning_text.strip():
+                stream_event_sink({
+                    "type": "reasoning.available",
+                    "provider": provider.name,
+                    "model": model.display_name,
+                    "attempt_reason": attempt_reason,
+                    "text": reasoning_text,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
     except Exception as exc:
         if trace_svc and span_id:
             trace_svc.span_error(span_id, type(exc).__name__, str(exc))
@@ -1091,6 +1596,7 @@ async def _run_model_once(
     max_tokens: int,
     tool_definitions: list[dict[str, Any]],
     trace_svc: Any = None,
+    stream_event_sink: Optional[Any] = None,
 ) -> ModelCallState:
     stats = ModelCallStats()
     result, client = await _call_model(
@@ -1102,6 +1608,7 @@ async def _run_model_once(
         tool_definitions,
         trace_svc=trace_svc,
         attempt_reason="chat",
+        stream_event_sink=stream_event_sink,
     )
     stats.add_result(result)
     return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
@@ -1129,6 +1636,7 @@ async def _complete_length_limited_tool_answer(
     temperature: float,
     max_tokens: int,
     trace_svc: Any = None,
+    stream_event_sink: Optional[Any] = None,
 ) -> None:
     combined_content = str(state.result.get("content") or "")
     for _ in range(TOOL_LOOP_LENGTH_CONTINUATION_LIMIT):
@@ -1156,6 +1664,7 @@ async def _complete_length_limited_tool_answer(
             trace_svc=trace_svc,
             attempt_reason=attempt_reason,
             client=state.client,
+            stream_event_sink=stream_event_sink,
         )
         state.client = client
         state.stats.add_result(result)
@@ -1180,8 +1689,10 @@ async def _run_tool_loop(
     temperature: float,
     max_tokens: int,
     trace_svc: Any = None,
+    stream_event_sink: Optional[Any] = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
+    generated_files: list[dict[str, Any]] = []
     workspace_session: WorkspaceSession | None = None
 
     async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1209,14 +1720,7 @@ async def _run_tool_loop(
 
             state.result["tool_calls"] = tool_calls
             state.stats.tool_calls += len(tool_calls)
-            messages.append({
-                "role": "assistant",
-                "content": state.result.get("content") or None,
-                "tool_calls": [
-                    {"id": call["id"], "type": call["type"], "function": call["function"]}
-                    for call in tool_calls
-                ],
-            })
+            messages.append(_assistant_tool_call_message(state.result))
 
             for call in tool_calls:
                 if call.get("type") != "function":
@@ -1247,6 +1751,7 @@ async def _run_tool_loop(
                     )
                     if isinstance(result, dict):
                         await _record_delegated_tool_auth_failure(db, user_id, name, result)
+                        generated_files.extend(_workspace_generated_files(result))
                 compact_result = _compact_tool_result_for_model(result)
                 tool_results.append({
                     "tool_call_id": call.get("id", ""),
@@ -1272,6 +1777,7 @@ async def _run_tool_loop(
                 trace_svc=trace_svc,
                 attempt_reason="tool_loop",
                 client=state.client,
+                stream_event_sink=stream_event_sink,
             )
             state.result = result
             state.client = client
@@ -1282,6 +1788,7 @@ async def _run_tool_loop(
                 temperature,
                 followup_max_tokens,
                 trace_svc=trace_svc,
+                stream_event_sink=stream_event_sink,
             )
         else:
             if state.result.get("tool_calls"):
@@ -1295,6 +1802,7 @@ async def _run_tool_loop(
                     [],
                     trace_svc=trace_svc,
                     attempt_reason="tool_loop_limit_answer",
+                    stream_event_sink=stream_event_sink,
                 )
                 state.result = result
                 state.client = client
@@ -1305,10 +1813,12 @@ async def _run_tool_loop(
                     temperature,
                     max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
                     trace_svc=trace_svc,
+                    stream_event_sink=stream_event_sink,
                 )
     finally:
         if workspace_session is not None:
             await workspace_session.__aexit__(None, None, None)
+    state.result["generated_files"] = generated_files
     return tool_results
 
 async def _log_usage(
@@ -1426,6 +1936,7 @@ async def execute_chat(
     user_id: Optional[UUID] = None,
     trace_svc: Any = None,
     request_id: Optional[str] = None,
+    stream_event_sink: Optional[Any] = None,
 ) -> dict:
     user_msg_text = _last_user_message(messages)
     context_span = None
@@ -1463,6 +1974,9 @@ async def execute_chat(
             model_obj,
             system_prompt,
         )
+        connector_skill_context = await _connector_skill_context(connected_accounts.connected_systems, tools)
+        system_prompt = _append_context_section(system_prompt, connector_skill_context)
+        system_prompt = _append_context_section(system_prompt, _tool_skill_context(tools))
         injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
         full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
         temperature = float(route.temperature) if route.temperature is not None else 0.3
@@ -1493,11 +2007,13 @@ async def execute_chat(
     state = await _run_model_once(
         model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
         trace_svc=trace_svc,
+        stream_event_sink=stream_event_sink,
     )
     tool_results: list[dict[str, Any]] = []
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,
+        stream_event_sink=stream_event_sink,
     ))
     tool_error_summary = _tool_result_error_summary(tool_results)
     await _log_usage(
@@ -1522,6 +2038,7 @@ async def execute_chat(
         "total_tokens": state.stats.total_tokens,
         "latency_ms": state.stats.latency_ms,
         "tool_calls": tool_results if tool_results else None,
+        "generated_files": state.result.get("generated_files") or None,
         "tool_error_summary": tool_error_summary if tool_error_summary else None,
         "has_tool_errors": bool(tool_error_summary),
         "context": _context_metadata(injected, state, policy),

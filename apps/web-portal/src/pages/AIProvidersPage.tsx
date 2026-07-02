@@ -1,24 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes, FormEvent, ReactNode } from "react";
 import {
-  AlertCircle,
-  CheckCircle2,
   ChevronDown,
-  ChevronRight,
-  KeyRound,
   Loader2,
   Plus,
-  RefreshCw,
   Save,
   SlidersHorizontal,
-  TestTube2,
   Trash2,
   X,
 } from "lucide-react";
-import { GlassButton } from "../components/ui/GlassButton";
-import { GlassInput } from "../components/ui/GlassInput";
-import { GlassPanel } from "../components/ui/GlassPanel";
-import { API_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
+import { Button } from "../components/ui/Button";
+import { TextField } from "../components/ui/TextField";
+import { SurfacePanel } from "../components/ui/SurfacePanel";
+import { API_BASE_URL, fetchWithTimeout } from "../hooks/useApi";
 
 interface ProviderModel {
   id: string;
@@ -50,23 +44,9 @@ interface Route {
   primary_model_id?: string | null;
 }
 
-interface SyncInfo {
-  success: boolean;
-  message: string;
-  model_count: number;
-}
-
 interface ProviderListResponse {
   providers: Provider[];
   route?: Route | null;
-  sync?: SyncInfo | null;
-}
-
-interface ProviderTestResponse {
-  success: boolean;
-  message: string;
-  provider?: string | null;
-  model?: string | null;
 }
 
 interface ProviderFormState {
@@ -75,11 +55,6 @@ interface ProviderFormState {
   baseUrl: string;
   apiKey: string;
   enabled: boolean;
-}
-
-interface Notice {
-  tone: "success" | "danger";
-  text: string;
 }
 
 interface EnabledModelRow {
@@ -91,6 +66,8 @@ interface PickerOption {
   value: string;
   label: string;
 }
+
+type ProviderSettingsSection = "providers" | "models";
 
 const CHAT_ROUTE_TASK = "general_chat";
 const CHAT_MODEL_TASK = "chat";
@@ -124,53 +101,8 @@ function isChatModel(model: ProviderModel) {
   return modelTaskType(model) === CHAT_MODEL_TASK;
 }
 
-function modelTaskLabel(model: ProviderModel) {
-  return modelTaskType(model) === VOICE_TRANSCRIPTION_MODEL_TASK ? "Voice" : "Chat";
-}
-
 function modelOptionLabel(row: EnabledModelRow) {
   return `${row.provider.name} - ${modelDisplayName(row.model)}`;
-}
-
-function apiKeyStatusLabel(status: string) {
-  switch (status) {
-    case "saved":
-      return "API key saved";
-    case "missing":
-      return "API key missing";
-    case "vault_not_configured":
-      return "Key storage unavailable";
-    case "error":
-      return "Key status unavailable";
-    default:
-      return status || "Unknown";
-  }
-}
-
-function apiKeyStatusClass(status: string) {
-  switch (status) {
-    case "saved":
-      return "text-default";
-    case "missing":
-    case "vault_not_configured":
-      return "text-[var(--color-warning)]";
-    case "error":
-      return "text-[var(--color-danger)]";
-    default:
-      return "text-muted";
-  }
-}
-
-function enabledModelCount(provider: Provider) {
-  return provider.models.filter(model => boolValue(model.enabled)).length;
-}
-
-function modelCountByTask(provider: Provider, taskType: string) {
-  return provider.models.filter(model => modelTaskType(model) === taskType).length;
-}
-
-function enabledModelCountByTask(provider: Provider, taskType: string) {
-  return provider.models.filter(model => boolValue(model.enabled) && modelTaskType(model) === taskType).length;
 }
 
 function errorMessageFromBody(body: unknown) {
@@ -184,15 +116,6 @@ function errorMessageFromBody(body: unknown) {
       return message;
   }
   return "";
-}
-
-function friendlyErrorMessage(err: unknown, fallback: string) {
-  if (isAbortError(err))
-    return "";
-  const message = err instanceof Error ? err.message : "";
-  if (!message || message === "Failed to fetch")
-    return fallback;
-  return message;
 }
 
 async function readApiError(response: Response) {
@@ -317,19 +240,6 @@ function FieldLabel({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-function StatusPill({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "active" | "warning" }) {
-  const toneClass = tone === "active"
-    ? "border border-default bg-surface text-default"
-    : tone === "warning"
-      ? "bg-[var(--color-warning)]/10 text-[var(--color-warning)]"
-      : "bg-raised text-muted";
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-bold ${toneClass}`}>
-      {children}
-    </span>
-  );
-}
-
 function IconButton({
   label,
   children,
@@ -341,7 +251,7 @@ function IconButton({
       type="button"
       aria-label={label}
       title={label}
-      className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border border-default bg-surface text-muted outline-none transition-colors hover-bg-subtle hover-text-default focus:border-soft disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-md border border-default bg-surface text-muted outline-none transition-colors hover-bg-subtle hover-text-default focus:border-soft disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
       {...props}
     >
       {children}
@@ -371,18 +281,33 @@ function SwitchControl({
         aria-label={ariaLabel || label || "Toggle"}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className="relative h-6 w-11 rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50"
+        className="relative h-6 w-11 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         style={{
           backgroundColor: checked ? "#6d6d6d" : "var(--color-surface-raised)",
           borderColor: checked ? "#6d6d6d" : "var(--color-border)",
         }}
       >
         <span
-          className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-white shadow transition-all"
+          className="absolute top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-white transition-transform"
           style={{ left: checked ? "24px" : "4px" }}
         />
       </button>
       {label ? <span className="text-xs font-bold text-muted">{label}</span> : null}
+    </div>
+  );
+}
+
+function EmptyState({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="settings-empty">
+      <p className="settings-title text-sm">{title}</p>
+      <div className="mt-4 flex justify-center">{children}</div>
     </div>
   );
 }
@@ -403,7 +328,7 @@ function ProviderFormModal({
   const isEdit = Boolean(form.providerId);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="relative w-full max-w-xl overflow-hidden rounded-2xl border border-default bg-raised shadow-2xl">
+      <div className="relative w-full max-w-xl overflow-hidden rounded-lg border border-default bg-raised">
         <form onSubmit={onSubmit}>
           <div className="flex items-start justify-between gap-4 border-b border-default bg-raised p-5">
             <div>
@@ -425,7 +350,7 @@ function ProviderFormModal({
           </div>
 
           <div className="space-y-4 bg-raised p-5">
-            <div className="flex items-center justify-between rounded-xl border border-default bg-surface px-4 py-3">
+            <div className="flex items-center justify-between rounded-lg border border-default bg-surface px-4 py-3">
               <div>
                 <p className="text-xs font-extrabold text-default">Provider enabled</p>
                 <p className="text-[11px] font-semibold text-muted">Turn this connection on or off.</p>
@@ -439,7 +364,7 @@ function ProviderFormModal({
             </div>
 
             <FieldLabel label="Provider name">
-              <GlassInput
+              <TextField
                 value={form.name}
                 onChange={(event) => onChange({ name: event.target.value })}
                 placeholder="Provider name"
@@ -448,7 +373,7 @@ function ProviderFormModal({
             </FieldLabel>
 
             <FieldLabel label="API endpoint">
-              <GlassInput
+              <TextField
                 value={form.baseUrl}
                 onChange={(event) => onChange({ baseUrl: event.target.value })}
                 placeholder="https://api.provider.com/v1"
@@ -457,7 +382,7 @@ function ProviderFormModal({
             </FieldLabel>
 
             <FieldLabel label="API key">
-              <GlassInput
+              <TextField
                 type="password"
                 value={form.apiKey}
                 onChange={(event) => onChange({ apiKey: event.target.value })}
@@ -467,13 +392,13 @@ function ProviderFormModal({
           </div>
 
           <div className="flex justify-end gap-2 border-t border-default bg-subtle p-5">
-            <GlassButton type="button" onClick={onClose}>
+            <Button type="button" onClick={onClose}>
               Cancel
-            </GlassButton>
-            <GlassButton type="submit" variant="primary" disabled={isSaving}>
+            </Button>
+            <Button type="submit" variant="primary" disabled={isSaving}>
               {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
               {isEdit ? "Save changes" : "Save provider"}
-            </GlassButton>
+            </Button>
           </div>
         </form>
       </div>
@@ -528,14 +453,14 @@ function ModelPicker({
         aria-expanded={isOpen}
         disabled={disabled}
         onClick={() => onOpenChange(!isOpen)}
-        className="flex h-12 w-full items-center justify-between gap-3 rounded-xl border border-default bg-transparent px-4 text-left text-xs font-semibold text-default outline-none transition-all focus:border-soft disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex h-12 w-full items-center justify-between gap-3 rounded-lg border border-default bg-transparent px-4 text-left text-xs font-semibold text-default outline-none transition-colors focus:border-soft disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="min-w-0 truncate">{displayValue}</span>
         <ChevronDown className={`h-4 w-4 shrink-0 text-muted transition-transform ${isOpen ? "rotate-180" : ""}`} />
       </button>
 
       {isOpen && !disabled ? (
-        <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-default bg-surface shadow-2xl">
+        <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-default bg-surface">
           <div className="max-h-72 overflow-y-auto p-1.5">
             {options.map(option => {
               const isSelected = option.value === value;
@@ -547,7 +472,7 @@ function ModelPicker({
                     onChange(option.value);
                     onOpenChange(false);
                   }}
-                  className={`flex w-full items-center rounded-lg px-3 py-2.5 text-left text-xs font-semibold transition-colors hover-bg-subtle ${
+                  className={`flex w-full items-center rounded-md px-3 py-2.5 text-left text-xs font-semibold transition-colors hover-bg-subtle ${
                     isSelected ? "bg-raised text-default" : "text-muted"
                   }`}
                 >
@@ -582,12 +507,35 @@ export function AIProvidersPage({
   const [confirmingDeleteProviderId, setConfirmingDeleteProviderId] = useState<string | null>(null);
   const [savingModelId, setSavingModelId] = useState<string | null>(null);
   const [isRouteSaving, setIsRouteSaving] = useState(false);
-  const [testingKey, setTestingKey] = useState<string | null>(null);
-  const [expandedProviderId, setExpandedProviderId] = useState<string | null>(null);
+  const [activeSection, setActiveSection] = useState<ProviderSettingsSection>("providers");
   const [openModelPicker, setOpenModelPicker] = useState<"primary" | null>(null);
-  const [notice, setNotice] = useState<Notice | null>(null);
-  const [testResult, setTestResult] = useState<ProviderTestResponse | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const isPreviewMode = previewMode;
+
+  const modelRows = useMemo(() => {
+    return providers.flatMap(provider => provider.models.map(model => ({ provider, model })));
+  }, [providers]);
+
+  const filteredProviders = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query)
+      return providers;
+    return providers.filter(provider => (
+      provider.name.toLowerCase().includes(query)
+      || provider.base_url.toLowerCase().includes(query)
+    ));
+  }, [providers, searchQuery]);
+
+  const filteredModelRows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query)
+      return modelRows;
+    return modelRows.filter(({ provider, model }) => (
+      provider.name.toLowerCase().includes(query)
+      || modelDisplayName(model).toLowerCase().includes(query)
+      || model.model_name.toLowerCase().includes(query)
+    ));
+  }, [modelRows, searchQuery]);
 
   const enabledRows = useMemo(() => {
     return providers.flatMap(provider => provider.models
@@ -608,17 +556,10 @@ export function AIProvidersPage({
   const applyPayload = useCallback((payload: ProviderListResponse) => {
     setProviders(payload.providers);
     setRoute(payload.route || null);
-    if (payload.sync) {
-      setNotice({
-        tone: payload.sync.success ? "success" : "danger",
-        text: payload.sync.message,
-      });
-    }
   }, []);
 
   const loadProviders = useCallback(async () => {
     setIsLoading(true);
-    setNotice(null);
     if (isPreviewMode) {
       applyPayload(previewProviderPayload());
       setIsLoading(false);
@@ -632,13 +573,7 @@ export function AIProvidersPage({
         throw new Error(await readApiError(response));
       applyPayload(await response.json() as ProviderListResponse);
     } catch (err) {
-      const message = friendlyErrorMessage(err, "AI provider settings could not be reached.");
-      if (message) {
-        setNotice({
-          tone: "danger",
-          text: message,
-        });
-      }
+      console.error("AI provider settings could not be reached.", err);
     } finally {
       setIsLoading(false);
     }
@@ -673,11 +608,6 @@ export function AIProvidersPage({
       return {
         providers: nextProviders,
         route: routeForProviders(nextProviders, route),
-        sync: {
-          success: true,
-          message: `Synced ${nextProvider.models.length} models.`,
-          model_count: nextProvider.models.length,
-        },
       } satisfies ProviderListResponse;
     }
 
@@ -710,7 +640,6 @@ export function AIProvidersPage({
   const openNewProviderForm = useCallback(() => {
     setProviderForm(emptyProviderForm());
     setIsProviderFormOpen(true);
-    setTestResult(null);
   }, []);
 
   const openEditProviderForm = useCallback((provider: Provider) => {
@@ -722,34 +651,19 @@ export function AIProvidersPage({
       enabled: boolValue(provider.enabled),
     });
     setIsProviderFormOpen(true);
-    setTestResult(null);
   }, []);
 
   const saveProvider = useCallback(async (event: FormEvent) => {
     event.preventDefault();
     setIsSavingProvider(true);
-    setNotice(null);
     try {
-      const savingId = providerForm.providerId;
-      const savingName = providerForm.name.trim();
       const payload = await saveProviderPayload(providerForm);
       applyPayload(payload);
-      const savedProvider = payload.providers.find(provider => provider.id === savingId)
-        || payload.providers.find(provider => provider.name === savingName);
-      setExpandedProviderId(savedProvider?.id || null);
+      setActiveSection("models");
       setProviderForm(emptyProviderForm());
       setIsProviderFormOpen(false);
-      if (!payload.sync) {
-        setNotice({
-          tone: "success",
-          text: "Provider saved.",
-        });
-      }
     } catch (err) {
-      setNotice({
-        tone: "danger",
-        text: err instanceof Error ? err.message : "Provider could not be saved.",
-      });
+      console.error("Provider could not be saved.", err);
     } finally {
       setIsSavingProvider(false);
     }
@@ -757,7 +671,6 @@ export function AIProvidersPage({
 
   const toggleProvider = useCallback(async (provider: Provider, enabled: boolean) => {
     setSavingProviderId(provider.id);
-    setNotice(null);
     try {
       const payload = await saveProviderPayload({
         providerId: provider.id,
@@ -767,17 +680,8 @@ export function AIProvidersPage({
         enabled,
       });
       applyPayload(payload);
-      if (!payload.sync) {
-        setNotice({
-          tone: "success",
-          text: enabled ? "Provider enabled." : "Provider disabled.",
-        });
-      }
     } catch (err) {
-      setNotice({
-        tone: "danger",
-        text: err instanceof Error ? err.message : "Provider could not be updated.",
-      });
+      console.error("Provider could not be updated.", err);
     } finally {
       setSavingProviderId(null);
     }
@@ -785,7 +689,6 @@ export function AIProvidersPage({
 
   const deleteProvider = useCallback(async (provider: Provider) => {
     setDeletingProviderId(provider.id);
-    setNotice(null);
     try {
       if (isPreviewMode) {
         const nextProviders = providers.filter(item => item.id !== provider.id);
@@ -793,13 +696,8 @@ export function AIProvidersPage({
           providers: nextProviders,
           route: routeForProviders(nextProviders, route),
         });
-        setExpandedProviderId(current => current === provider.id ? null : current);
         setOpenModelPicker(null);
         setConfirmingDeleteProviderId(null);
-        setNotice({
-          tone: "success",
-          text: "Provider deleted.",
-        });
         return;
       }
       const response = await fetch(`${API_BASE_URL}/model-providers/${provider.id}`, {
@@ -809,18 +707,10 @@ export function AIProvidersPage({
       if (!response.ok)
         throw new Error(await readApiError(response));
       applyPayload(await response.json() as ProviderListResponse);
-      setExpandedProviderId(current => current === provider.id ? null : current);
       setOpenModelPicker(null);
       setConfirmingDeleteProviderId(null);
-      setNotice({
-        tone: "success",
-        text: "Provider deleted.",
-      });
     } catch (err) {
-      setNotice({
-        tone: "danger",
-        text: err instanceof Error ? err.message : "Provider could not be deleted.",
-      });
+      console.error("Provider could not be deleted.", err);
     } finally {
       setDeletingProviderId(null);
     }
@@ -828,7 +718,6 @@ export function AIProvidersPage({
 
   const toggleModel = useCallback(async (provider: Provider, model: ProviderModel, enabled: boolean) => {
     setSavingModelId(model.id);
-    setNotice(null);
     try {
       if (isPreviewMode) {
         const nextProviders = providers.map(item => item.id === provider.id
@@ -843,10 +732,6 @@ export function AIProvidersPage({
           providers: nextProviders,
           route: routeForProviders(nextProviders, route),
         });
-        setNotice({
-          tone: "success",
-          text: enabled ? "Model enabled." : "Model disabled.",
-        });
         return;
       }
       const response = await fetch(`${API_BASE_URL}/model-providers/${provider.id}/models/${model.id}`, {
@@ -857,15 +742,8 @@ export function AIProvidersPage({
       if (!response.ok)
         throw new Error(await readApiError(response));
       applyPayload(await response.json() as ProviderListResponse);
-      setNotice({
-        tone: "success",
-        text: enabled ? "Model enabled." : "Model disabled.",
-      });
     } catch (err) {
-      setNotice({
-        tone: "danger",
-        text: err instanceof Error ? err.message : "Model could not be updated.",
-      });
+      console.error("Model could not be updated.", err);
     } finally {
       setSavingModelId(null);
     }
@@ -875,7 +753,6 @@ export function AIProvidersPage({
     if (!primaryId)
       return;
     setIsRouteSaving(true);
-    setNotice(null);
     try {
       if (isPreviewMode) {
         applyPayload({
@@ -884,10 +761,6 @@ export function AIProvidersPage({
             task_type: CHAT_ROUTE_TASK,
             primary_model_id: primaryId,
           },
-        });
-        setNotice({
-          tone: "success",
-          text: "Chat model updated.",
         });
         return;
       }
@@ -901,313 +774,216 @@ export function AIProvidersPage({
       if (!response.ok)
         throw new Error(await readApiError(response));
       applyPayload(await response.json() as ProviderListResponse);
-      setNotice({
-        tone: "success",
-        text: "Chat model updated.",
-      });
     } catch (err) {
-      setNotice({
-        tone: "danger",
-        text: err instanceof Error ? err.message : "Chat model could not be updated.",
-      });
+      console.error("Chat model could not be updated.", err);
     } finally {
       setIsRouteSaving(false);
     }
   }, [accessToken, applyPayload, isPreviewMode, providers]);
 
-  const testChatModel = useCallback(async () => {
-    const selected = enabledRows.find(row => row.model.id === primaryModelId);
-    if (!selected) {
-      setTestResult({ success: false, message: "Choose a default chat model first." });
-      return;
-    }
-
-    setTestingKey(selected.model.id);
-    setTestResult(null);
-    try {
-      if (isPreviewMode) {
-        setTestResult({
-          success: true,
-          message: `Preview test passed for ${modelDisplayName(selected.model)}.`,
-          provider: selected.provider.name,
-          model: selected.model.model_name,
-        });
-        return;
-      }
-      const response = await fetch(`${API_BASE_URL}/model-providers/test`, {
-        method: "POST",
-        headers: authHeaders(accessToken, true),
-        body: JSON.stringify({
-          provider_id: selected.provider.id,
-          model_id: selected.model.id,
-        }),
-      });
-      if (!response.ok)
-        throw new Error(await readApiError(response));
-      setTestResult(await response.json() as ProviderTestResponse);
-    } catch (err) {
-      setTestResult({
-        success: false,
-        message: err instanceof Error ? err.message : "Test failed.",
-      });
-    } finally {
-      setTestingKey(null);
-    }
-  }, [accessToken, enabledRows, isPreviewMode, primaryModelId]);
-
-  const activeProviderCount = providers.filter(provider => boolValue(provider.enabled)).length;
-  const totalModelCount = providers.reduce((count, provider) => count + provider.models.length, 0);
-  const chatModelCount = providers.reduce((count, provider) => count + provider.models.filter(isChatModel).length, 0);
-  const voiceModelCount = providers.reduce(
-    (count, provider) => count + provider.models.filter(model => modelTaskType(model) === VOICE_TRANSCRIPTION_MODEL_TASK).length,
-    0,
-  );
-
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8">
-      <GlassPanel className="relative z-20 overflow-visible rounded-2xl p-0">
-        <div className="flex flex-col gap-4 border-b border-default p-5 sm:flex-row sm:items-start sm:justify-between sm:p-6">
+      <SurfacePanel className="settings-panel relative z-20">
+        <div className="settings-page-header">
           <div className="min-w-0">
-            <h2 className="text-xl font-bold text-default">AI Providers</h2>
-            <p className="mt-1 max-w-2xl text-sm text-muted">
+            <h2 className="settings-title text-xl">AI Providers</h2>
+            <p className="settings-copy mt-1 max-w-2xl text-sm">
               Connect API providers, sync their available models, and choose the model chat should use.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <StatusPill tone={activeProviderCount > 0 ? "active" : "default"}>
-                {activeProviderCount} active
-              </StatusPill>
-              <StatusPill>{providers.length} providers</StatusPill>
-              <StatusPill>{chatModelCount} chat</StatusPill>
-              <StatusPill>{voiceModelCount} voice</StatusPill>
-              <StatusPill>{totalModelCount} total</StatusPill>
-            </div>
           </div>
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <GlassButton size="sm" onClick={openNewProviderForm}>
+          <div className="settings-actions">
+            <Button size="sm" onClick={openNewProviderForm}>
               <Plus className="h-3.5 w-3.5" />
               Add provider
-            </GlassButton>
-            <GlassButton size="sm" onClick={() => void loadProviders()} disabled={isLoading}>
-              <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? "animate-spin" : ""}`} />
-              Refresh
-            </GlassButton>
+            </Button>
           </div>
         </div>
 
-        {notice || testResult ? (
-          <div className="space-y-2 border-b border-default px-5 py-3 sm:px-6">
-            {notice ? (
-              <div className={`flex items-start gap-2 text-xs font-semibold ${
-                notice.tone === "success" ? "text-default" : "text-[var(--color-danger)]"
-              }`}>
-                {notice.tone === "success" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                <span>{notice.text}</span>
-              </div>
-            ) : null}
-
-            {testResult ? (
-              <div className={`flex items-start gap-2 text-xs font-semibold ${
-                testResult.success ? "text-default" : "text-[var(--color-danger)]"
-              }`}>
-                {testResult.success ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
-                <span>{testResult.message}</span>
-              </div>
-            ) : null}
+        <div className="settings-toolbar">
+          <div className="settings-tabs">
+            <button
+              type="button"
+              className={`settings-tab ${activeSection === "providers" ? "settings-tab-active" : ""}`}
+              onClick={() => {
+                setActiveSection("providers");
+                setSearchQuery("");
+              }}
+            >
+              Providers
+            </button>
+            <button
+              type="button"
+              className={`settings-tab ${activeSection === "models" ? "settings-tab-active" : ""}`}
+              onClick={() => {
+                setActiveSection("models");
+                setSearchQuery("");
+              }}
+            >
+              Models
+            </button>
           </div>
-        ) : null}
+          <input
+            className="settings-search"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={activeSection === "providers" ? "Search providers..." : "Search models..."}
+          />
+        </div>
 
-        <section className="relative z-30 border-b border-default p-5 sm:p-6">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,520px)_auto] lg:items-end">
-            <div className="min-w-0">
-              <h3 className="text-sm font-extrabold text-default">Chat model</h3>
-              <p className="mt-1 text-xs font-semibold text-muted">
-                The selected model is used for normal chat.
-              </p>
-            </div>
-            <ModelPicker
-              label="Default model"
-              hint={enabledRows.length === 0 ? "Enable a provider model first." : "Models come from enabled providers."}
-              value={primaryModelExists ? primaryModelId : ""}
-              placeholder="No enabled models"
-              options={chatModelOptions}
-              isOpen={openModelPicker === "primary"}
-              disabled={enabledRows.length === 0 || isRouteSaving}
-              onOpenChange={(open) => setOpenModelPicker(open ? "primary" : null)}
-              onChange={(nextPrimaryId) => void updateChatRoute(nextPrimaryId)}
-            />
-            <GlassButton size="sm" onClick={() => void testChatModel()} disabled={!primaryModelExists || Boolean(testingKey)}>
-              {testingKey ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TestTube2 className="h-3.5 w-3.5" />}
-              Test
-            </GlassButton>
-          </div>
-        </section>
+        <section className="settings-content">
+          {activeSection === "providers" ? (
+            <>
+              {isLoading ? (
+                <div className="settings-empty">
+                  <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted" />
+                </div>
+              ) : null}
 
-        <section className="relative z-10">
-          <div className="flex items-center justify-between gap-3 border-b border-default px-5 py-4 sm:px-6">
-            <div>
-              <h3 className="text-sm font-extrabold text-default">Providers</h3>
-              <p className="mt-1 text-xs font-semibold text-muted">
-                Open a provider to review the synced models.
-              </p>
-            </div>
-            {isLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted" /> : null}
-          </div>
+              {!isLoading && filteredProviders.length === 0 ? (
+                <EmptyState title={providers.length === 0 ? "No providers configured." : "No providers match your search."}>
+                  {providers.length === 0 ? (
+                    <Button onClick={openNewProviderForm}>
+                      <Plus className="h-3.5 w-3.5" />
+                      Add provider
+                    </Button>
+                  ) : null}
+                </EmptyState>
+              ) : null}
 
-          {!isLoading && providers.length === 0 ? (
-            <div className="px-5 py-10 text-center sm:px-6">
-              <p className="text-sm font-bold text-default">No providers configured.</p>
-              <p className="mt-1 text-xs font-semibold text-muted">Add a provider and the model list will sync automatically.</p>
-              <GlassButton className="mx-auto mt-4" onClick={openNewProviderForm}>
-                <Plus className="h-3.5 w-3.5" />
-                Add provider
-              </GlassButton>
-            </div>
-          ) : null}
+              {filteredProviders.length > 0 ? (
+                <div className="settings-list">
+                  <div className="settings-list-head provider-grid">
+                    <span>Provider</span>
+                    <span className="text-right">Actions</span>
+                  </div>
 
-          {providers.length > 0 ? (
-            <div className="divide-y divide-[var(--color-border)]">
-              <div className="hidden grid-cols-[minmax(0,2fr)_130px_170px_180px] gap-4 bg-subtle px-5 py-2 text-[10px] font-bold uppercase tracking-wide text-muted lg:grid sm:px-6">
-                <span>Provider</span>
-                <span>Models</span>
-                <span>Key</span>
-                <span className="text-right">Actions</span>
-              </div>
+                  {filteredProviders.map(provider => {
+                    const isProviderEnabled = boolValue(provider.enabled);
+                    const isConfirmingDelete = confirmingDeleteProviderId === provider.id;
 
-              {providers.map(provider => {
-                const isExpanded = expandedProviderId === provider.id;
-                const isProviderEnabled = boolValue(provider.enabled);
-                const routeUsesProvider = provider.models.some(model => model.id === route?.primary_model_id);
-                const providerEnabledModelCount = enabledModelCount(provider);
-                const providerChatModelCount = modelCountByTask(provider, CHAT_MODEL_TASK);
-                const providerVoiceModelCount = modelCountByTask(provider, VOICE_TRANSCRIPTION_MODEL_TASK);
-                const providerEnabledChatModelCount = enabledModelCountByTask(provider, CHAT_MODEL_TASK);
-                const providerEnabledVoiceModelCount = enabledModelCountByTask(provider, VOICE_TRANSCRIPTION_MODEL_TASK);
-                const isConfirmingDelete = confirmingDeleteProviderId === provider.id;
-
-                return (
-                  <div key={provider.id} className="bg-canvas">
-                    <div className="grid gap-3 px-5 py-4 sm:px-6 lg:grid-cols-[minmax(0,2fr)_130px_170px_180px] lg:items-center">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
+                    return (
+                      <div key={provider.id} className="settings-list-row provider-grid">
+                        <div className="min-w-0">
                           <h4 className="truncate text-sm font-extrabold text-default">{provider.name}</h4>
-                          <StatusPill tone={isProviderEnabled ? "active" : "default"}>
-                            {isProviderEnabled ? "On" : "Off"}
-                          </StatusPill>
-                          {routeUsesProvider ? <StatusPill tone="active">Default chat</StatusPill> : null}
-                          {provider.models.length === 0 ? <StatusPill tone="warning">No models</StatusPill> : null}
+                          <p className="mt-1 truncate text-xs font-semibold text-muted">{provider.base_url}</p>
                         </div>
-                        <p className="mt-1 truncate text-xs font-semibold text-muted">{provider.base_url}</p>
-                      </div>
 
-                      <div className="text-xs font-bold text-muted">
-                        <span className="lg:hidden">Models: </span>
-                        {providerEnabledChatModelCount} of {providerChatModelCount} chat on
-                        <span className="mx-1 text-muted">·</span>
-                        {providerEnabledVoiceModelCount} of {providerVoiceModelCount} voice on
-                        <span className="sr-only">. {providerEnabledModelCount} of {provider.models.length} total models on.</span>
-                      </div>
-
-                      <div className={`inline-flex min-w-0 items-center gap-1 text-xs font-bold ${apiKeyStatusClass(provider.api_key_status)}`}>
-                        <KeyRound className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">{apiKeyStatusLabel(provider.api_key_status)}</span>
-                      </div>
-
-                      <div className="flex items-center gap-2 lg:justify-end">
-                        <SwitchControl
-                          checked={isProviderEnabled}
-                          ariaLabel={`Toggle ${provider.name}`}
-                          disabled={savingProviderId === provider.id}
-                          onChange={(enabled) => void toggleProvider(provider, enabled)}
-                        />
-                        <IconButton label={`Edit ${provider.name}`} onClick={() => openEditProviderForm(provider)}>
-                          <SlidersHorizontal className="h-3.5 w-3.5" />
-                        </IconButton>
-                        {isConfirmingDelete ? (
-                          <>
-                            <IconButton label={`Cancel deleting ${provider.name}`} onClick={() => setConfirmingDeleteProviderId(null)}>
-                              <X className="h-3.5 w-3.5" />
-                            </IconButton>
+                        <div className="flex items-center gap-2 lg:justify-end">
+                          <SwitchControl
+                            checked={isProviderEnabled}
+                            ariaLabel={`Toggle ${provider.name}`}
+                            disabled={savingProviderId === provider.id}
+                            onChange={(enabled) => void toggleProvider(provider, enabled)}
+                          />
+                          <IconButton label={`Edit ${provider.name}`} onClick={() => openEditProviderForm(provider)}>
+                            <SlidersHorizontal className="h-3.5 w-3.5" />
+                          </IconButton>
+                          {isConfirmingDelete ? (
+                            <>
+                              <IconButton label={`Cancel deleting ${provider.name}`} onClick={() => setConfirmingDeleteProviderId(null)}>
+                                <X className="h-3.5 w-3.5" />
+                              </IconButton>
+                              <IconButton
+                                label={`Confirm delete ${provider.name}`}
+                                className="text-[var(--color-danger)] hover:text-[var(--color-danger)]"
+                                disabled={deletingProviderId === provider.id}
+                                onClick={() => void deleteProvider(provider)}
+                              >
+                                {deletingProviderId === provider.id
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : <Trash2 className="h-3.5 w-3.5" />}
+                              </IconButton>
+                            </>
+                          ) : (
                             <IconButton
-                              label={`Confirm delete ${provider.name}`}
+                              label={`Delete ${provider.name}`}
                               className="text-[var(--color-danger)] hover:text-[var(--color-danger)]"
                               disabled={deletingProviderId === provider.id}
-                              onClick={() => void deleteProvider(provider)}
+                              onClick={() => setConfirmingDeleteProviderId(provider.id)}
                             >
-                              {deletingProviderId === provider.id
-                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                : <Trash2 className="h-3.5 w-3.5" />}
+                              <Trash2 className="h-3.5 w-3.5" />
                             </IconButton>
-                          </>
-                        ) : (
-                          <IconButton
-                            label={`Delete ${provider.name}`}
-                            className="text-[var(--color-danger)] hover:text-[var(--color-danger)]"
-                            disabled={deletingProviderId === provider.id}
-                            onClick={() => setConfirmingDeleteProviderId(provider.id)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </IconButton>
-                        )}
-                        <IconButton
-                          label={`${isExpanded ? "Hide" : "View"} ${provider.name} models`}
-                          onClick={() => setExpandedProviderId(current => current === provider.id ? null : provider.id)}
-                        >
-                          {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                        </IconButton>
+                          )}
+                        </div>
                       </div>
-                    </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <div className="settings-model-route">
+                <ModelPicker
+                  label="Default model"
+                  hint={enabledRows.length === 0 ? "Enable a chat model first." : "Only enabled chat models appear here."}
+                  value={primaryModelExists ? primaryModelId : ""}
+                  placeholder="No enabled models"
+                  options={chatModelOptions}
+                  isOpen={openModelPicker === "primary"}
+                  disabled={enabledRows.length === 0 || isRouteSaving}
+                  onOpenChange={(open) => setOpenModelPicker(open ? "primary" : null)}
+                  onChange={(nextPrimaryId) => void updateChatRoute(nextPrimaryId)}
+                />
+              </div>
 
-                    {isExpanded ? (
-                      <div className="border-t border-default bg-subtle">
-                        {provider.models.length === 0 ? (
-                          <div className="px-5 py-5 text-center text-xs font-semibold text-muted sm:px-6">
-                            No models found. Edit the provider and save again with a valid API key.
-                          </div>
-                        ) : (
-                          <div className="divide-y divide-[var(--color-border)]">
-                            {provider.models.map(model => {
-                              const isPrimary = model.id === route?.primary_model_id;
-                              const modelEnabled = boolValue(model.enabled);
-                              return (
-                                <div key={model.id} className="grid gap-3 px-5 py-3 sm:px-6 lg:grid-cols-[minmax(0,1fr)_140px_80px] lg:items-center">
-                                  <div className="min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <p className="truncate text-xs font-extrabold text-default">{modelDisplayName(model)}</p>
-                                      <StatusPill tone={isChatModel(model) ? "default" : "active"}>{modelTaskLabel(model)}</StatusPill>
-                                      {isPrimary ? <StatusPill tone="active">Default</StatusPill> : null}
-                                      {!modelEnabled ? <StatusPill>Off</StatusPill> : null}
-                                    </div>
-                                    {model.model_name !== model.display_name ? (
-                                      <p className="mt-1 truncate text-[11px] font-semibold text-muted">{model.model_name}</p>
-                                    ) : null}
-                                  </div>
-                                  <p className="text-[11px] font-semibold text-muted">
-                                    {isChatModel(model)
-                                      ? model.context_window ? `${model.context_window.toLocaleString()} tokens` : "Context unknown"
-                                      : "Voice transcription"}
-                                  </p>
-                                  <div className="lg:justify-self-end">
-                                    <SwitchControl
-                                      checked={modelEnabled}
-                                      ariaLabel={`Toggle ${modelDisplayName(model)}`}
-                                      disabled={savingModelId === model.id}
-                                      onChange={(enabled) => void toggleModel(provider, model, enabled)}
-                                    />
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    ) : null}
+              {isLoading ? (
+                <div className="settings-empty">
+                  <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted" />
+                </div>
+              ) : null}
+
+              {!isLoading && filteredModelRows.length === 0 ? (
+                <EmptyState title={modelRows.length === 0 ? "No models synced." : "No models match your search."}>
+                  {modelRows.length === 0 ? (
+                    <Button onClick={() => setActiveSection("providers")}>
+                      Providers
+                    </Button>
+                  ) : null}
+                </EmptyState>
+              ) : null}
+
+              {filteredModelRows.length > 0 ? (
+                <div className="settings-list">
+                  <div className="settings-list-head model-grid">
+                    <span>Model</span>
+                    <span>Provider</span>
+                    <span className="text-right">Enabled</span>
                   </div>
-                );
-              })}
-            </div>
-          ) : null}
+
+                  {filteredModelRows.map(({ provider, model }) => {
+                    const modelEnabled = boolValue(model.enabled);
+
+                    return (
+                      <div key={model.id} className="settings-list-row model-grid">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-extrabold text-default">{modelDisplayName(model)}</p>
+                          {model.model_name !== model.display_name ? (
+                            <p className="mt-1 truncate text-[11px] font-semibold text-muted">{model.model_name}</p>
+                          ) : null}
+                        </div>
+
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-bold text-default">{provider.name}</p>
+                        </div>
+
+                        <div className="xl:justify-self-end">
+                          <SwitchControl
+                            checked={modelEnabled}
+                            ariaLabel={`Toggle ${modelDisplayName(model)}`}
+                            disabled={savingModelId === model.id}
+                            onChange={(enabled) => void toggleModel(provider, model, enabled)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </>
+          )}
         </section>
-      </GlassPanel>
+      </SurfacePanel>
 
       {isProviderFormOpen ? (
         <ProviderFormModal

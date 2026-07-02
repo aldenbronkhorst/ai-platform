@@ -1,44 +1,16 @@
 import re
 from typing import Any
+from sqlalchemy.ext.asyncio import AsyncSession
 
 CHAT_TITLE_MAX_CHARS = 70
-CHAT_TITLE_CANONICAL_WORDS = {
-    "ai": "AI",
-    "api": "API",
-    "azure": "Azure",
-    "ci": "CI",
-    "entra": "Entra",
-    "exchange": "Exchange",
-    "github": "GitHub",
-    "intune": "Intune",
-    "m365": "M365",
-    "odoo": "Odoo",
-    "mcp": "MCP",
-    "ms": "MS",
-    "ocr": "OCR",
-    "pdf": "PDF",
-    "po": "PO",
-    "pr": "PR",
-    "sharepoint": "SharePoint",
-    "teams": "Teams",
-    "ui": "UI",
-}
-CHAT_TITLE_STOPWORDS = {
-    "a", "all", "an", "and", "are", "as", "at", "be", "can", "check", "could",
-    "did", "do", "does", "for", "from", "get", "give", "how", "i", "if", "in",
-    "is", "it", "list", "me", "my", "now", "of", "on", "or", "our", "please",
-    "show", "tell", "that", "the", "there", "this", "to", "today", "us", "was",
-    "we", "were", "what", "when", "where", "why", "with", "would", "you", "your",
-}
-CHAT_TITLE_WORD_REPLACEMENTS = {
-    "acess": "access",
-    "employe": "employee",
-    "faliours": "failures",
-    "halllucinations": "hallucinations",
-    "connecotrs": "connectors",
-    "uerer": "user",
-    "whats": "what",
-}
+
+TITLE_GENERATION_PROMPT = (
+    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
+    "following exchange. The title should capture the main topic or intent. "
+    "Correct obvious spelling mistakes in the title. "
+    "Write the title in the same language the user is writing in. "
+    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+)
 
 
 def _sanitize_chat_title(title: Any) -> str | None:
@@ -60,62 +32,50 @@ def _sanitize_chat_title(title: Any) -> str | None:
     return text[:1].upper() + text[1:]
 
 
-def _title_word(token: str) -> str:
-    normalized = CHAT_TITLE_WORD_REPLACEMENTS.get(token.lower(), token)
-    canonical = CHAT_TITLE_CANONICAL_WORDS.get(normalized.lower())
-    if canonical:
-        return canonical
-    if normalized.isupper() and len(normalized) <= 6:
-        return normalized
-    return normalized[:1].upper() + normalized[1:].lower()
+def _message_text(message: dict[str, Any]) -> str:
+    text = str(message.get("content") or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
-def _normalize_title_text(text: str) -> str:
-    text = str(text or "")
-    text = re.sub(r"https?://\S+", " ", text)
-    text = text.replace("&", " and ")
-    text = re.sub(r"[_*`~#>\[\]{}()]", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _title_tokens(text: str) -> list[str]:
-    normalized = _normalize_title_text(text)
-    return re.findall(r"[A-Za-z][A-Za-z0-9'-]*|\d+", normalized)
-
-
-def _first_user_title_text(messages: list[dict[str, Any]]) -> str:
+def _first_message_text(messages: list[dict[str, Any]], role: str) -> str:
     for message in messages:
-        if isinstance(message, dict) and message.get("role") == "user":
-            text = _normalize_title_text(str(message.get("content") or ""))
+        if isinstance(message, dict) and message.get("role") == role:
+            text = _message_text(message)
             if text:
                 return text
     return ""
 
 
-def _deterministic_chat_title(messages: list[dict[str, Any]]) -> str | None:
-    """Create a concise local title from the first user message."""
-    first_user_text = _first_user_title_text(messages)
-    if not first_user_text:
+def _title_exchange(messages: list[dict[str, Any]]) -> str | None:
+    user_text = _first_message_text(messages, "user")
+    if not user_text:
+        return None
+    assistant_text = _first_message_text(messages, "assistant")
+    exchange = f"User: {user_text[:500]}"
+    if assistant_text:
+        exchange += f"\n\nAssistant: {assistant_text[:500]}"
+    return exchange
+
+
+async def generate_chat_title(db: AsyncSession, messages: list[dict[str, Any]]) -> str | None:
+    exchange = _title_exchange(messages)
+    if not exchange:
         return None
 
-    tokens = _title_tokens(first_user_text)
-    useful: list[str] = []
-    seen: set[str] = set()
-    for token in tokens:
-        lower = CHAT_TITLE_WORD_REPLACEMENTS.get(token.lower(), token.lower())
-        if lower in CHAT_TITLE_STOPWORDS or token.isdigit() or lower in seen:
-            continue
-        seen.add(lower)
-        useful.append(token)
-        if len(useful) >= 6:
-            break
+    from app.services.model_router import build_model_client, get_enabled_route
 
-    selected = useful[:6] or tokens[:6]
-    title = _sanitize_chat_title(" ".join(_title_word(token) for token in selected))
-    if title:
-        return title
-    return "New Chat"
-
-
-async def generate_chat_title(messages: list[dict[str, Any]]) -> str | None:
-    return _deterministic_chat_title(messages)
+    route, model, _provider = await get_enabled_route(db, "general_chat")
+    client = await build_model_client(_provider, model)
+    result = await client.chat_completion(
+        [
+            {"role": "system", "content": TITLE_GENERATION_PROMPT},
+            {"role": "user", "content": exchange},
+        ],
+        temperature=float(route.temperature) if route.temperature is not None else 0.3,
+        max_tokens=200,
+        tools=None,
+    )
+    if result.get("error"):
+        return None
+    return _sanitize_chat_title(result.get("content"))

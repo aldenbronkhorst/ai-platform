@@ -22,7 +22,9 @@ async def test_workspace_runs_python_and_collects_files():
         {
             "path": "answer.txt",
             "bytes": 2,
+            "mime_type": "text/plain",
             "sha256": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
+            "content_base64": "NDI=",
             "preview": "42",
         }
     ]
@@ -136,6 +138,13 @@ async def test_workspace_call_returns_connector_error_without_failing_script():
     assert result["stderr"] == ""
     assert result["connector_calls"] == {"odoo": 1}
     assert result["connector_error_calls"] == {"odoo": 1}
+    assert result["connector_error_details"] == [{
+        "tool_name": "odoo",
+        "error_type": "odoo_error",
+        "message": "Invalid field 'missing_field' on model 'res.partner'.",
+        "model": "res.partner",
+        "method": "read",
+    }]
 
 
 @pytest.mark.asyncio
@@ -268,6 +277,27 @@ async def test_workspace_python_can_call_any_platform_tool():
 
 
 @pytest.mark.asyncio
+async def test_workspace_python_can_read_connector_guidance_generically():
+    calls = []
+
+    async def fake_tool(tool_name, arguments):
+        calls.append((tool_name, arguments))
+        return {"connector": tool_name, "content": "# Skill"}
+
+    result = await run_workspace(
+        {
+            "code": "payload = call('odoo', {'operation': 'guidance'})\nprint(payload['content'])",
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "# Skill"
+    assert calls == [("odoo", {"operation": "guidance"})]
+
+
+@pytest.mark.asyncio
 async def test_workspace_shell_can_call_any_platform_tool():
     async def fake_tool(tool_name, arguments):
         return {"status": "success", "connector": tool_name, "value": arguments["value"]}
@@ -307,6 +337,13 @@ async def test_workspace_shell_command_fails_on_connector_error():
     assert result["status"] == "failed"
     assert '"error": true' in result["stderr"]
     assert "Connector failed." in result["stderr"]
+    assert result["connector_error_details"] == [{
+        "tool_name": "odoo",
+        "error_type": "connector_error",
+        "message": "Connector failed.",
+        "model": "res.partner",
+        "method": "read",
+    }]
 
 
 @pytest.mark.asyncio
@@ -324,7 +361,9 @@ async def test_workspace_runs_shell_and_collects_files():
         {
             "path": "terminal.txt",
             "bytes": 3,
+            "mime_type": "text/plain",
             "sha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+            "content_base64": "MTIz",
             "preview": "123",
         }
     ]

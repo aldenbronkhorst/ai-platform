@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin
@@ -28,6 +29,7 @@ ODOO_ERROR_CAUSE_RE = re.compile(
 )
 MAX_ODOO_ERROR_CHARS = 1200
 GENERIC_ODOO_TRACEBACK_MESSAGE = "Odoo returned a server traceback while processing the request."
+TRANSIENT_HTTP_STATUSES = {502, 503, 504}
 
 
 def compact_odoo_error_message(message: Any) -> str:
@@ -77,26 +79,62 @@ class OdooCredentials:
 
 
 class OdooClient:
-    def __init__(self, credentials: OdooCredentials, timeout: float = 120.0, ssl_verify: bool = True) -> None:
+    def __init__(
+        self,
+        credentials: OdooCredentials,
+        timeout: float = 120.0,
+        ssl_verify: bool = True,
+        max_attempts: int = 3,
+        retry_backoff_seconds: float = 0.4,
+    ) -> None:
         self.credentials = credentials
         self.timeout = timeout
         self.ssl_verify = ssl_verify
+        self.max_attempts = max(1, max_attempts)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._uid: int | None = None
 
         base_url = credentials.url.rstrip("/") + "/"
         self.jsonrpc_url = urljoin(base_url, "jsonrpc")
 
+    def _retry_delay(self, attempt_index: int) -> None:
+        if self.retry_backoff_seconds <= 0:
+            return
+        time.sleep(self.retry_backoff_seconds * attempt_index)
+
+    def _should_retry_http_error(self, exc: httpx.HTTPError) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return exc.response.status_code in TRANSIENT_HTTP_STATUSES
+        return isinstance(exc, httpx.TransportError)
+
     def _post_jsonrpc(self, payload: dict[str, Any]) -> dict[str, Any]:
+        last_http_error: httpx.HTTPError | None = None
+        response: httpx.Response | None = None
         with httpx.Client(verify=self.ssl_verify, timeout=self.timeout) as client:
-            response = client.post(
-                self.jsonrpc_url,
-                headers={"Content-Type": "application/json"},
-                json=payload,
-            )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise OdooJsonRpcUnavailable(f"Odoo JSON-RPC endpoint unavailable: {exc}") from exc
+            for attempt in range(1, self.max_attempts + 1):
+                try:
+                    response = client.post(
+                        self.jsonrpc_url,
+                        headers={"Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPError as exc:
+                    last_http_error = exc
+                    if attempt >= self.max_attempts or not self._should_retry_http_error(exc):
+                        raise OdooJsonRpcUnavailable(f"Odoo JSON-RPC endpoint unavailable: {exc}") from exc
+                    logger.info(
+                        "Retrying Odoo JSON-RPC after transient error: attempt=%s status=%s url=%s",
+                        attempt + 1,
+                        getattr(getattr(exc, "response", None), "status_code", "transport_error"),
+                        self.jsonrpc_url,
+                    )
+                    self._retry_delay(attempt)
+            else:
+                raise OdooJsonRpcUnavailable(f"Odoo JSON-RPC endpoint unavailable: {last_http_error}")
+        if response is None:
+            raise OdooJsonRpcUnavailable("Odoo JSON-RPC endpoint unavailable: no response received")
         try:
             data = response.json()
         except ValueError as exc:

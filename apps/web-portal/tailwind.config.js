@@ -1,3 +1,10 @@
+import typography from '@tailwindcss/typography';
+
+const themeColor = variable => ({ opacityValue } = {}) => {
+  if (opacityValue === undefined) return `var(${variable})`;
+  return `color-mix(in srgb, var(${variable}) ${Number(opacityValue) * 100}%, transparent)`;
+};
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -13,17 +20,27 @@ export default {
         surface: 'var(--color-surface)',
         raised: 'var(--color-surface-raised)',
         sidebar: 'var(--color-sidebar)',
-        glass: 'var(--glass-bg)',
-        'glass-hover': 'var(--glass-bg-strong)',
+        muted: 'var(--color-bg-subtle)',
       },
       textColor: {
         default: 'var(--color-text)',
         muted: 'var(--color-text-muted)',
         soft: 'var(--color-text-soft)',
+        foreground: 'var(--color-text)',
+        'muted-foreground': 'var(--color-text-muted)',
+        midground: themeColor('--dt-midground'),
       },
       borderColor: {
         default: 'var(--color-border)',
         subtle: 'var(--color-border-subtle)',
+        border: 'var(--color-border)',
+      },
+      colors: {
+        border: 'var(--color-border)',
+        foreground: 'var(--color-text)',
+        'muted-foreground': 'var(--color-text-muted)',
+        midground: themeColor('--dt-midground'),
+        muted: 'var(--color-bg-subtle)',
       },
       keyframes: {
         'fade-in': {
@@ -36,5 +53,5 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [typography],
 }
