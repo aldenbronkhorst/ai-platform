@@ -157,7 +157,7 @@ def test_provider_model_helpers_pick_general_chat_models():
     assert sorted(models, key=_chat_model_sort_key)[0].model_name == "provider-v1-auto"
 
 
-def test_provider_model_parser_uses_provider_metadata_for_voice_models():
+def test_provider_model_parser_uses_explicit_provider_metadata_for_voice_models():
     from app.routers.model_providers import _parse_models_payload
 
     parsed = _parse_models_payload({
@@ -169,14 +169,14 @@ def test_provider_model_parser_uses_provider_metadata_for_voice_models():
                 "supported_parameters": ["tools", "tool_choice"],
             },
             {
-                "id": "provider-speech-latest",
-                "name": "Provider Speech Latest",
+                "id": "provider-multimodal-latest",
+                "name": "Provider Multimodal Latest",
                 "modalities": ["audio", "text"],
             },
             {
                 "id": "provider-transcriber",
                 "name": "Provider Transcriber",
-                "architecture": {"input_modalities": ["audio"], "output_modalities": ["text"]},
+                "task": "speech_to_text",
             },
         ]
     })
@@ -184,16 +184,16 @@ def test_provider_model_parser_uses_provider_metadata_for_voice_models():
     by_id = {model.id: model for model in parsed}
     assert by_id["provider-chat-latest"].task_type == "chat"
     assert by_id["provider-chat-latest"].supports_tools is True
-    assert by_id["provider-speech-latest"].task_type == "voice_transcription"
+    assert by_id["provider-multimodal-latest"].task_type == "chat"
     assert by_id["provider-transcriber"].task_type == "voice_transcription"
 
 
-def test_provider_model_parser_falls_back_to_voice_model_name_markers():
+def test_provider_model_parser_does_not_guess_voice_from_model_name():
     from app.routers.model_providers import _parse_models_payload
 
     parsed = _parse_models_payload({"data": [{"id": "glm-asr-2512", "name": "GLM ASR 2512"}]})
 
-    assert parsed[0].task_type == "voice_transcription"
+    assert parsed[0].task_type == "chat"
 
 
 def test_provider_catalog_adds_documented_zai_voice_model():
@@ -619,30 +619,6 @@ def test_route_reconcile_flushes_before_bulk_model_delete():
             assert route.primary_model_id == new_model.id
 
     asyncio.run(run_delete_flow())
-
-
-def test_model_provider_test_uses_openai_compatible_client(monkeypatch):
-    async def fake_chat_completion(self, messages, temperature=0.3, max_tokens=2000, model_override=None, tools=None):
-        assert self.base_url == "https://provider.example/v1"
-        assert self.deployment_name == "provider-chat-latest"
-        assert self.api_key == "test-key"
-        return {"error": False, "content": "OK"}
-
-    monkeypatch.setattr(
-        "app.routers.model_providers.ModelProviderClient.chat_completion",
-        fake_chat_completion,
-    )
-
-    client = TestClient(app)
-    response = client.post("/model-providers/test", json={
-        "name": "Provider",
-        "base_url": "https://provider.example/v1",
-        "model_name": "provider-chat-latest",
-        "api_key": "test-key",
-    })
-
-    assert response.status_code == 200
-    assert response.json()["success"] is True
 
 
 def test_model_provider_settings_require_admin():

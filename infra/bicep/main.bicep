@@ -53,7 +53,7 @@ param apiImageTag string = 'latest'
 @description('Odoo Connector container image tag')
 param odooConnectorImageTag string = 'latest'
 
-@description('Azure Document Intelligence endpoint for OCR extraction')
+@description('Optional Azure Document Intelligence endpoint override for OCR extraction')
 param documentIntelligenceEndpoint string = ''
 
 @description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')
@@ -120,6 +120,21 @@ module keyVault 'modules/keyVault.bicep' = {
 // Module: Storage Account
 module storage 'modules/storageAccount.bicep' = {
   name: 'storageDeploy'
+  scope: rg
+  params: {
+    workload: workload
+    environment: environment
+    regionCode: regionCode
+    instance: instance
+    location: location
+    tags: tags
+    apiManagedIdentityPrincipalId: identity.outputs.apiManagedIdentityPrincipalId
+  }
+}
+
+// Module: Document Intelligence
+module documentIntelligence 'modules/documentIntelligence.bicep' = {
+  name: 'documentIntelligenceDeploy'
   scope: rg
   params: {
     workload: workload
@@ -200,7 +215,7 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresHost: postgres.outputs.fqdn
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
-    documentIntelligenceEndpoint: documentIntelligenceEndpoint
+    documentIntelligenceEndpoint: empty(documentIntelligenceEndpoint) ? documentIntelligence.outputs.endpoint : documentIntelligenceEndpoint
     microsoftAdminClientId: microsoftAdminClientId
     microsoftAdminAppDisplayName: microsoftAdminAppDisplayName
   }
@@ -258,6 +273,7 @@ module staticWebApp 'modules/staticWebApp.bicep' = {
 // Outputs
 output resourceGroupName string = rg.name
 output acrLoginServer string = acr.outputs.loginServer
+output documentIntelligenceEndpoint string = documentIntelligence.outputs.endpoint
 output acrName string = acr.outputs.name
 output keyVaultName string = keyVault.outputs.name
 output keyVaultUri string = keyVault.outputs.vaultUri

@@ -2,6 +2,7 @@ import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
+from app.core.guidance import guidance_version
 from app.core.security import internal_api_key_auth
 from app.models.schemas import CapabilitiesResponse
 
@@ -19,6 +20,7 @@ def health_check():
         "version": settings.app_version,
         "capabilities": [
             "odoo.run",
+            "odoo.guidance",
         ],
     }
     if config_issues:
@@ -55,7 +57,10 @@ def get_capabilities(_auth: dict = Depends(internal_api_key_auth)):
     return CapabilitiesResponse(
         endpoints=[
             {"path": "/odoo/orm/run", "method": "POST", "description": "Run direct Odoo calls"},
+            {"path": "/odoo/guidance", "method": "GET", "description": "Return Odoo connector guidance"},
+            {"path": "/odoo/manifest", "method": "GET", "description": "Return Odoo connector package manifest"},
         ],
         execute_kw_enabled=True,
         execute_kw_write_methods=True,
+        guidance_version=guidance_version(),
     )

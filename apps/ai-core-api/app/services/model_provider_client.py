@@ -87,7 +87,14 @@ def _model_uses_completion_token_budget(model: str) -> bool:
 
 def _model_uses_fixed_sampling(model: str) -> bool:
     normalized = str(model or "").lower()
-    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4", "kimi-k2.7-code"))
+
+
+def _json_safe_copy(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _text_delta(value: Any) -> str:
@@ -115,6 +122,32 @@ def _reasoning_delta(delta: dict[str, Any]) -> str:
         if text:
             return text
     return ""
+
+
+ASSISTANT_HISTORY_METADATA_KEYS = {
+    "reasoning_content",
+    "reasoning",
+    "thinking",
+    "thought",
+    "thought_signature",
+}
+
+
+def _assistant_message_for_history(message: dict[str, Any]) -> dict[str, Any]:
+    history: dict[str, Any] = {"role": "assistant"}
+    for key in ("content", "tool_calls", "name", "audio", "refusal"):
+        if key in message and (key == "content" or message[key] is not None):
+            history[key] = _json_safe_copy(message[key])
+    for key, value in message.items():
+        if key in history or key == "role":
+            continue
+        if value is None:
+            continue
+        if key in ASSISTANT_HISTORY_METADATA_KEYS or key.endswith("_signature") or key.endswith("_content"):
+            history[key] = _json_safe_copy(value)
+    if "content" not in history:
+        history["content"] = None
+    return history
 
 
 def _responses_message(role: str, content: Any) -> dict[str, Any] | None:
@@ -192,6 +225,39 @@ def _responses_output_text(body: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _responses_reasoning_text(body: dict[str, Any]) -> str:
+    parts: list[str] = []
+    output = body.get("output")
+    if not isinstance(output, list):
+        return ""
+    for item in output:
+        if not isinstance(item, dict) or "reasoning" not in str(item.get("type") or ""):
+            continue
+        for key in ("text", "reasoning", "reasoning_content"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                parts.append(value)
+        summary = item.get("summary")
+        if isinstance(summary, str) and summary:
+            parts.append(summary)
+        elif isinstance(summary, list):
+            for part in summary:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    text = part.get("text") or part.get("summary_text") or part.get("content")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+        content = item.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text") or part.get("reasoning") or part.get("content")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+    return "".join(parts)
+
+
 def _responses_tool_calls(body: dict[str, Any]) -> list[dict[str, Any]] | None:
     calls: list[dict[str, Any]] = []
     output = body.get("output")
@@ -215,47 +281,6 @@ def _responses_tool_calls(body: dict[str, Any]) -> list[dict[str, Any]] | None:
     return calls or None
 
 
-def _is_word_duplicate(previous: str, incoming: str) -> int:
-    previous_match = re.search(r"([\w'-]{3,})\s*$", previous)
-    incoming_match = re.match(r"\s*([\w'-]{3,})(?=\s|$|[.,;:!?])", incoming)
-    if not previous_match or not incoming_match:
-        return 0
-    if previous_match.group(1).lower() != incoming_match.group(1).lower():
-        return 0
-    return incoming_match.end()
-
-
-def _incremental_text_delta(accumulated: str, incoming: str) -> str:
-    """Normalize providers that stream cumulative or overlapping text chunks."""
-    if not incoming:
-        return ""
-    if not accumulated:
-        return incoming
-    if incoming == accumulated or accumulated.endswith(incoming):
-        return ""
-    if incoming.startswith(accumulated):
-        return incoming[len(accumulated):]
-
-    trimmed_accumulated = accumulated.rstrip()
-    if trimmed_accumulated and incoming.startswith(trimmed_accumulated):
-        delta = incoming[len(trimmed_accumulated):]
-        return delta.lstrip() if accumulated[-1].isspace() else delta
-
-    max_overlap = min(len(accumulated), len(incoming))
-    for overlap in range(max_overlap, 2, -1):
-        if accumulated[-overlap:] == incoming[:overlap]:
-            if overlap >= 4 or re.fullmatch(r"[\w'-]{3,}", incoming[:overlap]):
-                delta = incoming[overlap:]
-                return delta.lstrip() if accumulated[-1].isspace() else delta
-
-    duplicate_word_end = _is_word_duplicate(accumulated, incoming)
-    if duplicate_word_end:
-        delta = incoming[duplicate_word_end:]
-        return delta.lstrip() if accumulated[-1].isspace() else delta
-
-    return incoming
-
-
 def _merge_tool_call_deltas(tool_calls: list[dict[str, Any]], deltas: list[Any]) -> None:
     for item in deltas:
         if not isinstance(item, dict):
@@ -274,6 +299,10 @@ def _merge_tool_call_deltas(tool_calls: list[dict[str, Any]], deltas: list[Any])
             target["id"] = item["id"]
         if item.get("type"):
             target["type"] = item["type"]
+        for key, value in item.items():
+            if key in {"index", "id", "type", "function"} or value is None:
+                continue
+            target[key] = _json_safe_copy(value)
         function = item.get("function")
         if isinstance(function, dict):
             target_function = target.setdefault("function", {"name": "", "arguments": ""})
@@ -281,6 +310,10 @@ def _merge_tool_call_deltas(tool_calls: list[dict[str, Any]], deltas: list[Any])
                 target_function["name"] = function["name"]
             if isinstance(function.get("arguments"), str):
                 target_function["arguments"] = str(target_function.get("arguments") or "") + function["arguments"]
+            for key, value in function.items():
+                if key in {"name", "arguments"} or value is None:
+                    continue
+                target_function[key] = _json_safe_copy(value)
 
 
 def _parse_sse_data(line: str) -> str | None:
@@ -458,6 +491,8 @@ class ModelProviderClient:
     ) -> dict:
         model = str(model_override or self.deployment_name)
         if self._uses_responses_api(model):
+            if stream_event_sink:
+                return await self._streaming_responses_completion(messages, max_tokens, model, tools, stream_event_sink)
             return await self._responses_completion(messages, max_tokens, model, tools)
 
         url = _chat_completions_url(self.base_url)
@@ -496,8 +531,10 @@ class ModelProviderClient:
         return {
             "error": False,
             "content": msg.get("content", ""),
+            "reasoning_content": _reasoning_delta(msg),
             "finish_reason": choice.get("finish_reason", ""),
             "tool_calls": msg.get("tool_calls"),
+            "assistant_message": _assistant_message_for_history(msg),
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0),
@@ -561,6 +598,160 @@ class ModelProviderClient:
             "raw_response": body,
         }
 
+    async def _streaming_responses_completion(
+        self,
+        messages: list,
+        max_tokens: int,
+        model: str,
+        tools: Optional[list[dict[str, Any]]],
+        stream_event_sink: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        url = _responses_url(self.base_url)
+        payload, sent_tool_outputs = self._responses_payload(messages, max_tokens, model, tools)
+        payload = {**payload, "stream": True}
+        content_text = ""
+        reasoning_text = ""
+        output_items: list[dict[str, Any]] = []
+        usage: dict[str, Any] = {}
+        response_id: str | None = None
+        response_model = model
+        status = ""
+        finish_reason = ""
+        raw_events: list[dict[str, Any]] = []
+
+        start = time.monotonic()
+        async with httpx.AsyncClient(timeout=240.0) as client:
+            async with client.stream("POST", url, headers=await self._get_headers(), json=payload) as response:
+                if response.status_code != 200:
+                    raw_bytes = await response.aread()
+                    raw_text = raw_bytes.decode("utf-8", errors="replace")
+                    try:
+                        body = json.loads(raw_text)
+                    except Exception:
+                        body = {}
+                    detail = _error_detail(body, raw_text)
+                    elapsed = int((time.monotonic() - start) * 1000)
+                    return {
+                        "error": True,
+                        "error_type": _classify_error(response.status_code, detail),
+                        "status_code": response.status_code,
+                        "message": detail,
+                        "raw_response": raw_text,
+                        "latency_ms": elapsed,
+                    }
+
+                async for line in response.aiter_lines():
+                    data = _parse_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    raw_events.append(event)
+                    if len(raw_events) > 20:
+                        raw_events.pop(0)
+
+                    event_type = str(event.get("type") or "")
+                    if event_type == "error":
+                        detail = _error_detail(event, json.dumps(event, ensure_ascii=False, default=str))
+                        elapsed = int((time.monotonic() - start) * 1000)
+                        return {
+                            "error": True,
+                            "error_type": _classify_error(400, detail),
+                            "status_code": 400,
+                            "message": detail,
+                            "raw_response": event,
+                            "latency_ms": elapsed,
+                        }
+
+                    response_obj = event.get("response") if isinstance(event.get("response"), dict) else None
+                    if response_obj:
+                        if isinstance(response_obj.get("id"), str):
+                            response_id = response_obj["id"]
+                        if isinstance(response_obj.get("model"), str):
+                            response_model = response_obj["model"]
+                        if isinstance(response_obj.get("status"), str):
+                            status = response_obj["status"]
+                        if isinstance(response_obj.get("usage"), dict):
+                            usage = response_obj["usage"]
+                        if event_type == "response.failed":
+                            detail = _error_detail(response_obj, json.dumps(response_obj, ensure_ascii=False, default=str))
+                            elapsed = int((time.monotonic() - start) * 1000)
+                            return {
+                                "error": True,
+                                "error_type": _classify_error(400, detail),
+                                "status_code": 400,
+                                "message": detail,
+                                "raw_response": response_obj,
+                                "latency_ms": elapsed,
+                            }
+
+                    if isinstance(event.get("usage"), dict):
+                        usage = event["usage"]
+
+                    if "output_text.delta" in event_type:
+                        delta = event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            content_text += delta
+                            stream_event_sink({"type": "content_delta", "delta": delta})
+                        continue
+
+                    if "reasoning" in event_type and "delta" in event_type:
+                        delta = event.get("delta") or event.get("text")
+                        if isinstance(delta, str) and delta:
+                            reasoning_text += delta
+                            stream_event_sink({"type": "reasoning_delta", "delta": delta})
+                        continue
+
+                    if event_type == "response.output_item.done":
+                        item = event.get("item")
+                        if isinstance(item, dict):
+                            output_items.append(item)
+                        continue
+
+                    if event_type in {"response.completed", "response.incomplete", "response.failed"}:
+                        finish_reason = event_type.removeprefix("response.")
+                        break
+
+        body = {"output": output_items, "status": status or finish_reason, "usage": usage, "model": response_model}
+        if response_id:
+            self._responses_previous_response_id = response_id
+        self._responses_sent_tool_outputs.update(sent_tool_outputs)
+        if not content_text:
+            content_text = _responses_output_text(body)
+        if not reasoning_text:
+            reasoning_text = _responses_reasoning_text(body)
+
+        prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+        tool_calls = _responses_tool_calls(body)
+        elapsed = int((time.monotonic() - start) * 1000)
+
+        return {
+            "error": False,
+            "content": content_text,
+            "reasoning_content": reasoning_text,
+            "finish_reason": "tool_calls" if tool_calls else (status or finish_reason or "completed"),
+            "tool_calls": tool_calls,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "latency_ms": elapsed,
+            "model": response_model,
+            "raw_response": {
+                "streamed": True,
+                "event_count": len(raw_events),
+                "last_events": raw_events,
+                "output": output_items,
+            },
+        }
+
     async def _streaming_chat_completion(
         self,
         url: str,
@@ -572,6 +763,7 @@ class ModelProviderClient:
         content_text = ""
         reasoning_text = ""
         tool_calls: list[dict[str, Any]] = []
+        assistant_metadata: dict[str, Any] = {}
         usage: dict[str, Any] = {}
         finish_reason = ""
         response_model = model
@@ -628,15 +820,23 @@ class ModelProviderClient:
                     if not isinstance(delta, dict):
                         delta = choice.get("message") if isinstance(choice.get("message"), dict) else {}
 
-                    reasoning_delta = _incremental_text_delta(reasoning_text, _reasoning_delta(delta))
+                    reasoning_delta = _reasoning_delta(delta)
                     if reasoning_delta:
                         reasoning_text += reasoning_delta
                         stream_event_sink({"type": "reasoning_delta", "delta": reasoning_delta})
 
-                    content_delta = _incremental_text_delta(content_text, _text_delta(delta.get("content")))
+                    content_delta = _text_delta(delta.get("content"))
                     if content_delta:
                         content_text += content_delta
                         stream_event_sink({"type": "content_delta", "delta": content_delta})
+
+                    for key, value in delta.items():
+                        if key in {"content", "tool_calls", "reasoning_content", "reasoning", "thinking", "thought"}:
+                            continue
+                        if value is None:
+                            continue
+                        if key in ASSISTANT_HISTORY_METADATA_KEYS or key.endswith("_signature") or key.endswith("_content"):
+                            assistant_metadata[key] = _json_safe_copy(value)
 
                     streamed_tool_calls = delta.get("tool_calls")
                     if isinstance(streamed_tool_calls, list):
@@ -649,6 +849,13 @@ class ModelProviderClient:
             "reasoning_content": reasoning_text,
             "finish_reason": finish_reason,
             "tool_calls": tool_calls or None,
+            "assistant_message": _assistant_message_for_history({
+                "role": "assistant",
+                **assistant_metadata,
+                "content": content_text or None,
+                "reasoning_content": reasoning_text or None,
+                "tool_calls": tool_calls or None,
+            }),
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
             "total_tokens": usage.get("total_tokens", 0),

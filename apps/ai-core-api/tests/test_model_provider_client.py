@@ -106,6 +106,56 @@ async def test_gpt5_chat_payload_uses_completion_token_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model_name", ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"])
+async def test_kimi_code_payload_omits_temperature(monkeypatch, model_name):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": model_name,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, headers, json):
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ModelProviderClient(
+        base_url="https://api.moonshot.ai/v1",
+        deployment_name=model_name,
+        api_key="test-key",
+    )
+
+    await client.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.3,
+        max_tokens=2000,
+    )
+
+    assert captured["url"] == "https://api.moonshot.ai/v1/chat/completions"
+    assert captured["json"]["model"] == model_name
+    assert captured["json"]["max_tokens"] == 2000
+    assert "temperature" not in captured["json"]
+
+
+@pytest.mark.asyncio
 async def test_gpt55_uses_responses_api_with_xhigh_reasoning(monkeypatch):
     captured = {}
 
@@ -162,7 +212,6 @@ async def test_gpt55_uses_responses_api_with_xhigh_reasoning(monkeypatch):
                 "parameters": {"type": "object", "properties": {"code": {"type": "string"}}},
             },
         }],
-        stream_event_sink=lambda _event: None,
     )
 
     assert captured["url"] == "https://api.openai.com/v1/responses"
@@ -375,6 +424,71 @@ async def test_zai_client_does_not_disable_thinking_by_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_client_preserves_reasoning_and_provider_tool_metadata(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": "gemini-3.5-flash",
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "Need to inspect the workspace.",
+                        "thought_signature": "assistant-signature",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "thought_signature": "top-level-signature",
+                            "function": {
+                                "name": "workspace",
+                                "arguments": '{"code": "print(42)"}',
+                                "thought_signature": "function-signature",
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ModelProviderClient(
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        deployment_name="gemini-3.5-flash",
+        api_key="test-key",
+    )
+
+    result = await client.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.3,
+        max_tokens=2000,
+    )
+
+    assert result["finish_reason"] == "tool_calls"
+    assert result["reasoning_content"] == "Need to inspect the workspace."
+    assert result["tool_calls"][0]["thought_signature"] == "top-level-signature"
+    assert result["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
+    assert result["assistant_message"]["thought_signature"] == "assistant-signature"
+    assert result["assistant_message"]["reasoning_content"] == "Need to inspect the workspace."
+    assert result["assistant_message"]["tool_calls"][0]["thought_signature"] == "top-level-signature"
+
+
+@pytest.mark.asyncio
 async def test_client_streams_reasoning_and_content_deltas(monkeypatch):
     captured = {}
     events = []
@@ -446,15 +560,143 @@ async def test_client_streams_reasoning_and_content_deltas(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_client_normalizes_cumulative_and_overlapping_stream_chunks(monkeypatch):
+async def test_client_streams_responses_api_reasoning_and_text(monkeypatch):
+    events = []
+    captured = {}
+    lines = [
+        'data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","model":"gpt-5.5"}}',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"Checking "}',
+        'data: {"type":"response.reasoning_summary_text.delta","delta":"the files. "}',
+        'data: {"type":"response.output_text.delta","delta":"Done."}',
+        'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"Done."}]}}',
+        'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","model":"gpt-5.5","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}}',
+        "data: [DONE]",
+    ]
+
+    class FakeStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url, headers, json):
+            captured["method"] = method
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ModelProviderClient(
+        base_url="https://api.openai.com/v1",
+        deployment_name="gpt-5.5",
+        api_key="test-key",
+    )
+
+    result = await client.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        temperature=0.3,
+        max_tokens=2000,
+        stream_event_sink=events.append,
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.openai.com/v1/responses"
+    assert captured["json"]["stream"] is True
+    assert result["content"] == "Done."
+    assert result["reasoning_content"] == "Checking the files. "
+    assert result["finish_reason"] == "completed"
+    assert result["total_tokens"] == 7
+    assert events == [
+        {"type": "reasoning_delta", "delta": "Checking "},
+        {"type": "reasoning_delta", "delta": "the files. "},
+        {"type": "content_delta", "delta": "Done."},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_streams_provider_tool_metadata(monkeypatch):
+    lines = [
+        'data: {"choices":[{"delta":{"thought_signature":"assistant-signature","tool_calls":[{"index":0,"id":"call_1","type":"function","thought_signature":"top-level-signature","function":{"name":"workspace","arguments":"{\\"code\\": ","thought_signature":"function-signature"}}]}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"print(42)\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        "data: [DONE]",
+    ]
+
+    class FakeStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(model_provider_client.httpx, "AsyncClient", FakeAsyncClient)
+
+    client = ModelProviderClient(
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        deployment_name="gemini-3.5-flash",
+        api_key="test-key",
+    )
+
+    result = await client.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[{
+            "type": "function",
+            "function": {"name": "workspace", "parameters": {"type": "object"}},
+        }],
+        stream_event_sink=lambda _event: None,
+    )
+
+    assert result["finish_reason"] == "tool_calls"
+    assert result["tool_calls"][0]["thought_signature"] == "top-level-signature"
+    assert result["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
+    assert result["tool_calls"][0]["function"]["arguments"] == '{"code": "print(42)"}'
+    assert result["assistant_message"]["thought_signature"] == "assistant-signature"
+    assert result["assistant_message"]["tool_calls"][0]["thought_signature"] == "top-level-signature"
+
+
+@pytest.mark.asyncio
+async def test_client_streams_repeated_word_deltas_without_collapsing(monkeypatch):
     events = []
     lines = [
-        'data: {"choices":[{"delta":{"reasoning_content":"Finding "}}]}',
-        'data: {"choices":[{"delta":{"reasoning_content":"Finding products "}}]}',
-        'data: {"choices":[{"delta":{"reasoning_content":"products with matches. "}}]}',
-        'data: {"choices":[{"delta":{"content":"Exam"}}]}',
-        'data: {"choices":[{"delta":{"content":"Example "}}]}',
-        'data: {"choices":[{"delta":{"content":"Example product table."},"finish_reason":"stop"}]}',
+        'data: {"choices":[{"delta":{"content":"Lots "}}]}',
+        'data: {"choices":[{"delta":{"content":"Lots More"},"finish_reason":"stop"}]}',
         "data: [DONE]",
     ]
 
@@ -497,13 +739,8 @@ async def test_client_normalizes_cumulative_and_overlapping_stream_chunks(monkey
         stream_event_sink=events.append,
     )
 
-    assert result["reasoning_content"] == "Finding products with matches. "
-    assert result["content"] == "Example product table."
+    assert result["content"] == "Lots Lots More"
     assert events == [
-        {"type": "reasoning_delta", "delta": "Finding "},
-        {"type": "reasoning_delta", "delta": "products "},
-        {"type": "reasoning_delta", "delta": "with matches. "},
-        {"type": "content_delta", "delta": "Exam"},
-        {"type": "content_delta", "delta": "ple "},
-        {"type": "content_delta", "delta": "product table."},
+        {"type": "content_delta", "delta": "Lots "},
+        {"type": "content_delta", "delta": "Lots More"},
     ]

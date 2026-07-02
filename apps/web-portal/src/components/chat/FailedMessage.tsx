@@ -59,18 +59,18 @@ export function FailedMessage({ errorMessage, onRetry }: FailedMessageProps) {
   const message = parsed?.errorMessage || errorMessage || "Sorry, I could not complete that request. Please try again.";
 
   return (
-    <div className="max-w-[75%]">
-      <p className="text-xs font-semibold text-danger mb-1">
+    <div className="max-w-full pl-[var(--message-text-indent)] text-left">
+      <p className="mb-1 text-xs font-semibold text-[var(--color-danger)]">
         {heading}
       </p>
-      <p className="text-[11px] text-muted mb-3">
+      <p className="mb-3 text-[11px] text-[var(--ui-text-secondary)]">
         {message}
       </p>
 
       <div className="flex items-center gap-2">
         <button
           onClick={onRetry}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-[11px] font-semibold hover:opacity-90 transition-all"
+          className="flex items-center gap-1.5 rounded-md border border-[var(--ui-stroke-tertiary)] bg-[var(--dt-card)] px-3 py-1.5 text-[11px] font-semibold text-[var(--ui-text-secondary)] transition-colors hover:border-[var(--ui-stroke-secondary)] hover:text-foreground"
         >
           <RefreshCw className="w-3.5 h-3.5" />
           Retry

@@ -18,9 +18,11 @@ from app.services.model_router import (
     CANONICAL_SYSTEM_PROMPT,
     _compact_tool_result_for_model,
     _append_tool_guidance,
+    _assistant_tool_call_message,
     _execute_tool_call_impl,
+    _workspace_generated_files,
 )
-from app.services.chat_titles import _deterministic_chat_title, _sanitize_chat_title
+from app.services.chat_titles import _sanitize_chat_title
 from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
 
@@ -61,7 +63,7 @@ def test_canonical_prompt_requires_grounded_connected_system_numbers():
 
 
 def test_trace_redaction_keeps_token_counts_visible():
-    from app.services.trace_service import redact_value, summarize_payload
+    from app.services.trace_service import activity_safe_event, redact_value, summarize_payload
 
     assert redact_value("prompt_tokens", 123) == 123
     assert redact_value("completion_tokens", 45) == 45
@@ -72,6 +74,128 @@ def test_trace_redaction_keeps_token_counts_visible():
     assert summarize_payload({"messages": [{"role": "user", "content": "hi"}]}) == {
         "messages": [1, {"role": "user", "content": "hi"}]
     }
+    event = activity_safe_event({
+        "span_type": "tool_call",
+        "input_summary": {
+            "tool_name": "workspace",
+            "arguments": {"language": "python", "code": "print('hello')"},
+        },
+        "output_summary": {
+            "result": {
+                "workspace_id": "ws1",
+                "status": "success",
+                "language": "python",
+                "stdout": "hello\n",
+                "stderr": "",
+                "tool_calls": 0,
+            },
+        },
+    })
+    assert event["input_summary"]["arguments"]["code"] == "print('hello')"
+    assert event["output_summary"]["result"]["stdout"] == "hello"
+
+
+def test_workspace_generated_files_extracts_only_downloadable_outputs():
+    result = {
+        "workspace_id": "ws_123",
+        "run_index": 4,
+        "input_files": [{"path": "source.csv"}],
+        "files": [
+            {
+                "path": "source.csv",
+                "mime_type": "text/csv",
+                "bytes": 10,
+                "sha256": "input-sha",
+                "content_base64": "aW5wdXQ=",
+            },
+            {
+                "path": "output/report.xlsx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "bytes": 12,
+                "sha256": "output-sha",
+                "content_base64": "cmVwb3J0",
+            },
+            {
+                "path": "too-large.bin",
+                "mime_type": "application/octet-stream",
+                "bytes": 20_000_000,
+                "sha256": None,
+            },
+        ],
+    }
+
+    assert _workspace_generated_files(result) == [
+        {
+            "path": "output/report.xlsx",
+            "filename": "report.xlsx",
+            "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "bytes": 12,
+            "sha256": "output-sha",
+            "content_base64": "cmVwb3J0",
+            "workspace_id": "ws_123",
+            "run_index": 4,
+        }
+    ]
+
+
+def test_finished_trace_activity_keeps_tool_input_summary():
+    from app.services.trace_service import TraceService
+
+    events = []
+    trace = TraceService(MagicMock(), activity_event_sink=events.append)
+    span_id = trace.start_span(
+        "tool_call",
+        "workspace",
+        input_summary={
+            "tool_name": "workspace",
+            "arguments": {
+                "language": "python",
+                "code": "print('hello')",
+            },
+        },
+    )
+    trace.end_span(span_id, output_summary={"result": {"status": "success", "stdout": "hello"}})
+
+    finished = events[-1]
+    assert finished["event"] == "span_finished"
+    assert finished["input_summary"]["action"].startswith("Run Python: print('hello')")
+    assert finished["input_summary"]["arguments"]["purpose"] == "print('hello')"
+    assert finished["input_summary"]["arguments"]["code"] == "print('hello')"
+
+
+def test_agent_stream_event_maps_reasoning_and_content_deltas():
+    from app.services.model_router import _agent_stream_event
+
+    provider = AIProvider(name="Z.ai", provider_type="openai_compatible")
+    model = AIModel(display_name="GLM 5.2", model_name="glm-5.2")
+
+    reasoning = _agent_stream_event(
+        {"type": "reasoning_delta", "delta": "Checking live data."},
+        provider=provider,
+        model=model,
+        attempt_reason="chat",
+    )
+    thinking = _agent_stream_event(
+        {"type": "thinking_delta", "delta": "Planning the lookup."},
+        provider=provider,
+        model=model,
+        attempt_reason="chat",
+    )
+    content = _agent_stream_event(
+        {"type": "content_delta", "delta": "The answer is "},
+        provider=provider,
+        model=model,
+        attempt_reason="tool_loop",
+    )
+
+    assert reasoning["type"] == "reasoning.delta"
+    assert reasoning["provider"] == "Z.ai"
+    assert reasoning["model"] == "GLM 5.2"
+    assert reasoning["text"] == "Checking live data."
+    assert thinking["type"] == "reasoning.delta"
+    assert thinking["text"] == "Planning the lookup."
+    assert content["type"] == "message.delta"
+    assert content["attempt_reason"] == "tool_loop"
 
 
 def test_chat_title_sanitizer_returns_short_plain_title():
@@ -79,66 +203,6 @@ def test_chat_title_sanitizer_returns_short_plain_title():
     assert _sanitize_chat_title("1. Odoo Invoice Review\nextra") == "Odoo Invoice Review"
     assert _sanitize_chat_title("<|tool_call_begin|>bad") is None
     assert _sanitize_chat_title("New Chat") is None
-
-
-def test_deterministic_chat_title_uses_first_user_request():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "can you check our azure and tell me all active resources"},
-        {"role": "assistant", "content": "I will check Azure."},
-    ])
-
-    assert title == "Azure Active Resources"
-
-
-def test_deterministic_chat_title_preserves_business_terms():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "what did Penelope do today in Odoo, give me a timeline"},
-    ])
-
-    assert title == "Penelope Odoo Timeline"
-
-
-def test_deterministic_chat_title_drops_question_scaffolding_and_standalone_counts():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "there are 2 gerhard employees in my odoo?"},
-    ])
-
-    assert title == "Gerhard Employees Odoo"
-
-
-def test_deterministic_chat_title_corrects_typos_and_uses_subject():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "create a microsoft uerer for employe gerhard in odoo"},
-    ])
-
-    assert title == "Create Microsoft User Employee Gerhard Odoo"
-
-
-def test_deterministic_chat_title_uses_latest_user_message_only():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "whats costing so much"},
-        {"role": "assistant", "content": "Azure Cost Management returned a daily cost table."},
-    ])
-
-    assert title == "Costing So Much"
-
-
-def test_deterministic_chat_title_normalizes_error_typos():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "halllucinations and now claims it cannot acess azure"},
-    ])
-
-    assert title == "Hallucinations Claims Cannot Access Azure"
-
-
-def test_deterministic_chat_title_does_not_preserve_raw_misspellings():
-    title = _deterministic_chat_title([
-        {"role": "user", "content": "faliours during thinking in the connecotrs"},
-    ])
-
-    assert title == "Failures During Thinking Connectors"
-    assert "Faliours" not in title
-    assert "Connecotrs" not in title
 
 
 MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_NATIVE_TOOL_NAMES))
@@ -199,8 +263,8 @@ def test_microsoft_guidance_uses_workspace_broker_targets():
     assert "ms_graph_powershell" not in prompt
     assert "ms_az_powershell" not in prompt
     assert "ms_bicep" not in prompt
-    assert "connected account permissions decide what succeeds" in prompt
-    assert "Do not present business-system behavior as verified unless the script actually checked it." in prompt
+    assert "account permissions decide what succeeds" in prompt
+    assert "If a live system fact matters, check it in Workspace" in prompt
 
 def test_compact_tool_result_preserves_small_graph_collections():
     result = {
@@ -217,6 +281,40 @@ def test_compact_tool_result_preserves_small_graph_collections():
 
     assert len(compacted["result"]["value"]) == 14
     assert "truncated_items" not in compacted["result"]["value"]
+
+
+def test_assistant_tool_call_message_preserves_provider_state():
+    message = _assistant_tool_call_message({
+        "content": None,
+        "reasoning_content": "Need a tool.",
+        "tool_calls": [{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "workspace", "arguments": "{}"},
+        }],
+        "assistant_message": {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "Need a tool.",
+            "thought_signature": "assistant-signature",
+            "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "thought_signature": "top-level-signature",
+                "function": {
+                    "name": "workspace",
+                    "arguments": "{}",
+                    "thought_signature": "function-signature",
+                },
+            }],
+        },
+    })
+
+    assert message["role"] == "assistant"
+    assert message["reasoning_content"] == "Need a tool."
+    assert message["thought_signature"] == "assistant-signature"
+    assert message["tool_calls"][0]["thought_signature"] == "top-level-signature"
+    assert message["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
 
 
 # ── Mock DB that can simulate empty / configured / connector states ──
@@ -337,27 +435,57 @@ async def test_odoo_tool_credentials_require_saved_connection_details():
 
 
 @pytest.mark.asyncio
-async def test_generate_chat_title_falls_back_when_title_model_unavailable():
+async def test_generate_chat_title_uses_model_response():
     from app.services.chat_titles import generate_chat_title
 
-    title = await generate_chat_title([
-        {"role": "user", "content": "what are all my azure resources and month to date costs"}
-    ])
+    route = MagicMock(temperature=0.3)
+    model = MagicMock()
+    provider = MagicMock()
+    client = AsyncMock()
+    client.chat_completion.return_value = {
+        "error": False,
+        "content": "Odoo May P&L Revenue.",
+    }
 
-    assert title == "Azure Resources Month Date Costs"
+    with patch("app.services.model_router.get_enabled_route", new=AsyncMock(return_value=(route, model, provider))) as get_route, patch(
+        "app.services.model_router.build_model_client", new=AsyncMock(return_value=client)
+    ) as build_client:
+        title = await generate_chat_title(
+            MagicMock(),
+            [
+                {"role": "user", "content": "in odoo whats revenue as per p and l report for may"},
+                {"role": "assistant", "content": "The P&L revenue for May is R 5,890,107.02."},
+            ],
+        )
+
+    assert title == "Odoo May P&L Revenue"
+    get_route.assert_awaited_once()
+    build_client.assert_awaited_once_with(provider, model)
+    request_messages = client.chat_completion.await_args.args[0]
+    assert "Generate a short, descriptive title" in request_messages[0]["content"]
+    assert "User: in odoo whats revenue" in request_messages[1]["content"]
+    assert "Assistant: The P&L revenue" in request_messages[1]["content"]
 
 
 @pytest.mark.asyncio
-async def test_generate_chat_title_does_not_call_model():
+async def test_generate_chat_title_returns_none_when_model_unavailable():
     from app.services.chat_titles import generate_chat_title
 
-    with patch("app.services.model_router._call_model", new=AsyncMock()) as call_model:
-        title = await generate_chat_title([
-            {"role": "user", "content": "there are 2 gerhard employees in my odoo?"}
-        ])
+    client = AsyncMock()
+    client.chat_completion.return_value = {
+        "error": True,
+        "message": "provider unavailable",
+    }
 
-    assert title == "Gerhard Employees Odoo"
-    assert call_model.await_count == 0
+    with patch("app.services.model_router.get_enabled_route", new=AsyncMock(return_value=(MagicMock(temperature=0.3), MagicMock(), MagicMock()))), patch(
+        "app.services.model_router.build_model_client", new=AsyncMock(return_value=client)
+    ):
+        title = await generate_chat_title(
+            MagicMock(),
+            [{"role": "user", "content": "there are 2 gerhard employees in my odoo?"}],
+        )
+
+    assert title is None
 
 
 # ── Connector Context Tests ──
@@ -816,11 +944,12 @@ class TestToolDefinitions:
         assert "`odoo`" in system_prompt
         assert "`ms_graph`" in system_prompt
         assert "`github_cli`" in system_prompt
-        assert "connected account permissions decide what succeeds" in system_prompt
-        assert "one workspace call per discovery step" in system_prompt
+        assert "connector-owned skill text is included in the system context" in system_prompt
+        assert "account permissions decide what succeeds" in system_prompt
+        assert "If a live system fact matters, check it in Workspace" in system_prompt
         assert "router infers mode" not in system_prompt
 
-    def test_workspace_guidance_prefers_set_based_odoo_queries(self):
+    def test_workspace_guidance_describes_workspace_broker(self):
         from app.services.model_router import _append_tool_guidance
         from app.services.model_tool_calls import _build_tool_definitions
         tools = [
@@ -835,12 +964,49 @@ class TestToolDefinitions:
 
         system_prompt = _append_tool_guidance("Base prompt.", tools, _build_tool_definitions(tools))
 
-        assert "Prefer source-system results and bulk queries" in system_prompt
+        assert "cloud-computer surface" in system_prompt
         assert "available by default" in system_prompt
-        assert "returns connector errors as data" in system_prompt
         assert "Broker targets include" in system_prompt
-        assert "calling connectors inside per-record loops" in system_prompt
+        assert "connector-owned skill text" in system_prompt
+        assert "If a live system fact matters" in system_prompt
         assert "prefer the direct `odoo` tool" not in system_prompt
+
+    def test_document_reader_guidance_is_tool_owned(self):
+        from app.services.model_router import _append_tool_guidance, _tool_skill_context
+        from app.services.model_tool_calls import _build_tool_definitions
+
+        tool = AITool(
+            name="document_reader",
+            display_name="Document Reader",
+            description="Read documents",
+            target_system="ai-platform",
+            input_schema={"type": "object", "properties": {"mode": {"type": "string"}}},
+        )
+
+        system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
+        skill_context = _tool_skill_context([tool])
+
+        assert "Document Reader tool owns detailed SKILL.md guidance" in system_prompt
+        assert "## Tool Skills" in skill_context
+        assert "### Document Reader Tool Skill" in skill_context
+        assert "OCR Profile Selection" in skill_context
+        assert "prebuilt-layout" in skill_context
+
+    @pytest.mark.asyncio
+    async def test_document_reader_guidance_mode_does_not_require_artifact_id(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        result = await _execute_tool_call_impl(
+            AsyncMock(),
+            uuid.uuid4(),
+            "document_reader",
+            {"mode": "guidance"},
+        )
+
+        assert result["status"] == "success"
+        assert result["mode"] == "guidance"
+        assert result["tool"] == "document_reader"
+        assert "Document Reader" in result["content"]
 
     def test_build_tool_definitions_normalizes_dotted_names(self):
         from app.services.model_tool_calls import _build_tool_definitions
@@ -1126,6 +1292,111 @@ class TestToolExecution:
         assert result == []
 
     @pytest.mark.asyncio
+    async def test_odoo_guidance_reads_connector_package_without_user_credentials(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        requested = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "connector": "odoo",
+                    "content": "# Odoo API",
+                    "manifest": {"id": "odoo", "skills": [{"path": "skills/odoo-api/SKILL.md"}]},
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, **kwargs):
+                requested["url"] = url
+                requested["headers"] = kwargs["headers"]
+                return FakeResponse()
+
+        with patch(
+            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            new=AsyncMock(side_effect=AssertionError("guidance must not require user credentials")),
+        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call_impl(
+                MockSession(has_config=True),
+                uuid.uuid4(),
+                "odoo",
+                {"operation": "guidance"},
+            )
+
+        assert requested["url"] == "http://mock-connector:8000/odoo/guidance"
+        assert requested["headers"]["X-Internal-API-Key"] == "test-key"
+        assert result["connector"] == "odoo"
+        assert result["manifest"]["skills"][0]["path"] == "skills/odoo-api/SKILL.md"
+
+    @pytest.mark.asyncio
+    async def test_connector_skill_context_injects_odoo_skill_from_connector(self):
+        from app.services.model_router import _connector_skill_context
+
+        requested = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "version": "2.3.0",
+                    "source": "/app/skills/odoo-api/SKILL.md",
+                    "content": "# Odoo API\n\n## Financial Reports\nUse account.report.get_report_information.",
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                requested["timeout"] = kwargs.get("timeout")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def get(self, url, *args, **kwargs):
+                requested["url"] = url
+                requested["headers"] = kwargs["headers"]
+                return FakeResponse()
+
+        tools = [
+            AITool(
+                name="workspace",
+                display_name="Workspace",
+                description="Run workspace code",
+                target_system="ai-platform",
+                input_schema={"type": "object", "properties": {"code": {"type": "string"}}},
+            )
+        ]
+
+        with patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
+            "app.services.model_router.ODOO_CONNECTOR_KEY",
+            "test-key",
+        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+            context = await _connector_skill_context({"odoo"}, tools)
+
+        assert requested["url"] == "http://mock-connector:8000/odoo/guidance"
+        assert requested["headers"]["X-Internal-API-Key"] == "test-key"
+        assert "## Connector Skills" in context
+        assert "### Odoo Connector Skill" in context
+        assert "Version: 2.3.0" in context
+        assert "## Financial Reports" in context
+        assert "account.report.get_report_information" in context
+
+    @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
         from app.models.models import AIArtifact
         from app.services.model_router import _execute_tool_call_impl
@@ -1170,6 +1441,167 @@ class TestToolExecution:
         assert result["artifact_id"] == str(artifact_id)
         assert result["text"] == "Agreement text from PDF"
         assert result["extraction_source"] == "native_pdf"
+
+    @pytest.mark.asyncio
+    async def test_document_reader_reads_artifact_text_like_a_paged_file(self):
+        from app.models.models import AIArtifact
+        from app.services.model_router import _execute_tool_call_impl
+
+        user_id = uuid.uuid4()
+        artifact_id = uuid.uuid4()
+        artifact = AIArtifact(
+            id=artifact_id,
+            artifact_type="upload",
+            filename="scanned-grv.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/scanned-grv.pdf",
+            created_by_user_id=user_id,
+            extraction_status="ready",
+            extraction_source="azure_document_intelligence:prebuilt-read",
+        )
+
+        class ArtifactDb:
+            async def execute(self, _stmt):
+                class Result:
+                    def scalar_one_or_none(self):
+                        return artifact
+
+                return Result()
+
+            async def flush(self):
+                pass
+
+        with patch(
+            "app.services.artifact.ArtifactService.readable_text",
+            new=AsyncMock(return_value="code 001 price 10\ncode 002 price 20\ncode 003 price 30"),
+        ):
+            result = await _execute_tool_call_impl(
+                ArtifactDb(),
+                user_id,
+                "document_reader",
+                {"artifact_id": str(artifact_id), "mode": "read", "offset": 2, "limit": 1},
+            )
+
+        assert result["status"] == "success"
+        assert result["mode"] == "read"
+        assert result["content"] == "2|code 002 price 20"
+        assert result["offset"] == 2
+        assert result["limit"] == 1
+        assert result["total_lines"] == 3
+        assert result["truncated"] is True
+        assert result["next_offset"] == 3
+
+    @pytest.mark.asyncio
+    async def test_document_reader_tables_returns_structured_rows_not_flattened_text(self):
+        from app.models.models import AIArtifact
+        from app.services.model_router import _execute_tool_call_impl
+
+        user_id = uuid.uuid4()
+        artifact_id = uuid.uuid4()
+        artifact = AIArtifact(
+            id=artifact_id,
+            artifact_type="upload",
+            filename="scanned-grv.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/scanned-grv.pdf",
+            created_by_user_id=user_id,
+            extraction_status="ready",
+            extraction_source="azure_document_intelligence:prebuilt-layout",
+            extracted_text=(
+                "020283 Subaru Lip Pencil 5.650 020908 Pawpaw Cream 29.150"
+            ),
+            extraction_metadata_json={
+                "provider": "azure_document_intelligence",
+                "model_id": "prebuilt-layout",
+                "layout": {
+                    "page_count": 1,
+                    "table_count": 1,
+                    "tables": [
+                        {
+                            "table_index": 1,
+                            "row_count": 3,
+                            "column_count": 3,
+                            "cell_count": 9,
+                            "rows": [
+                                {"row_index": 0, "values": ["STK-CODE", "DESCRIPTION", "PRICE"]},
+                                {"row_index": 1, "values": ["020283", "Subaru Lip Pencil", "5.650"]},
+                                {"row_index": 2, "values": ["020908", "Pawpaw Cream", "29.150"]},
+                            ],
+                            "cells": [
+                                {"row": 0, "column": 0, "text": "STK-CODE", "kind": "columnHeader"},
+                                {"row": 0, "column": 1, "text": "DESCRIPTION", "kind": "columnHeader"},
+                                {"row": 0, "column": 2, "text": "PRICE", "kind": "columnHeader"},
+                                {"row": 1, "column": 0, "text": "020283"},
+                                {"row": 1, "column": 1, "text": "Subaru Lip Pencil"},
+                                {"row": 1, "column": 2, "text": "5.650"},
+                                {"row": 2, "column": 0, "text": "020908"},
+                                {"row": 2, "column": 1, "text": "Pawpaw Cream"},
+                                {"row": 2, "column": 2, "text": "29.150"},
+                            ],
+                            "markdown": (
+                                "| STK-CODE | DESCRIPTION | PRICE |\n"
+                                "| --- | --- | --- |\n"
+                                "| 020283 | Subaru Lip Pencil | 5.650 |\n"
+                                "| 020908 | Pawpaw Cream | 29.150 |"
+                            ),
+                        }
+                    ],
+                },
+            },
+        )
+
+        class ArtifactDb:
+            async def execute(self, _stmt):
+                class Result:
+                    def scalar_one_or_none(self):
+                        return artifact
+
+                return Result()
+
+            async def flush(self):
+                pass
+
+        with patch(
+            "app.services.artifact.ArtifactService.readable_text",
+            new=AsyncMock(return_value=artifact.extracted_text),
+        ):
+            result = await _execute_tool_call_impl(
+                ArtifactDb(),
+                user_id,
+                "document_reader",
+                {"artifact_id": str(artifact_id), "mode": "tables"},
+            )
+
+        assert result["status"] == "success"
+        assert result["mode"] == "tables"
+        assert result["total_tables"] == 1
+        table = result["tables"][0]
+        assert table["rows"][1]["values"] == ["020283", "Subaru Lip Pencil", "5.650"]
+        assert table["rows"][2]["values"] == ["020908", "Pawpaw Cream", "29.150"]
+        assert table["rows"][1]["values"][2] != "29.150"
+        assert result["extraction_metadata"]["layout"] == {
+            "page_count": 1,
+            "table_count": 1,
+            "stored_table_count": 1,
+            "lines_truncated": None,
+            "tables_truncated": None,
+        }
+
+    def test_compact_tool_result_preserves_document_reader_text(self):
+        from app.services.model_router import _compact_tool_result_for_model
+
+        long_text = "\n".join(f"{index}|line {index}" for index in range(1, 200))
+        compact = _compact_tool_result_for_model(
+            {
+                "status": "success",
+                "tool_name": "document_reader",
+                "mode": "read",
+                "content": long_text,
+            }
+        )
+
+        assert compact["content"] == long_text
+        assert "198|line 198" in compact["content"]
 
     @pytest.mark.asyncio
     async def test_odoo_connector_error_is_recorded_for_trace(self):
@@ -1544,15 +1976,34 @@ class TestToolExecution:
                 # First call: model returns a tool_call
                 {
                     "content": None,
+                    "reasoning_content": "Need Odoo.",
                     "finish_reason": "tool_calls",
                     "tool_calls": [{
                         "id": "call_1",
                         "type": "function",
+                        "thought_signature": "top-level-signature",
                         "function": {
                             "name": "odoo",
                             "arguments": '{"model": "res.partner", "method": "search_read", "args": [[]], "kwargs": {"limit": 5}}',
+                            "thought_signature": "function-signature",
                         },
                     }],
+                    "assistant_message": {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": "Need Odoo.",
+                        "thought_signature": "assistant-signature",
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "thought_signature": "top-level-signature",
+                            "function": {
+                                "name": "odoo",
+                                "arguments": '{"model": "res.partner", "method": "search_read", "args": [[]], "kwargs": {"limit": 5}}',
+                                "thought_signature": "function-signature",
+                            },
+                        }],
+                    },
                     "prompt_tokens": 10,
                     "completion_tokens": 5,
                     "total_tokens": 15,
@@ -1594,6 +2045,11 @@ class TestToolExecution:
             post_tool_call = client.chat_completion.call_args_list[1]
             assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
             assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
+            replayed_assistant = post_tool_call.kwargs["messages"][-3]
+            assert replayed_assistant["reasoning_content"] == "Need Odoo."
+            assert replayed_assistant["thought_signature"] == "assistant-signature"
+            assert replayed_assistant["tool_calls"][0]["thought_signature"] == "top-level-signature"
+            assert replayed_assistant["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
 
     @pytest.mark.asyncio
     async def test_execute_chat_reuses_workspace_session_across_tool_calls(self):

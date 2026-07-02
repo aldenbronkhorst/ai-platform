@@ -157,6 +157,9 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
+            { name: 'DOCUMENT_OCR_PROVIDER', value: 'azure_document_intelligence' }
+            { name: 'DOCUMENT_OCR_READ_MODEL_ID', value: 'prebuilt-read' }
+            { name: 'DOCUMENT_OCR_LAYOUT_MODEL_ID', value: 'prebuilt-layout' }
             { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
             { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
           ]

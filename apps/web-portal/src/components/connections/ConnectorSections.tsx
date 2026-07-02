@@ -5,8 +5,8 @@ import {
   GitBranch,
   Trash2,
 } from "lucide-react";
-import { GlassButton } from "../ui/GlassButton";
-import { GlassInput } from "../ui/GlassInput";
+import { Button } from "../ui/Button";
+import { TextField } from "../ui/TextField";
 import {
   MICROSOFT_NATIVE_CONNECTOR_KEY_SET,
   formatDateTime,
@@ -73,7 +73,7 @@ function FormField({ label, children }: { label: string; children: ReactNode }) 
 
 export function DetailCard({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-default bg-canvas p-4">
+    <div className="rounded-lg border border-default bg-canvas p-4">
       {children}
     </div>
   );
@@ -228,9 +228,9 @@ export function OdooConnectorSection({
 
       {isOdooStatusLoaded && !isOdooDisconnected ? (
         <ActionGroup>
-          <GlassButton size="sm" variant="danger" onClick={onDisconnect}>
+          <Button size="sm" variant="danger" onClick={onDisconnect}>
             <Trash2 className="w-3.5 h-3.5" /> Disconnect
-          </GlassButton>
+          </Button>
         </ActionGroup>
       ) : null}
 
@@ -238,22 +238,22 @@ export function OdooConnectorSection({
         <form onSubmit={onConnect} className="space-y-4">
           <div className="grid gap-3">
             <FormField label="Instance URL">
-              <GlassInput type="url" required placeholder="https://your-odoo-instance.com" value={odooUrl} onChange={e => onOdooUrlChange(e.target.value)} />
+              <TextField type="url" required placeholder="https://your-odoo-instance.com" value={odooUrl} onChange={e => onOdooUrlChange(e.target.value)} />
             </FormField>
             <FormField label="Database">
-              <GlassInput type="text" required placeholder="Database name" value={odooDb} onChange={e => onOdooDbChange(e.target.value)} />
+              <TextField type="text" required placeholder="Database name" value={odooDb} onChange={e => onOdooDbChange(e.target.value)} />
             </FormField>
             <FormField label="Username">
-              <GlassInput type="email" required placeholder="user@example.com" value={odooUsername} onChange={e => onOdooUsernameChange(e.target.value)} />
+              <TextField type="email" required placeholder="user@example.com" value={odooUsername} onChange={e => onOdooUsernameChange(e.target.value)} />
             </FormField>
             <FormField label="API Key">
-              <GlassInput type="password" required placeholder="Odoo API key" value={odooApiKey} onChange={e => onOdooApiKeyChange(e.target.value)} />
+              <TextField type="password" required placeholder="Odoo API key" value={odooApiKey} onChange={e => onOdooApiKeyChange(e.target.value)} />
             </FormField>
           </div>
           <ActionGroup>
-            <GlassButton type="submit" disabled={isConnecting}>
+            <Button type="submit" disabled={isConnecting}>
               {isConnecting ? "Connecting..." : "Verify & Save"}
-            </GlassButton>
+            </Button>
           </ActionGroup>
         </form>
       )}
@@ -315,12 +315,12 @@ export function MicrosoftNativeConnectorSection({
       />
 
       <ActionGroup>
-        <GlassButton size="sm" onClick={onConnect} disabled={isStarting || isPolling}>
-          {isStarting ? "Starting sign-in..." : isPolling ? "Waiting for authentication..." : status === "connected" ? "Refresh Sign-In" : `Connect ${connector.name}`}
-        </GlassButton>
-        <GlassButton size="sm" variant="danger" onClick={onDisconnect}>
+        <Button size="sm" onClick={onConnect} disabled={isStarting || isPolling}>
+          {isStarting ? "Starting sign-in..." : isPolling ? "Waiting for authentication..." : status === "connected" ? "Reconnect" : `Connect ${connector.name}`}
+        </Button>
+        <Button size="sm" variant="danger" onClick={onDisconnect}>
           <Trash2 className="w-3.5 h-3.5" /> Disconnect
-        </GlassButton>
+        </Button>
       </ActionGroup>
 
       {activeDeviceCode && (
@@ -337,9 +337,9 @@ export function MicrosoftNativeConnectorSection({
               </p>
             </div>
             <ActionGroup>
-              <GlassButton size="sm" onClick={() => onOpenDeviceLogin(activeDeviceCode.verification_url)}>
+              <Button size="sm" onClick={() => onOpenDeviceLogin(activeDeviceCode.verification_url)}>
                 Open Microsoft Sign-In
-              </GlassButton>
+              </Button>
             </ActionGroup>
           </div>
         </DetailCard>
@@ -379,9 +379,9 @@ export function GitHubConnectorSection({
       />
 
       <ActionGroup>
-        <GlassButton size="sm" onClick={onConnect}>
+        <Button size="sm" onClick={onConnect}>
           <GitBranch className="w-4 h-4" /> Connect with GitHub
-        </GlassButton>
+        </Button>
       </ActionGroup>
     </ConnectorDetailShell>
   );

@@ -8,8 +8,10 @@ connector/tool helpers. Connector secrets are never written into the workspace.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import secrets
 import shutil
@@ -38,7 +40,7 @@ MAX_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_MAX_TIMEOUT_SECONDS", "120")
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_DEFAULT_TIMEOUT_SECONDS", "60"))
 MAX_OUTPUT_CHARS = int(os.environ.get("WORKSPACE_MAX_OUTPUT_CHARS", "20000"))
 MAX_COLLECTED_FILES = int(os.environ.get("WORKSPACE_MAX_COLLECTED_FILES", "20"))
-MAX_COLLECTED_FILE_BYTES = int(os.environ.get("WORKSPACE_MAX_COLLECTED_FILE_BYTES", "1000000"))
+MAX_COLLECTED_FILE_BYTES = int(os.environ.get("WORKSPACE_MAX_COLLECTED_FILE_BYTES", str(15 * 1024 * 1024)))
 MAX_FILE_PREVIEW_CHARS = int(os.environ.get("WORKSPACE_MAX_FILE_PREVIEW_CHARS", "4000"))
 CHILD_MEMORY_MB = int(os.environ.get("WORKSPACE_CHILD_MEMORY_MB", "512"))
 
@@ -188,6 +190,7 @@ class WorkspaceToolBroker:
         self.calls = 0
         self.call_counts: dict[str, int] = {}
         self.error_counts: dict[str, int] = {}
+        self.error_details: list[dict[str, Any]] = []
         self._server: asyncio.AbstractServer | None = None
 
     async def __aenter__(self) -> "WorkspaceToolBroker":
@@ -240,6 +243,7 @@ class WorkspaceToolBroker:
         result = await self.executor(tool_name, arguments)
         if isinstance(result, dict) and (result.get("error") or result.get("status") == "failed"):
             self.error_counts[tool_name] = self.error_counts.get(tool_name, 0) + 1
+            self.error_details.append(_connector_error_detail(tool_name, arguments, result))
             return {
                 "ok": False,
                 "error": True,
@@ -248,6 +252,21 @@ class WorkspaceToolBroker:
                 "result": result,
             }
         return {"ok": True, "result": result}
+
+
+def _connector_error_detail(tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    detail: dict[str, Any] = {
+        "tool_name": tool_name,
+        "error_type": str(result.get("error_type") or result.get("error") or "connector_error"),
+        "message": _truncate_text(str(result.get("message") or result.get("error") or "Connector call failed."), 1200),
+    }
+    for key in ("operation", "model", "method"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value:
+            detail[key] = value
+    if "calls" in arguments and isinstance(arguments["calls"], list):
+        detail["batch_call_count"] = len(arguments["calls"])
+    return detail
 
 
 def _write_tool_helpers(workdir: Path, broker: WorkspaceToolBroker) -> None:
@@ -314,7 +333,6 @@ def call(tool_name, arguments=None, raise_on_error=False):
 def call_checked(tool_name, arguments=None):
     """Call a platform tool/connector and raise PlatformToolError on failure."""
     return call(tool_name, arguments, raise_on_error=True)
-
 '''
     (workdir / "ai_platform_tools.py").write_text(textwrap.dedent(tools_helper).strip() + "\n", encoding="utf-8")
 
@@ -401,11 +419,16 @@ def _collect_files(workdir: Path) -> list[dict[str, Any]]:
         except ValueError:
             continue
         size = path.stat().st_size
+        mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         item: dict[str, Any] = {
             "path": str(rel_path),
             "bytes": size,
+            "mime_type": mime_type,
             "sha256": _sha256_file(path) if size <= MAX_COLLECTED_FILE_BYTES else None,
         }
+        if size <= MAX_COLLECTED_FILE_BYTES:
+            data = path.read_bytes()
+            item["content_base64"] = base64.b64encode(data).decode("ascii")
         if size <= MAX_FILE_PREVIEW_CHARS:
             data = path.read_bytes()
             if _is_text_preview(data):
@@ -549,6 +572,7 @@ class WorkspaceSession:
         before_calls = self._broker.calls
         before_call_counts = dict(self._broker.call_counts)
         before_error_counts = dict(self._broker.error_counts)
+        before_error_detail_count = len(self._broker.error_details)
 
         try:
             input_files = _write_input_files(self.workdir, arguments.get("files"))
@@ -568,6 +592,7 @@ class WorkspaceSession:
                 for tool_name, count in self._broker.error_counts.items()
                 if count - before_error_counts.get(tool_name, 0) > 0
             }
+            connector_error_details = self._broker.error_details[before_error_detail_count:]
             response = {
                 "status": status,
                 "backend": WORKSPACE_BACKEND,
@@ -584,10 +609,12 @@ class WorkspaceSession:
                 "tool_calls": self._broker.calls - before_calls,
                 "connector_calls": connector_calls,
                 "connector_error_calls": connector_error_calls,
+                "connector_error_details": connector_error_details,
                 "odoo_calls": connector_calls.get("odoo", 0),
                 "workspace_tool_calls_total": self._broker.calls,
                 "connector_calls_total": dict(self._broker.call_counts),
                 "connector_error_calls_total": dict(self._broker.error_counts),
+                "connector_error_details_total": self._broker.error_details[-20:],
                 "helper_modules": ["ai_platform_tools"],
                 "helper_commands": ["ai-platform-tool"],
                 "error": bool(status == "failed"),

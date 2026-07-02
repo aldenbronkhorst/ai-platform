@@ -1,17 +1,17 @@
 import type { InputHTMLAttributes, TextareaHTMLAttributes } from "react";
 
-interface GlassInputProps extends InputHTMLAttributes<HTMLInputElement> {
+interface TextInputProps extends InputHTMLAttributes<HTMLInputElement> {
   multiline?: false;
 }
 
-interface GlassTextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   multiline: true;
 }
 
-type Props = GlassInputProps | GlassTextareaProps;
+type Props = TextInputProps | TextAreaProps;
 
-export function GlassInput(props: Props) {
-  const base = "w-full px-4 py-3 bg-transparent border border-default rounded-xl focus:outline-none focus:border-soft text-xs text-default placeholder-soft transition-all";
+export function TextField(props: Props) {
+  const base = "w-full rounded-lg border border-default bg-transparent px-4 py-3 text-xs text-default placeholder-soft transition-colors focus:border-subtle focus:outline-none";
 
   if (props.multiline) {
     const { multiline, ...rest } = props;

@@ -13,6 +13,8 @@ from app.core.config import get_settings
 from app.services.document_processing import (
     DocumentExtractionResult,
     DocumentProcessingService,
+    OCR_PROFILE_LAYOUT,
+    OCR_PROFILE_TEXT,
     is_supported_document,
 )
 
@@ -36,8 +38,15 @@ class ArtifactService:
 
     def _get_blob_client(self) -> BlobServiceClient:
         if self._blob_client is None:
+            if self.settings.azure_storage_connection_string:
+                self._blob_client = BlobServiceClient.from_connection_string(
+                    self.settings.azure_storage_connection_string
+                )
+                return self._blob_client
+
             account_url = f"https://{self.settings.storage_account_name}.blob.core.windows.net"
-            self._blob_client = BlobServiceClient(account_url=account_url, credential=self._get_credential())
+            credential = self.settings.azure_storage_account_key or self._get_credential()
+            self._blob_client = BlobServiceClient(account_url=account_url, credential=credential)
         return self._blob_client
 
     def _blob_name(self, artifact_id: UUID, filename: str) -> str:
@@ -58,12 +67,30 @@ class ArtifactService:
         artifact.extraction_metadata_json = result.metadata or None
         artifact.extraction_error = result.error
 
-    async def _extract_and_store_text(self, artifact: AIArtifact, file_content: bytes) -> None:
+    def _has_layout_metadata(self, artifact: AIArtifact) -> bool:
+        metadata = getattr(artifact, "extraction_metadata_json", None)
+        if not isinstance(metadata, dict):
+            return False
+        layout = metadata.get("layout")
+        if not isinstance(layout, dict):
+            return False
+        if layout.get("tables"):
+            return True
+        return bool(layout.get("pages"))
+
+    async def _extract_and_store_text(
+        self,
+        artifact: AIArtifact,
+        file_content: bytes,
+        *,
+        ocr_profile: str = OCR_PROFILE_TEXT,
+    ) -> None:
         try:
             result = await DocumentProcessingService().extract(
                 artifact.filename,
                 artifact.mime_type,
                 file_content,
+                ocr_profile=ocr_profile,
             )
         except Exception as exc:
             result = DocumentExtractionResult(
@@ -74,7 +101,14 @@ class ArtifactService:
         self._apply_extraction_result(artifact, result)
         await self.db.flush()
 
-    async def upload(self, data: AIArtifactCreate, file_content: bytes, created_by_user_id: Optional[UUID] = None) -> AIArtifact:
+    async def upload(
+        self,
+        data: AIArtifactCreate,
+        file_content: bytes,
+        created_by_user_id: Optional[UUID] = None,
+        *,
+        artifact_type: str = "chat-upload",
+    ) -> AIArtifact:
         artifact_id = uuid4()
         container = self.CHAT_UPLOAD_CONTAINER
         blob_name = self._blob_name(artifact_id, data.filename)
@@ -87,18 +121,33 @@ class ArtifactService:
 
         artifact = AIArtifact(
             id=artifact_id,
-            artifact_type="chat-upload",
+            artifact_type=artifact_type,
             filename=data.filename,
             mime_type=data.mime_type,
             storage_uri=storage_uri,
             sha256=sha256,
             created_by_user_id=created_by_user_id,
+            extraction_status="pending" if is_supported_document(data.filename, data.mime_type) else "not_required",
         )
         self.db.add(artifact)
         await self.db.flush()
-        if is_supported_document(artifact.filename, artifact.mime_type):
-            await self._extract_and_store_text(artifact, file_content)
         return artifact
+
+    async def create_from_bytes(
+        self,
+        *,
+        filename: str,
+        mime_type: str,
+        content: bytes,
+        artifact_type: str,
+        created_by_user_id: Optional[UUID] = None,
+    ) -> AIArtifact:
+        return await self.upload(
+            AIArtifactCreate(filename=filename, mime_type=mime_type),
+            content,
+            created_by_user_id=created_by_user_id,
+            artifact_type=artifact_type,
+        )
 
     async def download_content(self, artifact: AIArtifact) -> bytes:
         container, blob_name = self._blob_location(artifact)
@@ -125,43 +174,52 @@ class ArtifactService:
         return filename.endswith((".txt", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".md", ".yaml", ".yml", ".log"))
 
     async def text_preview(self, artifact: AIArtifact, max_chars: int = 12_000) -> Optional[str]:
-        if not self.supports_text_preview(artifact):
-            return None
-
-        if getattr(artifact, "extracted_text", None):
-            text = (artifact.extracted_text or "").strip()
-            if len(text) <= max_chars:
-                return text
-            return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
-
-        if is_supported_document(artifact.filename, artifact.mime_type):
-            status = getattr(artifact, "extraction_status", None) or "not_required"
-            should_attempt = status in {"not_required", "queued", "pending", "processing"} or (
-                status == "needs_ocr" and bool(self.settings.azure_document_intelligence_endpoint)
-            )
-            if should_attempt:
-                content = await self.download_content(artifact)
-                await self._extract_and_store_text(artifact, content)
-                if artifact.extracted_text:
-                    text = artifact.extracted_text.strip()
-                    if len(text) <= max_chars:
-                        return text
-                    return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
-
+        text = await self.readable_text(artifact)
+        if text is None:
             if getattr(artifact, "extraction_status", None) in {"needs_ocr", "failed"}:
                 error = getattr(artifact, "extraction_error", None)
                 detail = f" {error}" if error else ""
                 return f"[Document Reader could not extract text from this file. Status: {artifact.extraction_status}.{detail}]"
-
             return None
-
-        content = await self.download_content(artifact)
-        text = content.decode("utf-8", errors="replace").replace("\x00", "").strip()
         if not text:
             return None
         if len(text) <= max_chars:
             return text
         return f"{text[:max_chars].rstrip()}\n[Attachment text truncated to {max_chars} characters.]"
+
+    async def readable_text(self, artifact: AIArtifact, *, require_layout: bool = False) -> Optional[str]:
+        """Return the full extracted/readable text for a user artifact.
+
+        This is the hosted equivalent of Hermes' file-read base layer: OCR or
+        native extraction happens once, then the text remains available for
+        paged reads by the model or Workspace broker.
+        """
+        if not self.supports_text_preview(artifact):
+            return None
+
+        if getattr(artifact, "extracted_text", None) and (
+            not require_layout or self._has_layout_metadata(artifact)
+        ):
+            return (artifact.extracted_text or "").replace("\x00", "").strip()
+
+        if is_supported_document(artifact.filename, artifact.mime_type):
+            status = getattr(artifact, "extraction_status", None) or "not_required"
+            should_attempt = require_layout or status in {"not_required", "queued", "pending", "processing"} or (
+                status == "needs_ocr" and bool(self.settings.azure_document_intelligence_endpoint)
+            )
+            if should_attempt:
+                content = await self.download_content(artifact)
+                await self._extract_and_store_text(
+                    artifact,
+                    content,
+                    ocr_profile=OCR_PROFILE_LAYOUT if require_layout else OCR_PROFILE_TEXT,
+                )
+                if artifact.extracted_text:
+                    return artifact.extracted_text.replace("\x00", "").strip()
+            return None
+
+        content = await self.download_content(artifact)
+        return content.decode("utf-8", errors="replace").replace("\x00", "").strip()
 
     async def get_by_id(self, artifact_id: UUID) -> Optional[AIArtifact]:
         result = await self.db.execute(select(AIArtifact).where(AIArtifact.id == artifact_id))

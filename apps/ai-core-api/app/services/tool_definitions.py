@@ -138,16 +138,22 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "document_reader",
         "display_name": "Document Reader",
-        "description": "Built-in platform tool for uploaded documents. Extracts text from text-based PDFs locally and uses Azure Document Intelligence for OCR when a PDF or image does not contain extractable text. Does not depend on Azure AI Search.",
+        "description": "Built-in platform tool for uploaded PDFs/images. Reads native text, OCR text, structured tables, and page layout. The tool owns its SKILL.md guidance; use mode='guidance' to inspect it. Use mode='tables' for invoices, GRVs, statements, price lists, purchase orders, bills, sales orders, credit notes, or any tabular comparison.",
         "target_system": "ai-platform",
         "input_schema": {
             "type": "object",
             "properties": {
-                "artifact_id": {"type": "string", "description": "Uploaded artifact ID to inspect"},
-                "mode": {"type": "string", "enum": ["status", "preview", "extract"], "description": "Read-only document operation"},
+                "artifact_id": {"type": "string", "description": "Uploaded artifact ID to inspect. Not required for mode='guidance'."},
+                "mode": {"type": "string", "enum": ["guidance", "status", "read", "preview", "extract", "tables", "layout"], "description": "Read-only document operation. guidance returns the tool-owned SKILL.md; tables returns structured rows/cells using layout OCR; layout returns page lines/geometry; read returns line-numbered text."},
+                "offset": {"type": "integer", "description": "Line number to start reading from in mode='read' (1-indexed).", "default": 1, "minimum": 1},
+                "limit": {"type": "integer", "description": "Maximum lines to read in mode='read' (default 500, max 2000).", "default": 500, "maximum": 2000},
+                "table_offset": {"type": "integer", "description": "Table number to start reading from in mode='tables' (1-indexed).", "default": 1, "minimum": 1},
+                "table_limit": {"type": "integer", "description": "Maximum structured tables to return in mode='tables' (default 20, max 100).", "default": 20, "maximum": 100},
+                "page_offset": {"type": "integer", "description": "Page number to start reading from in mode='layout' (1-indexed).", "default": 1, "minimum": 1},
+                "page_limit": {"type": "integer", "description": "Maximum layout pages to return in mode='layout' (default 20, max 100).", "default": 20, "maximum": 100},
                 "max_chars": {"type": "integer", "description": "Maximum extracted text characters to return", "default": 12000},
             },
-            "required": ["artifact_id", "mode"],
+            "required": ["mode"],
         },
     },
 ]

@@ -4,8 +4,8 @@ import {
   Plug, RefreshCw,
   ChevronRight, Search, X,
 } from "lucide-react";
-import { GlassPanel } from "../components/ui/GlassPanel";
-import { GlassButton } from "../components/ui/GlassButton";
+import { SurfacePanel } from "../components/ui/SurfacePanel";
+import { Button } from "../components/ui/Button";
 import { API_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
 import {
   ConnectorLogo,
@@ -33,31 +33,12 @@ const KV_ERROR_PHRASES = [
 ];
 const MICROSOFT_DEVICE_LOGIN_URL = "https://microsoft.com/devicelogin";
 
-interface ConnectionTestResult {
-  success: boolean;
-  message: string;
-  isKeyVaultError?: boolean;
-  errorType?: string;
-  requestId?: string;
-}
-
-interface CliCommandResult {
-  command?: string;
-  stdout?: string;
-  stderr?: string;
-  error_message?: string;
-  exit_code?: number;
-}
-
-interface CliTestResult {
-  success?: boolean;
+interface ConnectorNotice {
   status?: string;
   connector?: string;
+  title?: string;
   message?: string;
-  stdout?: string;
-  stderr?: string;
   request_id?: string;
-  commands?: CliCommandResult[];
 }
 
 interface MicrosoftAuthCallbackResult {
@@ -131,13 +112,6 @@ function closeMicrosoftAuthWindow(authWindow?: Window | null) {
   } catch { /* ignore browsers that block closing the popup */ }
 }
 
-function cliResultHeading(result: CliTestResult) {
-  const tone = getStatusTone(result.status, result.success === false);
-  if (tone === "success") return "Ready";
-  if (tone === "warning") return "Attention needed";
-  return "Issues found";
-}
-
 const CONNECTOR_FALLBACKS: ConnectorDef[] = [
   { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
   { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI" },
@@ -179,13 +153,12 @@ interface ConnectionsPageProps { accessToken: string; }
 export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null);
+  const [connectorNotice, setConnectorNotice] = useState<ConnectorNotice | null>(null);
   const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
   const [odooUrl, setOdooUrl] = useState("");
   const [odooDb, setOdooDb] = useState("");
   const [odooUsername, setOdooUsername] = useState("");
   const [odooApiKey, setOdooApiKey] = useState("");
-  const [cliTestResult, setCliTestResult] = useState<CliTestResult | null>(null);
   const [microsoftDeviceCode, setMicrosoftDeviceCode] = useState<(MicrosoftNativeDeviceCode & { connectorKey: string }) | null>(null);
   const [microsoftStartingConnector, setMicrosoftStartingConnector] = useState<string | null>(null);
   const [microsoftPollingConnector, setMicrosoftPollingConnector] = useState<string | null>(null);
@@ -276,11 +249,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           headers: headers(),
           body: JSON.stringify({ code, state }),
         });
-        const data = await res.json() as CliTestResult;
-        setCliTestResult({ ...data, status: res.ok ? "success" : "failed", connector: "github" });
+        const data = await res.json() as ConnectorNotice;
+        if (!res.ok) setConnectorNotice({ status: "failed", connector: "github", title: "GitHub connection failed", message: data.message || "GitHub OAuth failed.", request_id: data.request_id });
         await fetchConnectors();
       } catch (err) {
-        setCliTestResult({ status: "failed", connector: "github", message: errorMessage(err) });
+        setConnectorNotice({ status: "failed", connector: "github", title: "GitHub connection failed", message: errorMessage(err) });
       } finally {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
@@ -292,7 +265,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   const handleConnectOdoo = async (e: FormEvent) => {
     e.preventDefault(); if (!accessToken) return;
-    setIsConnecting(true); setTestResult(null);
+    setIsConnecting(true); setConnectorNotice(null);
     try {
       const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/connect`, {
         method: "POST", headers: headers(),
@@ -300,23 +273,23 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       });
       const data = await res.json() as ApiRecord;
       if (res.ok) {
-        setTestResult({ success: true, message: "Odoo connection established!" });
         setSelectedConnector(null); setOdooApiKey("");
         void Promise.all([fetchOdooStatus(), fetchConnectors()]);
       } else {
         const rawDetail = data.detail;
         const detail = rawDetail && typeof rawDetail === "object" ? rawDetail as ApiRecord : {};
         const detailMessage = typeof rawDetail === "string" ? rawDetail : stringValue(detail.message, "Connection failed.");
-        setTestResult({
-          success: false, message: detailMessage,
-          isKeyVaultError: isKeyVaultError(detailMessage),
-          errorType: stringValue(detail.error_type),
-          requestId: stringValue(detail.request_id),
+        setConnectorNotice({
+          status: "failed",
+          connector: "odoo",
+          title: isKeyVaultError(detailMessage) ? "Key Vault permission error" : "Connection failed",
+          message: detailMessage,
+          request_id: stringValue(detail.request_id),
         });
         void Promise.all([fetchOdooStatus(), fetchConnectors()]);
       }
     } catch (err) {
-      setTestResult({ success: false, message: `Could not reach backend: ${errorMessage(err)}` });
+      setConnectorNotice({ status: "failed", connector: "odoo", title: "Connection failed", message: `Could not reach backend: ${errorMessage(err)}` });
     } finally { setIsConnecting(false); }
   };
 
@@ -324,13 +297,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!accessToken || !confirm("Disconnect Odoo? Credentials will be permanently deleted.")) return;
     try {
       const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
-      if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername(""); setOdooApiKey(""); setTestResult(null); }
+      if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername(""); setOdooApiKey(""); setConnectorNotice(null); }
       void Promise.all([fetchOdooStatus(), fetchConnectors()]);
     } catch { /* ignore transient disconnect errors */ }
   };
 
   const handleConnectMicrosoftNative = async (connectorKey: string) => {
-    if (!accessToken) return; setCliTestResult(null);
+    if (!accessToken) return; setConnectorNotice(null);
     if (microsoftStartingConnector || microsoftPollingConnector) return;
     cancelMicrosoftAuthAttempt();
     const attemptId = microsoftAuthAttemptRef.current + 1;
@@ -342,7 +315,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const siteUrl = window.prompt("Enter the SharePoint site or admin URL for this PnP connector");
       if (!siteUrl?.trim()) {
         setMicrosoftStartingConnector(null);
-        setCliTestResult({ status: "failed", connector: connectorKey, message: "SharePoint / PnP sign-in requires a SharePoint site or admin URL." });
+        setConnectorNotice({ status: "failed", connector: connectorKey, title: "Connection failed", message: "SharePoint / PnP sign-in requires a SharePoint site or admin URL." });
         return;
       }
       connectPayload.site_url = siteUrl.trim();
@@ -359,9 +332,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setMicrosoftStartingConnector(null);
         setMicrosoftDeviceCode({ ...data, connectorKey });
         setMicrosoftPollingConnector(connectorKey);
-        const authApp = data.auth_app_name ? ` in ${data.auth_app_name}` : "";
         const expiresAtMs = data.expires_at ? data.expires_at * 1000 : currentTimeMs() + (data.expires_in || 900) * 1000;
-        setCliTestResult({ status: "pending", connector: connectorKey, message: `Sign in to ${displayName}${authApp}. This stores only the ${displayName} connector token.` });
         openMicrosoftDeviceLogin(data.verification_url, authWindow);
         const poll = async () => {
           if (microsoftAuthAttemptRef.current !== attemptId) return;
@@ -369,9 +340,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             closeMicrosoftAuthWindow(authWindow);
             setMicrosoftPollingConnector(null);
             setMicrosoftDeviceCode(null);
-            setCliTestResult({
+            setConnectorNotice({
               status: "failed",
               connector: connectorKey,
+              title: "Sign-in expired",
               message: `The Microsoft sign-in code for ${displayName} expired before Microsoft completed authorization. Start a new sign-in and enter the newest code.`,
               request_id: data.request_id,
             });
@@ -393,31 +365,19 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
-              setCliTestResult({
-                status: "success",
-                connector: connectorKey,
-                message: pd.message || `${displayName} connected.`,
-                request_id: pd.request_id,
-              });
+              setConnectorNotice(null);
               void fetchConnectors();
             } else if (pd.status === "pending") {
-              const remainingSeconds = Math.max(0, Math.ceil((expiresAtMs - currentTimeMs()) / 1000));
-              setCliTestResult({
-                status: "pending",
-                connector: connectorKey,
-                message: `Waiting for Microsoft to complete ${displayName} sign-in. Code expires in ${remainingSeconds}s.`,
-                request_id: pd.request_id || data.request_id,
-              });
               microsoftPollTimerRef.current = window.setTimeout(poll, (pd.interval || data.interval || 5) * 1000);
             } else if (pd.status === "stale") {
               closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
-              setCliTestResult({
+              setConnectorNotice({
                 status: "failed",
                 connector: connectorKey,
+                title: "Sign-in restarted",
                 message: pd.message || "A newer Microsoft sign-in was started. Use the newest device code.",
-                stderr: pd.error_type,
                 request_id: pd.request_id,
               });
               void fetchConnectors();
@@ -425,11 +385,11 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
               closeMicrosoftAuthWindow(authWindow);
               setMicrosoftPollingConnector(null);
               setMicrosoftDeviceCode(null);
-              setCliTestResult({
+              setConnectorNotice({
                 status: "failed",
                 connector: connectorKey,
+                title: "Connection failed",
                 message: pd.message || pd.error || `${displayName} authentication failed.`,
-                stderr: pd.error_type,
                 request_id: pd.request_id,
               });
               void fetchConnectors();
@@ -440,9 +400,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             setMicrosoftStartingConnector(null);
             setMicrosoftPollingConnector(null);
             setMicrosoftDeviceCode(null);
-            setCliTestResult({
+            setConnectorNotice({
               status: "failed",
               connector: connectorKey,
+              title: "Connection failed",
               message: `Could not check Microsoft sign-in status for ${displayName}: ${errorMessage(err)}`,
               request_id: data.request_id,
             });
@@ -455,14 +416,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         setMicrosoftStartingConnector(null);
         setMicrosoftDeviceCode(null);
         setMicrosoftPollingConnector(null);
-        setCliTestResult({ status: "failed", connector: connectorKey, message: data.message || data.error || "Failed to start device code flow", request_id: data.request_id });
+        setConnectorNotice({ status: "failed", connector: connectorKey, title: "Connection failed", message: data.message || data.error || "Failed to start device code flow", request_id: data.request_id });
       }
     } catch (err) {
       closeMicrosoftAuthWindow(authWindow);
       setMicrosoftStartingConnector(null);
       setMicrosoftPollingConnector(null);
       setMicrosoftDeviceCode(null);
-      setCliTestResult({ status: "failed", connector: connectorKey, message: errorMessage(err) });
+      setConnectorNotice({ status: "failed", connector: connectorKey, title: "Connection failed", message: errorMessage(err) });
     }
   };
 
@@ -471,7 +432,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     cancelMicrosoftAuthAttempt();
     await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
     await fetchConnectors();
-    setCliTestResult({ status: "success", connector: connectorKey, message: "Disconnected" });
+    setConnectorNotice(null);
   };
 
   const handleGithubOAuth = async () => {
@@ -480,8 +441,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       const res = await fetch(`${API_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
       const data = await res.json() as { auth_url?: string; message?: string };
       if (data.auth_url) window.location.href = data.auth_url;
-      else setCliTestResult({ status: "failed", connector: "github", message: data.message || "GitHub OAuth not configured." });
-    } catch (err) { setCliTestResult({ status: "failed", connector: "github", message: errorMessage(err) }); }
+      else setConnectorNotice({ status: "failed", connector: "github", title: "Connection failed", message: data.message || "GitHub OAuth not configured." });
+    } catch (err) { setConnectorNotice({ status: "failed", connector: "github", title: "Connection failed", message: errorMessage(err) }); }
   };
 
   const connectorDetail = (key: string) => {
@@ -574,7 +535,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
   return (
     <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
-      <GlassPanel className="p-5 sm:p-8 rounded-2xl sm:rounded-3xl flex items-start sm:items-center justify-between gap-4">
+      <SurfacePanel className="flex items-start justify-between gap-4 rounded-lg p-5 sm:items-center sm:p-8">
         <div>
           <h2 className="text-xl font-bold text-default mb-2">Connectors</h2>
           <p className="text-sm text-muted max-w-2xl">
@@ -582,7 +543,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           </p>
         </div>
         <Plug className="hidden sm:block w-12 h-12 text-soft shrink-0" />
-      </GlassPanel>
+      </SurfacePanel>
 
       {connectorMeta === null && !connectorStatusError ? (
         <DetailCard>
@@ -594,9 +555,9 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
         <DetailCard>
           <div className="flex items-center justify-between gap-4">
             <p className="text-sm text-muted">{connectorStatusError}</p>
-            <GlassButton size="sm" onClick={fetchConnectors}>
+            <Button size="sm" onClick={fetchConnectors}>
               <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </GlassButton>
+            </Button>
           </div>
         </DetailCard>
       ) : null}
@@ -615,7 +576,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             value={connectorSearch}
             onChange={(e) => setConnectorSearch(e.target.value)}
             placeholder="Search connectors..."
-            className="w-full rounded-2xl border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-all focus:border-soft"
+            className="w-full rounded-lg border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-colors focus:border-subtle"
           />
         </div>
 
@@ -629,8 +590,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           const meta = connectorMeta?.[c.key];
           const status = meta?.status;
           return (
-          <button key={c.key} onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(c.key); setTestResult(null); setCliTestResult(null); }}
-            className="text-left w-full p-5 rounded-2xl border border-default bg-surface hover:bg-canvas transition-colors cursor-pointer group">
+          <button key={c.key} onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(c.key); setConnectorNotice(null); }}
+            className="group w-full cursor-pointer rounded-lg border border-default bg-surface p-5 text-left transition-colors hover:bg-canvas">
             <div className="flex items-start justify-between mb-3">
               <div className="p-2.5 rounded-xl bg-surface border border-default">
                 <ConnectorLogo connectorKey={c.key} />
@@ -653,7 +614,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
       {/* Detail Drawer */}
       {activeConnector && (
-        <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm z-50 flex justify-end animate-fade-in">
+        <div className="fixed inset-0 z-50 flex justify-end bg-canvas/80 animate-fade-in">
           <div className="w-full max-w-lg bg-surface border-l border-default overflow-y-auto">
             <div className="p-4 sm:p-6 border-b border-default flex items-center justify-between">
               <div className="flex items-center gap-3 min-w-0">
@@ -664,7 +625,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                   {availableConnectors.find(c => c.key === activeConnector)?.name || activeConnector}
                 </h2>
               </div>
-              <button onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(null); setTestResult(null); setCliTestResult(null); }}
+              <button onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(null); setConnectorNotice(null); }}
                 className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
                 <X className="w-5 h-5" />
               </button>
@@ -672,48 +633,13 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
             <div className="p-4 sm:p-6">
               {connectorDetail(activeConnector)}
 
-              {/* Test/Error results */}
-              {testResult && (
-                <div className={`mt-4 p-3 rounded-xl text-sm border ${testResult.success ? 'border-[var(--color-success)]/25 bg-[var(--color-success)]/5' : 'border-[var(--color-danger)]/25 bg-[var(--color-danger)]/5'}`}>
-                  <p className={`font-semibold ${testResult.success ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                    {testResult.success ? "Success" : testResult.isKeyVaultError ? "Key Vault Permission Error" : "Connection Failed"}
+              {connectorNotice && (
+                <div className={`mt-4 p-3 rounded-lg text-sm border ${panelToneClass(getStatusTone(connectorNotice.status, connectorNotice.status === "failed"))}`}>
+                  <p className={`font-semibold ${panelTitleClass(getStatusTone(connectorNotice.status, connectorNotice.status === "failed"))}`}>
+                    {connectorNotice.title || connectorDisplayNameForKey(connectorNotice.connector, connectorMeta)}
                   </p>
-                  <p className="text-muted mt-1">{testResult.message}</p>
-                  {!testResult.success && testResult.requestId && (
-                    <p className="mt-2 text-xs text-muted">Support reference: {testResult.requestId}</p>
-                  )}
-                </div>
-              )}
-
-              {cliTestResult && (
-                <div className={`mt-4 p-3 rounded-xl text-sm space-y-2 border ${panelToneClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
-                  <p className={`font-semibold ${panelTitleClass(getStatusTone(cliTestResult.status, cliTestResult.success === false))}`}>
-                    {connectorDisplayNameForKey(cliTestResult.connector, connectorMeta)} — {cliResultHeading(cliTestResult)}
-                  </p>
-                  {cliTestResult.request_id && (
-                    <p className="text-[10px] text-muted font-mono">Request ID: {cliTestResult.request_id}</p>
-                  )}
-                  {(cliTestResult.commands?.length ?? 0) > 0 ? (
-                    <div className="space-y-2">
-                      {(cliTestResult.commands ?? []).map((cmd, i) => (
-                        <details key={i} className="border border-default rounded-lg p-2 bg-surface/50">
-                          <summary className={`text-xs cursor-pointer font-mono ${cmd.exit_code === 0 ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]'}`}>
-                            {cmd.exit_code === 0 ? "✓" : "✗"} {cmd.command?.substring(0, 60)}...
-                          </summary>
-                          <div className="mt-1 text-[10px] font-mono text-muted space-y-1">
-                            {cmd.stdout && <pre className="whitespace-pre-wrap">{cmd.stdout}</pre>}
-                            {cmd.stderr && <pre className="text-[var(--color-danger)] whitespace-pre-wrap">{cmd.stderr}</pre>}
-                            {cmd.error_message && <p className="text-[var(--color-danger)]">{cmd.error_message}</p>}
-                            <p>Exit code: {cmd.exit_code}</p>
-                          </div>
-                        </details>
-                      ))}
-                    </div>
-                  ) : (
-                    <pre className="text-xs text-muted font-mono whitespace-pre-wrap overflow-x-auto max-h-60">
-                      {cliTestResult.stdout || cliTestResult.stderr || cliTestResult.message || "No output"}
-                    </pre>
-                  )}
+                  {connectorNotice.message ? <p className="text-muted mt-1">{connectorNotice.message}</p> : null}
+                  {connectorNotice.request_id ? <p className="mt-2 text-xs text-muted">Support reference: {connectorNotice.request_id}</p> : null}
                 </div>
               )}
             </div>

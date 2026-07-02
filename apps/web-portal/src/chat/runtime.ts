@@ -6,11 +6,10 @@ export const CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS = 2_500;
 export const CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS = 180_000;
 
 const CHAT_SESSIONS_CACHE_PREFIX = "ai-platform.chatSessions.";
-const CONNECTOR_PROGRESS_HINTS = [
-  { label: "Azure", keywords: ["azure", "subscription", "resource group", "container app", "key vault"] },
-  { label: "GitHub", keywords: ["github", "repo", "pull request", "commit", "branch", "workflow", "actions"] },
-  { label: "Odoo", keywords: ["odoo", "invoice", "credit note", "customer", "sale order", "profit and loss", "turnover"] },
-];
+const THINKING_STATUS_PREFIX_RE =
+  /^\s*(?:(?:[^\s.]{1,16})\s+)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i;
+const EMPTY_THINKING_PLACEHOLDER_RE =
+  /\b(?:current rewritten thinking|next thinking to process|provide the thinking content|don't see any .*thinking)\b/i;
 
 function chatSessionsCacheKey(email: string) {
   return `${CHAT_SESSIONS_CACHE_PREFIX}${email.toLowerCase()}`;
@@ -63,24 +62,17 @@ export function mobileViewportMatches() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
 }
 
-function connectorProgressHints(content: string) {
-  const normalized = content.toLowerCase();
-  return CONNECTOR_PROGRESS_HINTS
-    .filter(({ keywords }) => keywords.some(keyword => normalized.includes(keyword)))
-    .map(({ label }) => label);
-}
-
 export function pendingProgressMetadata(requestId: string, content: string, artifactCount: number, startedAt: string) {
   const summary = content.trim().replace(/\s+/g, " ").slice(0, 120);
   return {
     request_id: requestId,
     progress_context: {
       summary,
-      connectors: connectorProgressHints(content),
       has_artifacts: artifactCount > 0,
       started_at: startedAt,
     },
     activity_events: [],
+    message_parts: [],
   };
 }
 
@@ -156,30 +148,214 @@ export async function uploadFailureFromResponse(res: Response, defaultMessage: s
   return detailString(detail, defaultMessage);
 }
 
+function coerceGatewayText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (typeof item === "string") return item;
+      if (isRecord(item)) {
+        if (typeof item.text === "string") return item.text;
+        if (typeof item.output_text === "string") return item.output_text;
+      }
+      return "";
+    }).join("");
+  }
+  if (isRecord(value)) {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.output_text === "string") return value.output_text;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return String(value);
+}
+
+function coerceThinkingText(value: unknown): string {
+  const raw = coerceGatewayText(value).replace(THINKING_STATUS_PREFIX_RE, "");
+  return EMPTY_THINKING_PLACEHOLDER_RE.test(raw) ? "" : raw;
+}
+
 export function appendActivityEvent(message: ChatMessage, event: unknown): ChatMessage {
   const metadata = isRecord(message.metadata_json) ? { ...message.metadata_json } : {};
   const current = Array.isArray(metadata.activity_events) ? metadata.activity_events : [];
   metadata.activity_events = [...current, event];
-  metadata.stream_work_items = appendWorkItem(metadata.stream_work_items, {
-    kind: "activity",
-    event,
-  });
   return { ...message, metadata_json: metadata };
 }
 
-function appendWorkItem(current: unknown, item: Record<string, unknown>) {
-  const items = Array.isArray(current) ? current.filter(isRecord).map(existing => ({ ...existing })) : [];
-  return [...items, item].slice(-80);
+type StoredMessagePart =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | {
+    type: "tool-call";
+    toolCallId: string;
+    toolName: string;
+    args: unknown;
+    argsText: string;
+    result?: unknown;
+    isError?: boolean;
+    durationMs?: number;
+  };
+
+function eventText(event: Record<string, unknown>, key: string) {
+  const value = event[key];
+  return typeof value === "string" ? value : "";
+}
+
+function eventNumber(event: Record<string, unknown>, key: string) {
+  const value = event[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function messagePartsFrom(value: unknown): StoredMessagePart[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).flatMap((part): StoredMessagePart[] => {
+    if (part.type === "text") {
+      return typeof part.text === "string" ? [{ type: "text", text: part.text }] : [];
+    }
+    if (part.type === "reasoning") {
+      return typeof part.text === "string" ? [{ type: "reasoning", text: part.text }] : [];
+    }
+    if (part.type === "tool-call") {
+      const toolCallId = eventText(part, "toolCallId");
+      const toolName = eventText(part, "toolName") || "tool";
+      if (!toolCallId) return [];
+      const next: StoredMessagePart = {
+        type: "tool-call",
+        toolCallId,
+        toolName,
+        args: "args" in part ? part.args : {},
+        argsText: eventText(part, "argsText"),
+      };
+      if ("result" in part) next.result = part.result;
+      if (typeof part.isError === "boolean") next.isError = part.isError;
+      const durationMs = eventNumber(part, "durationMs");
+      if (durationMs !== undefined) next.durationMs = durationMs;
+      return [next];
+    }
+    return [];
+  });
+}
+
+const STREAM_PART = {
+  reasoning: (text: string): StoredMessagePart => ({ type: "reasoning", text }),
+  text: (text: string): StoredMessagePart => ({ type: "text", text }),
+};
+
+function appendStreamPart(
+  parts: StoredMessagePart[],
+  type: "reasoning" | "text",
+  delta: string,
+): StoredMessagePart[] {
+  if (!delta) return parts;
+  const next = [...parts];
+
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const part = next[i];
+
+    if (part.type === type) {
+      next[i] = { ...part, text: `${part.text}${delta}` };
+      return next;
+    }
+
+    if (part.type !== "text" && part.type !== "reasoning") {
+      break;
+    }
+  }
+
+  return [...next, STREAM_PART[type](delta)];
+}
+
+function appendTextPart(parts: StoredMessagePart[], delta: string): StoredMessagePart[] {
+  return appendStreamPart(parts, "text", delta);
+}
+
+function appendReasoningPart(parts: StoredMessagePart[], delta: string): StoredMessagePart[] {
+  return appendStreamPart(parts, "reasoning", delta);
+}
+
+function replaceReasoningPart(parts: StoredMessagePart[], text: string): StoredMessagePart[] {
+  if (!text) return parts;
+  const next = [...parts];
+  const last = next[next.length - 1];
+
+  if (last?.type === "reasoning") {
+    next[next.length - 1] = { ...last, text };
+    return next;
+  }
+
+  return [...next, { type: "reasoning", text }];
+}
+
+function upsertToolCallPart(parts: StoredMessagePart[], event: Record<string, unknown>): StoredMessagePart[] {
+  const id = eventText(event, "id");
+  const name = eventText(event, "name") || "tool";
+  const eventType = typeof event.type === "string" ? event.type : "";
+  const patch: StoredMessagePart = {
+    type: "tool-call",
+    toolCallId: id || `tool:${parts.length}`,
+    toolName: name,
+    args: "args" in event ? event.args : {},
+    argsText: eventText(event, "verboseArgs"),
+  };
+  if ("result" in event) patch.result = event.result;
+  if (typeof event.isError === "boolean") patch.isError = event.isError;
+  if (typeof event.error === "boolean") patch.isError = event.error;
+  const durationMs = eventNumber(event, "durationMs");
+  if (durationMs !== undefined) patch.durationMs = durationMs;
+
+  const index = parts.findIndex(part => part.type === "tool-call" && id && part.toolCallId === id);
+  if (index === -1) return [...parts, patch];
+  return parts.map((part, partIndex) => (
+    partIndex === index ? { ...part, ...patch, result: eventType === "tool.start" ? undefined : patch.result } : part
+  ));
+}
+
+export function appendMessagePartEvent(message: ChatMessage, event: unknown): ChatMessage {
+  if (!isRecord(event)) return message;
+  const type = typeof event.type === "string" ? event.type : "";
+  const metadata = isRecord(message.metadata_json) ? { ...message.metadata_json } : {};
+  let messageParts = messagePartsFrom(metadata.message_parts);
+  let content = message.content || "";
+  let status = message.status;
+
+  if (type === "message.delta") {
+    const delta = coerceGatewayText(event.delta ?? event.text);
+    if (delta) {
+      content += delta;
+      messageParts = appendTextPart(messageParts, delta).slice(-240);
+      status = "streaming";
+    }
+  } else if (type === "thinking.delta") {
+    // Matches Hermes: thinking.delta is status chrome, not visible reasoning.
+  } else if (type === "reasoning.delta" || type === "reasoning.available") {
+    const delta = coerceThinkingText(event.text ?? event.delta);
+    if (delta) {
+      status = "streaming";
+      if (type === "reasoning.available") {
+        messageParts = replaceReasoningPart(messageParts, delta).slice(-240);
+      } else {
+        messageParts = appendReasoningPart(messageParts, delta).slice(-240);
+      }
+    }
+  } else if (type === "tool.start") {
+    messageParts = upsertToolCallPart(messageParts, event).slice(-240);
+  } else if (type === "tool.complete") {
+    messageParts = upsertToolCallPart(messageParts, event).slice(-240);
+  }
+  metadata.message_parts = messageParts;
+
+  return { ...message, content, status, metadata_json: metadata };
 }
 
 export function mergeStreamMetadata(finalMessage: ChatMessage, pendingMessage: ChatMessage | null): ChatMessage {
   if (!pendingMessage || !isRecord(pendingMessage.metadata_json)) return finalMessage;
   const pendingMetadata = pendingMessage.metadata_json;
   const finalMetadata = isRecord(finalMessage.metadata_json) ? { ...finalMessage.metadata_json } : {};
-  for (const key of ["stream_work_items"]) {
-    if (finalMetadata[key] === undefined && pendingMetadata[key] !== undefined) {
-      finalMetadata[key] = pendingMetadata[key];
-    }
+  if (finalMetadata.message_parts === undefined && pendingMetadata.message_parts !== undefined) {
+    finalMetadata.message_parts = pendingMetadata.message_parts;
   }
   return { ...finalMessage, metadata_json: finalMetadata };
 }

@@ -14,7 +14,6 @@ from app.core.database import get_db
 from app.core.security import api_key_auth
 from app.models.models import AIModel, AIProvider, AIRoute, AITrace, AIUsageLog
 from app.services.key_vault import delete_secret, get_secret_value, key_vault_uri, set_secret_value
-from app.services.model_provider_client import ModelProviderClient
 from app.services.model_router import CANONICAL_SYSTEM_PROMPT
 
 
@@ -24,7 +23,6 @@ OPENAI_COMPATIBLE = "openai_compatible"
 CHAT_ROUTE = "general_chat"
 CHAT_MODEL_TASK = "chat"
 VOICE_TRANSCRIPTION_MODEL_TASK = "voice_transcription"
-TRANSCRIPTION_MODEL_MARKERS = ("transcribe", "whisper", "asr")
 ZAI_TRANSCRIPTION_MODEL = "glm-asr-2512"
 
 
@@ -91,27 +89,6 @@ class RouteUpdateRequest(BaseModel):
     primary_model_id: UUID
 
 
-class ProviderTestRequest(BaseModel):
-    provider_id: UUID | None = None
-    model_id: UUID | None = None
-    name: str | None = None
-    base_url: str | None = None
-    model_name: str | None = None
-    api_key: str | None = None
-
-    @field_validator("name", "base_url", "model_name", mode="before")
-    @classmethod
-    def strip_optional_text(_cls, value: str | None) -> str | None:
-        return value.strip() if isinstance(value, str) else value
-
-
-class ProviderTestResponse(BaseModel):
-    success: bool
-    message: str
-    provider: str | None = None
-    model: str | None = None
-
-
 class DiscoveredModel(BaseModel):
     id: str
     display_name: str | None = None
@@ -164,15 +141,6 @@ def _model_task_type(model: AIModel) -> str:
 
 def _is_chat_model(model: AIModel) -> bool:
     return _model_task_type(model) == CHAT_MODEL_TASK
-
-
-def _looks_like_transcription_model(model_id: str) -> bool:
-    name = model_id.lower()
-    return any(marker in name for marker in TRANSCRIPTION_MODEL_MARKERS)
-
-
-def _task_type_for_model(model_id: str) -> str:
-    return VOICE_TRANSCRIPTION_MODEL_TASK if _looks_like_transcription_model(model_id) else CHAT_MODEL_TASK
 
 
 def _chat_model_sort_key(model: AIModel) -> tuple[int, str]:
@@ -246,6 +214,28 @@ def _lower_strings(value: Any) -> set[str]:
     return set()
 
 
+VOICE_TRANSCRIPTION_METADATA = {
+    "automatic_speech_recognition",
+    "asr",
+    "speech_to_text",
+    "speech-to-text",
+    "stt",
+    "transcribe",
+    "transcription",
+    "voice_transcription",
+    "voice-transcription",
+}
+
+
+def _is_voice_transcription_metadata(value: str) -> bool:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return (
+        normalized in VOICE_TRANSCRIPTION_METADATA
+        or "speech_to_text" in normalized
+        or "transcription" in normalized
+    )
+
+
 def _task_type_from_model_metadata(model_id: str, data: dict[str, Any]) -> str:
     metadata_values: set[str] = set()
     for key in (
@@ -269,10 +259,10 @@ def _task_type_from_model_metadata(model_id: str, data: dict[str, Any]) -> str:
         for key in ("modality", "modalities", "input_modalities", "output_modalities"):
             metadata_values.update(_lower_strings(architecture.get(key)))
 
-    if {"audio", "speech", "transcription", "asr", "stt", "speech_to_text", "speech-to-text"}.intersection(metadata_values):
+    if any(_is_voice_transcription_metadata(value) for value in metadata_values):
         return VOICE_TRANSCRIPTION_MODEL_TASK
 
-    return _task_type_for_model(model_id)
+    return CHAT_MODEL_TASK
 
 
 def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
@@ -289,7 +279,7 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
             context_window = None
             supports_tools = None
             supports_json_schema = None
-            task_type = _task_type_for_model(model_id)
+            task_type = CHAT_MODEL_TASK
         elif isinstance(item, dict):
             model_id = str(item.get("id") or item.get("name") or "").strip()
             if not model_id:
@@ -387,7 +377,7 @@ async def _upsert_discovered_model(db: AsyncSession, provider: AIProvider, disco
     model.supports_tools = _bool_string(supports_tools)
     model.supports_json_schema = _bool_string(supports_json_schema)
     model.context_window = discovered.context_window
-    config = model.config_json if isinstance(model.config_json, dict) else {}
+    config = dict(model.config_json) if isinstance(model.config_json, dict) else {}
     config["task_type"] = discovered.task_type
     model.config_json = config
 
@@ -730,51 +720,3 @@ async def update_chat_route(
     route.enabled = "true"
     await db.commit()
     return await _provider_payload(db)
-
-
-@router.post("/test", response_model=ProviderTestResponse)
-async def test_model_provider(
-    req: ProviderTestRequest,
-    db: AsyncSession = Depends(get_db),
-    auth: dict = Depends(api_key_auth),
-):
-    _require_admin(auth)
-    provider_name = req.name or "Provider"
-    base_url = (req.base_url or "").rstrip("/")
-    model_name = req.model_name or ""
-    api_key = req.api_key or ""
-
-    if req.provider_id:
-        provider = await _get_provider(db, req.provider_id)
-        provider_name = provider.name
-        base_url = provider.base_url
-        if not api_key:
-            api_key = await _stored_api_key(provider)
-    if req.model_id:
-        model = await _get_model(db, req.model_id)
-        if not _is_chat_model(model):
-            raise HTTPException(status_code=400, detail="Only chat models can be tested here.")
-        model_name = model.deployment_name
-
-    if not base_url or not model_name:
-        raise HTTPException(status_code=400, detail="Provider endpoint and model are required.")
-    if not api_key:
-        return ProviderTestResponse(success=False, message="API key is missing.", provider=provider_name, model=model_name)
-
-    client = ModelProviderClient(base_url=base_url, deployment_name=model_name, api_key=api_key)
-    try:
-        result = await client.chat_completion(
-            messages=[{"role": "user", "content": "Reply with only OK."}],
-            temperature=0,
-            max_tokens=8,
-        )
-    except Exception as exc:
-        return ProviderTestResponse(success=False, message=str(exc), provider=provider_name, model=model_name)
-    if result.get("error"):
-        return ProviderTestResponse(
-            success=False,
-            message=str(result.get("message") or result.get("error_type") or "Provider test failed."),
-            provider=provider_name,
-            model=model_name,
-        )
-    return ProviderTestResponse(success=True, message="Connection succeeded.", provider=provider_name, model=model_name)

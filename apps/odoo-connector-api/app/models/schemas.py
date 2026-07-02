@@ -25,3 +25,4 @@ class CapabilitiesResponse(BaseModel):
     endpoints: list[dict[str, Any]]
     execute_kw_enabled: bool
     execute_kw_write_methods: bool
+    guidance_version: str | None = None

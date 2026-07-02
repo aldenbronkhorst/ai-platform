@@ -1,14 +1,12 @@
-import { Copy, Check, Pencil } from "lucide-react";
+import { Copy, Check } from "lucide-react";
 import { useState, useCallback, useEffect } from "react";
 
 interface MessageActionsProps {
-  role: "user" | "assistant";
   content: string;
   onCopy?: () => void;
-  onEdit?: () => void;
 }
 
-export function MessageActions({ role, content, onCopy, onEdit }: MessageActionsProps) {
+export function MessageActions({ content, onCopy }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
@@ -24,26 +22,17 @@ export function MessageActions({ role, content, onCopy, onEdit }: MessageActions
   }, [copied]);
 
   return (
-    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-150">
+    <div
+      className="relative flex flex-row items-center justify-end gap-2 py-1.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
+      data-slot="aui_msg-actions"
+    >
       <button
         onClick={handleCopy}
-        className="p-1 rounded-md text-muted hover:text-default hover-bg-surface transition-all"
         title="Copy"
         aria-label="Copy message"
       >
-        {copied ? <Check className="w-3.5 h-3.5 text-accent" /> : <Copy className="w-3.5 h-3.5" />}
+        {copied ? <Check className="w-3.5 h-3.5 text-foreground" /> : <Copy className="w-3.5 h-3.5" />}
       </button>
-
-      {role === "user" && onEdit && (
-        <button
-          onClick={onEdit}
-          className="p-1 rounded-md text-muted hover:text-default hover-bg-surface transition-all"
-          title="Edit"
-          aria-label="Edit message"
-        >
-          <Pencil className="w-3.5 h-3.5" />
-        </button>
-      )}
     </div>
   );
 }

@@ -730,7 +730,7 @@ async def get_connected_accounts(
             "status": _account_status(odoo),
             "auth_method": "api_key",
             "last_verified_at": _account_last_verified(odoo),
-            "actions_available": ["connect", "test", "disconnect"] if _account_status(odoo) == "not_connected" else ["test", "disconnect"],
+            "actions_available": ["connect"] if _account_status(odoo) == "not_connected" else ["disconnect"],
             "state": _connector_state(odoo, "odoo", include_token_state),
             "metadata": {
                 "odoo_url": odoo.odoo_url if odoo else None,
@@ -746,7 +746,7 @@ async def get_connected_accounts(
             "status": _account_status(github),
             "auth_method": "github_oauth",
             "last_verified_at": _account_last_verified(github),
-            "actions_available": ["connect", "test", "disconnect"],
+            "actions_available": ["connect"] if _account_status(github) == "not_connected" else ["disconnect"],
             "state": _connector_state(github, "github", include_token_state),
             "metadata": {
                 "provider_username": github.provider_username if github else None,
@@ -783,7 +783,7 @@ def _microsoft_native_connector_cards(db_accounts: list[AIConnectedAccount], inc
                 "status": _account_status(account),
                 "auth_method": "native_microsoft",
                 "last_verified_at": _account_last_verified(account),
-                "actions_available": ["connect", "test", "disconnect"],
+                "actions_available": ["connect"] if _account_status(account) == "not_connected" else ["disconnect"],
                 "state": _connector_state(account, provider, include_token_state),
                 "metadata": {
                     "provider_username": account.provider_username if account else None,

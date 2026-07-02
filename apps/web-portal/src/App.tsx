@@ -53,15 +53,16 @@ export default function App() {
     chatInput,
     chatMessages,
     chatSessions,
-    createNewChat,
     deleteChatSession,
     fileInputRef,
     handleCopyMessage,
     handleEditResend,
     handleFileUpload,
+    handleOpenAttachment,
     handleRemoveFile,
     handleRetryMessage,
     handleSendMessage,
+    handleStopActiveChat,
     handleToggleVoice,
     isActiveChatSending,
     isMessagesLoading,
@@ -69,6 +70,7 @@ export default function App() {
     renameChatSession,
     selectSession,
     setChatInput,
+    startNewChat,
     voiceInterimTranscript,
     voiceState,
   } = useChatController({
@@ -153,12 +155,14 @@ export default function App() {
             displayName={activeUser.displayName}
             onInputChange={setChatInput}
             onSend={handleSendMessage}
+            onStop={handleStopActiveChat}
             onRemoveFile={handleRemoveFile}
             onTriggerUpload={() => fileInputRef.current?.click()}
             onToggleVoice={handleToggleVoice}
             onRetryMessage={handleRetryMessage}
             onCopyMessage={handleCopyMessage}
             onEditResend={handleEditResend}
+            onOpenAttachment={handleOpenAttachment}
           />
         );
       case "connected-accounts":
@@ -198,7 +202,7 @@ export default function App() {
         onTabChange={handleTabChange}
         onNewChat={() => {
           closeMobileSidebar();
-          void createNewChat();
+          startNewChat();
         }}
         onSelectSession={(session) => {
           selectSession(session);

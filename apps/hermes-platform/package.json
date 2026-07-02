@@ -1,0 +1,12 @@
+{
+  "name": "@ai-platform/hermes-platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "init": "npm --prefix ../../ run hermes:init",
+    "desktop": "npm --prefix ../../ run hermes:desktop",
+    "status": "npm --prefix ../../ run hermes:status",
+    "update": "npm --prefix ../../ run hermes:update"
+  }
+}

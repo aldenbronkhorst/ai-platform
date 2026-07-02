@@ -41,37 +41,37 @@ export function AppShell({
   onSignOut,
 }: AppShellProps) {
   return (
-    <div className="fixed inset-0 flex h-[100dvh] w-screen bg-canvas text-default antialiased overflow-hidden overscroll-none">
-      <div className="flex h-full min-h-0 w-full gap-3 overflow-hidden p-3">
-        <SidebarPanel
+    <div data-slot="app-shell" className="flex h-full min-h-0 w-full bg-canvas text-default antialiased overflow-hidden overscroll-none">
+      <SidebarPanel
+        activeTab={activeTab}
+        chatSessions={chatSessions}
+        activeSession={activeSession}
+        activeUser={activeUser}
+        isSessionsLoading={isSessionsLoading}
+        isSidebarCollapsed={isSidebarCollapsed}
+        isProfileMenuOpen={isProfileMenuOpen}
+        onTabChange={onTabChange}
+        onNewChat={onNewChat}
+        onSelectSession={onSelectSession}
+        onDeleteSession={onDeleteSession}
+        onRenameSession={onRenameSession}
+        onToggleCollapse={onToggleCollapse}
+        onToggleProfileMenu={onToggleProfileMenu}
+        onSignOut={onSignOut}
+      />
+
+      <main className={`flex-1 h-full min-h-0 flex flex-col min-w-0 ${activeTab === "chat" ? "overflow-visible" : "overflow-hidden"}`}>
+        <MainHeader
           activeTab={activeTab}
-          chatSessions={chatSessions}
           activeSession={activeSession}
-          activeUser={activeUser}
-          isSessionsLoading={isSessionsLoading}
           isSidebarCollapsed={isSidebarCollapsed}
-          isProfileMenuOpen={isProfileMenuOpen}
-          onTabChange={onTabChange}
-          onNewChat={onNewChat}
-          onSelectSession={onSelectSession}
           onDeleteSession={onDeleteSession}
           onRenameSession={onRenameSession}
-          onToggleCollapse={onToggleCollapse}
-          onToggleProfileMenu={onToggleProfileMenu}
-          onSignOut={onSignOut}
         />
-
-        <main className={`flex-1 h-full min-h-0 flex flex-col min-w-0 ${activeTab === "chat" ? "overflow-visible" : "overflow-hidden"}`}>
-          <MainHeader
-            activeTab={activeTab}
-            activeSession={activeSession}
-            isSidebarCollapsed={isSidebarCollapsed}
-          />
-          <section className={`flex-1 min-h-0 overscroll-contain ${activeTab === "chat" ? "overflow-visible" : "overflow-y-auto p-4 sm:p-6"}`}>
-            {children}
-          </section>
-        </main>
-      </div>
+        <section className={`flex-1 min-h-0 overscroll-contain ${activeTab === "chat" ? "overflow-visible" : "overflow-y-auto p-4 sm:p-6"}`}>
+          {children}
+        </section>
+      </main>
     </div>
   );
 }

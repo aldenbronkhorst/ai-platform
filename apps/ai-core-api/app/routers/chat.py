@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import binascii
+from contextlib import suppress
 import json
 import uuid
 import logging
@@ -20,6 +23,7 @@ from app.models.models import (
     AIArtifact, AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AIUsageLog,
 )
 from app.services.artifact import ArtifactService
+from app.services.document_processing import is_supported_document
 
 logger = logging.getLogger(__name__)
 
@@ -383,23 +387,63 @@ def _can_auto_title_session(session: AIChatSession) -> bool:
 
 
 async def _maybe_generate_session_title(
+    db: AsyncSession,
     session: AIChatSession,
     messages: list[dict[str, str]],
-    assistant_content: str,
 ) -> None:
     if not _can_auto_title_session(session):
         return
 
     from app.services.chat_titles import generate_chat_title
 
-    title = await generate_chat_title(
-        [*messages, {"role": "assistant", "content": assistant_content}],
-    )
+    try:
+        title = await generate_chat_title(db, messages)
+    except Exception as exc:
+        logger.warning("Auto-title generation failed for session %s: %s", session.id, exc)
+        return
     if not title:
         return
 
     session.title = title
-    _set_session_title_source(session, "local")
+    _set_session_title_source(session, "ai")
+
+
+async def _session_title_messages(db: AsyncSession, session_id: UUID) -> list[dict[str, str]]:
+    result = await db.execute(
+        select(AIChatMessage.role, AIChatMessage.content)
+        .where(
+            AIChatMessage.chat_session_id == session_id,
+            AIChatMessage.role.in_(["user", "assistant"]),
+        )
+        .order_by(AIChatMessage.created_at)
+        .limit(6)
+    )
+    return [
+        {"role": str(role), "content": str(content or "")}
+        for role, content in result.all()
+        if content
+    ]
+
+
+async def _refresh_session_title(
+    session_id: UUID,
+) -> str | None:
+    async with AsyncSessionLocal() as db:
+        try:
+            result = await db.execute(select(AIChatSession).where(AIChatSession.id == session_id))
+            session = result.scalar_one_or_none()
+            if session is None:
+                return None
+            if not _can_auto_title_session(session):
+                return None
+            messages = await _session_title_messages(db, session_id)
+            await _maybe_generate_session_title(db, session, messages)
+            await db.commit()
+            return session.title.strip() or None
+        except Exception as exc:
+            await db.rollback()
+            logger.warning("Auto-title refresh failed for session %s: %s", session_id, exc)
+            return None
 
 
 def _attachment_response(artifact: AIArtifact) -> dict[str, Any]:
@@ -485,7 +529,9 @@ async def _attachment_context(db: AsyncSession, artifacts: list[AIArtifact]) -> 
     for artifact in artifacts:
         header = f"File: {artifact.filename} ({artifact.mime_type}, id={artifact.id})"
         preview = None
-        if remaining_chars > 0:
+        is_document = is_supported_document(artifact.filename, artifact.mime_type)
+        has_stored_text = bool((getattr(artifact, "extracted_text", None) or "").strip())
+        if remaining_chars > 0 and (has_stored_text or not is_document):
             try:
                 preview = await artifact_svc.text_preview(artifact, max_chars=min(per_file_chars, remaining_chars))
             except Exception as exc:
@@ -494,10 +540,80 @@ async def _attachment_context(db: AsyncSession, artifacts: list[AIArtifact]) -> 
         if preview:
             blocks.append(f"{header}\n{preview}")
             remaining_chars = max(0, remaining_chars - len(preview))
+        elif is_document:
+            status_text = getattr(artifact, "extraction_status", None) or "pending"
+            blocks.append(
+                f"{header}\n"
+                f"[Document text is not in the prompt. extraction_status={status_text}. "
+                "Use document_reader mode='tables' for tabular documents or mode='read' for text. "
+                "Use mode='guidance' for the tool-owned document guidance.]"
+            )
         else:
             blocks.append(f"{header}\n[No text preview available for this file type.]")
 
     return "\n\n".join(blocks)
+
+
+def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
+    if not artifacts:
+        return ""
+
+    seen: set[UUID] = set()
+    lines: list[str] = []
+    for artifact in artifacts:
+        if artifact.id in seen:
+            continue
+        seen.add(artifact.id)
+        text_chars = len((getattr(artifact, "extracted_text", None) or "").strip())
+        status_text = getattr(artifact, "extraction_status", None) or "not_required"
+        source_text = getattr(artifact, "extraction_source", None) or "none"
+        lines.append(
+            f"- File: {artifact.filename} "
+            f"(mime_type={artifact.mime_type}, id={artifact.id}, "
+            f"extraction_status={status_text}, extraction_source={source_text}, text_chars={text_chars})"
+        )
+
+    if not lines:
+        return ""
+    if len(lines) > 50:
+        hidden_count = len(lines) - 50
+        lines = lines[:50] + [f"- [{hidden_count} additional uploaded files hidden from this context]"]
+    return (
+        "[Available files in this chat]\n"
+        "These files were uploaded earlier in this chat and remain available for follow-up questions. "
+        "When the user refers to the same files, previous PDFs, attachments, or uploaded documents, use "
+        "`document_reader` with the listed artifact id. Use mode='tables' for invoices, GRVs, statements, "
+        "price lists, or other tabular documents; use mode='read' for extracted text. "
+        "Use mode='guidance' for Document Reader's tool-owned skill.\n"
+        + "\n".join(lines)
+    )
+
+
+async def _session_artifact_context(
+    db: AsyncSession,
+    session_id: UUID,
+    user_id: UUID,
+    exclude_artifact_ids: set[UUID],
+) -> str:
+    result = await db.execute(
+        select(AIArtifact)
+        .join(AIChatArtifact, AIChatArtifact.artifact_id == AIArtifact.id)
+        .where(
+            AIChatArtifact.chat_session_id == session_id,
+            AIArtifact.created_by_user_id == user_id,
+        )
+        .order_by(AIChatArtifact.created_at.asc())
+    )
+    artifacts = [
+        artifact
+        for artifact in result.scalars().all()
+        if artifact.id not in exclude_artifact_ids
+    ]
+    return _artifact_manifest_context(artifacts)
+
+
+def _join_context_blocks(*blocks: str) -> str:
+    return "\n\n".join(block.strip() for block in blocks if block and block.strip())
 
 
 def _content_with_attachment_context(content: str, attachment_context: str) -> str:
@@ -650,6 +766,7 @@ async def _run_model_router(
     messages: list[dict[str, str]],
     request_id: str,
     activity_event_sink=None,
+    agent_event_sink=None,
 ):
     from app.services.trace_service import TraceService
     from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
@@ -666,6 +783,7 @@ async def _run_model_router(
             user_id=user_id,
             trace_svc=trace_svc,
             request_id=request_id,
+            stream_event_sink=agent_event_sink,
         )
         trace_svc.end_span(model_span, output_summary={
             "content_length": len(router_result.get("content", "")),
@@ -836,11 +954,245 @@ def _tool_error_summary_text(tool_error_summary: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def _safe_text(value: Any, max_chars: int = 220) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        text = str(value)
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _safe_block_text(value: Any, max_chars: int = 2200) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, default=str, indent=2)
+    else:
+        text = value if isinstance(value, str) else str(value)
+    text = re.sub(r"\n{4,}", "\n\n\n", text.strip())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _display_name(value: Any) -> str:
+    text = _safe_text(value, 80).replace("_", " ").replace("-", " ").strip()
+    return text.title() if text else "Step"
+
+
+def _join_detail(parts: list[Any]) -> str:
+    return " · ".join(_safe_text(part, 120) for part in parts if _safe_text(part, 120))
+
+
+def _tool_context(input_summary: dict[str, Any]) -> str:
+    arguments = input_summary.get("arguments") if isinstance(input_summary.get("arguments"), dict) else {}
+    action = _safe_text(input_summary.get("action"), 160)
+    tool_name = _safe_text(input_summary.get("tool_name"), 80)
+    language = _safe_text(arguments.get("language") or "python", 40)
+    detail = _safe_text(
+        arguments.get("purpose")
+        or arguments.get("task")
+        or arguments.get("query")
+        or arguments.get("command")
+        or arguments.get("action"),
+        120,
+    )
+    if action and (not detail or detail.lower() in action.lower()):
+        return action
+    if not action and tool_name == "workspace":
+        language_label = "Shell" if language.lower() in {"sh", "bash", "shell", "terminal"} else language.title()
+        return f"Run {language_label}{f': {detail}' if detail else ''}"
+    return _join_detail([action, arguments.get("mode"), language, detail])
+
+
+def _tool_args_text(input_summary: dict[str, Any]) -> str:
+    arguments = input_summary.get("arguments") if isinstance(input_summary.get("arguments"), dict) else {}
+    if arguments:
+        return _safe_block_text(arguments, 3000)
+    return _safe_block_text(input_summary, 1200)
+
+
+def _tool_failed(event: dict[str, Any], output_summary: dict[str, Any]) -> bool:
+    result = output_summary.get("result") if isinstance(output_summary.get("result"), dict) else {}
+    status = str(event.get("status") or result.get("status") or "").lower()
+    return bool(event.get("error_message") or result.get("error") or status in {"failed", "error"})
+
+
+def _tool_args_payload(input_summary: dict[str, Any]) -> Any:
+    arguments = input_summary.get("arguments")
+    return arguments if isinstance(arguments, dict) else input_summary
+
+
+def _tool_result_payload(output_summary: dict[str, Any]) -> Any:
+    if "result" in output_summary:
+        return output_summary.get("result")
+    return output_summary
+
+
+def _compact_message_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    compact = [
+        part
+        for part in parts
+        if isinstance(part, dict) and part.get("type") in {"text", "reasoning", "tool-call"}
+    ][-240:]
+    return compact or None
+
+
+def _append_message_text_part(parts: list[dict[str, Any]], part_type: str, text: str) -> None:
+    if not text:
+        return
+
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if part.get("type") == part_type:
+            part["type"] = part_type
+            part["text"] = re.sub(r"\n{4,}", "\n\n\n", f"{part.get('text') or ''}{text}")[:24000]
+            return
+        if part.get("type") not in {"text", "reasoning"}:
+            break
+
+    parts.append({
+        "type": part_type,
+        "text": re.sub(r"\n{4,}", "\n\n\n", text)[:24000],
+    })
+
+
+def _replace_message_text_part(parts: list[dict[str, Any]], part_type: str, text: str) -> None:
+    if not text:
+        return
+
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if part.get("type") == part_type:
+            part["type"] = part_type
+            part["text"] = re.sub(r"\n{4,}", "\n\n\n", text)[:24000]
+            return
+        if part.get("type") not in {"text", "reasoning"}:
+            break
+
+    parts.append({
+        "type": part_type,
+        "text": re.sub(r"\n{4,}", "\n\n\n", text)[:24000],
+    })
+
+
+def _upsert_tool_call_part(parts: list[dict[str, Any]], event: dict[str, Any]) -> None:
+    tool_id = _safe_text(event.get("id"), 120)
+    event_type = str(event.get("type") or "")
+    patch: dict[str, Any] = {
+        "type": "tool-call",
+        "toolCallId": tool_id or f"tool:{len(parts)}",
+        "toolName": _safe_text(event.get("name"), 80) or "tool",
+        "argsText": _safe_block_text(event.get("verboseArgs"), 3000),
+        "isError": bool(event.get("isError") or event.get("error")),
+    }
+    if "args" in event:
+        patch["args"] = event.get("args")
+    else:
+        patch["args"] = {}
+    if "result" in event:
+        patch["result"] = event.get("result")
+    if event.get("durationMs") is not None:
+        patch["durationMs"] = event.get("durationMs")
+
+    for part in reversed(parts):
+        if part.get("type") == "tool-call" and tool_id and part.get("toolCallId") == tool_id:
+            part.update(patch)
+            if event_type == "tool.start":
+                part.pop("result", None)
+            return
+
+    parts.append(patch)
+
+
+def _message_parts_with_final_text(parts: list[dict[str, Any]] | None, content: str) -> list[dict[str, Any]] | None:
+    next_parts = [dict(part) for part in (parts or []) if isinstance(part, dict)]
+    text = _safe_block_text(content, 24000)
+    if text and not any(part.get("type") == "text" and _safe_text(part.get("text"), 1).strip() for part in next_parts):
+        next_parts.append({"type": "text", "text": text})
+    return _compact_message_parts(next_parts)
+
+
+def _agent_status_event(event: dict[str, Any], finished: bool) -> dict[str, Any] | None:
+    span_type = str(event.get("span_type") or "step")
+    span_name = str(event.get("span_name") or "")
+    output_summary = event.get("output_summary") if isinstance(event.get("output_summary"), dict) else {}
+    if span_type == "context_build":
+        title = "Context ready" if finished else "Preparing context"
+        detail = ""
+        if finished:
+            detail = _join_detail([
+                f"{output_summary.get('tool_count')} tools" if output_summary.get("tool_count") is not None else "",
+                f"{output_summary.get('memories_injected')} memories" if output_summary.get("memories_injected") is not None else "",
+            ])
+        return {"type": "status.update", "title": title, "detail": detail, "created_at": _utcnow().isoformat()}
+    if span_type == "provider_call":
+        title = "Model pass complete" if finished else "Thinking"
+        detail = f"{_display_name(span_name)}"
+        if finished and output_summary.get("latency_ms") is not None:
+            detail = _join_detail([detail, f"{output_summary.get('latency_ms')}ms"])
+        return {"type": "status.update", "title": title, "detail": detail, "created_at": _utcnow().isoformat()}
+    if span_type == "model_request":
+        title = "Model request complete" if finished else "Running model request"
+        return {"type": "status.update", "title": title, "detail": "", "created_at": _utcnow().isoformat()}
+    return None
+
+
+def _agent_tool_event(event: dict[str, Any], finished: bool) -> dict[str, Any] | None:
+    if str(event.get("span_type") or "") != "tool_call":
+        return None
+    input_summary = event.get("input_summary") if isinstance(event.get("input_summary"), dict) else {}
+    output_summary = event.get("output_summary") if isinstance(event.get("output_summary"), dict) else {}
+    span_name = str(event.get("span_name") or "")
+    tool_name = str(input_summary.get("tool_name") or span_name or "tool")
+    context = _tool_context(input_summary)
+    if not finished:
+        return {
+            "type": "tool.start",
+            "id": event.get("span_id"),
+            "name": tool_name,
+            "context": context,
+            "args": _tool_args_payload(input_summary),
+            "verboseArgs": _tool_args_text(input_summary),
+            "startedAt": event.get("started_at"),
+            "created_at": _utcnow().isoformat(),
+        }
+    failed = _tool_failed(event, output_summary)
+    return {
+        "type": "tool.complete",
+        "id": event.get("span_id"),
+        "name": tool_name,
+        "context": context,
+        "args": _tool_args_payload(input_summary),
+        "result": _tool_result_payload(output_summary),
+        "error": failed,
+        "isError": failed,
+        "durationMs": event.get("duration_ms"),
+        "completedAt": event.get("ended_at"),
+        "created_at": _utcnow().isoformat(),
+    }
+
+
+def _agent_event_from_activity(event: dict[str, Any]) -> dict[str, Any] | None:
+    phase = str(event.get("event") or "")
+    if phase not in {"span_started", "span_finished"}:
+        return None
+
+    finished = phase == "span_finished"
+    return _agent_tool_event(event, finished) or _agent_status_event(event, finished)
+
+
 def _assistant_metadata(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
     activity_events: list[dict[str, Any]] | None = None,
+    message_parts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = {
         "request_id": request_id,
@@ -854,6 +1206,8 @@ def _assistant_metadata(
         metadata["tool_error_summary"] = tool_error_summary
     if activity_events:
         metadata["activity_events"] = activity_events
+    if message_parts:
+        metadata["message_parts"] = message_parts
     return metadata
 
 
@@ -864,17 +1218,20 @@ def _build_assistant_message(
     request_id: str,
     trace_id: str,
     activity_events: list[dict[str, Any]] | None = None,
+    message_parts: list[dict[str, Any]] | None = None,
 ) -> AIChatMessage:
+    content = router_result.get("content", "")
+    stored_parts = _message_parts_with_final_text(message_parts, content)
     return _new_chat_message(
         session_id,
         user_id,
         "assistant",
-        router_result.get("content", ""),
+        content,
         model_provider=router_result.get("model_provider", "unknown"),
         model_name=router_result.get("model_name", "unknown"),
         token_usage_json=_token_usage(router_result),
         tool_call_json=router_result.get("tool_calls"),
-        metadata_json=_assistant_metadata(router_result, request_id, trace_id, activity_events),
+        metadata_json=_assistant_metadata(router_result, request_id, trace_id, activity_events, stored_parts),
     )
 
 
@@ -918,14 +1275,60 @@ async def _persist_success(
     user_id: UUID,
     request_id: str,
     context_data: dict[str, Any] | None,
+    generated_files: list[dict[str, Any]] | None = None,
     tool_error_summary: list[dict[str, Any]] | None = None,
 ) -> None:
     db.add(assistant_msg)
     await _record_memory_usage(db, context_data, assistant_msg, session_id, user_id, request_id)
+    await _persist_generated_files(db, session_id, assistant_msg, user_id, generated_files or [])
     session.last_message_at = _utcnow()
     session.updated_at = _utcnow()
     await db.commit()
     await db.refresh(assistant_msg)
+
+
+async def _persist_generated_files(
+    db: AsyncSession,
+    session_id: UUID,
+    assistant_msg: AIChatMessage,
+    user_id: UUID,
+    generated_files: list[dict[str, Any]],
+) -> None:
+    if not generated_files:
+        return
+
+    artifact_svc = ArtifactService(db)
+    seen: set[tuple[str, str]] = set()
+    for item in generated_files[:20]:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get("filename") or item.get("path") or "output").rsplit("/", 1)[-1].strip() or "output"
+        content_base64 = item.get("content_base64")
+        if not isinstance(content_base64, str) or not content_base64:
+            continue
+        try:
+            content = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError):
+            logger.warning("Skipping generated artifact with invalid base64 | filename=%s", filename)
+            continue
+        sha256 = str(item.get("sha256") or "")
+        dedupe_key = (filename, sha256 or str(len(content)))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        artifact = await artifact_svc.create_from_bytes(
+            filename=filename,
+            mime_type=str(item.get("mime_type") or "application/octet-stream"),
+            content=content,
+            artifact_type="chat-generated",
+            created_by_user_id=user_id,
+        )
+        db.add(AIChatArtifact(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            artifact_id=artifact.id,
+            linked_message_id=assistant_msg.id,
+        ))
 
 
 async def _enqueue_or_extract_memories(
@@ -962,11 +1365,36 @@ async def _process_chat_turn(
     request_id: str,
     user_id: UUID,
     activity_event_sink=None,
+    agent_event_sink=None,
 ) -> AIChatMessage:
     activity_events: list[dict[str, Any]] = []
+    message_parts: list[dict[str, Any]] = []
+
+    def collect_agent_event(event: dict[str, Any]) -> None:
+        event_type = event.get("type")
+        if event_type in {"reasoning.delta", "reasoning.available"}:
+            delta = event.get("text") or event.get("delta")
+            if isinstance(delta, str):
+                if event_type == "reasoning.available":
+                    _replace_message_text_part(message_parts, "reasoning", delta)
+                else:
+                    _append_message_text_part(message_parts, "reasoning", delta)
+        elif event_type == "message.delta":
+            pass
+        elif event_type == "tool.start":
+            _upsert_tool_call_part(message_parts, event)
+        elif event_type == "tool.complete":
+            _upsert_tool_call_part(message_parts, event)
+        if len(message_parts) > 240:
+            del message_parts[:-240]
+        if agent_event_sink:
+            agent_event_sink(event)
 
     def collect_activity(event: dict[str, Any]) -> None:
         activity_events.append(event)
+        agent_event = _agent_event_from_activity(event)
+        if agent_event:
+            collect_agent_event(agent_event)
         if activity_event_sink:
             activity_event_sink(event)
 
@@ -977,11 +1405,20 @@ async def _process_chat_turn(
     _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
 
     attachment_context = await _attachment_context(db, artifacts)
+    session_artifact_context = await _session_artifact_context(
+        db,
+        session_id,
+        user_id,
+        {artifact.id for artifact in artifacts},
+    )
     messages = await _conversation_messages(
         db,
         session_id,
         user_msg,
-        _content_with_attachment_context(req.content, attachment_context),
+        _content_with_attachment_context(
+            req.content,
+            _join_context_blocks(attachment_context, session_artifact_context),
+        ),
     )
     await _commit_user_turn_start(db, session)
     router_result, trace_svc = await _run_model_router(
@@ -993,6 +1430,7 @@ async def _process_chat_turn(
         messages,
         request_id,
         activity_event_sink=collect_activity,
+        agent_event_sink=collect_agent_event,
     )
     try:
         _raise_on_blank_response(router_result, request_id, user_id, session_id)
@@ -1019,13 +1457,19 @@ async def _process_chat_turn(
         request_id,
         trace_svc.trace_id,
         activity_events,
+        _compact_message_parts(message_parts),
     )
-    await _maybe_generate_session_title(
+    await _persist_success(
+        db,
         session,
-        messages,
-        assistant_msg.content,
+        assistant_msg,
+        session_id,
+        user_id,
+        request_id,
+        context_data,
+        router_result.get("generated_files") if isinstance(router_result.get("generated_files"), list) else [],
+        tool_error_summary,
     )
-    await _persist_success(db, session, assistant_msg, session_id, user_id, request_id, context_data, tool_error_summary)
     await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)
     trace_status = "partial_failure" if tool_error_summary else "success"
     await trace_svc.commit(
@@ -1070,7 +1514,12 @@ async def stream_chat_message(
     def collect_activity(event: dict[str, Any]) -> None:
         queue.put_nowait({"type": "activity", "payload": event})
 
+    def collect_agent_event(event: dict[str, Any]) -> None:
+        event_type = str(event.get("type") or "status.update")
+        queue.put_nowait({"type": event_type, "payload": event})
+
     async def run_turn() -> None:
+        cancelled = False
         async with AsyncSessionLocal() as db:
             try:
                 assistant_msg = await _process_chat_turn(
@@ -1080,8 +1529,31 @@ async def stream_chat_message(
                     request_id,
                     user_id,
                     collect_activity,
+                    collect_agent_event,
                 )
-                await queue.put({"type": "message", "payload": _chat_message_payload(assistant_msg)})
+                attachments_by_message = await _attachments_by_message(db, [assistant_msg.id])
+                await queue.put({
+                    "type": "message.complete",
+                    "payload": _chat_message_payload(assistant_msg, attachments_by_message.get(assistant_msg.id, [])),
+                })
+                title = await _refresh_session_title(session_id)
+                if title:
+                    await queue.put({
+                        "type": "session.title",
+                        "payload": {
+                            "session_id": str(session_id),
+                            "title": title,
+                        },
+                    })
+            except asyncio.CancelledError:
+                cancelled = True
+                await db.rollback()
+                logger.info(
+                    "Streaming chat turn cancelled | request_id=%s session_id=%s",
+                    request_id,
+                    session_id,
+                )
+                raise
             except HTTPException as exc:
                 await db.rollback()
                 await queue.put({"type": "error", "payload": exc.detail})
@@ -1098,6 +1570,8 @@ async def stream_chat_message(
                     },
                 })
             finally:
+                if cancelled:
+                    return
                 await queue.put({"type": "done", "payload": {"request_id": request_id}})
 
     async def event_stream():
@@ -1116,10 +1590,13 @@ async def stream_chat_message(
         finally:
             if not task.done():
                 logger.info(
-                    "Chat stream client disconnected; turn will continue in background | request_id=%s session_id=%s",
+                    "Chat stream client disconnected; cancelling turn | request_id=%s session_id=%s",
                     request_id,
                     session_id,
                 )
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     return StreamingResponse(
         event_stream(),
