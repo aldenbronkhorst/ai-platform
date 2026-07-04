@@ -2,10 +2,10 @@ import time
 import re
 import json
 from typing import Optional, Any, Callable
-from urllib.parse import urlparse
 
 import httpx
 
+from app.services.model_provider_adapters import ProviderRequestAdapter
 
 QUOTA_RATE_LIMIT_PATTERNS = [
     re.compile(r"rate\s*limit", re.IGNORECASE),
@@ -61,33 +61,6 @@ def _chat_completions_url(base_url: str) -> str:
 def _responses_url(base_url: str) -> str:
     normalized = base_url.rstrip("/")
     return f"{normalized}/responses"
-
-
-def _default_extra_body(base_url: str) -> dict[str, Any]:
-    return {}
-
-
-def _is_openai_api(base_url: str) -> bool:
-    hostname = urlparse(str(base_url or "")).hostname
-    if not hostname:
-        return False
-    normalized = hostname.lower().rstrip(".")
-    return normalized == "api.openai.com" or normalized.endswith(".api.openai.com")
-
-
-def _model_prefers_responses_api(model: str) -> bool:
-    normalized = str(model or "").lower()
-    return normalized.startswith("gpt-5.5") or "codex" in normalized
-
-
-def _model_uses_completion_token_budget(model: str) -> bool:
-    normalized = str(model or "").lower()
-    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
-
-
-def _model_uses_fixed_sampling(model: str) -> bool:
-    normalized = str(model or "").lower()
-    return normalized.startswith(("gpt-5", "o1", "o3", "o4", "kimi-k2.7-code"))
 
 
 def _json_safe_copy(value: Any) -> Any:
@@ -337,6 +310,7 @@ class ModelProviderClient:
         self.deployment_name = deployment_name
         self.api_key = api_key
         self.request_options = request_options or {}
+        self.adapter = ProviderRequestAdapter(self.base_url, self.request_options)
         self._responses_previous_response_id: str | None = None
         self._responses_sent_tool_outputs: set[str] = set()
 
@@ -347,12 +321,7 @@ class ModelProviderClient:
         return headers
 
     def _uses_responses_api(self, model: str) -> bool:
-        configured_api = str(self.request_options.get("api") or "").strip().lower()
-        if configured_api == "responses":
-            return True
-        if configured_api == "chat_completions":
-            return False
-        return _is_openai_api(self.base_url) and _model_prefers_responses_api(model)
+        return self.adapter.uses_responses_api(model)
 
     def _payload(
         self,
@@ -362,31 +331,14 @@ class ModelProviderClient:
         model_override: Optional[str],
         tools: Optional[list[dict[str, Any]]],
     ) -> dict[str, Any]:
-        model = str(model_override or self.deployment_name)
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-        }
-        if _model_uses_completion_token_budget(model):
-            payload["max_completion_tokens"] = max_tokens
-        else:
-            payload["max_tokens"] = max_tokens
-        if not _model_uses_fixed_sampling(model):
-            payload["temperature"] = temperature
-        if tools:
-            payload["tools"] = tools
-
-        extra_body = _default_extra_body(self.base_url)
-        configured_extra_body = self.request_options.get("extra_body")
-        if isinstance(configured_extra_body, dict):
-            extra_body.update(configured_extra_body)
-        if extra_body:
-            payload.update(extra_body)
-
-        without_parameters = self.request_options.get("omit_parameters") or []
-        for parameter in without_parameters:
-            payload.pop(str(parameter), None)
-        return payload
+        return self.adapter.chat_payload(
+            deployment_name=self.deployment_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model_override=model_override,
+            tools=tools,
+        )
 
     def _responses_input(self, messages: list) -> tuple[list[dict[str, Any]], set[str]]:
         sent_tool_outputs: set[str] = set()

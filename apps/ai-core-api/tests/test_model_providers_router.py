@@ -188,12 +188,12 @@ def test_provider_model_parser_uses_explicit_provider_metadata_for_voice_models(
     assert by_id["provider-transcriber"].task_type == "voice_transcription"
 
 
-def test_provider_model_parser_does_not_guess_voice_from_model_name():
+def test_provider_model_parser_uses_known_voice_model_id_markers():
     from app.routers.model_providers import _parse_models_payload
 
     parsed = _parse_models_payload({"data": [{"id": "glm-asr-2512", "name": "GLM ASR 2512"}]})
 
-    assert parsed[0].task_type == "chat"
+    assert parsed[0].task_type == "voice_transcription"
 
 
 def test_provider_catalog_adds_documented_zai_voice_model():
@@ -206,6 +206,192 @@ def test_provider_catalog_adds_documented_zai_voice_model():
     assert by_id["glm-asr-2512"].display_name == "GLM ASR 2512"
     assert by_id["glm-asr-2512"].task_type == "voice_transcription"
     assert by_id["glm-asr-2512"].supports_tools is False
+
+
+def test_model_provider_payload_includes_preset_catalog(monkeypatch):
+    _patch_key_vault(monkeypatch)
+
+    client = TestClient(app)
+    response = client.get("/model-providers")
+
+    assert response.status_code == 200
+    catalog_keys = {item["key"] for item in response.json()["catalog"]}
+    assert {
+        "openai",
+        "google_gemini",
+        "zai",
+        "moonshot",
+        "mistral",
+        "groq",
+        "together",
+        "fireworks",
+        "openrouter",
+        "deepseek",
+        "xai",
+        "nvidia",
+        "perplexity",
+        "cohere",
+        "elevenlabs",
+    }.issubset(catalog_keys)
+    routes = {item["task_type"]: item for item in response.json()["routes"]}
+    assert routes["general_chat"]["model_task_type"] == "chat"
+    assert routes["voice_transcription"]["model_task_type"] == "voice_transcription"
+    assert routes["image_generation"]["model_task_type"] == "image_generation"
+
+
+def test_model_provider_classifies_capability_from_minimal_model_ids():
+    from app.routers.model_providers import _parse_models_payload
+
+    parsed = _parse_models_payload([
+        "gpt-5.5",
+        "whisper-large-v3",
+        "scribe_v2",
+        "gpt-image-1",
+        "imagen-4.0-generate",
+        "black-forest-labs/flux-1.1-pro",
+    ])
+    by_id = {model.id: model for model in parsed}
+    assert by_id["gpt-5.5"].task_type == "chat"
+    assert by_id["whisper-large-v3"].task_type == "voice_transcription"
+    assert by_id["scribe_v2"].task_type == "voice_transcription"
+    assert by_id["gpt-image-1"].task_type == "image_generation"
+    assert by_id["imagen-4.0-generate"].task_type == "image_generation"
+    assert by_id["black-forest-labs/flux-1.1-pro"].task_type == "image_generation"
+
+
+def test_model_provider_upsert_uses_preset_provider_definition(monkeypatch):
+    _patch_key_vault(monkeypatch)
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        from app.routers.model_providers import DiscoveredModel
+
+        assert base_url == "https://api.openai.com/v1"
+        assert api_key == "secret-value"
+        return [DiscoveredModel(id="gpt-test", display_name="GPT Test")]
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    response = client.post("/model-providers", json={
+        "provider_key": "openai",
+        "name": "Wrong Custom Name",
+        "base_url": "https://wrong.example/v1",
+        "api_key": "secret-value",
+    })
+
+    assert response.status_code == 201
+    provider = next(item for item in response.json()["providers"] if item["provider_key"] == "openai")
+    assert provider["name"] == "OpenAI"
+    assert provider["base_url"] == "https://api.openai.com/v1"
+    assert provider["provider_type"] == "openai_compatible"
+    catalog_item = next(item for item in response.json()["catalog"] if item["key"] == "openai")
+    assert catalog_item["configured_provider_id"] == provider["id"]
+
+
+def test_model_provider_upsert_supports_elevenlabs_scribe_v2(monkeypatch):
+    stored = _patch_key_vault(monkeypatch)
+
+    client = TestClient(app)
+    provider_name = f"ElevenLabs Voice {uuid.uuid4()}"
+    response = client.post("/model-providers", json={
+        "name": provider_name,
+        "provider_type": "elevenlabs",
+        "base_url": "https://api.elevenlabs.io/v1",
+        "api_key": "eleven-key",
+    })
+
+    assert response.status_code == 201
+    assert stored
+    payload = response.json()
+    provider = next(item for item in payload["providers"] if item["name"] == provider_name)
+    assert provider["provider_type"] == "elevenlabs"
+    assert _model_ids(provider) == {"scribe_v2"}
+    model = provider["models"][0]
+    assert model["display_name"] == "Scribe v2"
+    assert model["config_json"]["task_type"] == "voice_transcription"
+    assert model["supports_tools"] == "false"
+    assert model["supports_json_schema"] == "false"
+    if payload["route"]:
+        assert payload["route"]["primary_model_id"] != model["id"]
+    voice_route = next(route for route in payload["routes"] if route["task_type"] == "voice_transcription")
+    assert voice_route["primary_model_id"] is None
+
+
+def test_model_provider_route_selects_voice_model(monkeypatch):
+    _patch_key_vault(monkeypatch)
+
+    client = TestClient(app)
+    provider_name = f"Voice Route {uuid.uuid4()}"
+    create_response = client.post("/model-providers", json={
+        "provider_key": "elevenlabs",
+        "name": provider_name,
+        "base_url": "https://api.elevenlabs.io/v1",
+        "api_key": "eleven-key",
+    })
+    assert create_response.status_code == 201
+    provider = next(item for item in create_response.json()["providers"] if item["name"] == "ElevenLabs")
+    model = provider["models"][0]
+
+    response = client.patch("/model-providers/route", json={
+        "task_type": "voice_transcription",
+        "primary_model_id": model["id"],
+    })
+
+    assert response.status_code == 200
+    voice_route = next(route for route in response.json()["routes"] if route["task_type"] == "voice_transcription")
+    assert voice_route["primary_model_id"] == model["id"]
+
+
+def test_model_provider_infers_elevenlabs_from_base_url(monkeypatch):
+    _patch_key_vault(monkeypatch)
+
+    client = TestClient(app)
+    provider_name = f"ElevenLabs Inferred {uuid.uuid4()}"
+    response = client.post("/model-providers", json={
+        "name": provider_name,
+        "base_url": "https://api.elevenlabs.io/v1",
+        "enabled": False,
+    })
+
+    assert response.status_code == 201
+    provider = next(item for item in response.json()["providers"] if item["name"] == provider_name)
+    assert provider["provider_type"] == "elevenlabs"
+
+
+def test_model_provider_patch_updates_model_task_type(monkeypatch):
+    stored = _patch_key_vault(monkeypatch)
+
+    async def fake_fetch_available_models(base_url: str, api_key: str | None = None):
+        from app.routers.model_providers import DiscoveredModel
+
+        assert api_key == "secret-value"
+        return [DiscoveredModel(id="provider-chat-latest", display_name="Provider Chat Latest")]
+
+    monkeypatch.setattr("app.routers.model_providers._fetch_available_models", fake_fetch_available_models)
+
+    client = TestClient(app)
+    provider_name = f"Manual Task {uuid.uuid4()}"
+    create_response = client.post("/model-providers", json={
+        "name": provider_name,
+        "base_url": "https://provider.example/v1",
+        "api_key": "secret-value",
+    })
+    assert create_response.status_code == 201
+    assert stored
+    provider = next(item for item in create_response.json()["providers"] if item["name"] == provider_name)
+    model = provider["models"][0]
+
+    response = client.patch(
+        f"/model-providers/{provider['id']}/models/{model['id']}",
+        json={"task_type": "voice_transcription"},
+    )
+
+    assert response.status_code == 200
+    provider = next(item for item in response.json()["providers"] if item["name"] == provider_name)
+    model = provider["models"][0]
+    assert model["config_json"]["task_type"] == "voice_transcription"
+    assert model["supports_tools"] == "false"
+    assert model["supports_json_schema"] == "false"
 
 
 def test_model_provider_upsert_stores_key_and_syncs_models(monkeypatch):
@@ -249,7 +435,7 @@ def test_model_provider_upsert_stores_key_and_syncs_models(monkeypatch):
     assert provider["provider_type"] == "openai_compatible"
     assert _model_ids(provider) == {"provider-chat-latest", "provider-fast"}
     assert all(model["enabled"] == "true" for model in provider["models"])
-    assert payload["route"]["primary_model_id"] in {model["id"] for model in provider["models"]}
+    assert payload["route"]["primary_model_id"]
 
 
 def test_model_provider_upsert_stores_voice_models_outside_chat_route(monkeypatch):

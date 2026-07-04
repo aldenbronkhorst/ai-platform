@@ -2,7 +2,7 @@ import { Copy, Check } from "lucide-react";
 import { useState, useCallback, useEffect } from "react";
 
 interface MessageActionsProps {
-  content: string;
+  content: string | (() => string);
   onCopy?: () => void;
 }
 
@@ -10,7 +10,8 @@ export function MessageActions({ content, onCopy }: MessageActionsProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(content).catch(() => {});
+    const text = typeof content === "function" ? content() : content;
+    navigator.clipboard.writeText(text).catch(() => {});
     onCopy?.();
     setCopied(true);
   }, [content, onCopy]);

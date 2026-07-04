@@ -10,7 +10,7 @@ from app.services.workspace_runtime import WorkspaceSession, run_workspace
 @pytest.mark.asyncio
 async def test_workspace_runs_python_and_collects_files():
     result = await run_workspace({
-        "code": "print('hello workspace')\nopen('answer.txt', 'w').write('42')",
+        "code": "print('hello workspace')\nopen(output_path('answer.txt'), 'w').write('42')",
         "timeout": 10,
     })
 
@@ -20,7 +20,7 @@ async def test_workspace_runs_python_and_collects_files():
     assert result["stderr"] == ""
     assert result["files"] == [
         {
-            "path": "answer.txt",
+            "path": "outputs/answer.txt",
             "bytes": 2,
             "mime_type": "text/plain",
             "sha256": "73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049",
@@ -298,6 +298,117 @@ async def test_workspace_python_can_read_connector_guidance_generically():
 
 
 @pytest.mark.asyncio
+async def test_workspace_has_standard_file_data_stack_available():
+    result = await run_workspace(
+        {
+            "code": (
+                "import numpy\n"
+                "import openpyxl\n"
+                "import pandas\n"
+                "import xlsxwriter\n"
+                "print('data-stack-ok')\n"
+            ),
+            "timeout": 10,
+        }
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "data-stack-ok"
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_helpers_use_chat_artifact_manifest():
+    artifact_id = str(uuid.uuid4())
+    calls = []
+
+    async def fake_tool(tool_name, arguments):
+        calls.append((tool_name, arguments))
+        assert tool_name == "document_reader"
+        mode = arguments["mode"]
+        if mode == "download":
+            return {
+                "tool_name": "document_reader",
+                "mode": "download",
+                "artifact_id": artifact_id,
+                "filename": "invoice.pdf",
+                "content_base64": "aW52b2ljZS1ieXRlcw==",
+            }
+        if mode == "read":
+            return {"tool_name": "document_reader", "mode": "read", "content": "1|Invoice text"}
+        if mode == "tables":
+            return {"tool_name": "document_reader", "mode": "tables", "tables": [{"table_index": 1, "row_count": 2}]}
+        if mode == "layout":
+            return {"tool_name": "document_reader", "mode": "layout", "pages": [{"page_number": 1}]}
+        raise AssertionError(f"unexpected mode {mode}")
+
+    result = await run_workspace(
+        {
+            "code": (
+                "files = list_files()\n"
+                "print(files[0]['filename'])\n"
+                "path = download_file('invoice.pdf')\n"
+                "print(open(path, 'rb').read().decode())\n"
+                "print(read_document('invoice.pdf')['content'])\n"
+                "print(read_tables('invoice.pdf')['tables'][0]['row_count'])\n"
+                "print(read_layout('invoice.pdf')['pages'][0]['page_number'])\n"
+                "save_output('summary.txt', 'done')\n"
+            ),
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+        artifacts=[
+            {
+                "id": artifact_id,
+                "filename": "invoice.pdf",
+                "mime_type": "application/pdf",
+                "artifact_type": "chat-upload",
+                "extraction_status": "pending",
+            }
+        ],
+    )
+
+    assert result["status"] == "success"
+    assert result["available_files"][0]["id"] == artifact_id
+    assert result["stdout"].splitlines() == [
+        "invoice.pdf",
+        "invoice-bytes",
+        "1|Invoice text",
+        "2",
+        "1",
+    ]
+    assert result["connector_calls"] == {"document_reader": 4}
+    assert calls == [
+        ("document_reader", {"artifact_id": artifact_id, "mode": "download"}),
+        ("document_reader", {"artifact_id": artifact_id, "mode": "read"}),
+        ("document_reader", {"artifact_id": artifact_id, "mode": "tables"}),
+        ("document_reader", {"artifact_id": artifact_id, "mode": "layout"}),
+    ]
+    assert result["files"][0]["path"] == "outputs/summary.txt"
+    assert result["files"][0]["preview"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_helpers_reject_ambiguous_names():
+    async def fake_tool(tool_name, arguments):
+        return {"tool_name": tool_name, **arguments}
+
+    result = await run_workspace(
+        {
+            "code": "file_info('invoice')",
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+        artifacts=[
+            {"id": str(uuid.uuid4()), "filename": "invoice-a.pdf", "mime_type": "application/pdf"},
+            {"id": str(uuid.uuid4()), "filename": "invoice-b.pdf", "mime_type": "application/pdf"},
+        ],
+    )
+
+    assert result["status"] == "failed"
+    assert "ambiguous" in result["stderr"]
+
+
+@pytest.mark.asyncio
 async def test_workspace_shell_can_call_any_platform_tool():
     async def fake_tool(tool_name, arguments):
         return {"status": "success", "connector": tool_name, "value": arguments["value"]}
@@ -350,7 +461,7 @@ async def test_workspace_shell_command_fails_on_connector_error():
 async def test_workspace_runs_shell_and_collects_files():
     result = await run_workspace({
         "language": "terminal",
-        "code": "printf 'terminal-ok\\n'\nprintf 123 > terminal.txt",
+        "code": "printf 'terminal-ok\\n'\nmkdir -p outputs\nprintf 123 > outputs/terminal.txt",
         "timeout": 10,
     })
 
@@ -359,12 +470,50 @@ async def test_workspace_runs_shell_and_collects_files():
     assert result["stdout"].strip() == "terminal-ok"
     assert result["files"] == [
         {
-            "path": "terminal.txt",
+            "path": "outputs/terminal.txt",
             "bytes": 3,
             "mime_type": "text/plain",
             "sha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
             "content_base64": "MTIz",
             "preview": "123",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workspace_blocks_local_desktop_launch_commands():
+    result = await run_workspace({
+        "code": "import subprocess\nresult = subprocess.run(['open', 'outputs/answer.txt'], capture_output=True, text=True)\nprint(result.returncode)\nprint(result.stderr.strip())",
+        "timeout": 10,
+    })
+
+    assert result["status"] == "success"
+    assert "64" in result["stdout"]
+    assert "Save deliverables under outputs/" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_collects_only_explicit_outputs():
+    result = await run_workspace({
+        "code": (
+            "import os\n"
+            "open('answer.txt', 'w', encoding='utf-8').write('scratch')\n"
+            "os.makedirs('Library/Caches/com.apple.python/x', exist_ok=True)\n"
+            "open('Library/Caches/com.apple.python/x/cache.cpython-39.pyc', 'wb').write(b'cache')\n"
+            "open(output_path('result.txt'), 'w', encoding='utf-8').write('returned')\n"
+        ),
+        "timeout": 10,
+    })
+
+    assert result["status"] == "success"
+    assert result["files"] == [
+        {
+            "path": "outputs/result.txt",
+            "bytes": 8,
+            "mime_type": "text/plain",
+            "sha256": "68752bf62253f655b49bd5e8d989fc11d439d0e90cccbca77f13180179706cea",
+            "content_base64": "cmV0dXJuZWQ=",
+            "preview": "returned",
         }
     ]
 

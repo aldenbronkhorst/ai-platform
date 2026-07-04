@@ -305,7 +305,7 @@ echo "Starting local AI core API on http://127.0.0.1:$API_PORT ..."
 ) >"$LOG_DIR/ai-core-api.log" 2>&1 &
 PIDS+=("$!")
 
-wait_for_url "http://127.0.0.1:$API_PORT/health" "AI core API" "$API_STARTUP_ATTEMPTS"
+wait_for_url "http://127.0.0.1:$API_PORT/health/ready" "AI core API" "$API_STARTUP_ATTEMPTS"
 
 echo "Starting local web portal on http://localhost:$WEB_PORT ..."
 (

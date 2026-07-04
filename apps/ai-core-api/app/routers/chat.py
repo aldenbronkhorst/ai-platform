@@ -30,7 +30,6 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
-RECENT_WORKSPACE_STDOUT_CHARS = 4000
 ACTIVE_STREAM_TURNS: dict[str, tuple[UUID, UUID, asyncio.Task[None]]] = {}
 
 
@@ -53,6 +52,7 @@ class ChatMessageCreate(BaseModel):
 
 class ChatMessageAttachmentResponse(BaseModel):
     id: UUID
+    artifact_type: str
     filename: str
     mime_type: str
 
@@ -449,6 +449,7 @@ async def _refresh_session_title(
 def _attachment_response(artifact: AIArtifact) -> dict[str, Any]:
     return {
         "id": artifact.id,
+        "artifact_type": artifact.artifact_type,
         "filename": artifact.filename,
         "mime_type": artifact.mime_type,
     }
@@ -554,12 +555,12 @@ async def _attachment_context(db: AsyncSession, artifacts: list[AIArtifact]) -> 
     return "\n\n".join(blocks)
 
 
-def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
+def _artifact_manifest_entries(artifacts: list[AIArtifact]) -> list[dict[str, Any]]:
     if not artifacts:
-        return ""
+        return []
 
     seen: set[UUID] = set()
-    lines: list[str] = []
+    entries: list[dict[str, Any]] = []
     for artifact in artifacts:
         if artifact.id in seen:
             continue
@@ -567,10 +568,34 @@ def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
         text_chars = len((getattr(artifact, "extracted_text", None) or "").strip())
         status_text = getattr(artifact, "extraction_status", None) or "not_required"
         source_text = getattr(artifact, "extraction_source", None) or "none"
+        entries.append(
+            {
+                "id": str(artifact.id),
+                "artifact_id": str(artifact.id),
+                "filename": artifact.filename,
+                "mime_type": artifact.mime_type,
+                "artifact_type": artifact.artifact_type,
+                "sha256": artifact.sha256,
+                "extraction_status": status_text,
+                "extraction_source": source_text,
+                "text_chars": text_chars,
+            }
+        )
+    return entries
+
+
+def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
+    entries = _artifact_manifest_entries(artifacts)
+    if not entries:
+        return ""
+
+    lines: list[str] = []
+    for entry in entries:
         lines.append(
-            f"- File: {artifact.filename} "
-            f"(mime_type={artifact.mime_type}, id={artifact.id}, "
-            f"extraction_status={status_text}, extraction_source={source_text}, text_chars={text_chars})"
+            f"- File: {entry['filename']} "
+            f"(mime_type={entry['mime_type']}, id={entry['id']}, "
+            f"extraction_status={entry['extraction_status']}, "
+            f"extraction_source={entry['extraction_source']}, text_chars={entry['text_chars']})"
         )
 
     if not lines:
@@ -589,12 +614,12 @@ def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
     )
 
 
-async def _session_artifact_context(
+async def _session_artifacts(
     db: AsyncSession,
     session_id: UUID,
     user_id: UUID,
     exclude_artifact_ids: set[UUID],
-) -> str:
+) -> list[AIArtifact]:
     result = await db.execute(
         select(AIArtifact)
         .join(AIChatArtifact, AIChatArtifact.artifact_id == AIArtifact.id)
@@ -609,6 +634,16 @@ async def _session_artifact_context(
         for artifact in result.scalars().all()
         if artifact.id not in exclude_artifact_ids
     ]
+    return artifacts
+
+
+async def _session_artifact_context(
+    db: AsyncSession,
+    session_id: UUID,
+    user_id: UUID,
+    exclude_artifact_ids: set[UUID],
+) -> str:
+    artifacts = await _session_artifacts(db, session_id, user_id, exclude_artifact_ids)
     return _artifact_manifest_context(artifacts)
 
 
@@ -632,80 +667,105 @@ def _json_value(value: Any) -> Any:
     return value
 
 
-def _compact_workspace_tool_fact(tool_result: dict[str, Any], line_budget: int) -> list[str]:
-    if line_budget <= 0 or tool_result.get("tool_name") != "workspace":
-        return []
-    result = tool_result.get("result")
-    arguments = tool_result.get("arguments")
-    if not isinstance(result, dict) or not isinstance(arguments, dict):
-        return []
-
-    purpose = str(arguments.get("purpose") or "").strip()
-    status = str(result.get("status") or "").strip() or "unknown"
-    connector_calls = result.get("connector_calls")
-    connector_text = ""
-    if isinstance(connector_calls, dict) and connector_calls:
-        connector_text = " connector_calls=" + ", ".join(
-            f"{key}:{value}" for key, value in sorted(connector_calls.items())
-        )
-    lines = [
-        f"workspace purpose={purpose or 'unspecified'} status={status}{connector_text}"
-    ]
-    if len(lines) >= line_budget:
-        return lines
-
-    stdout = result.get("stdout")
-    if isinstance(stdout, dict):
-        stdout = stdout.get("preview")
-    if isinstance(stdout, str) and stdout.strip():
-        compact_stdout = stdout.strip()
-        if len(compact_stdout) > RECENT_WORKSPACE_STDOUT_CHARS:
-            compact_stdout = compact_stdout[:RECENT_WORKSPACE_STDOUT_CHARS].rstrip() + "..."
-        lines.append(f"workspace stdout={compact_stdout}")
-    return lines[:line_budget]
+def _json_safe_copy(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        return str(value)
 
 
-def _recent_verified_tool_facts(history_messages: list[AIChatMessage]) -> str:
-    lines: list[str] = []
-    for message in reversed(history_messages[-8:]):
-        tool_calls = _json_value(message.tool_call_json)
-        if not isinstance(tool_calls, list):
+def _history_message_from_raw(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    role = str(raw.get("role") or "").strip()
+    if role not in {"assistant", "user", "system", "tool"}:
+        return None
+    message = _json_safe_copy(raw)
+    if not isinstance(message, dict):
+        return None
+    message["role"] = role
+    if role == "tool" and not message.get("tool_call_id"):
+        return None
+    if role != "assistant" and "content" not in message:
+        return None
+    if role == "assistant" and "content" not in message:
+        message["content"] = None
+    return message
+
+
+def _tool_result_history_messages(message: AIChatMessage) -> list[dict[str, Any]]:
+    tool_results = _json_value(message.tool_call_json)
+    if not isinstance(tool_results, list) or not tool_results:
+        content = message.content or ""
+        return [{"role": "assistant", "content": content}] if content.strip() else []
+
+    assistant_tool_calls: list[dict[str, Any]] = []
+    tool_messages: list[dict[str, Any]] = []
+    for index, tool_result in enumerate(tool_results):
+        if not isinstance(tool_result, dict):
             continue
-        for tool_result in reversed(tool_calls):
-            if not isinstance(tool_result, dict):
-                continue
-            remaining = 30 - len(lines)
-            lines.extend(_compact_workspace_tool_fact(tool_result, remaining))
-            if len(lines) >= 30:
-                break
-        if len(lines) >= 30:
-            break
-    if not lines:
-        return ""
-    unique_lines = list(dict.fromkeys(reversed(lines)))
-    return (
-        "Recent verified tool results from this chat. If the user asks a follow-up about the previous answer "
-        "or how it was produced, answer from these facts and the immediately previous assistant reply when they "
-        "are sufficient; do not rediscover the same facts with broad searches:\n"
-        + "\n".join(f"- {line}" for line in unique_lines[:30])
-    )
+        tool_name = str(tool_result.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+        tool_call_id = str(tool_result.get("tool_call_id") or f"stored_tool_{message.id}_{index}")
+        arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
+        assistant_tool_calls.append({
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False, default=str),
+            },
+        })
+        tool_messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": json.dumps(tool_result.get("result") or {}, ensure_ascii=False, default=str),
+        })
+
+    if not assistant_tool_calls:
+        content = message.content or ""
+        return [{"role": "assistant", "content": content}] if content.strip() else []
+
+    messages: list[dict[str, Any]] = [
+        {"role": "assistant", "content": None, "tool_calls": assistant_tool_calls},
+        *tool_messages,
+    ]
+    final_content = message.content or ""
+    if final_content.strip():
+        messages.append({"role": "assistant", "content": final_content})
+    return messages
 
 
-async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: AIChatMessage, content: str) -> list[dict[str, str]]:
+def _assistant_turn_messages(message: AIChatMessage) -> list[dict[str, Any]]:
+    metadata = message.metadata_json or {}
+    stored_messages = metadata.get("conversation_messages")
+    if isinstance(stored_messages, list):
+        replay = [
+            history_message
+            for raw_message in stored_messages
+            if (history_message := _history_message_from_raw(raw_message)) is not None
+        ]
+        if replay:
+            return replay
+    return _tool_result_history_messages(message)
+
+
+async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: AIChatMessage, content: str) -> list[dict[str, Any]]:
     history = await db.execute(
         select(AIChatMessage).where(
             AIChatMessage.chat_session_id == session_id
         ).order_by(AIChatMessage.created_at.asc())
     )
     history_messages = list(history.scalars().all())
-    messages = [
-        {"role": msg.role, "content": msg.content}
-        for msg in history_messages
-        if msg.id != user_msg.id and _is_valid_history_message(msg)
-    ]
-    tool_facts = _recent_verified_tool_facts(history_messages)
-    if tool_facts:
-        messages.append({"role": "system", "content": tool_facts})
+    messages: list[dict[str, Any]] = []
+    for msg in history_messages:
+        if msg.id == user_msg.id or not _is_valid_history_message(msg):
+            continue
+        if msg.role == "assistant":
+            messages.extend(_assistant_turn_messages(msg))
+            continue
+        messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": content})
     return messages
 
@@ -716,6 +776,8 @@ def _is_valid_history_message(message: AIChatMessage) -> bool:
     metadata = message.metadata_json or {}
     if metadata.get("failed"):
         return False
+    if metadata.get("conversation_messages") or message.tool_call_json:
+        return True
     content = message.content or ""
     if not content.strip():
         return False
@@ -767,6 +829,7 @@ async def _run_model_router(
     request_id: str,
     activity_event_sink=None,
     agent_event_sink=None,
+    workspace_artifacts: list[dict[str, Any]] | None = None,
 ):
     from app.services.trace_service import TraceService
     from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
@@ -784,6 +847,7 @@ async def _run_model_router(
             trace_svc=trace_svc,
             request_id=request_id,
             stream_event_sink=agent_event_sink,
+            workspace_artifacts=workspace_artifacts,
         )
         trace_svc.end_span(model_span, output_summary={
             "content_length": len(router_result.get("content", "")),
@@ -1232,6 +1296,15 @@ def _assistant_metadata(
         metadata["activity_events"] = activity_events
     if message_parts:
         metadata["message_parts"] = message_parts
+    conversation_messages = router_result.get("conversation_messages")
+    if isinstance(conversation_messages, list):
+        replay = [
+            history_message
+            for raw_message in conversation_messages
+            if (history_message := _history_message_from_raw(raw_message)) is not None
+        ]
+        if replay:
+            metadata["conversation_messages"] = replay
     return metadata
 
 
@@ -1429,12 +1502,14 @@ async def _process_chat_turn(
     _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
 
     attachment_context = await _attachment_context(db, artifacts)
-    session_artifact_context = await _session_artifact_context(
+    previous_artifacts = await _session_artifacts(
         db,
         session_id,
         user_id,
         {artifact.id for artifact in artifacts},
     )
+    session_artifact_context = _artifact_manifest_context(previous_artifacts)
+    workspace_artifacts = _artifact_manifest_entries(artifacts + previous_artifacts)
     messages = await _conversation_messages(
         db,
         session_id,
@@ -1455,6 +1530,7 @@ async def _process_chat_turn(
         request_id,
         activity_event_sink=collect_activity,
         agent_event_sink=collect_agent_event,
+        workspace_artifacts=workspace_artifacts,
     )
     try:
         _raise_on_blank_response(router_result, request_id, user_id, session_id)
@@ -1633,9 +1709,8 @@ async def stream_chat_message(
                     },
                 )
             finally:
-                if cancelled:
-                    return
-                emit_stream_event("done", {"request_id": request_id})
+                if not cancelled:
+                    emit_stream_event("done", {"request_id": request_id})
 
     async def event_stream():
         nonlocal stream_open

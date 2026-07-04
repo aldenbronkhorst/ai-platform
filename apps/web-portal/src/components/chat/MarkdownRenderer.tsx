@@ -10,7 +10,6 @@ import { createMathPlugin } from "@streamdown/math";
 import {
   cloneElement,
   isValidElement,
-  memo,
   type ComponentProps,
   type ReactNode,
   useDeferredValue,
@@ -204,15 +203,17 @@ const REVEAL_DRAIN_MS = 500;
 const REVEAL_MAX_CHARS_PER_FRAME = 30;
 const REVEAL_MIN_COMMIT_MS = 33;
 
-function commonPrefixLength(left: string, right: string) {
+function commonPrefixLength(left: string, right: string): number {
   const max = Math.min(left.length, right.length);
   let index = 0;
-  while (index < max && left[index] === right[index]) index += 1;
+  while (index < max && left[index] === right[index]) {
+    index += 1;
+  }
   return index;
 }
 
 function useSmoothReveal(text: string, isRunning: boolean): string {
-  const [displayed, setDisplayed] = useState(isRunning ? "" : text);
+  const [displayed, setDisplayed] = useState(text);
   const targetRef = useRef(text);
   const shownRef = useRef(displayed);
   const frameRef = useRef<number | null>(null);
@@ -228,13 +229,23 @@ function useSmoothReveal(text: string, isRunning: boolean): string {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    if (!targetRef.current.startsWith(shownRef.current)) {
-      const prefixLength = commonPrefixLength(shownRef.current, targetRef.current);
-      shownRef.current = isRunning ? targetRef.current.slice(0, prefixLength) : targetRef.current;
+    if (!isRunning) {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      shownRef.current = text;
+      const id = window.setTimeout(() => setDisplayed(text), 0);
+      return () => window.clearTimeout(id);
+    }
+
+    if (!text.startsWith(shownRef.current)) {
+      const prefixLength = commonPrefixLength(shownRef.current, text);
+      shownRef.current = targetRef.current.slice(0, prefixLength);
       setDisplayed(shownRef.current);
     }
 
-    if (shownRef.current.length >= targetRef.current.length || frameRef.current !== null) return;
+    if (shownRef.current.length >= text.length || frameRef.current !== null) return;
 
     lastTickRef.current = performance.now();
 
@@ -272,7 +283,7 @@ function useSmoothReveal(text: string, isRunning: boolean): string {
     [],
   );
 
-  return displayed;
+  return isRunning ? displayed : text;
 }
 
 function SmoothStreamingText({ children }: { children: ReactNode }) {
@@ -469,15 +480,3 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
     </TextMessagePartProvider>
   );
 }
-
-function MarkdownRendererImpl({
-  content,
-  isRunning = false,
-}: {
-  content: string;
-  isRunning?: boolean;
-}) {
-  return <MarkdownTextContent isRunning={isRunning} text={content} />;
-}
-
-export const MarkdownRenderer = memo(MarkdownRendererImpl);

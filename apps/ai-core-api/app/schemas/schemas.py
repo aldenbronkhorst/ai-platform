@@ -12,6 +12,7 @@ class AIArtifactCreate(BaseModel):
 class AIArtifactResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    artifact_type: str
     filename: str
     mime_type: str
     storage_uri: str

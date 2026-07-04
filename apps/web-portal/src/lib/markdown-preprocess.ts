@@ -1,8 +1,7 @@
 import { isLikelyProseFence, sanitizeLanguageTag } from "./markdown-code";
-import { stripPreviewTargets } from "./preview-targets";
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
-const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
+const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\((?:#preview[:/][^)]+)\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
@@ -117,6 +116,14 @@ function scrubBacktickNoise(text: string): string {
 
 function stripEmptyFenceBlocks(text: string): string {
   return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+}
+
+function stripPreviewTargets(text: string): string {
+  return text
+    .replace(PREVIEW_MARKER_RE, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {

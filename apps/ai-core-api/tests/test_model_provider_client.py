@@ -106,7 +106,15 @@ async def test_gpt5_chat_payload_uses_completion_token_budget(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model_name", ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"])
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "moonshot/kimi-k2.7-code",
+        "moonshot:kimi-k2.7-code-highspeed",
+    ],
+)
 async def test_kimi_code_payload_omits_temperature(monkeypatch, model_name):
     captured = {}
 

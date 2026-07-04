@@ -60,4 +60,4 @@ function Tip({ label, children, delayDuration = 0, ...props }: TipProps) {
   );
 }
 
-export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger };
+export { Tip };

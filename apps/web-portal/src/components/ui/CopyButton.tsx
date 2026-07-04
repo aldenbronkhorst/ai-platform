@@ -14,7 +14,7 @@ async function writeClipboardText(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
-export interface CopyButtonProps {
+interface CopyButtonProps {
   className?: string;
   disabled?: boolean;
   iconClassName?: string;

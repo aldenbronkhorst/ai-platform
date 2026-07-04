@@ -7,19 +7,14 @@
     "dev": "npm --workspace apps/web-portal run dev",
     "build": "npm --workspace apps/web-portal run build",
     "preview": "npm --workspace apps/web-portal run preview",
-    "lint": "npm --workspace apps/web-portal run lint",
-    "hermes:init": "git submodule update --init --recursive vendor/hermes-agent && npm --prefix vendor/hermes-agent install && npm --prefix vendor/hermes-agent run install:desktop",
-    "hermes:desktop": "npm --prefix vendor/hermes-agent/apps/desktop run dev",
-    "hermes:status": "git submodule status vendor/hermes-agent",
-    "hermes:update": "git submodule update --remote --merge vendor/hermes-agent"
+    "lint": "npm --workspace apps/web-portal run lint"
   },
   "overrides": {
     "@assistant-ui/store": "0.2.13",
     "@assistant-ui/tap": "0.5.16"
   },
   "workspaces": [
-    "apps/web-portal",
-    "apps/hermes-platform"
+    "apps/web-portal"
   ],
   "dependencies": {
     "@assistant-ui/store": "0.2.13",

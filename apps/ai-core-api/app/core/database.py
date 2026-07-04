@@ -4,12 +4,25 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    future=True,
-    pool_pre_ping=True,
-)
+engine_options = {
+    "echo": settings.debug,
+    "future": True,
+    "pool_pre_ping": True,
+}
+
+if settings.database_url.startswith("postgresql"):
+    engine_options.update(
+        {
+            "pool_recycle": 300,
+            "pool_timeout": 10,
+            "connect_args": {
+                "timeout": 10,
+                "command_timeout": 30,
+            },
+        }
+    )
+
+engine = create_async_engine(settings.database_url, **engine_options)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,

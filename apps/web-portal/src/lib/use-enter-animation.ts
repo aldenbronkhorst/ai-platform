@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
 const playedAnimationKeys = new Set<string>();
 const playedAnimationOrder: string[] = [];
@@ -30,11 +30,20 @@ function scheduleMicrotask(cb: () => void): void {
 }
 
 export function useEnterAnimation(enabled: boolean, animationKey?: string): (el: HTMLElement | null) => void {
+  const enabledRef = useRef(enabled);
+  const keyRef = useRef(animationKey);
+
+  // Hermes keeps the callback ref stable and reads the latest values at attach time.
+  // eslint-disable-next-line react-hooks/refs
+  enabledRef.current = enabled;
+  // eslint-disable-next-line react-hooks/refs
+  keyRef.current = animationKey;
+
   return useCallback((el: HTMLElement | null) => {
-    if (!el || !enabled || typeof window === "undefined") return;
+    if (!el || !enabledRef.current || typeof window === "undefined") return;
     if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
 
-    const key = animationKey;
+    const key = keyRef.current;
     if (key && hasPlayedAnimation(key)) return;
 
     el.animate(
@@ -50,5 +59,5 @@ export function useEnterAnimation(enabled: boolean, animationKey?: string): (el:
         if (el.isConnected) rememberPlayedAnimation(key);
       });
     }
-  }, [animationKey, enabled]);
+  }, []);
 }

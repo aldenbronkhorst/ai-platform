@@ -109,7 +109,21 @@ def test_workspace_generated_files_extracts_only_downloadable_outputs():
                 "content_base64": "aW5wdXQ=",
             },
             {
-                "path": "output/report.xlsx",
+                "path": "report.xlsx",
+                "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "bytes": 12,
+                "sha256": "root-sha",
+                "content_base64": "cm9vdA==",
+            },
+            {
+                "path": "Library/Caches/com.apple.python/main.cpython-39.pyc",
+                "mime_type": "application/x-python-code",
+                "bytes": 12,
+                "sha256": "cache-sha",
+                "content_base64": "Y2FjaGU=",
+            },
+            {
+                "path": "outputs/report.xlsx",
                 "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "bytes": 12,
                 "sha256": "output-sha",
@@ -126,7 +140,7 @@ def test_workspace_generated_files_extracts_only_downloadable_outputs():
 
     assert _workspace_generated_files(result) == [
         {
-            "path": "output/report.xlsx",
+            "path": "outputs/report.xlsx",
             "filename": "report.xlsx",
             "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "bytes": 12,
@@ -136,6 +150,19 @@ def test_workspace_generated_files_extracts_only_downloadable_outputs():
             "run_index": 4,
         }
     ]
+
+
+def test_workspace_tool_description_tells_model_to_return_created_files():
+    from app.services.tool_definitions import CANONICAL_TOOL_DEFINITIONS
+
+    workspace = next(tool for tool in CANONICAL_TOOL_DEFINITIONS if tool["name"] == "workspace")
+    description = workspace["description"]
+
+    assert "Save files the user should receive under outputs/" in description
+    assert "are returned as chat attachments" in description
+    assert "list_files()" in description
+    assert "read_tables(ref)" in description
+    assert "download_file(ref)" in description
 
 
 def test_finished_trace_activity_keeps_tool_input_summary():
@@ -265,6 +292,8 @@ def test_microsoft_guidance_uses_workspace_broker_targets():
     assert "ms_bicep" not in prompt
     assert "account permissions decide what succeeds" in prompt
     assert "If a live system fact matters, check it in Workspace" in prompt
+    assert "`list_files()`" in prompt
+    assert "`download_file(ref)`" in prompt
 
 def test_compact_tool_result_preserves_small_graph_collections():
     result = {
@@ -1443,6 +1472,57 @@ class TestToolExecution:
         assert result["extraction_source"] == "native_pdf"
 
     @pytest.mark.asyncio
+    async def test_document_reader_download_returns_original_bytes_for_workspace_transforms(self):
+        from app.models.models import AIArtifact
+        from app.services.model_router import _compact_tool_result_for_model, _execute_tool_call_impl
+
+        user_id = uuid.uuid4()
+        artifact_id = uuid.uuid4()
+        artifact = AIArtifact(
+            id=artifact_id,
+            artifact_type="upload",
+            filename="scan.pdf",
+            mime_type="application/pdf",
+            storage_uri="https://storage.example/scan.pdf",
+            created_by_user_id=user_id,
+            extraction_status="ready",
+            extraction_source="azure_document_intelligence:prebuilt-layout",
+        )
+
+        class ArtifactDb:
+            async def execute(self, _stmt):
+                class Result:
+                    def scalar_one_or_none(self):
+                        return artifact
+
+                return Result()
+
+            async def flush(self):
+                pass
+
+        with patch(
+            "app.services.artifact.ArtifactService.download_content",
+            new=AsyncMock(return_value=b"%PDF-test"),
+        ):
+            result = await _execute_tool_call_impl(
+                ArtifactDb(),
+                user_id,
+                "document_reader",
+                {"artifact_id": str(artifact_id), "mode": "download"},
+            )
+
+        assert result["status"] == "success"
+        assert result["mode"] == "download"
+        assert result["filename"] == "scan.pdf"
+        assert result["bytes"] == 9
+        assert result["content_base64"] == "JVBERi10ZXN0"
+
+        compact = _compact_tool_result_for_model(result)
+        assert "content_base64" not in compact
+        assert compact["content_base64_omitted"] is True
+        assert "Workspace code" in compact["content_base64_hint"]
+
+    @pytest.mark.asyncio
     async def test_document_reader_reads_artifact_text_like_a_paged_file(self):
         from app.models.models import AIArtifact
         from app.services.model_router import _execute_tool_call_impl
@@ -2052,6 +2132,108 @@ class TestToolExecution:
             assert replayed_assistant["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
 
     @pytest.mark.asyncio
+    async def test_execute_chat_recovers_blank_length_initial_response_with_tools(self):
+        """A blank first pass should continue without removing the model's tool choice."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="workspace", display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        client = AsyncMock(
+            chat_completion=AsyncMock(side_effect=[
+                {
+                    "content": "",
+                    "finish_reason": "length",
+                    "tool_calls": None,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 16000,
+                    "total_tokens": 16100,
+                    "latency_ms": 1000,
+                    "error": False,
+                },
+                {
+                    "content": None,
+                    "finish_reason": "tool_calls",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "workspace",
+                            "arguments": '{"code": "print(\\"ready\\")", "timeout": 10}',
+                        },
+                    }],
+                    "prompt_tokens": 110,
+                    "completion_tokens": 10,
+                    "total_tokens": 120,
+                    "latency_ms": 500,
+                    "error": False,
+                },
+                {
+                    "content": "I found one sales order from Odoo and can continue the import.",
+                    "finish_reason": "stop",
+                    "tool_calls": None,
+                    "prompt_tokens": 120,
+                    "completion_tokens": 20,
+                    "total_tokens": 140,
+                    "latency_ms": 600,
+                    "error": False,
+                },
+            ])
+        )
+        execute_tool = AsyncMock(return_value={"status": "success", "stdout": "ready"})
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=execute_tool,
+        ):
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "use workspace to process the excel"}],
+                user_id=uuid.uuid4(),
+            )
+
+        assert result["content"] == "I found one sales order from Odoo and can continue the import."
+        assert result["finish_reason"] == "stop"
+        assert result["tool_call_count"] == 1
+        assert client.chat_completion.call_count == 3
+        retry_call = client.chat_completion.call_args_list[1]
+        assert retry_call.kwargs["tools"] is not None
+        assert "provider output limit" in retry_call.kwargs["messages"][-1]["content"]
+        execute_tool.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_execute_chat_reuses_workspace_session_across_tool_calls(self):
         from app.services.model_router import execute_chat
 
@@ -2160,8 +2342,93 @@ class TestToolExecution:
         assert client.chat_completion.call_count == 3
 
     @pytest.mark.asyncio
-    async def test_execute_chat_answers_without_tools_at_tool_loop_limit(self):
-        """The loop limit should answer from gathered results instead of returning a platform stop message."""
+    async def test_execute_chat_does_not_stop_after_old_tool_loop_count(self):
+        """Normal chats should not stop just because a task needs many tool steps."""
+        from app.services.model_router import execute_chat
+
+        account = AIConnectedAccount(
+            id=uuid.uuid4(), user_id=uuid.uuid4(),
+            provider="odoo", status="connected",
+        )
+        db = MockSession(has_config=True, connected_accounts=[account])
+        db.has_tools = True
+
+        class MockToolResult:
+            def scalars(self):
+                class Scalars:
+                    def all(self):
+                        return [
+                            AITool(
+                                name="workspace",
+                                display_name="Workspace",
+                                description="Run workspace code",
+                                target_system="ai-platform",
+                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
+                            ),
+                        ]
+                return Scalars()
+
+        original_execute = db.execute
+
+        async def mock_execute(stmt, *args, **kwargs):
+            if "ai_tools" in str(stmt):
+                return MockToolResult()
+            return await original_execute(stmt, *args, **kwargs)
+
+        db.execute = mock_execute
+        tool_step_count = 22
+        model_responses = []
+        for index in range(tool_step_count):
+            model_responses.append({
+                "content": None,
+                "finish_reason": "tool_calls",
+                "tool_calls": [{
+                        "id": f"call_{index}",
+                        "type": "function",
+                        "function": {
+                            "name": "workspace",
+                            "arguments": '{"purpose": "lookup next record", "code": "print(\\"ok\\")"}',
+                        },
+                    }],
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "latency_ms": 100,
+                "error": False,
+            })
+        model_responses.append({
+            "content": "Completed after every requested lookup.",
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "prompt_tokens": 20,
+            "completion_tokens": 6,
+            "latency_ms": 150,
+            "error": False,
+        })
+        client = AsyncMock(chat_completion=AsyncMock(side_effect=model_responses))
+        execute_tool = AsyncMock(return_value={"records": [{"id": 56137, "name": "INV-2026-02128"}]})
+
+        with patch.object(
+            type(db), 'add'
+        ), patch.object(
+            type(db), 'flush'
+        ), patch(
+            'app.services.model_router.build_model_client',
+            new=AsyncMock(return_value=client),
+        ), patch(
+            'app.services.model_router._execute_tool_call',
+            new=execute_tool,
+        ):
+            result = await execute_chat(db, [{"role": "user", "content": "check all the needed records"}], user_id=uuid.uuid4())
+
+        assert result["content"] == "Completed after every requested lookup."
+        assert result["finish_reason"] == "stop"
+        assert result["tool_call_count"] == tool_step_count
+        assert client.chat_completion.call_count == tool_step_count + 1
+        assert execute_tool.await_count == tool_step_count
+
+    @pytest.mark.asyncio
+    async def test_execute_chat_answers_without_tools_at_configured_tool_loop_cap(self):
+        """If ops explicitly configures a cap, the router should answer from gathered results."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(

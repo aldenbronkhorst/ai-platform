@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type { AttachedFile, ChatAttachment, ChatMessage, ChatSession } from "../types";
-import { API_BASE_URL, fetchWithTimeout } from "../hooks/useApi";
+import { API_BASE_URL, fetchWithAuth, fetchWithTimeout, type AccessTokenGetter } from "../hooks/useApi";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import {
   appendActivityEvent,
@@ -29,6 +29,7 @@ import {
 interface UseChatControllerOptions {
   accessToken: string | null;
   activeUserEmail: string;
+  getAccessToken: AccessTokenGetter;
   onOpenChat: () => void;
 }
 
@@ -69,6 +70,10 @@ function replaceOrAppendMessage(messages: ChatMessage[], messageId: string, repl
   return messages.map(message => message.id === messageId ? replacement : message);
 }
 
+const STREAM_DELTA_FLUSH_MS = 33;
+const STREAM_DELTA_EVENTS = new Set(["reasoning.delta", "reasoning.available", "message.delta"]);
+const TOOL_EVENTS = new Set(["tool.start", "tool.complete"]);
+
 function wait(ms: number) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
@@ -87,7 +92,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function useChatController({ accessToken, activeUserEmail, onOpenChat }: UseChatControllerOptions) {
+export function useChatController({ accessToken, activeUserEmail, getAccessToken, onOpenChat }: UseChatControllerOptions) {
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<ChatSession | null>(null);
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
@@ -122,11 +127,10 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           ? "wav"
           : "webm";
     formData.append("file", audioBlob, `voice-input.${extension}`);
-    const res = await fetch(`${API_BASE_URL}/voice/transcribe`, {
+    const res = await fetchWithAuth(`${API_BASE_URL}/voice/transcribe`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${accessToken}` },
       body: formData,
-    });
+    }, getAccessToken, { timeoutMs: 120_000 });
     if (!res.ok) {
       let message = `Voice transcription failed with HTTP ${res.status}.`;
       try {
@@ -140,7 +144,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     }
     const data = await res.json() as { transcript?: string };
     return (data.transcript || "").trim();
-  }, [accessToken]);
+  }, [accessToken, getAccessToken]);
 
   const {
     voiceState,
@@ -162,10 +166,14 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
 
   const isActiveChatSending = activeSessionId ? sendingSessionIds.includes(activeSessionId) : false;
 
-  const getHeaders = useCallback(() => ({
-    Authorization: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-  }), [accessToken]);
+  const getHeaders = useCallback(async () => {
+    const token = await getAccessToken({ redirectOnFailure: true });
+    if (!token) throw new Error("Microsoft session expired. Please sign in again.");
+    return {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+  }, [getAccessToken]);
 
   const updateLocalChatSession = useCallback((sessionId: string, patch: Partial<ChatSession>) => {
     setChatSessions(prev => {
@@ -205,7 +213,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     if (!accessToken || !activeUserEmail) return;
     setIsSessionsLoading(true);
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: await getHeaders() });
       if (res.ok) {
         const data = sortChatSessions(await res.json() as ChatSession[]);
         setChatSessions(prev => {
@@ -235,7 +243,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const refreshChatSession = useCallback(async (sessionId: string) => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}`, { headers: await getHeaders() });
       if (res.ok) {
         upsertChatSession(await res.json() as ChatSession);
       }
@@ -260,7 +268,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     try {
       const res = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`, {
         method: "PATCH",
-        headers: getHeaders(),
+        headers: await getHeaders(),
         body: JSON.stringify({ title: cleanTitle }),
       });
       if (!res.ok) throw new Error(`Rename failed with HTTP ${res.status}`);
@@ -356,7 +364,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     try {
       const res = await fetch(`${API_BASE_URL}/chat/sessions`, {
         method: "POST",
-        headers: getHeaders(),
+        headers: await getHeaders(),
         body: JSON.stringify({ title: "New Chat" }),
       });
       if (res.ok) {
@@ -387,7 +395,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       setIsMessagesLoading(true);
     }
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: getHeaders() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: await getHeaders() });
       if (res.ok) {
         const data = (await res.json() as ChatMessage[]).map(normalizeChatMessage);
         if (activeSessionIdRef.current === sid) {
@@ -407,7 +415,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
 
   const deleteChatSession = useCallback(async (sid: string) => {
     try {
-      await fetch(`${API_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: getHeaders() });
+      await fetch(`${API_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: await getHeaders() });
       setChatSessions(prev => prev.filter(s => s.id !== sid));
       if (activeSession?.id === sid) setActiveSession(null);
       void fetchChatSessions();
@@ -505,7 +513,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     try {
       const res = await fetch(`${API_BASE_URL}/chat/sessions/${session.id}/messages/stream`, {
         method: "POST",
-        headers: { ...getHeaders(), "X-Request-ID": requestId },
+        headers: { ...(await getHeaders()), "X-Request-ID": requestId },
         body: JSON.stringify({
           content,
           artifact_ids: artifactIds,
@@ -542,6 +550,50 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, updatedMessage));
           }
         };
+        let queuedPartEvents: unknown[] = [];
+        let flushHandle: number | null = null;
+        let flushHandleType: "raf" | "timeout" | null = null;
+        let lastFlushAt = 0;
+        const flushQueuedPartEvents = () => {
+          if (queuedPartEvents.length === 0) return;
+          const events = queuedPartEvents;
+          queuedPartEvents = [];
+          updatePendingMessage(message => events.reduce<ChatMessage>(
+            (nextMessage, event) => appendMessagePartEvent(nextMessage, event),
+            message,
+          ));
+        };
+        const schedulePartEventFlush = () => {
+          if (flushHandle !== null) return;
+
+          const runFlush = () => {
+            flushHandle = null;
+            flushHandleType = null;
+            lastFlushAt = performance.now();
+            flushQueuedPartEvents();
+          };
+          const sinceLastFlush = performance.now() - lastFlushAt;
+
+          if (sinceLastFlush >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === "function") {
+            flushHandleType = "raf";
+            flushHandle = window.requestAnimationFrame(runFlush);
+            return;
+          }
+
+          flushHandleType = "timeout";
+          flushHandle = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLastFlush));
+        };
+        const queuePartEvent = (event: unknown) => {
+          queuedPartEvents.push(event);
+          schedulePartEventFlush();
+        };
+        const cancelScheduledPartEventFlush = () => {
+          if (flushHandle === null) return;
+          if (flushHandleType === "raf") window.cancelAnimationFrame(flushHandle);
+          else window.clearTimeout(flushHandle);
+          flushHandle = null;
+          flushHandleType = null;
+        };
 
         while (true) {
           const { value, done } = await reader.read();
@@ -554,9 +606,17 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
           for (const item of parsed.events) {
             if (item.event === "activity") {
               updatePendingMessage(message => appendActivityEvent(message, item.data));
-            } else if (["reasoning.delta", "reasoning.available", "thinking.delta", "tool.start", "tool.complete", "message.delta"].includes(item.event)) {
+            } else if (STREAM_DELTA_EVENTS.has(item.event)) {
+              queuePartEvent(item.data);
+            } else if (item.event === "thinking.delta") {
+              // Provider status chrome only; visible reasoning comes through reasoning.delta/available.
+            } else if (TOOL_EVENTS.has(item.event)) {
+              cancelScheduledPartEventFlush();
+              flushQueuedPartEvents();
               updatePendingMessage(message => appendMessagePartEvent(message, item.data));
             } else if (item.event === "message" || item.event === "message.complete") {
+              cancelScheduledPartEventFlush();
+              flushQueuedPartEvents();
               const pendingMessage = pendingStreamMessage
                 || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
                 || null;
@@ -573,6 +633,8 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
             }
           }
         }
+        cancelScheduledPartEventFlush();
+        flushQueuedPartEvents();
 
         if (streamFailure) {
           if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
@@ -646,11 +708,11 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
     const activeStream = streamControllersRef.current[activeSessionId];
     if (!activeStream) return;
     stoppedRequestIdsRef.current.add(activeStream.requestId);
-    void fetch(`${API_BASE_URL}/chat/sessions/${activeSessionId}/messages/${activeStream.requestId}/cancel`, {
+    void getHeaders().then(headers => fetch(`${API_BASE_URL}/chat/sessions/${activeSessionId}/messages/${activeStream.requestId}/cancel`, {
       method: "POST",
-      headers: getHeaders(),
+      headers,
       keepalive: true,
-    }).catch(() => undefined);
+    })).catch(() => undefined);
     activeStream.controller.abort();
   }, [activeSessionId, getHeaders]);
 
@@ -815,15 +877,15 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       const formData = new FormData();
       formData.append("file", file);
       try {
-        const response = await fetch(`${API_BASE_URL}/artifacts`, {
+        const response = await fetchWithAuth(`${API_BASE_URL}/artifacts`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${accessToken}` },
           body: formData,
-        });
+        }, getAccessToken, { timeoutMs: 120_000 });
         if (response.ok) {
           const art = await response.json() as ChatAttachment;
           const attachment: ChatAttachment = {
             id: art.id,
+            artifact_type: art.artifact_type,
             filename: art.filename || file.name,
             mime_type: art.mime_type || file.type || "application/octet-stream",
           };
@@ -845,7 +907,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
         } : f));
       }
     }));
-  }, [accessToken]);
+  }, [accessToken, getAccessToken]);
 
   const handleRemoveFile = useCallback((id: string) => {
     setAttachedFiles(prev => prev.filter(f => f.id !== id));
@@ -854,9 +916,12 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
   const handleOpenAttachment = useCallback(async (attachment: ChatAttachment) => {
     if (!accessToken) return;
     try {
-      const response = await fetch(`${API_BASE_URL}/artifacts/${attachment.id}/download`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const response = await fetchWithAuth(
+        `${API_BASE_URL}/artifacts/${attachment.id}/download`,
+        {},
+        getAccessToken,
+        { timeoutMs: 120_000 },
+      );
       if (!response.ok) {
         throw new Error(await uploadFailureFromResponse(response, `Download failed with HTTP ${response.status}.`));
       }
@@ -884,7 +949,7 @@ export function useChatController({ accessToken, activeUserEmail, onOpenChat }: 
       console.error("Open attachment failed:", err);
       alert(errorMessage(err));
     }
-  }, [accessToken]);
+  }, [accessToken, getAccessToken]);
 
   const selectSession = useCallback((session: ChatSession) => {
     isDraftChatRef.current = false;
