@@ -71,7 +71,7 @@ function FormField({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-export function DetailCard({ children }: { children: ReactNode }) {
+function DetailCard({ children }: { children: ReactNode }) {
   return (
     <div className="rounded-lg border border-default bg-canvas p-4">
       {children}
@@ -136,40 +136,18 @@ export function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connect
 }
 
 function ConnectorDetailShell({
-  connector,
-  status,
-  fallback,
-  hasStatusError,
   children,
 }: {
-  connector: ConnectorDef;
-  status?: string;
-  fallback: string;
-  hasStatusError?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className="space-y-5">
-      <div className="flex items-start gap-3">
-        <div className="p-2.5 rounded-xl bg-canvas border border-default shrink-0">
-          <ConnectorLogo connectorKey={connector.key} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h3 className="font-bold text-base text-default">{connector.name}</h3>
-          <p className="text-xs text-muted mt-0.5">{connector.subtitle}</p>
-        </div>
-        <StatusBadge status={status} fallback={fallback} hasError={hasStatusError} />
-      </div>
       {children}
     </div>
   );
 }
 
 export function OdooConnectorSection({
-  connector,
-  status,
-  statusFallback,
-  hasStatusError,
   odooStatus,
   odooUrl,
   odooDb,
@@ -183,10 +161,6 @@ export function OdooConnectorSection({
   onOdooUsernameChange,
   onOdooApiKeyChange,
 }: {
-  connector: ConnectorDef;
-  status?: string;
-  statusFallback: string;
-  hasStatusError?: boolean;
   odooStatus: OdooStatus | null;
   odooUrl: string;
   odooDb: string;
@@ -204,7 +178,7 @@ export function OdooConnectorSection({
   const isOdooDisconnected = odooStatus?.status === "not_connected";
 
   return (
-    <ConnectorDetailShell connector={connector} status={status || odooStatus?.status} fallback={statusFallback} hasStatusError={hasStatusError}>
+    <ConnectorDetailShell>
       {!isOdooStatusLoaded ? (
         <DetailCard>
           <p className="text-sm text-muted">Loading connection details...</p>
@@ -265,8 +239,6 @@ export function MicrosoftNativeConnectorSection({
   connector,
   meta,
   status,
-  statusFallback,
-  hasStatusError,
   isStarting,
   isPolling,
   activeDeviceCode,
@@ -277,8 +249,6 @@ export function MicrosoftNativeConnectorSection({
   connector: ConnectorDef;
   meta?: ConnectorMeta;
   status?: string;
-  statusFallback: string;
-  hasStatusError?: boolean;
   isStarting: boolean;
   isPolling: boolean;
   activeDeviceCode: (MicrosoftNativeDeviceCode & { connectorKey: string }) | null;
@@ -293,7 +263,7 @@ export function MicrosoftNativeConnectorSection({
   const authAppName = meta?.metadata?.auth_app_name;
 
   return (
-    <ConnectorDetailShell connector={connector} status={readinessStatus} fallback={statusFallback} hasStatusError={hasStatusError}>
+    <ConnectorDetailShell>
       <DetailCard>
         <div className="space-y-2 text-sm text-muted">
           <p>
@@ -349,22 +319,16 @@ export function MicrosoftNativeConnectorSection({
 }
 
 export function GitHubConnectorSection({
-  connector,
   meta,
   status,
-  statusFallback,
-  hasStatusError,
   onConnect,
 }: {
-  connector: ConnectorDef;
   meta?: ConnectorMeta;
   status?: string;
-  statusFallback: string;
-  hasStatusError?: boolean;
   onConnect: () => void;
 }) {
   return (
-    <ConnectorDetailShell connector={connector} status={status} fallback={statusFallback} hasStatusError={hasStatusError}>
+    <ConnectorDetailShell>
       <DetailCard>
         <p className="text-sm text-muted">Connect with GitHub OAuth.</p>
       </DetailCard>

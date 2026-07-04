@@ -48,11 +48,6 @@ separate admin tools.
 - `apps/ai-core-api` - FastAPI orchestration API for auth, chat, memory, tools,
   chat file uploads, tracing, and connector routing.
 - `apps/odoo-connector-api` - Internal Odoo execution service.
-- `apps/hermes-platform` - AI Platform overlay for the upstream Hermes Agent
-  shell. Platform-specific code belongs here or in the backend, not inside the
-  upstream submodule.
-- `vendor/hermes-agent` - Upstream Hermes Agent Git submodule. Treat this as
-  read-only vendor code and update it through the submodule pointer.
 - `infra/bicep` - Azure infrastructure for the deployed app.
 
 ## Core Runtime
@@ -86,20 +81,6 @@ runtime and operational surface.
 
 ```bash
 npm --workspace apps/web-portal run dev
-```
-
-Hermes upstream shell:
-
-```bash
-npm run hermes:init
-npm run hermes:desktop
-```
-
-Check or update the pinned upstream Hermes commit:
-
-```bash
-npm run hermes:status
-npm run hermes:update
 ```
 
 Backend tests:

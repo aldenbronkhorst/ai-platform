@@ -53,7 +53,7 @@ export function ChatView({
   const composerRef = useRef<HTMLDivElement>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [isEditSaving, setIsEditSaving] = useState(false);
-  const [composerHeight, setComposerHeight] = useState(0);
+  const [composerMetrics, setComposerMetrics] = useState({ height: 0, surfaceHeight: 0 });
 
   const handleEditSave = useCallback(async (messageId: string, newContent: string) => {
     if (!newContent.trim()) return;
@@ -66,17 +66,30 @@ export function ChatView({
   useLayoutEffect(() => {
     const el = composerRef.current;
     if (!el) return;
-    const observer = new ResizeObserver(([entry]) => {
-      setComposerHeight(entry.contentRect.height);
-    });
+    const surface = el.querySelector<HTMLElement>("[data-slot='composer-surface']");
+    const syncComposerMetrics = () => {
+      const height = el.getBoundingClientRect().height;
+      const surfaceHeight = surface?.getBoundingClientRect().height || 0;
+      setComposerMetrics(previous => (
+        previous.height === height && previous.surfaceHeight === surfaceHeight
+          ? previous
+          : { height, surfaceHeight }
+      ));
+    };
+    const observer = new ResizeObserver(syncComposerMetrics);
     observer.observe(el);
+    if (surface) observer.observe(surface);
+    syncComposerMetrics();
     return () => observer.disconnect();
   }, []);
 
   const hasMessages = chatMessages.length > 0;
   const hasThread = Boolean(activeSession && (hasMessages || isMessagesLoading));
-  const shellStyle = composerHeight
-    ? ({ "--composer-measured-height": `${composerHeight}px` } as CSSProperties)
+  const shellStyle = composerMetrics.height
+    ? ({
+      "--composer-measured-height": `${composerMetrics.height}px`,
+      "--composer-surface-measured-height": `${composerMetrics.surfaceHeight || composerMetrics.height}px`,
+    } as CSSProperties)
     : undefined;
 
   return (

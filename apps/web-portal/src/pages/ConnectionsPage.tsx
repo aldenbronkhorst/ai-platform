@@ -1,15 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { FormEvent } from "react";
 import {
-  Plug, RefreshCw,
+  RefreshCw,
   ChevronRight, Search, X,
 } from "lucide-react";
-import { SurfacePanel } from "../components/ui/SurfacePanel";
 import { Button } from "../components/ui/Button";
-import { API_BASE_URL, fetchWithTimeout, isAbortError } from "../hooks/useApi";
+import { API_BASE_URL, fetchWithTimeout, isAbortError, type AccessTokenGetter } from "../hooks/useApi";
 import {
   ConnectorLogo,
-  DetailCard,
   GitHubConnectorSection,
   MicrosoftNativeConnectorSection,
   OdooConnectorSection,
@@ -112,31 +110,28 @@ function closeMicrosoftAuthWindow(authWindow?: Window | null) {
   } catch { /* ignore browsers that block closing the popup */ }
 }
 
-const CONNECTOR_FALLBACKS: ConnectorDef[] = [
-  { key: "odoo", name: "Odoo", subtitle: "ERP connector" },
-  { key: "azure_cli", name: "Azure CLI", subtitle: "Native Azure CLI" },
-  { key: "microsoft_graph", name: "Microsoft Graph", subtitle: "Direct Microsoft Graph" },
-  { key: "exchange_online", name: "Exchange Online", subtitle: "Exchange Online PowerShell" },
-  { key: "teams_admin", name: "Teams Admin", subtitle: "Microsoft Teams PowerShell" },
-  { key: "sharepoint_pnp", name: "SharePoint / PnP", subtitle: "SharePoint / PnP PowerShell" },
-  { key: "github", name: "GitHub", subtitle: "Native GitHub CLI connector" },
+const CONNECTOR_ORDER = [
+  "odoo",
+  "azure_cli",
+  "microsoft_graph",
+  "exchange_online",
+  "teams_admin",
+  "sharepoint_pnp",
+  "github",
 ];
-const CONNECTOR_FALLBACK_BY_KEY = new Map(CONNECTOR_FALLBACKS.map((connector) => [connector.key, connector]));
 
 function connectorDefinitions(meta: Record<string, ConnectorMeta> | null): ConnectorDef[] {
-  if (!meta) return CONNECTOR_FALLBACKS;
-  const preferredOrder = CONNECTOR_FALLBACKS.map((connector) => connector.key);
+  if (!meta) return [];
   const keys = [
-    ...preferredOrder.filter((key) => meta[key]),
-    ...Object.keys(meta).filter((key) => !preferredOrder.includes(key)).sort(),
+    ...CONNECTOR_ORDER.filter((key) => meta[key]),
+    ...Object.keys(meta).filter((key) => !CONNECTOR_ORDER.includes(key)).sort(),
   ];
   return keys.map((key) => {
-    const fallback = CONNECTOR_FALLBACK_BY_KEY.get(key);
     const connector = meta[key];
     return {
       key,
-      name: connector.display_name || fallback?.name || formatStatusLabel(key),
-      subtitle: connector.subtitle || fallback?.subtitle || connector.auth_method || "Connector",
+      name: connector.display_name || formatStatusLabel(key),
+      subtitle: connector.subtitle || connector.auth_method || "Connector",
     };
   });
 }
@@ -144,13 +139,15 @@ function connectorDefinitions(meta: Record<string, ConnectorMeta> | null): Conne
 function connectorDisplayNameForKey(key: string | undefined, meta: Record<string, ConnectorMeta> | null) {
   if (!key) return "Connector";
   return meta?.[key]?.display_name
-    || CONNECTOR_FALLBACK_BY_KEY.get(key)?.name
     || formatStatusLabel(key);
 }
 
-interface ConnectionsPageProps { accessToken: string; }
+interface ConnectionsPageProps {
+  accessToken: string;
+  getAccessToken: AccessTokenGetter;
+}
 
-export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
+export function ConnectionsPage({ accessToken, getAccessToken }: ConnectionsPageProps) {
   const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectorNotice, setConnectorNotice] = useState<ConnectorNotice | null>(null);
@@ -168,10 +165,14 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const microsoftAuthAttemptRef = useRef(0);
   const microsoftPollTimerRef = useRef<number | null>(null);
 
-  const headers = useCallback(() => ({
-    Authorization: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-  }), [accessToken]);
+  const headers = useCallback(async () => {
+    const token = await getAccessToken({ redirectOnFailure: true });
+    if (!token) throw new Error("Microsoft session expired. Please sign in again.");
+    return {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+  }, [getAccessToken]);
 
   const clearMicrosoftPollTimer = useCallback(() => {
     if (microsoftPollTimerRef.current !== null) {
@@ -193,7 +194,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchConnectors = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts`, { headers: headers() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts`, { headers: await headers() });
       if (res.ok) {
         const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
         const meta: Record<string, ConnectorMeta> = {};
@@ -218,7 +219,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const fetchOdooStatus = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts/odoo/status`, { headers: headers() });
+      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts/odoo/status`, { headers: await headers() });
       if (res.ok) {
         const data = await res.json() as OdooStatus;
         setOdooStatus(data);
@@ -246,7 +247,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
       try {
         const res = await fetch(`${API_BASE_URL}/connector/github/oauth-callback`, {
           method: "POST",
-          headers: headers(),
+          headers: await headers(),
           body: JSON.stringify({ code, state }),
         });
         const data = await res.json() as ConnectorNotice;
@@ -268,7 +269,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     setIsConnecting(true); setConnectorNotice(null);
     try {
       const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/connect`, {
-        method: "POST", headers: headers(),
+        method: "POST", headers: await headers(),
         body: JSON.stringify({ odoo_url: odooUrl, odoo_db: odooDb, odoo_username: odooUsername, odoo_api_key: odooApiKey }),
       });
       const data = await res.json() as ApiRecord;
@@ -296,7 +297,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleDisconnectOdoo = async () => {
     if (!accessToken || !confirm("Disconnect Odoo? Credentials will be permanently deleted.")) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: headers() });
+      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/disconnect`, { method: "POST", headers: await headers() });
       if (res.ok) { setOdooUrl(""); setOdooDb(""); setOdooUsername(""); setOdooApiKey(""); setConnectorNotice(null); }
       void Promise.all([fetchOdooStatus(), fetchConnectors()]);
     } catch { /* ignore transient disconnect errors */ }
@@ -309,7 +310,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     const attemptId = microsoftAuthAttemptRef.current + 1;
     microsoftAuthAttemptRef.current = attemptId;
     setMicrosoftStartingConnector(connectorKey);
-    const displayName = connectorMeta?.[connectorKey]?.display_name || CONNECTOR_FALLBACK_BY_KEY.get(connectorKey)?.name || formatStatusLabel(connectorKey);
+    const displayName = connectorDisplayNameForKey(connectorKey, connectorMeta);
     const connectPayload: Record<string, string> = {};
     if (connectorKey === "sharepoint_pnp") {
       const siteUrl = window.prompt("Enter the SharePoint site or admin URL for this PnP connector");
@@ -324,7 +325,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     try {
       const res = await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/device-code`, {
         method: "POST",
-        headers: headers(),
+        headers: await headers(),
         body: Object.keys(connectPayload).length ? JSON.stringify(connectPayload) : undefined,
       });
       const data = await res.json() as MicrosoftNativeDeviceCode & { error?: string; message?: string };
@@ -352,7 +353,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           }
           try {
             const pr = await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/token-callback`, {
-              method: "POST", headers: headers(),
+              method: "POST", headers: await headers(),
               body: JSON.stringify({
                 auth_session_id: data.auth_session_id,
                 device_code: data.device_code,
@@ -430,7 +431,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleMicrosoftNativeDisconnect = async (connectorKey: string) => {
     if (!accessToken) return;
     cancelMicrosoftAuthAttempt();
-    await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: headers() });
+    await fetch(`${API_BASE_URL}/connector/microsoft-native/${connectorKey}/disconnect`, { method: "POST", headers: await headers() });
     await fetchConnectors();
     setConnectorNotice(null);
   };
@@ -438,7 +439,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
   const handleGithubOAuth = async () => {
     if (!accessToken) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: headers() });
+      const res = await fetch(`${API_BASE_URL}/connector/github/auth-url`, { method: "GET", headers: await headers() });
       const data = await res.json() as { auth_url?: string; message?: string };
       if (data.auth_url) window.location.href = data.auth_url;
       else setConnectorNotice({ status: "failed", connector: "github", title: "Connection failed", message: data.message || "GitHub OAuth not configured." });
@@ -450,16 +451,10 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     if (!c) return null;
     const meta = connectorMeta?.[key];
     const metaStatus = connectorMeta?.[key]?.status;
-    const statusFallback = connectorStatusError ? "Status Unavailable" : "Checking...";
-    const hasStatusError = Boolean(connectorStatusError && !metaStatus);
 
     if (key === "odoo") {
       return (
         <OdooConnectorSection
-          connector={c}
-          status={metaStatus}
-          statusFallback={statusFallback}
-          hasStatusError={hasStatusError}
           odooStatus={odooStatus}
           odooUrl={odooUrl}
           odooDb={odooDb}
@@ -485,8 +480,6 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
           connector={c}
           meta={meta}
           status={metaStatus}
-          statusFallback={statusFallback}
-          hasStatusError={hasStatusError}
           isStarting={isStarting}
           isPolling={isPolling}
           activeDeviceCode={activeDeviceCode}
@@ -499,11 +492,8 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
 
     if (key === "github") return (
       <GitHubConnectorSection
-        connector={c}
         meta={connectorMeta?.github}
         status={metaStatus}
-        statusFallback={statusFallback}
-        hasStatusError={hasStatusError}
         onConnect={handleGithubOAuth}
       />
     );
@@ -534,91 +524,112 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
     : null;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5 sm:space-y-8 animate-fade-in">
-      <SurfacePanel className="flex items-start justify-between gap-4 rounded-lg p-5 sm:items-center sm:p-8">
-        <div>
-          <h2 className="text-xl font-bold text-default mb-2">Connectors</h2>
-          <p className="text-sm text-muted max-w-2xl">
+    <div className="settings-page mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8 animate-fade-in">
+      <div className="settings-page-header">
+        <div className="min-w-0">
+          <h2 className="settings-title text-xl">Connectors</h2>
+          <p className="settings-copy mt-1 max-w-2xl text-sm">
             Connect external systems and expose their account-specific tools to the AI platform.
           </p>
         </div>
-        <Plug className="hidden sm:block w-12 h-12 text-soft shrink-0" />
-      </SurfacePanel>
-
-      {connectorMeta === null && !connectorStatusError ? (
-        <DetailCard>
-          <p className="text-sm text-muted">Loading connectors...</p>
-        </DetailCard>
-      ) : null}
-
-      {connectorStatusError ? (
-        <DetailCard>
-          <div className="flex items-center justify-between gap-4">
-            <p className="text-sm text-muted">{connectorStatusError}</p>
+        {connectorStatusError ? (
+          <div className="settings-actions">
             <Button size="sm" onClick={fetchConnectors}>
               <RefreshCw className="w-3.5 h-3.5" /> Retry
             </Button>
           </div>
-        </DetailCard>
+        ) : null}
+      </div>
+
+      {connectorMeta === null && !connectorStatusError ? (
+        <div className="settings-empty">
+          <p className="text-sm text-muted">Loading connectors...</p>
+        </div>
+      ) : null}
+
+      {connectorStatusError ? (
+        <div className="settings-inline-alert">
+          <p className="text-sm text-muted">{connectorStatusError}</p>
+        </div>
       ) : null}
 
       {connectorMeta && availableConnectors.length === 0 && !connectorStatusError ? (
-        <DetailCard>
+        <div className="settings-empty">
           <p className="text-sm text-muted">No connectors are available.</p>
-        </DetailCard>
+        </div>
       ) : null}
 
       {availableConnectors.length > 0 ? (
-      <div className="space-y-4">
-        <div className="relative max-w-xl">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-soft pointer-events-none" />
-          <input
-            value={connectorSearch}
-            onChange={(e) => setConnectorSearch(e.target.value)}
-            placeholder="Search connectors..."
-            className="w-full rounded-lg border border-default bg-surface py-3 pl-10 pr-4 text-sm text-default placeholder-soft outline-none transition-colors focus:border-subtle"
-          />
-        </div>
-
-        {filteredConnectors.length === 0 ? (
-          <DetailCard>
-            <p className="text-sm text-muted">No connectors match your search.</p>
-          </DetailCard>
-        ) : (
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredConnectors.map((c) => {
-          const meta = connectorMeta?.[c.key];
-          const status = meta?.status;
-          return (
-          <button key={c.key} onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(c.key); setConnectorNotice(null); }}
-            className="group w-full cursor-pointer rounded-lg border border-default bg-surface p-5 text-left transition-colors hover:bg-canvas">
-            <div className="flex items-start justify-between mb-3">
-              <div className="p-2.5 rounded-xl bg-surface border border-default">
-                <ConnectorLogo connectorKey={c.key} />
-              </div>
-              <ChevronRight className="w-4 h-4 text-soft group-hover:text-default transition-colors" />
+        <>
+          <div className="settings-toolbar settings-toolbar-search-only">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
+              <input
+                value={connectorSearch}
+                onChange={(e) => setConnectorSearch(e.target.value)}
+                placeholder="Search connectors..."
+                className="settings-search pl-9"
+              />
             </div>
-            <h4 className="font-bold text-sm text-default truncate">{c.name}</h4>
-            <p className="text-xs text-muted truncate mb-3">{c.subtitle}</p>
-            <StatusBadge
-              status={status}
-              fallback={connectorStatusError ? "Status Unavailable" : "Checking..."}
-              hasError={Boolean(connectorStatusError && !status)}
-            />
-          </button>
-        );})}
-      </div>
-        )}
-      </div>
+          </div>
+
+          {filteredConnectors.length === 0 ? (
+            <div className="settings-empty">
+              <p className="text-sm text-muted">No connectors match your search.</p>
+            </div>
+          ) : (
+            <div className="settings-list">
+              <div className="settings-list-head connector-grid">
+                <span>Connector</span>
+                <span>Status</span>
+                <span className="text-right">Details</span>
+              </div>
+
+              {filteredConnectors.map((c) => {
+                const meta = connectorMeta?.[c.key];
+                const status = meta?.status;
+                return (
+                  <button
+                    key={c.key}
+                    onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(c.key); setConnectorNotice(null); }}
+                    className="settings-list-row connector-grid group w-full text-left"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-default bg-transparent">
+                        <ConnectorLogo connectorKey={c.key} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-extrabold text-default">{c.name}</span>
+                        <span className="mt-1 block truncate text-xs font-semibold text-muted">{c.subtitle}</span>
+                      </span>
+                    </div>
+
+                    <div className="flex items-center">
+                      <StatusBadge
+                        status={status}
+                        fallback={connectorStatusError ? "Status Unavailable" : "Checking..."}
+                        hasError={Boolean(connectorStatusError && !status)}
+                      />
+                    </div>
+
+                    <span className="flex justify-end">
+                      <ChevronRight className="h-4 w-4 text-soft transition-colors group-hover:text-default" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </>
       ) : null}
 
       {/* Detail Drawer */}
       {activeConnector && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-canvas/80 animate-fade-in">
-          <div className="w-full max-w-lg bg-surface border-l border-default overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex justify-end bg-[color-mix(in_srgb,var(--ui-chat-surface-background)_84%,transparent)] animate-fade-in">
+          <div className="w-full max-w-lg bg-raised border-l border-default overflow-y-auto">
             <div className="p-4 sm:p-6 border-b border-default flex items-center justify-between">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="p-2 rounded-xl bg-canvas border border-default shrink-0">
+                <div className="p-2 rounded-lg bg-transparent border border-default shrink-0">
                   <ConnectorLogo connectorKey={activeConnector} />
                 </div>
                 <h2 className="font-bold text-lg text-default truncate">
@@ -626,7 +637,7 @@ export function ConnectionsPage({ accessToken }: ConnectionsPageProps) {
                 </h2>
               </div>
               <button onClick={() => { cancelMicrosoftAuthAttempt(); setSelectedConnector(null); setConnectorNotice(null); }}
-                className="p-2 rounded-lg hover:bg-canvas text-muted hover:text-default">
+                className="p-2 rounded-lg hover-bg-subtle text-muted hover-text-default">
                 <X className="w-5 h-5" />
               </button>
             </div>

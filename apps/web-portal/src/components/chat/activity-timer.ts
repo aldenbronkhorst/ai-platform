@@ -38,7 +38,3 @@ export function useElapsedSeconds(active = true, timerKey?: string): number {
 
   return elapsed;
 }
-
-export function __resetElapsedTimerRegistryForTests() {
-  startedAtByKey.clear();
-}

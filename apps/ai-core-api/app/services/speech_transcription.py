@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import AIModel, AIProvider
+from app.models.models import AIModel, AIProvider, AIRoute
 from app.services.key_vault import get_secret_value
 
 
@@ -15,8 +15,11 @@ DEFAULT_TRANSCRIPTION_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 DEFAULT_TRANSCRIPTION_LANGUAGE = "en"
 OPENAI_COMPATIBLE_PROVIDER_TYPE = "openai_compatible"
+ELEVENLABS_PROVIDER_TYPE = "elevenlabs"
+VOICE_TRANSCRIPTION_PROVIDER_TYPES = (OPENAI_COMPATIBLE_PROVIDER_TYPE, ELEVENLABS_PROVIDER_TYPE)
 VOICE_TRANSCRIPTION_TASK_TYPE = "voice_transcription"
 TRANSCRIPTION_MODEL_PRIORITY = (
+    "scribe_v2",
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",
     "whisper-1",
@@ -57,6 +60,7 @@ class SpeechTranscriptionNoSpeechError(RuntimeError):
 @dataclass
 class SpeechTranscriptionConfig:
     provider_name: str
+    provider_type: str
     base_url: str
     api_key: str
     model: str
@@ -85,12 +89,69 @@ def _transcriptions_url(base_url: str) -> str:
     return f"{normalized}/audio/transcriptions"
 
 
+def _elevenlabs_speech_to_text_url(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/speech-to-text"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/speech-to-text"
+    return f"{normalized}/v1/speech-to-text"
+
+
+def _provider_type_from_base_url(base_url: str) -> str:
+    host = ""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        host = ""
+    if host == "api.elevenlabs.io" or host.endswith(".elevenlabs.io"):
+        return ELEVENLABS_PROVIDER_TYPE
+    return OPENAI_COMPATIBLE_PROVIDER_TYPE
+
+
+def _normalize_provider_type(provider_type: str | None, base_url: str) -> str:
+    raw = (provider_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return _provider_type_from_base_url(base_url)
+    aliases = {
+        "openai": OPENAI_COMPATIBLE_PROVIDER_TYPE,
+        "openai_compatible": OPENAI_COMPATIBLE_PROVIDER_TYPE,
+        "compatible": OPENAI_COMPATIBLE_PROVIDER_TYPE,
+        "eleven": ELEVENLABS_PROVIDER_TYPE,
+        "eleven_labs": ELEVENLABS_PROVIDER_TYPE,
+        "elevenlabs": ELEVENLABS_PROVIDER_TYPE,
+    }
+    return aliases.get(raw, raw)
+
+
 def _extract_transcript(body: dict[str, Any]) -> str:
     for key in ("text", "transcript", "DisplayText", "displayText"):
         text = body.get(key)
         if isinstance(text, str) and text.strip():
             return text.strip()
     return ""
+
+
+def _upstream_error_message(body: Any, fallback: str) -> str:
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("detail") or detail.get("status")
+            if message:
+                return str(message)
+        if isinstance(detail, str) and detail:
+            return detail
+        error = body.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("type") or fallback)
+        if isinstance(error, str) and error:
+            return error
+        message = body.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return fallback
 
 
 def _looks_like_transcription_model(model_name: str) -> bool:
@@ -125,9 +186,11 @@ class SpeechTranscriptionService:
         api_key = os.environ.get("VOICE_TRANSCRIPTION_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             return None
+        base_url = os.environ.get("VOICE_TRANSCRIPTION_BASE_URL", DEFAULT_TRANSCRIPTION_BASE_URL)
         return SpeechTranscriptionConfig(
             provider_name=os.environ.get("VOICE_TRANSCRIPTION_PROVIDER_NAME", "OpenAI"),
-            base_url=os.environ.get("VOICE_TRANSCRIPTION_BASE_URL", DEFAULT_TRANSCRIPTION_BASE_URL),
+            provider_type=_normalize_provider_type(os.environ.get("VOICE_TRANSCRIPTION_PROVIDER_TYPE"), base_url),
+            base_url=base_url,
             api_key=api_key,
             model=os.environ.get("VOICE_TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL),
         )
@@ -136,13 +199,34 @@ class SpeechTranscriptionService:
         if db is None:
             return None
 
+        route_result = await db.execute(
+            select(AIRoute).where(AIRoute.task_type == VOICE_TRANSCRIPTION_TASK_TYPE, AIRoute.enabled == "true")
+        )
+        route = route_result.scalar_one_or_none()
+        if route and route.primary_model_id:
+            routed_result = await db.execute(
+                select(AIModel, AIProvider)
+                .join(AIProvider, AIProvider.id == AIModel.provider_id)
+                .where(
+                    AIModel.id == route.primary_model_id,
+                    AIModel.enabled == "true",
+                    AIProvider.enabled == "true",
+                    AIProvider.provider_type.in_(VOICE_TRANSCRIPTION_PROVIDER_TYPES),
+                )
+            )
+            routed = routed_result.first()
+            if routed:
+                model, provider = routed
+                if _is_transcription_model(model):
+                    return await self._config_from_provider_model(provider, model)
+
         result = await db.execute(
             select(AIModel, AIProvider)
             .join(AIProvider, AIProvider.id == AIModel.provider_id)
             .where(
                 AIModel.enabled == "true",
                 AIProvider.enabled == "true",
-                AIProvider.provider_type == OPENAI_COMPATIBLE_PROVIDER_TYPE,
+                AIProvider.provider_type.in_(VOICE_TRANSCRIPTION_PROVIDER_TYPES),
             )
         )
         candidates = [
@@ -154,6 +238,9 @@ class SpeechTranscriptionService:
             return None
 
         model, provider = sorted(candidates, key=lambda item: _transcription_model_sort_key(item[0]))[0]
+        return await self._config_from_provider_model(provider, model)
+
+    async def _config_from_provider_model(self, provider: AIProvider, model: AIModel) -> SpeechTranscriptionConfig:
         if not provider.secret_reference:
             raise SpeechTranscriptionConfigError(
                 f"AI provider '{provider.name}' has no saved API key for voice transcription."
@@ -165,6 +252,7 @@ class SpeechTranscriptionService:
             )
         return SpeechTranscriptionConfig(
             provider_name=provider.name,
+            provider_type=provider.provider_type,
             base_url=provider.base_url,
             api_key=api_key,
             model=model.model_name,
@@ -180,11 +268,11 @@ class SpeechTranscriptionService:
             return provider_config
 
         raise SpeechTranscriptionConfigError(
-            "Voice transcription is not configured. Add an OpenAI-compatible provider with "
-            "a transcribe, whisper, or asr model in AI Providers, or set VOICE_TRANSCRIPTION_API_KEY/OPENAI_API_KEY."
+            "Voice transcription is not configured. Add a voice transcription model in AI Providers, "
+            "or set VOICE_TRANSCRIPTION_API_KEY/OPENAI_API_KEY."
         )
 
-    async def _post_transcription(
+    async def _post_openai_transcription(
         self,
         config: SpeechTranscriptionConfig,
         audio_bytes: bytes,
@@ -215,13 +303,59 @@ class SpeechTranscriptionService:
             body = {"raw": response.text}
 
         if response.status_code >= 400:
-            error = body.get("error") if isinstance(body, dict) else None
-            if isinstance(error, dict):
-                message = str(error.get("message") or error.get("type") or "Voice transcription failed.")
-            else:
-                message = str(error or response.text or "Voice transcription failed.")
+            message = _upstream_error_message(body, response.text or "Voice transcription failed.")
             raise SpeechTranscriptionUpstreamError(response.status_code, message, body)
         return body if isinstance(body, dict) else {"text": str(body)}
+
+    async def _post_elevenlabs_transcription(
+        self,
+        config: SpeechTranscriptionConfig,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str,
+    ) -> dict[str, Any]:
+        data = {
+            "model_id": config.model,
+        }
+        language = os.environ.get("VOICE_TRANSCRIPTION_LANGUAGE", DEFAULT_TRANSCRIPTION_LANGUAGE).strip()
+        if language:
+            data["language_code"] = language
+
+        headers = {
+            "Accept": "application/json",
+            "xi-api-key": config.api_key,
+        }
+        files = {
+            "file": (filename or "voice-input.wav", audio_bytes, _base_content_type(content_type) or "audio/wav"),
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                _elevenlabs_speech_to_text_url(config.base_url),
+                headers=headers,
+                data=data,
+                files=files,
+            )
+
+        try:
+            body = response.json()
+        except Exception:
+            body = {"raw": response.text}
+
+        if response.status_code >= 400:
+            message = _upstream_error_message(body, response.text or "Voice transcription failed.")
+            raise SpeechTranscriptionUpstreamError(response.status_code, message, body)
+        return body if isinstance(body, dict) else {"text": str(body)}
+
+    async def _post_transcription(
+        self,
+        config: SpeechTranscriptionConfig,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str,
+    ) -> dict[str, Any]:
+        if config.provider_type == ELEVENLABS_PROVIDER_TYPE:
+            return await self._post_elevenlabs_transcription(config, audio_bytes, filename, content_type)
+        return await self._post_openai_transcription(config, audio_bytes, filename, content_type)
 
     async def transcribe(
         self,

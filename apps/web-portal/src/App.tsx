@@ -30,6 +30,7 @@ export default function App() {
     accessToken,
     activeUser,
     authError,
+    getAccessToken,
     inProgress,
     instance,
     isTokenLoading,
@@ -76,6 +77,7 @@ export default function App() {
   } = useChatController({
     accessToken,
     activeUserEmail,
+    getAccessToken,
     onOpenChat: openChatTab,
   });
 
@@ -168,13 +170,13 @@ export default function App() {
       case "connected-accounts":
         return (
           <Suspense fallback={<PageLoader />}>
-            <ConnectionsPage accessToken={accessToken} />
+            <ConnectionsPage accessToken={accessToken} getAccessToken={getAccessToken} />
           </Suspense>
         );
       case "ai-providers":
         return (
           <Suspense fallback={<PageLoader />}>
-            <AIProvidersPage accessToken={accessToken} />
+            <AIProvidersPage getAccessToken={getAccessToken} />
           </Suspense>
         );
       default:

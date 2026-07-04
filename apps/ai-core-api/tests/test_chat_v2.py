@@ -91,46 +91,36 @@ class TestArtifactDownloadSurface:
 
 
 class TestChatResponseGuards:
-    def test_recent_verified_tool_facts_compacts_previous_tool_results(self):
-        from app.routers.chat import _recent_verified_tool_facts
+    def test_assistant_turn_messages_replays_tool_transcript(self):
+        from app.routers.chat import _assistant_turn_messages
 
-        facts = _recent_verified_tool_facts([
-            SimpleNamespace(
-                tool_call_json=[
-                    {
-                        "tool_name": "odoo",
-                        "arguments": {"model": "account.move"},
-                        "result": {"model": "account.move", "result": [{"id": 56137, "name": "INV-2026-02128"}]},
+        message = SimpleNamespace(
+            id=uuid.uuid4(),
+            role="assistant",
+            content="The answer is 42.",
+            metadata_json={},
+            tool_call_json=[
+                {
+                    "tool_call_id": "call_workspace_1",
+                    "tool_name": "workspace",
+                    "arguments": {"purpose": "Lookup an Odoo system total"},
+                    "result": {
+                        "status": "success",
+                        "connector_calls": {"odoo": 1},
+                        "stdout": "system total: 42",
                     },
-                    {
-                        "tool_name": "odoo",
-                        "arguments": {"model": "account.partial.reconcile"},
-                        "result": {"model": "account.partial.reconcile", "result": [{"id": 47647, "amount": 5206.75}]},
-                    },
-                    {
-                        "tool_name": "workspace",
-                        "arguments": {
-                            "purpose": "Lookup an Odoo system total",
-                        },
-                        "result": {
-                            "status": "success",
-                            "connector_calls": {"odoo": 1},
-                            "stdout": "system total: 42",
-                        },
-                    },
-                ]
-            )
-        ])
+                },
+            ],
+        )
 
-        assert "Recent verified tool results from this chat" in facts
-        assert "immediately previous assistant reply" in facts
-        assert "how it was produced" in facts
-        assert "workspace purpose=Lookup an Odoo system total" in facts
-        assert "connector_calls=odoo:1" in facts
-        assert "system total: 42" in facts
-        assert "account.move id=56137" not in facts
-        assert "account.partial.reconcile id=47647" not in facts
-        assert "records" not in facts
+        replay = _assistant_turn_messages(message)
+
+        assert [item["role"] for item in replay] == ["assistant", "tool", "assistant"]
+        assert replay[0]["tool_calls"][0]["id"] == "call_workspace_1"
+        assert replay[0]["tool_calls"][0]["function"]["name"] == "workspace"
+        assert replay[1]["tool_call_id"] == "call_workspace_1"
+        assert "system total: 42" in replay[1]["content"]
+        assert replay[2]["content"] == "The answer is 42."
 
     def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):
         from app.routers.chat import _assistant_metadata
@@ -407,15 +397,37 @@ class TestChatAttachments:
 
         payload = _chat_message_payload(message, [{
             "id": attachment_id,
+            "artifact_type": "chat-upload",
             "filename": "statement.csv",
             "mime_type": "text/csv",
         }])
 
         assert payload["attachments"] == [{
             "id": attachment_id,
+            "artifact_type": "chat-upload",
             "filename": "statement.csv",
             "mime_type": "text/csv",
         }]
+
+    def test_attachment_response_exposes_artifact_type_for_generated_outputs(self):
+        import uuid
+        from app.models.models import AIArtifact
+        from app.routers.chat import _attachment_response
+
+        artifact = AIArtifact(
+            id=uuid.uuid4(),
+            artifact_type="chat-generated",
+            filename="analysis.xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            storage_uri="https://storage.example/chat-generated/analysis.xlsx",
+        )
+
+        assert _attachment_response(artifact) == {
+            "id": artifact.id,
+            "artifact_type": "chat-generated",
+            "filename": "analysis.xlsx",
+            "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
 
     def test_content_with_attachment_context_handles_attachment_only_messages(self):
         from app.routers.chat import _content_with_attachment_context
@@ -583,7 +595,7 @@ class TestChatAttachments:
     def test_artifact_manifest_context_exposes_previous_upload_ids(self):
         import uuid
         from app.models.models import AIArtifact
-        from app.routers.chat import _artifact_manifest_context
+        from app.routers.chat import _artifact_manifest_context, _artifact_manifest_entries
 
         artifact = AIArtifact(
             id=uuid.uuid4(),
@@ -603,6 +615,19 @@ class TestChatAttachments:
         assert f"id={artifact.id}" in context
         assert "document_reader" in context
         assert "text_chars=8" in context
+
+        entries = _artifact_manifest_entries([artifact])
+        assert entries == [{
+            "id": str(artifact.id),
+            "artifact_id": str(artifact.id),
+            "filename": "COSMETIC CONNECTION GRV141814.pdf",
+            "mime_type": "application/pdf",
+            "artifact_type": "chat-upload",
+            "sha256": None,
+            "extraction_status": "ready",
+            "extraction_source": "azure_document_intelligence:prebuilt-read",
+            "text_chars": 8,
+        }]
 
 
 class TestChatStreaming:

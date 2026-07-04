@@ -30,6 +30,7 @@ export interface ChatMessage {
 
 export interface ChatAttachment {
   id: string;
+  artifact_type?: string;
   filename: string;
   mime_type: string;
 }

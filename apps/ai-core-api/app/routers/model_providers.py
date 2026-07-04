@@ -1,5 +1,6 @@
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 from urllib.parse import urlparse
@@ -20,10 +21,36 @@ from app.services.model_router import CANONICAL_SYSTEM_PROMPT
 router = APIRouter(prefix="/model-providers", tags=["model-providers"])
 
 OPENAI_COMPATIBLE = "openai_compatible"
+ELEVENLABS = "elevenlabs"
+SUPPORTED_PROVIDER_TYPES = {OPENAI_COMPATIBLE, ELEVENLABS}
 CHAT_ROUTE = "general_chat"
 CHAT_MODEL_TASK = "chat"
 VOICE_TRANSCRIPTION_MODEL_TASK = "voice_transcription"
+IMAGE_GENERATION_MODEL_TASK = "image_generation"
 ZAI_TRANSCRIPTION_MODEL = "glm-asr-2512"
+ELEVENLABS_SCRIBE_V2_MODEL = "scribe_v2"
+CUSTOM_OPENAI_COMPATIBLE_PROVIDER_KEY = "custom_openai_compatible"
+
+MODEL_TASK_LABELS = {
+    CHAT_MODEL_TASK: "Chat",
+    VOICE_TRANSCRIPTION_MODEL_TASK: "Voice",
+    IMAGE_GENERATION_MODEL_TASK: "Image",
+}
+
+ROUTE_DEFINITIONS = {
+    CHAT_ROUTE: {
+        "label": "Chat",
+        "model_task_type": CHAT_MODEL_TASK,
+    },
+    VOICE_TRANSCRIPTION_MODEL_TASK: {
+        "label": "Voice transcription",
+        "model_task_type": VOICE_TRANSCRIPTION_MODEL_TASK,
+    },
+    IMAGE_GENERATION_MODEL_TASK: {
+        "label": "Image generation",
+        "model_task_type": IMAGE_GENERATION_MODEL_TASK,
+    },
+}
 
 
 class ProviderModelResponse(BaseModel):
@@ -43,6 +70,7 @@ class ProviderModelResponse(BaseModel):
 class ProviderResponse(BaseModel):
     id: UUID
     name: str
+    provider_key: str | None = None
     provider_type: str
     base_url: str
     enabled: str
@@ -53,7 +81,20 @@ class ProviderResponse(BaseModel):
 
 class RouteResponse(BaseModel):
     task_type: str
+    label: str | None = None
+    model_task_type: str | None = None
     primary_model_id: UUID | None = None
+
+
+class ProviderCatalogResponse(BaseModel):
+    key: str
+    name: str
+    provider_type: str
+    base_url: str
+    auth_label: str
+    supports_custom_name: bool = False
+    supports_custom_base_url: bool = False
+    configured_provider_id: UUID | None = None
 
 
 class ModelSyncResponse(BaseModel):
@@ -65,13 +106,17 @@ class ModelSyncResponse(BaseModel):
 class ProviderListResponse(BaseModel):
     providers: list[ProviderResponse]
     route: RouteResponse | None = None
+    routes: list[RouteResponse] = Field(default_factory=list)
+    catalog: list[ProviderCatalogResponse] = Field(default_factory=list)
     sync: ModelSyncResponse | None = None
 
 
 class ProviderUpsertRequest(BaseModel):
     provider_id: UUID | None = None
+    provider_key: str | None = Field(None, max_length=100)
     name: str = Field(..., min_length=1, max_length=100)
     base_url: str = Field(..., min_length=1, max_length=500)
+    provider_type: str | None = Field(None, max_length=50)
     api_key: str | None = Field(None, max_length=4000)
     enabled: bool = True
 
@@ -82,11 +127,13 @@ class ProviderUpsertRequest(BaseModel):
 
 
 class ModelToggleRequest(BaseModel):
-    enabled: bool = True
+    enabled: bool | None = None
+    task_type: str | None = None
 
 
 class RouteUpdateRequest(BaseModel):
     primary_model_id: UUID
+    task_type: str = CHAT_ROUTE
 
 
 class DiscoveredModel(BaseModel):
@@ -96,6 +143,132 @@ class DiscoveredModel(BaseModel):
     supports_tools: bool | None = None
     supports_json_schema: bool | None = None
     task_type: str = CHAT_MODEL_TASK
+
+
+@dataclass(frozen=True)
+class ProviderPreset:
+    key: str
+    name: str
+    provider_type: str
+    base_url: str
+    auth_label: str = "API key"
+    supports_custom_name: bool = False
+    supports_custom_base_url: bool = False
+    catalog_models: tuple[DiscoveredModel, ...] = ()
+
+
+PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
+    ProviderPreset(
+        key="openai",
+        name="OpenAI",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.openai.com/v1",
+    ),
+    ProviderPreset(
+        key="google_gemini",
+        name="Google Gemini",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+    ),
+    ProviderPreset(
+        key="zai",
+        name="Z.ai / GLM",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.z.ai/api/paas/v4",
+        catalog_models=(
+            DiscoveredModel(
+                id=ZAI_TRANSCRIPTION_MODEL,
+                display_name="GLM ASR 2512",
+                supports_tools=False,
+                supports_json_schema=False,
+                task_type=VOICE_TRANSCRIPTION_MODEL_TASK,
+            ),
+        ),
+    ),
+    ProviderPreset(
+        key="moonshot",
+        name="Moonshot / Kimi",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.moonshot.ai/v1",
+    ),
+    ProviderPreset(
+        key="mistral",
+        name="Mistral AI",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.mistral.ai/v1",
+    ),
+    ProviderPreset(
+        key="groq",
+        name="Groq",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.groq.com/openai/v1",
+    ),
+    ProviderPreset(
+        key="together",
+        name="Together AI",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.together.xyz/v1",
+    ),
+    ProviderPreset(
+        key="fireworks",
+        name="Fireworks AI",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.fireworks.ai/inference/v1",
+    ),
+    ProviderPreset(
+        key="openrouter",
+        name="OpenRouter",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://openrouter.ai/api/v1",
+    ),
+    ProviderPreset(
+        key="deepseek",
+        name="DeepSeek",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.deepseek.com/v1",
+    ),
+    ProviderPreset(
+        key="xai",
+        name="xAI",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.x.ai/v1",
+    ),
+    ProviderPreset(
+        key="nvidia",
+        name="NVIDIA NIM",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://integrate.api.nvidia.com/v1",
+    ),
+    ProviderPreset(
+        key="perplexity",
+        name="Perplexity",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.perplexity.ai",
+    ),
+    ProviderPreset(
+        key="cohere",
+        name="Cohere",
+        provider_type=OPENAI_COMPATIBLE,
+        base_url="https://api.cohere.ai/compatibility/v1",
+    ),
+    ProviderPreset(
+        key="elevenlabs",
+        name="ElevenLabs",
+        provider_type=ELEVENLABS,
+        base_url="https://api.elevenlabs.io/v1",
+        catalog_models=(
+            DiscoveredModel(
+                id=ELEVENLABS_SCRIBE_V2_MODEL,
+                display_name="Scribe v2",
+                supports_tools=False,
+                supports_json_schema=False,
+                task_type=VOICE_TRANSCRIPTION_MODEL_TASK,
+            ),
+        ),
+    ),
+)
+
+PROVIDER_PRESETS_BY_KEY = {preset.key: preset for preset in PROVIDER_PRESETS}
 
 
 def _is_admin(auth: dict[str, Any]) -> bool:
@@ -181,6 +354,122 @@ def _base_hostname(base_url: str) -> str:
         return ""
 
 
+def _provider_type_from_base_url(base_url: str) -> str:
+    hostname = _base_hostname(base_url)
+    if hostname == "api.elevenlabs.io" or hostname.endswith(".elevenlabs.io"):
+        return ELEVENLABS
+    return OPENAI_COMPATIBLE
+
+
+def _normalize_provider_type(provider_type: str | None, base_url: str) -> str:
+    raw = (provider_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return _provider_type_from_base_url(base_url)
+    aliases = {
+        "openai": OPENAI_COMPATIBLE,
+        "openai_compatible": OPENAI_COMPATIBLE,
+        "openai-compatible": OPENAI_COMPATIBLE,
+        "compatible": OPENAI_COMPATIBLE,
+        "eleven": ELEVENLABS,
+        "eleven_labs": ELEVENLABS,
+        "elevenlabs": ELEVENLABS,
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in SUPPORTED_PROVIDER_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider type: {provider_type}.")
+    return normalized
+
+
+def _normalize_provider_key(provider_key: str | None) -> str | None:
+    if not provider_key:
+        return None
+    key = provider_key.strip().lower().replace("-", "_").replace(" ", "_")
+    return key or None
+
+
+def _provider_capabilities(provider: AIProvider) -> dict[str, Any]:
+    return dict(provider.capabilities) if isinstance(provider.capabilities, dict) else {}
+
+
+def _preset_for_base_url(base_url: str, provider_type: str | None = None) -> ProviderPreset | None:
+    normalized_base_url = base_url.rstrip("/")
+    for preset in PROVIDER_PRESETS:
+        if preset.base_url.rstrip("/") == normalized_base_url:
+            return preset
+    hostname = _base_hostname(base_url)
+    for preset in PROVIDER_PRESETS:
+        if provider_type and preset.provider_type != provider_type:
+            continue
+        if _base_hostname(preset.base_url) == hostname:
+            return preset
+    return None
+
+
+def _provider_preset(provider: AIProvider) -> ProviderPreset | None:
+    key = _normalize_provider_key(_provider_capabilities(provider).get("provider_key"))
+    if key and key in PROVIDER_PRESETS_BY_KEY:
+        return PROVIDER_PRESETS_BY_KEY[key]
+    return _preset_for_base_url(provider.base_url, provider.provider_type)
+
+
+def _provider_key(provider: AIProvider) -> str | None:
+    preset = _provider_preset(provider)
+    return preset.key if preset else None
+
+
+def _provider_catalog(providers: list[AIProvider]) -> list[ProviderCatalogResponse]:
+    configured_by_key: dict[str, UUID] = {}
+    for provider in providers:
+        key = _provider_key(provider)
+        if key and key not in configured_by_key:
+            configured_by_key[key] = provider.id
+    return [
+        ProviderCatalogResponse(
+            key=preset.key,
+            name=preset.name,
+            provider_type=preset.provider_type,
+            base_url=preset.base_url,
+            auth_label=preset.auth_label,
+            supports_custom_name=preset.supports_custom_name,
+            supports_custom_base_url=preset.supports_custom_base_url,
+            configured_provider_id=configured_by_key.get(preset.key),
+        )
+        for preset in PROVIDER_PRESETS
+    ]
+
+
+def _resolve_provider_request(req: ProviderUpsertRequest) -> tuple[str, str, str, str | None]:
+    provider_key = _normalize_provider_key(req.provider_key)
+    if provider_key and provider_key != CUSTOM_OPENAI_COMPATIBLE_PROVIDER_KEY:
+        preset = PROVIDER_PRESETS_BY_KEY.get(provider_key)
+        if not preset:
+            raise HTTPException(status_code=400, detail=f"Unsupported provider preset: {req.provider_key}.")
+        name = req.name.strip() if preset.supports_custom_name else preset.name
+        base_url = req.base_url.strip() if preset.supports_custom_base_url else preset.base_url
+        return name, base_url.rstrip("/"), preset.provider_type, preset.key
+
+    name = req.name.strip()
+    base_url = req.base_url.strip().rstrip("/")
+    if not name:
+        raise HTTPException(status_code=400, detail="Provider name is required.")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Provider API endpoint is required.")
+    provider_type = _normalize_provider_type(req.provider_type, base_url)
+    preset = _preset_for_base_url(base_url, provider_type)
+    return name, base_url, provider_type, preset.key if preset else None
+
+
+def _route_definition(task_type: str) -> dict[str, str]:
+    definition = ROUTE_DEFINITIONS.get(task_type)
+    if not definition:
+        raise HTTPException(status_code=400, detail=f"Unsupported model route: {task_type}.")
+    return definition
+
+
+def _route_model_task_type(task_type: str) -> str:
+    return _route_definition(task_type)["model_task_type"]
+
+
 def _model_context_window(data: dict[str, Any]) -> int | None:
     for key in ("context_length", "context_window", "context_window_tokens", "max_context_length"):
         value = data.get(key)
@@ -226,6 +515,41 @@ VOICE_TRANSCRIPTION_METADATA = {
     "voice-transcription",
 }
 
+IMAGE_GENERATION_METADATA = {
+    "image",
+    "image_generation",
+    "image-generation",
+    "text_to_image",
+    "text-to-image",
+    "vision_generation",
+}
+
+VOICE_MODEL_ID_MARKERS = (
+    "asr",
+    "audio-transcription",
+    "audio_transcription",
+    "scribe",
+    "speech-to-text",
+    "speech_to_text",
+    "transcribe",
+    "transcription",
+    "whisper",
+)
+
+IMAGE_MODEL_ID_MARKERS = (
+    "dall-e",
+    "dalle",
+    "flux",
+    "gpt-image",
+    "image-generation",
+    "image_generation",
+    "imagen",
+    "stable-diffusion",
+    "stable_diffusion",
+    "text-to-image",
+    "text_to_image",
+)
+
 
 def _is_voice_transcription_metadata(value: str) -> bool:
     normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
@@ -236,7 +560,22 @@ def _is_voice_transcription_metadata(value: str) -> bool:
     )
 
 
+def _is_image_generation_metadata(value: str) -> bool:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return (
+        normalized in IMAGE_GENERATION_METADATA
+        or "image_generation" in normalized
+        or "text_to_image" in normalized
+    )
+
+
 def _task_type_from_model_metadata(model_id: str, data: dict[str, Any]) -> str:
+    normalized_model_id = model_id.strip().lower().replace(" ", "_")
+    if any(marker in normalized_model_id for marker in VOICE_MODEL_ID_MARKERS):
+        return VOICE_TRANSCRIPTION_MODEL_TASK
+    if any(marker in normalized_model_id for marker in IMAGE_MODEL_ID_MARKERS):
+        return IMAGE_GENERATION_MODEL_TASK
+
     metadata_values: set[str] = set()
     for key in (
         "type",
@@ -261,6 +600,8 @@ def _task_type_from_model_metadata(model_id: str, data: dict[str, Any]) -> str:
 
     if any(_is_voice_transcription_metadata(value) for value in metadata_values):
         return VOICE_TRANSCRIPTION_MODEL_TASK
+    if any(_is_image_generation_metadata(value) for value in metadata_values):
+        return IMAGE_GENERATION_MODEL_TASK
 
     return CHAT_MODEL_TASK
 
@@ -279,7 +620,7 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
             context_window = None
             supports_tools = None
             supports_json_schema = None
-            task_type = CHAT_MODEL_TASK
+            task_type = _task_type_from_model_metadata(model_id, {})
         elif isinstance(item, dict):
             model_id = str(item.get("id") or item.get("name") or "").strip()
             if not model_id:
@@ -309,29 +650,38 @@ def _parse_models_payload(body: Any) -> list[DiscoveredModel]:
     return sorted(discovered, key=lambda model: model.id.lower())
 
 
-def _provider_catalog_models(base_url: str) -> list[DiscoveredModel]:
-    hostname = _base_hostname(base_url)
-    if hostname == "api.z.ai":
-        return [
-            DiscoveredModel(
-                id=ZAI_TRANSCRIPTION_MODEL,
-                display_name="GLM ASR 2512",
-                supports_tools=False,
-                supports_json_schema=False,
-                task_type=VOICE_TRANSCRIPTION_MODEL_TASK,
-            )
-        ]
+def _provider_catalog_models(
+    base_url: str,
+    provider_type: str = OPENAI_COMPATIBLE,
+    provider_key: str | None = None,
+) -> list[DiscoveredModel]:
+    preset = PROVIDER_PRESETS_BY_KEY.get(_normalize_provider_key(provider_key) or "") or _preset_for_base_url(
+        base_url,
+        provider_type,
+    )
+    if preset:
+        return list(preset.catalog_models)
     return []
 
 
-def _merge_catalog_models(base_url: str, discovered: list[DiscoveredModel]) -> list[DiscoveredModel]:
+def _merge_catalog_models(
+    base_url: str,
+    discovered: list[DiscoveredModel],
+    provider_type: str = OPENAI_COMPATIBLE,
+    provider_key: str | None = None,
+) -> list[DiscoveredModel]:
     models_by_id = {model.id: model for model in discovered}
-    for model in _provider_catalog_models(base_url):
+    for model in _provider_catalog_models(base_url, provider_type, provider_key):
         models_by_id.setdefault(model.id, model)
     return sorted(models_by_id.values(), key=lambda model: model.id.lower())
 
 
-async def _fetch_available_models(base_url: str, api_key: str | None = None) -> list[DiscoveredModel]:
+async def _fetch_available_models(
+    base_url: str,
+    api_key: str | None = None,
+    provider_type: str = OPENAI_COMPATIBLE,
+    provider_key: str | None = None,
+) -> list[DiscoveredModel]:
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -339,7 +689,7 @@ async def _fetch_available_models(base_url: str, api_key: str | None = None) -> 
         response = await client.get(_models_url(base_url), headers=headers)
     if response.status_code != 200:
         raise RuntimeError(response.text[:500] or f"Provider returned HTTP {response.status_code}.")
-    return _merge_catalog_models(base_url, _parse_models_payload(response.json()))
+    return _merge_catalog_models(base_url, _parse_models_payload(response.json()), provider_type, provider_key)
 
 
 async def _upsert_discovered_model(db: AsyncSession, provider: AIProvider, discovered: DiscoveredModel) -> None:
@@ -384,7 +734,7 @@ async def _upsert_discovered_model(db: AsyncSession, provider: AIProvider, disco
 
 async def _ensure_provider_catalog_models(db: AsyncSession, providers: list[AIProvider]) -> None:
     for provider in providers:
-        for model in _provider_catalog_models(provider.base_url):
+        for model in _provider_catalog_models(provider.base_url, provider.provider_type, _provider_key(provider)):
             await _upsert_discovered_model(db, provider, model)
     await db.flush()
 
@@ -402,7 +752,9 @@ async def _api_key_status(provider: AIProvider) -> str:
 
 async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = None) -> ProviderListResponse:
     provider_result = await db.execute(
-        select(AIProvider).where(AIProvider.provider_type == OPENAI_COMPATIBLE).order_by(AIProvider.name)
+        select(AIProvider)
+        .where(AIProvider.provider_type.in_(SUPPORTED_PROVIDER_TYPES))
+        .order_by(AIProvider.name)
     )
     providers = list(provider_result.scalars().all())
     await _ensure_provider_catalog_models(db, providers)
@@ -414,13 +766,23 @@ async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = N
         for model in model_result.scalars().all():
             models_by_provider.setdefault(model.provider_id, []).append(model)
 
-    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
-    route = route_result.scalar_one_or_none()
+    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type.in_(list(ROUTE_DEFINITIONS))))
+    routes_by_task = {route.task_type: route for route in route_result.scalars().all()}
+    route_responses = [
+        RouteResponse(
+            task_type=task_type,
+            label=definition["label"],
+            model_task_type=definition["model_task_type"],
+            primary_model_id=routes_by_task.get(task_type).primary_model_id if routes_by_task.get(task_type) else None,
+        )
+        for task_type, definition in ROUTE_DEFINITIONS.items()
+    ]
     return ProviderListResponse(
         providers=[
             ProviderResponse(
                 id=provider.id,
                 name=provider.name,
+                provider_key=_provider_key(provider),
                 provider_type=provider.provider_type,
                 base_url=provider.base_url,
                 enabled=provider.enabled,
@@ -432,8 +794,13 @@ async def _provider_payload(db: AsyncSession, sync: ModelSyncResponse | None = N
         ],
         route=RouteResponse(
             task_type=CHAT_ROUTE,
-            primary_model_id=route.primary_model_id if route else None,
-        ) if route else None,
+            label=ROUTE_DEFINITIONS[CHAT_ROUTE]["label"],
+            model_task_type=ROUTE_DEFINITIONS[CHAT_ROUTE]["model_task_type"],
+            primary_model_id=routes_by_task.get(CHAT_ROUTE).primary_model_id
+            if routes_by_task.get(CHAT_ROUTE) else None,
+        ) if routes_by_task.get(CHAT_ROUTE) else None,
+        routes=route_responses,
+        catalog=_provider_catalog(providers),
         sync=sync,
     )
 
@@ -468,41 +835,45 @@ async def _save_provider_secret(provider: AIProvider, api_key: str | None) -> No
     await set_secret_value(provider.secret_reference, api_key)
 
 
-async def _enabled_chat_models(db: AsyncSession) -> list[AIModel]:
-    result = await db.execute(
-        select(AIModel)
-        .join(AIProvider, AIProvider.id == AIModel.provider_id)
-        .where(
-            AIModel.enabled == "true",
-            AIProvider.enabled == "true",
-            AIProvider.provider_type == OPENAI_COMPATIBLE,
-        )
-        .order_by(AIProvider.name, AIModel.display_name)
-    )
-    return sorted([model for model in result.scalars().all() if _is_chat_model(model)], key=_chat_model_sort_key)
+async def _enabled_models_for_task(
+    db: AsyncSession,
+    model_task_type: str,
+    excluded_model_ids: set[UUID] | None = None,
+) -> list[AIModel]:
+    excluded_model_ids = excluded_model_ids or set()
+    provider_types = {OPENAI_COMPATIBLE}
+    if model_task_type == VOICE_TRANSCRIPTION_MODEL_TASK:
+        provider_types = {OPENAI_COMPATIBLE, ELEVENLABS}
 
-
-async def _enabled_chat_models_excluding(db: AsyncSession, excluded_model_ids: set[UUID]) -> list[AIModel]:
     conditions = [
         AIModel.enabled == "true",
         AIProvider.enabled == "true",
-        AIProvider.provider_type == OPENAI_COMPATIBLE,
+        AIProvider.provider_type.in_(provider_types),
     ]
     if excluded_model_ids:
         conditions.append(~AIModel.id.in_(excluded_model_ids))
+
     result = await db.execute(
         select(AIModel)
         .join(AIProvider, AIProvider.id == AIModel.provider_id)
         .where(*conditions)
         .order_by(AIProvider.name, AIModel.display_name)
     )
-    return sorted([model for model in result.scalars().all() if _is_chat_model(model)], key=_chat_model_sort_key)
+    models = [model for model in result.scalars().all() if _model_task_type(model) == model_task_type]
+    if model_task_type == CHAT_MODEL_TASK:
+        return sorted(models, key=_chat_model_sort_key)
+    return sorted(models, key=lambda model: (model.display_name or model.model_name or "").lower())
 
 
-async def _reconcile_chat_route(db: AsyncSession) -> None:
+async def _enabled_chat_models(db: AsyncSession) -> list[AIModel]:
+    return await _enabled_models_for_task(db, CHAT_MODEL_TASK)
+
+
+async def _reconcile_route(db: AsyncSession, route_task_type: str) -> None:
     await db.flush()
-    models = await _enabled_chat_models(db)
-    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
+    model_task_type = _route_model_task_type(route_task_type)
+    models = await _enabled_models_for_task(db, model_task_type)
+    route_result = await db.execute(select(AIRoute).where(AIRoute.task_type == route_task_type))
     route = route_result.scalar_one_or_none()
 
     if not models:
@@ -516,17 +887,32 @@ async def _reconcile_chat_route(db: AsyncSession) -> None:
     if not route:
         route = AIRoute(
             id=uuid.uuid4(),
-            task_type=CHAT_ROUTE,
+            task_type=route_task_type,
             primary_model_id=primary,
             temperature=0.3,
             max_tokens=2000,
-            system_prompt=CANONICAL_SYSTEM_PROMPT,
+            system_prompt=CANONICAL_SYSTEM_PROMPT if route_task_type == CHAT_ROUTE else "",
             enabled="true",
         )
         db.add(route)
 
     route.primary_model_id = primary
     route.enabled = "true"
+
+
+async def _reconcile_routes(db: AsyncSession) -> None:
+    await _reconcile_route(db, CHAT_ROUTE)
+    route_result = await db.execute(
+        select(AIRoute).where(
+            AIRoute.task_type.in_([task for task in ROUTE_DEFINITIONS if task != CHAT_ROUTE])
+        )
+    )
+    for route in route_result.scalars().all():
+        await _reconcile_route(db, route.task_type)
+
+
+async def _reconcile_chat_route(db: AsyncSession) -> None:
+    await _reconcile_route(db, CHAT_ROUTE)
 
 
 async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_ids: set[UUID]) -> None:
@@ -538,30 +924,34 @@ async def _reconcile_routes_before_model_delete(db: AsyncSession, deleted_model_
     if not routes:
         return
 
-    remaining_models = await _enabled_chat_models_excluding(db, deleted_model_ids)
-    if not remaining_models:
-        route_ids = [route.id for route in routes]
-        await db.execute(update(AIUsageLog).where(AIUsageLog.route_id.in_(route_ids)).values(route_id=None))
-        await db.execute(update(AITrace).where(AITrace.route_id.in_(route_ids)).values(route_id=None))
-        for route in routes:
-            await db.delete(route)
-        await db.flush()
-        return
-
-    remaining_ids = {model.id for model in remaining_models}
     for route in routes:
-        if route.primary_model_id in remaining_ids:
-            primary = route.primary_model_id
-        else:
-            primary = remaining_models[0].id
-
-        route.primary_model_id = primary
+        model_task_type = ROUTE_DEFINITIONS.get(route.task_type, {}).get("model_task_type", CHAT_MODEL_TASK)
+        remaining_models = await _enabled_models_for_task(
+            db,
+            model_task_type,
+            deleted_model_ids,
+        )
+        if not remaining_models:
+            await db.execute(update(AIUsageLog).where(AIUsageLog.route_id == route.id).values(route_id=None))
+            await db.execute(update(AITrace).where(AITrace.route_id == route.id).values(route_id=None))
+            await db.delete(route)
+            continue
+        remaining_ids = {model.id for model in remaining_models}
+        route.primary_model_id = route.primary_model_id if route.primary_model_id in remaining_ids else remaining_models[0].id
         route.enabled = "true"
     await db.flush()
 
 
 async def _sync_provider_models(db: AsyncSession, provider: AIProvider, api_key: str) -> int:
-    discovered_models = await _fetch_available_models(provider.base_url, api_key)
+    if provider.provider_type == ELEVENLABS:
+        discovered_models = _provider_catalog_models(provider.base_url, provider.provider_type, _provider_key(provider))
+    else:
+        discovered_models = _merge_catalog_models(
+            provider.base_url,
+            await _fetch_available_models(provider.base_url, api_key),
+            provider.provider_type,
+            _provider_key(provider),
+        )
     if not discovered_models:
         raise RuntimeError("No models were returned by this provider.")
 
@@ -588,31 +978,38 @@ async def upsert_model_provider(
 ):
     _require_admin(auth)
 
+    name, base_url, provider_type, provider_key = _resolve_provider_request(req)
     provider = await _get_provider(db, req.provider_id) if req.provider_id else None
     if not provider:
-        existing = await db.execute(select(AIProvider).where(AIProvider.name == req.name))
+        existing = await db.execute(select(AIProvider).where(AIProvider.name == name))
         provider = existing.scalar_one_or_none()
 
     if not provider:
         provider = AIProvider(
             id=uuid.uuid4(),
-            name=req.name,
-            provider_type=OPENAI_COMPATIBLE,
-            base_url=req.base_url.rstrip("/"),
+            name=name,
+            provider_type=provider_type,
+            base_url=base_url,
             auth_type="key_vault_secret",
-            secret_reference=_secret_name(req.name),
+            secret_reference=_secret_name(name),
             enabled=_bool_string(req.enabled),
-            capabilities={},
+            capabilities={"provider_key": provider_key} if provider_key else {},
         )
         db.add(provider)
     else:
-        provider.name = req.name
-        provider.provider_type = OPENAI_COMPATIBLE
-        provider.base_url = req.base_url.rstrip("/")
+        provider.name = name
+        provider.provider_type = provider_type
+        provider.base_url = base_url
         provider.auth_type = "key_vault_secret"
         provider.enabled = _bool_string(req.enabled)
         if not provider.secret_reference:
-            provider.secret_reference = _secret_name(req.name)
+            provider.secret_reference = _secret_name(name)
+        capabilities = _provider_capabilities(provider)
+        if provider_key:
+            capabilities["provider_key"] = provider_key
+        else:
+            capabilities.pop("provider_key", None)
+        provider.capabilities = capabilities
 
     await db.flush()
 
@@ -634,7 +1031,7 @@ async def upsert_model_provider(
 
     await _save_provider_secret(provider, req.api_key)
 
-    await _reconcile_chat_route(db)
+    await _reconcile_routes(db)
     await db.commit()
     return await _provider_payload(db, sync_result)
 
@@ -685,34 +1082,51 @@ async def toggle_provider_model(
     model = await _get_model(db, model_id)
     if model.provider_id != provider.id:
         raise HTTPException(status_code=400, detail="Model does not belong to this provider.")
-    model.enabled = _bool_string(req.enabled)
-    await _reconcile_chat_route(db)
+    if req.enabled is not None:
+        model.enabled = _bool_string(req.enabled)
+    if req.task_type is not None:
+        task_type = req.task_type.strip()
+        if task_type not in set(MODEL_TASK_LABELS):
+            raise HTTPException(status_code=400, detail=f"Unsupported model task type: {req.task_type}.")
+        config = dict(model.config_json) if isinstance(model.config_json, dict) else {}
+        config["task_type"] = task_type
+        model.config_json = config
+        if task_type != CHAT_MODEL_TASK:
+            model.supports_tools = "false"
+            model.supports_json_schema = "false"
+    await _reconcile_routes(db)
     await db.commit()
     return await _provider_payload(db)
 
 
 @router.patch("/route", response_model=ProviderListResponse)
-async def update_chat_route(
+async def update_model_route(
     req: RouteUpdateRequest,
     db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
     _require_admin(auth)
+    route_task_type = req.task_type.strip() or CHAT_ROUTE
+    route_definition = _route_definition(route_task_type)
+    required_model_task_type = route_definition["model_task_type"]
     primary = await _get_model(db, req.primary_model_id)
-    await _get_provider(db, primary.provider_id)
-    if not _is_chat_model(primary):
-        raise HTTPException(status_code=400, detail="Only chat models can be selected as the default chat model.")
+    provider = await _get_provider(db, primary.provider_id)
+    if provider.enabled != "true" or primary.enabled != "true":
+        raise HTTPException(status_code=400, detail="Only enabled provider models can be selected.")
+    if _model_task_type(primary) != required_model_task_type:
+        label = route_definition["label"].lower()
+        raise HTTPException(status_code=400, detail=f"Only {label} models can be selected for this route.")
 
-    result = await db.execute(select(AIRoute).where(AIRoute.task_type == CHAT_ROUTE))
+    result = await db.execute(select(AIRoute).where(AIRoute.task_type == route_task_type))
     route = result.scalar_one_or_none()
     if not route:
         route = AIRoute(
             id=uuid.uuid4(),
-            task_type=CHAT_ROUTE,
+            task_type=route_task_type,
             primary_model_id=primary.id,
             temperature=0.3,
             max_tokens=2000,
-            system_prompt=CANONICAL_SYSTEM_PROMPT,
+            system_prompt=CANONICAL_SYSTEM_PROMPT if route_task_type == CHAT_ROUTE else "",
             enabled="true",
         )
         db.add(route)

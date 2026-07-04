@@ -1,21 +1,8 @@
-import { useEffect, useRef, useCallback, useState } from "react";
-import {
-  Plug,
-  BrainCircuit,
-  Plus,
-  X,
-  Check,
-  ChevronLeft,
-  Menu,
-  User,
-  ChevronDown,
-  Pencil,
-  LogOut,
-  MoreVertical,
-  Trash2,
-} from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import type { ChatSession, UserProfile, ActiveTab } from "../../types";
+import { cn } from "../../lib/utils";
+import { Codicon } from "../ui/Codicon";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,6 +27,11 @@ interface SidebarPanelProps {
   onToggleProfileMenu: () => void;
   onSignOut: () => void;
 }
+
+const SIDEBAR_NAV: ReadonlyArray<{ tab: ActiveTab; icon: string; label: string }> = [
+  { tab: "connected-accounts", icon: "plug", label: "Connectors" },
+  { tab: "ai-providers", icon: "symbol-misc", label: "AI Providers" },
+];
 
 export function SidebarPanel({
   activeTab,
@@ -70,35 +62,30 @@ export function SidebarPanel({
     editInputRef.current?.select();
   }, [editingSessionId]);
 
-  const handleClickOutside = useCallback((e: MouseEvent) => {
+  const handleClickOutside = useCallback((event: MouseEvent) => {
     if (
       profileMenuRef.current &&
-      !profileMenuRef.current.contains(e.target as Node) &&
+      !profileMenuRef.current.contains(event.target as Node) &&
       profileButtonRef.current &&
-      !profileButtonRef.current.contains(e.target as Node)
+      !profileButtonRef.current.contains(event.target as Node)
     ) {
       onToggleProfileMenu();
     }
   }, [onToggleProfileMenu]);
 
-  const handleEscape = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape") {
+  const handleEscape = useCallback((event: KeyboardEvent) => {
+    if (event.key === "Escape") {
       onToggleProfileMenu();
     }
   }, [onToggleProfileMenu]);
 
   useEffect(() => {
     if (!isProfileMenuOpen) return;
-    const ac = new AbortController();
-    document.addEventListener("mousedown", handleClickOutside, { signal: ac.signal });
-    document.addEventListener("keydown", handleEscape, { signal: ac.signal });
-    return () => ac.abort();
+    const controller = new AbortController();
+    document.addEventListener("mousedown", handleClickOutside, { signal: controller.signal });
+    document.addEventListener("keydown", handleEscape, { signal: controller.signal });
+    return () => controller.abort();
   }, [isProfileMenuOpen, handleClickOutside, handleEscape]);
-
-  const navItems: { tab: ActiveTab; icon: LucideIcon; label: string }[] = [
-    { tab: "connected-accounts", icon: Plug, label: "Connectors" },
-    { tab: "ai-providers", icon: BrainCircuit, label: "AI Providers" },
-  ];
 
   const startEditing = (session: ChatSession) => {
     setEditingSessionId(session.id);
@@ -120,219 +107,236 @@ export function SidebarPanel({
 
   if (isSidebarCollapsed) {
     return (
-      <div className="fixed top-3 left-3 z-40">
+      <div className="fixed left-2 top-2 z-40">
         <button
+          aria-label="Expand sidebar"
+          className="sidebar-icon-button size-7"
           onClick={() => onToggleCollapse(false)}
-          className="flex h-11 w-11 items-center justify-center rounded-lg border border-[var(--sidebar-edge-border)] bg-[var(--ui-sidebar-surface-background)] text-muted transition-colors hover:text-default"
-          title="Expand Sidebar"
+          title="Expand sidebar"
+          type="button"
         >
-          <Menu className="w-5 h-5" />
+          <Codicon name="layout-sidebar-right" size="0.875rem" />
         </button>
       </div>
     );
   }
 
   return (
-    <aside className="fixed inset-0 z-50 h-[100dvh] w-full flex flex-col justify-between select-none shrink-0 animate-fade-in bg-[var(--ui-sidebar-surface-background)] border-0 rounded-none overflow-hidden overscroll-none md:relative md:inset-auto md:z-auto md:h-full md:w-[var(--sidebar-width)] md:border-r md:border-[var(--sidebar-edge-border)]">
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="h-[var(--titlebar-height)] px-3 border-b border-[var(--ui-stroke-tertiary)] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <h1 className="font-semibold text-[0.8125rem] text-default">
-              AI Platform
-            </h1>
-          </div>
+    <aside className="sidebar-shell">
+      <div className="sidebar-main">
+        <div className="sidebar-titlebar">
+          <h1 className="sidebar-product-title">AI Platform</h1>
           <button
+            aria-label="Collapse sidebar"
+            className="sidebar-icon-button size-6"
             onClick={() => onToggleCollapse(true)}
-            className="rounded-md p-1 text-muted transition-colors hover-bg-surface hover:text-default"
-            title="Collapse Sidebar"
+            title="Collapse sidebar"
+            type="button"
           >
-            <ChevronLeft className="hidden md:block w-4 h-4" />
-            <X className="md:hidden w-4 h-4" />
+            <Codicon name="chevron-left" size="0.875rem" />
           </button>
         </div>
 
-        <div className="px-2.5 py-2 border-b border-[var(--ui-stroke-tertiary)] space-y-1">
-          <button
-            onClick={onNewChat}
-            className="nav-item"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="nav-item-label">New session</span>
+        <nav aria-label="Primary" className="sidebar-nav-block">
+          <button className="sidebar-nav-row" onClick={onNewChat} type="button">
+            <span className="sidebar-row-lead">
+              <Codicon name="robot" size="0.875rem" />
+            </span>
+            <span className="sidebar-row-label">New session</span>
           </button>
 
-          <div className="nav-list">
-            {navItems.map(({ tab, icon: Icon, label }) => (
+          <div className="sidebar-row-stack">
+            {SIDEBAR_NAV.map(({ tab, icon, label }) => (
               <button
+                aria-current={activeTab === tab ? "page" : undefined}
+                className={cn("sidebar-nav-row", activeTab === tab && "is-active")}
                 key={tab}
                 onClick={() => onTabChange(tab)}
-                className={`nav-item ${activeTab === tab ? "nav-item-active" : ""}`}
+                type="button"
               >
-                <Icon className="nav-item-icon" />
-                <span className="nav-item-label">{label}</span>
+                <span className="sidebar-row-lead">
+                  <Codicon name={icon} size="0.875rem" />
+                </span>
+                <span className="sidebar-row-label">{label}</span>
               </button>
             ))}
           </div>
-        </div>
+        </nav>
 
-        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-2.5 py-2 space-y-0.5">
-          <span className="px-2 py-1.5 block text-[0.64rem] font-semibold text-[var(--theme-primary)] uppercase tracking-[0.16em]">
-            Sessions
-          </span>
-          {isSessionsLoading && chatSessions.length === 0 ? (
-            <div className="text-center py-6 text-xs text-muted">Loading...</div>
-          ) : chatSessions.length === 0 ? (
-            <div className="text-center py-8 text-xs text-soft font-medium">
-              No recent conversations.
-            </div>
-          ) : (
-            chatSessions.map((sess) => {
-              const isEditing = editingSessionId === sess.id;
-              return (
-              <div
-                key={sess.id}
-                onClick={() => {
-                  if (!isEditing) onSelectSession(sess);
-                }}
-                className={`nav-item group cursor-pointer justify-between ${
-                  activeSession?.id === sess.id && activeTab === "chat" ? "nav-item-active" : ""
-                }`}
-              >
-                <div className="overflow-hidden flex-1 pr-2">
-                  {isEditing ? (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        commitEditing(sess);
-                      }}
-                    >
-                      <input
-                        ref={editInputRef}
-                        value={editingTitle}
-                        onChange={(e) => setEditingTitle(e.target.value)}
-                        onClick={(e) => e.stopPropagation()}
-                        onBlur={() => commitEditing(sess)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancelEditing();
-                          }
-                        }}
-                        className="w-full bg-transparent text-xs font-semibold leading-tight text-default outline-none"
-                        maxLength={80}
-                      />
-                    </form>
-                  ) : (
-                    <p className="text-xs font-semibold truncate leading-tight text-default" title={sess.title}>
-                      {sess.title}
-                    </p>
-                  )}
-                </div>
-                {isEditing ? (
-                  <button
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      commitEditing(sess);
-                    }}
-                    className="text-soft hover-text-default p-1 rounded hover-bg-surface transition-all shrink-0"
-                    title="Save title"
-                  >
-                    <Check className="w-3 h-3" />
-                  </button>
-                ) : (
-                  <div className="relative z-[2] grid w-[1.375rem] shrink-0 place-items-center">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          aria-label={`Actions for ${sess.title}`}
-                          className="grid h-5 w-5 place-items-center rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-[var(--ui-control-active-background)] hover:text-foreground focus-visible:bg-[var(--ui-control-active-background)] focus-visible:text-foreground data-[state=open]:bg-[var(--ui-control-active-background)] data-[state=open]:text-foreground group-hover:text-[var(--ui-text-tertiary)]"
-                          onClick={(e) => e.stopPropagation()}
-                          title="Session actions"
-                          type="button"
-                        >
-                          <MoreVertical className="h-3.5 w-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="end"
-                        aria-label={`Actions for ${sess.title}`}
-                        className="w-36"
-                        sideOffset={6}
-                      >
-                        <DropdownMenuItem onSelect={() => startEditing(sess)}>
-                          <Pencil className="h-3.5 w-3.5 text-muted" />
-                          <span>Rename</span>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() => onDeleteSession(sess.id)}
-                          variant="destructive"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          <span>Delete</span>
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                )}
+        <div className="sidebar-session-scroll">
+          <section className="sidebar-section sidebar-section-fill" aria-label="Sessions">
+            <SidebarSectionLabel meta={String(chatSessions.length)}>Sessions</SidebarSectionLabel>
+            {isSessionsLoading && chatSessions.length === 0 ? (
+              <div className="sidebar-empty-state">Loading...</div>
+            ) : chatSessions.length === 0 ? (
+              <div className="sidebar-empty-state">No recent conversations.</div>
+            ) : (
+              <div className="sidebar-row-stack">
+                {chatSessions.map((session) => (
+                  <SidebarSessionRow
+                    active={activeSession?.id === session.id && activeTab === "chat"}
+                    editing={editingSessionId === session.id}
+                    editingTitle={editingTitle}
+                    inputRef={editInputRef}
+                    key={session.id}
+                    onCancelEditing={cancelEditing}
+                    onCommitEditing={() => commitEditing(session)}
+                    onDelete={() => onDeleteSession(session.id)}
+                    onEditingTitleChange={setEditingTitle}
+                    onResume={() => onSelectSession(session)}
+                    onStartEditing={() => startEditing(session)}
+                    session={session}
+                  />
+                ))}
               </div>
-              );
-            })
-          )}
+            )}
+          </section>
         </div>
       </div>
 
-      <div className="p-2 border-t border-[var(--ui-stroke-tertiary)] relative">
+      <div className="sidebar-footer">
         {isProfileMenuOpen && (
-          <div
-            ref={profileMenuRef}
-            className="absolute bottom-16 left-3 right-3 z-50 space-y-1 rounded-md border border-[var(--ui-stroke-secondary)] bg-[color-mix(in_srgb,var(--ui-bg-elevated)_96%,transparent)] p-2 py-3 text-left shadow-sm backdrop-blur-sm animate-fade-in"
-          >
-            <div className="px-3 py-1">
-              <p className="text-xs font-bold text-default truncate">
-                {activeUser?.displayName}
-              </p>
-              <p className="text-[10px] text-muted truncate mt-0.5">
-                {activeUser?.email}
-              </p>
+          <div ref={profileMenuRef} className="sidebar-profile-menu">
+            <div className="sidebar-profile-menu-header">
+              <p>{activeUser?.displayName}</p>
+              <span>{activeUser?.email}</span>
             </div>
-            <div className="border-t border-[var(--ui-stroke-tertiary)] my-1" />
-
-            <button
-              onClick={onSignOut}
-              className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-[var(--color-danger)] hover:bg-[var(--ui-row-hover-background)] hover:text-[var(--color-danger)] rounded-[4px] text-left transition-colors"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Sign Out
+            <button className="sidebar-profile-menu-item is-danger" onClick={onSignOut} type="button">
+              <Codicon name="sign-out" size="0.875rem" />
+              <span>Sign Out</span>
             </button>
           </div>
         )}
 
         <button
           ref={profileButtonRef}
-          onClick={onToggleProfileMenu}
+          aria-expanded={isProfileMenuOpen}
+          className="sidebar-profile-row"
           data-state={isProfileMenuOpen ? "open" : "closed"}
-          className="w-full flex items-center justify-between p-1.5 rounded-md bg-transparent transition-colors hover:bg-[var(--ui-row-hover-background)] data-[state=open]:bg-[var(--ui-control-active-background)]"
+          onClick={onToggleProfileMenu}
+          type="button"
         >
-          <div className="flex items-center gap-2.5 overflow-hidden">
-            <div className="w-7 h-7 rounded-md bg-[var(--ui-bg-tertiary)] border border-[var(--ui-stroke-tertiary)] flex items-center justify-center shrink-0">
-              <User className="w-3.5 h-3.5 text-muted" />
-            </div>
-            <div className="text-left overflow-hidden">
-              <p className="text-[0.75rem] font-medium text-default truncate">
-                {activeUser?.displayName}
-              </p>
-              <span className="text-[9px] text-muted truncate block">
-                Microsoft ID Active
-              </span>
-            </div>
-          </div>
-          <ChevronDown
-            className={`w-3.5 h-3.5 text-muted transition-all ${
-              isProfileMenuOpen ? "rotate-180" : ""
-            }`}
-          />
+          <span className="sidebar-profile-avatar">
+            <Codicon name="account" size="0.875rem" />
+          </span>
+          <span className="sidebar-profile-copy">
+            <span>{activeUser?.displayName}</span>
+            <small>Microsoft ID Active</small>
+          </span>
+          <Codicon className="sidebar-profile-caret" name="chevron-down" size="0.875rem" />
         </button>
       </div>
     </aside>
+  );
+}
+
+function SidebarSectionLabel({
+  children,
+  meta,
+}: {
+  children: string;
+  meta: string | null;
+}) {
+  return (
+    <div className="sidebar-section-label">
+      <span aria-hidden="true" className="sidebar-section-dot dither" />
+      <span className="sidebar-section-name">{children}</span>
+      {meta ? <span className="sidebar-section-meta">{meta}</span> : null}
+    </div>
+  );
+}
+
+function SidebarSessionRow({
+  active,
+  editing,
+  editingTitle,
+  inputRef,
+  onCancelEditing,
+  onCommitEditing,
+  onDelete,
+  onEditingTitleChange,
+  onResume,
+  onStartEditing,
+  session,
+}: {
+  active: boolean;
+  editing: boolean;
+  editingTitle: string;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onCancelEditing: () => void;
+  onCommitEditing: () => void;
+  onDelete: () => void;
+  onEditingTitleChange: (title: string) => void;
+  onResume: () => void;
+  onStartEditing: () => void;
+  session: ChatSession;
+}) {
+  return (
+    <div className={cn("sidebar-session-row group", active && "is-active")}>
+      {editing ? (
+        <form
+          className="sidebar-session-body"
+          onClick={(event) => event.stopPropagation()}
+          onSubmit={(event) => {
+            event.preventDefault();
+            onCommitEditing();
+          }}
+        >
+          <input
+            className="sidebar-rename-input"
+            maxLength={80}
+            onBlur={onCommitEditing}
+            onChange={(event) => onEditingTitleChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onCancelEditing();
+              }
+            }}
+            ref={inputRef}
+            value={editingTitle}
+          />
+          <button
+            aria-label="Save title"
+            className="sidebar-action-button is-visible"
+            onMouseDown={(event) => event.preventDefault()}
+            type="submit"
+          >
+            <Codicon name="check" size="0.875rem" />
+          </button>
+        </form>
+      ) : (
+        <>
+          <button className="sidebar-session-body" onClick={onResume} type="button">
+            <span className="sidebar-row-label">{session.title}</span>
+          </button>
+          <div className="sidebar-session-actions">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={`Actions for ${session.title}`}
+                  className="sidebar-action-button"
+                  onClick={(event) => event.stopPropagation()}
+                  title="Session actions"
+                  type="button"
+                >
+                  <Codicon name="kebab-vertical" size="0.875rem" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" aria-label={`Actions for ${session.title}`} className="w-36" sideOffset={6}>
+                <DropdownMenuItem onSelect={onStartEditing}>
+                  <Codicon name="edit" size="0.875rem" />
+                  <span>Rename</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={onDelete} variant="destructive">
+                  <Codicon name="trash" size="0.875rem" />
+                  <span>Delete</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </>
+      )}
+    </div>
   );
 }

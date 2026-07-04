@@ -33,11 +33,15 @@ WorkspaceToolExecutor = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]
 
 WORKSPACE_TOOL_NAME = "workspace"
 WORKSPACE_BACKEND = "local-workspace"
+WORKSPACE_OUTPUT_DIR = "outputs"
+WORKSPACE_INPUT_DIR = "inputs"
+WORKSPACE_MANIFEST_FILENAME = "workspace_manifest.json"
 MAX_CODE_CHARS = int(os.environ.get("WORKSPACE_MAX_CODE_CHARS", "60000"))
 MAX_INPUT_FILES = int(os.environ.get("WORKSPACE_MAX_INPUT_FILES", "10"))
 MAX_INPUT_FILE_CHARS = int(os.environ.get("WORKSPACE_MAX_INPUT_FILE_CHARS", "100000"))
-MAX_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_MAX_TIMEOUT_SECONDS", "120"))
+MAX_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_MAX_TIMEOUT_SECONDS", "600"))
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_DEFAULT_TIMEOUT_SECONDS", "60"))
+BROKER_SOCKET_TIMEOUT_SECONDS = int(os.environ.get("WORKSPACE_BROKER_SOCKET_TIMEOUT_SECONDS", "120"))
 MAX_OUTPUT_CHARS = int(os.environ.get("WORKSPACE_MAX_OUTPUT_CHARS", "20000"))
 MAX_COLLECTED_FILES = int(os.environ.get("WORKSPACE_MAX_COLLECTED_FILES", "20"))
 MAX_COLLECTED_FILE_BYTES = int(os.environ.get("WORKSPACE_MAX_COLLECTED_FILE_BYTES", str(15 * 1024 * 1024)))
@@ -53,10 +57,24 @@ INTERNAL_WORKSPACE_FILES = {
     "__ai_platform_runner.py",
     "ai_platform_tools.py",
     "ai-platform-tool",
+    WORKSPACE_MANIFEST_FILENAME,
 }
 
 PYTHON_RUNNER = """
-from ai_platform_tools import PlatformToolError, call, call_checked, call_raw
+from ai_platform_tools import (
+    PlatformToolError,
+    call,
+    call_checked,
+    call_raw,
+    download_file,
+    file_info,
+    list_files,
+    output_path,
+    read_document,
+    read_layout,
+    read_tables,
+    save_output,
+)
 
 namespace = {
     "__name__": "__main__",
@@ -65,6 +83,14 @@ namespace = {
     "call": call,
     "call_checked": call_checked,
     "call_raw": call_raw,
+    "download_file": download_file,
+    "file_info": file_info,
+    "list_files": list_files,
+    "output_path": output_path,
+    "read_document": read_document,
+    "read_layout": read_layout,
+    "read_tables": read_tables,
+    "save_output": save_output,
 }
 with open("main.py", "r", encoding="utf-8") as handle:
     source = handle.read()
@@ -98,17 +124,19 @@ def _workspace_root() -> Path:
 
 def _clean_env(workdir: Path) -> dict[str, str]:
     bin_dir = workdir / "bin"
+    runtime_bin = Path(sys.executable).parent
     return {
         "HOME": str(workdir),
         "TMPDIR": str(workdir),
         "TEMP": str(workdir),
         "TMP": str(workdir),
-        "PATH": f"{bin_dir}:/usr/local/bin:/usr/bin:/bin",
+        "PATH": f"{bin_dir}:{runtime_bin}:/usr/local/bin:/usr/bin:/bin",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
         "PYTHONNOUSERSITE": "1",
         "PYTHONPATH": str(workdir),
         "AI_PLATFORM_WORKSPACE": "1",
+        "AI_PLATFORM_OUTPUT_DIR": WORKSPACE_OUTPUT_DIR,
     }
 
 
@@ -177,6 +205,61 @@ def _write_input_files(workdir: Path, raw_files: Any) -> list[dict[str, Any]]:
     return written
 
 
+def _normalize_manifest_artifacts(raw_artifacts: Any) -> list[dict[str, Any]]:
+    if not raw_artifacts:
+        return []
+    if not isinstance(raw_artifacts, list):
+        return []
+
+    files: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_artifacts:
+        if not isinstance(item, dict):
+            continue
+        raw_id = str(item.get("id") or item.get("artifact_id") or "").strip()
+        filename = str(item.get("filename") or item.get("name") or "").strip()
+        if not raw_id or not filename or raw_id in seen:
+            continue
+        try:
+            text_chars = int(item.get("text_chars") or 0)
+        except (TypeError, ValueError):
+            text_chars = 0
+        seen.add(raw_id)
+        files.append(
+            {
+                "id": raw_id,
+                "artifact_id": raw_id,
+                "filename": filename,
+                "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+                "artifact_type": str(item.get("artifact_type") or "chat-file"),
+                "sha256": str(item.get("sha256") or "") or None,
+                "extraction_status": str(item.get("extraction_status") or "not_required"),
+                "extraction_source": str(item.get("extraction_source") or "") or None,
+                "text_chars": text_chars,
+            }
+        )
+    return files
+
+
+def _write_workspace_manifest(workdir: Path, artifacts: list[dict[str, Any]]) -> None:
+    manifest = {
+        "version": 1,
+        "files": artifacts,
+        "input_dir": WORKSPACE_INPUT_DIR,
+        "output_dir": WORKSPACE_OUTPUT_DIR,
+        "notes": [
+            "Use list_files() to inspect uploaded/session files.",
+            "Use download_file(ref) for raw uploaded bytes.",
+            "Use read_document(ref), read_tables(ref), or read_layout(ref) for extracted/OCR content.",
+            "Use save_output(filename, data) or output_path(filename) for user-facing returned files.",
+        ],
+    }
+    (workdir / WORKSPACE_MANIFEST_FILENAME).write_text(
+        json.dumps(manifest, ensure_ascii=False, default=str, indent=2),
+        encoding="utf-8",
+    )
+
+
 class WorkspaceToolBroker:
     def __init__(self, executor: WorkspaceToolExecutor | None, workdir: Path) -> None:
         self.executor = executor
@@ -224,9 +307,14 @@ class WorkspaceToolBroker:
         try:
             writer.write(json.dumps(response, ensure_ascii=False, default=str).encode("utf-8"))
             await writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
 
     async def _execute_request(self, request: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(request, dict) or request.get("token") != self.token:
@@ -271,19 +359,182 @@ def _connector_error_detail(tool_name: str, arguments: dict[str, Any], result: d
 
 def _write_tool_helpers(workdir: Path, broker: WorkspaceToolBroker) -> None:
     tools_helper = f'''
+import base64
 import json
+import os
 import socket
 
 _HOST = {broker.host!r}
 _PORT = {broker.port!r}
 _SOCKET_PATH = {broker.socket_path!r}
 _TOKEN = {broker.token!r}
+_BROKER_SOCKET_TIMEOUT = {BROKER_SOCKET_TIMEOUT_SECONDS!r}
+INPUT_DIR = {WORKSPACE_INPUT_DIR!r}
+OUTPUT_DIR = {WORKSPACE_OUTPUT_DIR!r}
+MANIFEST_FILE = {WORKSPACE_MANIFEST_FILENAME!r}
 
 
 class PlatformToolError(RuntimeError):
     def __init__(self, message, payload=None):
         super().__init__(message)
         self.payload = payload or {{}}
+
+
+def output_path(filename):
+    """Return a path under outputs/ for files that should be returned to chat."""
+    filename = str(filename or "").strip().replace("\\\\", "/").lstrip("/")
+    parts = filename.split("/")
+    if not filename or any(part in ("", ".", "..") for part in parts):
+        raise ValueError("Output filename must be a safe relative path.")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    return os.path.join(OUTPUT_DIR, *parts)
+
+
+def save_output(filename, data, mode=None):
+    """Save a user-facing output file under outputs/ and return its path."""
+    path = output_path(filename)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    binary = isinstance(data, (bytes, bytearray))
+    file_mode = mode or ("wb" if binary else "w")
+    if "b" in file_mode:
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        with open(path, file_mode) as handle:
+            handle.write(data)
+    else:
+        with open(path, file_mode, encoding="utf-8") as handle:
+            handle.write(str(data))
+    return path
+
+
+def _safe_relative_path(path):
+    path = str(path or "").strip().replace("\\\\", "/").lstrip("/")
+    parts = path.split("/")
+    if not path or any(part in ("", ".", "..") for part in parts):
+        raise ValueError("Path must be a safe relative path.")
+    return os.path.join(*parts)
+
+
+def _load_manifest():
+    try:
+        with open(MANIFEST_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {{"files": []}}
+    files = payload.get("files") if isinstance(payload, dict) else []
+    if not isinstance(files, list):
+        files = []
+    return {{"files": [dict(item) for item in files if isinstance(item, dict)]}}
+
+
+def list_files():
+    """Return uploaded/session files available to this workspace."""
+    return _load_manifest()["files"]
+
+
+def _ref_value(value):
+    return str(value or "").strip()
+
+
+def _ref_lower(value):
+    return _ref_value(value).lower()
+
+
+def _basename(value):
+    return os.path.basename(_ref_value(value).replace("\\\\", "/"))
+
+
+def file_info(ref=None):
+    """Resolve an uploaded/session file by id, artifact_id, filename, or basename."""
+    files = list_files()
+    if ref is None or str(ref).strip() == "":
+        return files
+
+    key = _ref_value(ref)
+    key_lower = key.lower()
+
+    exact = []
+    for item in files:
+        values = [
+            _ref_value(item.get("id")),
+            _ref_value(item.get("artifact_id")),
+            _ref_value(item.get("filename")),
+            _basename(item.get("filename")),
+        ]
+        if key in values or key_lower in [value.lower() for value in values if value]:
+            exact.append(item)
+
+    if len(exact) == 1:
+        return dict(exact[0])
+    if len(exact) > 1:
+        names = ", ".join(_ref_value(item.get("filename")) for item in exact[:10])
+        raise ValueError(f"File reference {{ref!r}} is ambiguous. Matches: {{names}}")
+
+    partial = [
+        item
+        for item in files
+        if key_lower in _ref_lower(item.get("filename")) or key_lower in _ref_lower(_basename(item.get("filename")))
+    ]
+    if len(partial) == 1:
+        return dict(partial[0])
+    if len(partial) > 1:
+        names = ", ".join(_ref_value(item.get("filename")) for item in partial[:10])
+        raise ValueError(f"File reference {{ref!r}} is ambiguous. Matches: {{names}}")
+
+    available = ", ".join(_ref_value(item.get("filename")) for item in files[:20])
+    raise ValueError(f"File {{ref!r}} is not available in this workspace. Available files: {{available}}")
+
+
+def _artifact_id(ref):
+    info = file_info(ref)
+    artifact_id = _ref_value(info.get("artifact_id") or info.get("id"))
+    if not artifact_id:
+        raise ValueError(f"File {{ref!r}} has no artifact_id.")
+    return artifact_id, info
+
+
+def download_file(ref, path=None):
+    """Download an uploaded/session artifact into inputs/ and return the local path."""
+    artifact_id, info = _artifact_id(ref)
+    response = call_checked("document_reader", {{"artifact_id": artifact_id, "mode": "download"}})
+    content_base64 = response.get("content_base64")
+    if not isinstance(content_base64, str) or not content_base64:
+        raise PlatformToolError("Document Reader download did not return content_base64.", response)
+
+    if path is None:
+        filename = _basename(info.get("filename")) or f"artifact-{{artifact_id}}"
+        target = os.path.join(INPUT_DIR, _safe_relative_path(filename))
+    else:
+        target = _safe_relative_path(path)
+
+    os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
+    with open(target, "wb") as handle:
+        handle.write(base64.b64decode(content_base64))
+    return target
+
+
+def read_document(ref, **kwargs):
+    """Read extracted/OCR text for an uploaded/session artifact."""
+    artifact_id, _info = _artifact_id(ref)
+    arguments = {{"artifact_id": artifact_id, "mode": "read"}}
+    arguments.update(kwargs)
+    return call_checked("document_reader", arguments)
+
+
+def read_tables(ref, **kwargs):
+    """Read structured tables for an uploaded/session artifact."""
+    artifact_id, _info = _artifact_id(ref)
+    arguments = {{"artifact_id": artifact_id, "mode": "tables"}}
+    arguments.update(kwargs)
+    return call_checked("document_reader", arguments)
+
+
+def read_layout(ref, **kwargs):
+    """Read layout/pages for an uploaded/session artifact."""
+    artifact_id, _info = _artifact_id(ref)
+    arguments = {{"artifact_id": artifact_id, "mode": "layout"}}
+    arguments.update(kwargs)
+    return call_checked("document_reader", arguments)
 
 
 def call_raw(tool_name, arguments=None):
@@ -295,10 +546,10 @@ def call_raw(tool_name, arguments=None):
     }}
     if _SOCKET_PATH:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(60)
+        sock.settimeout(_BROKER_SOCKET_TIMEOUT)
         sock.connect(_SOCKET_PATH)
     else:
-        sock = socket.create_connection((_HOST, _PORT), timeout=60)
+        sock = socket.create_connection((_HOST, _PORT), timeout=_BROKER_SOCKET_TIMEOUT)
     with sock:
         sock.sendall(json.dumps(payload, default=str).encode("utf-8") + b"\\n")
         chunks = []
@@ -381,6 +632,15 @@ if __name__ == "__main__":
     cli_path.write_text(textwrap.dedent(cli).strip() + "\n", encoding="utf-8")
     cli_path.chmod(0o700)
 
+    launcher_block = '''#!/usr/bin/env sh
+echo "Workspace cannot open local desktop applications. Save deliverables under outputs/ so the platform returns them as chat attachments." >&2
+exit 64
+'''
+    for command_name in ("open", "xdg-open", "start"):
+        launcher_path = bin_dir / command_name
+        launcher_path.write_text(textwrap.dedent(launcher_block).strip() + "\n", encoding="utf-8")
+        launcher_path.chmod(0o700)
+
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -402,11 +662,16 @@ def _is_text_preview(data: bytes) -> bool:
 
 def _collect_files(workdir: Path) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
+    output_root = workdir / WORKSPACE_OUTPUT_DIR
+    if not output_root.exists():
+        return files
     root = workdir.resolve()
-    for path in sorted(workdir.rglob("*")):
+    for path in sorted(output_root.rglob("*")):
         if "__pycache__" in path.parts:
             continue
         if not path.is_file() or path.name in INTERNAL_WORKSPACE_FILES:
+            continue
+        if path.name.startswith("."):
             continue
         if len(files) >= MAX_COLLECTED_FILES:
             files.append({"truncated": True, "message": "Additional workspace files were omitted from the result."})
@@ -506,8 +771,9 @@ async def run_workspace(
     arguments: dict[str, Any],
     *,
     tool_executor: WorkspaceToolExecutor | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    async with WorkspaceSession(tool_executor=tool_executor) as session:
+    async with WorkspaceSession(tool_executor=tool_executor, artifacts=artifacts) as session:
         return await session.run(arguments)
 
 
@@ -518,17 +784,30 @@ class WorkspaceSession:
         self,
         *,
         tool_executor: WorkspaceToolExecutor | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
         workspace_id: str | None = None,
+        persistent: bool = False,
     ) -> None:
         self.tool_executor = tool_executor
+        self.artifacts = _normalize_manifest_artifacts(artifacts)
         self.workspace_id = workspace_id or uuid.uuid4().hex
+        self.persistent = persistent
         self.workdir = _workspace_root() / self.workspace_id
+        self._run_index_file = self.workdir / ".run_index"
         self._broker: WorkspaceToolBroker | None = None
         self._entered = False
         self._run_index = 0
 
     async def __aenter__(self) -> "WorkspaceSession":
-        self.workdir.mkdir(parents=True, exist_ok=False)
+        self.workdir.mkdir(parents=True, exist_ok=self.persistent)
+        (self.workdir / WORKSPACE_INPUT_DIR).mkdir(parents=True, exist_ok=True)
+        (self.workdir / WORKSPACE_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        if self.persistent and self._run_index_file.exists():
+            try:
+                self._run_index = int(self._run_index_file.read_text(encoding="utf-8").strip() or "0")
+            except ValueError:
+                self._run_index = 0
+        _write_workspace_manifest(self.workdir, self.artifacts)
         broker = WorkspaceToolBroker(self.tool_executor, self.workdir)
         self._broker = await broker.__aenter__()
         _write_tool_helpers(self.workdir, self._broker)
@@ -541,7 +820,7 @@ class WorkspaceSession:
                 await self._broker.__aexit__(*exc)
         finally:
             self._entered = False
-            if os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
+            if not self.persistent and os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
                 shutil.rmtree(self.workdir, ignore_errors=True)
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -569,6 +848,8 @@ class WorkspaceSession:
             return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
 
         self._run_index += 1
+        if self.persistent:
+            self._run_index_file.write_text(str(self._run_index), encoding="utf-8")
         before_calls = self._broker.calls
         before_call_counts = dict(self._broker.call_counts)
         before_error_counts = dict(self._broker.error_counts)
@@ -605,6 +886,7 @@ class WorkspaceSession:
                 "stdout": _truncate_text(stdout),
                 "stderr": _truncate_text(stderr),
                 "files": files,
+                "available_files": self.artifacts,
                 "input_files": input_files,
                 "tool_calls": self._broker.calls - before_calls,
                 "connector_calls": connector_calls,

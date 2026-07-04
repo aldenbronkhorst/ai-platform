@@ -84,6 +84,36 @@ def test_app_shell_is_edge_flush_without_outer_bubble():
     assert "overflow: hidden;" in css
 
 
+def test_sidebar_uses_hermes_codicon_row_chrome_not_old_nav_items():
+    sidebar_path = os.path.join(SRC_DIR, "components", "layout", "SidebarPanel.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+    with open(sidebar_path, "r", encoding="utf-8") as f:
+        sidebar = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert 'import { Codicon } from "../ui/Codicon";' in sidebar
+    assert "lucide-react" not in sidebar
+    assert "nav-item" not in sidebar
+    assert ".nav-item" not in css
+    assert "sidebar-nav-row" in sidebar
+    assert "sidebar-session-row" in sidebar
+    assert 'name="robot"' in sidebar
+    assert 'icon: "plug"' in sidebar
+    assert 'icon: "symbol-misc"' in sidebar
+    assert 'name="kebab-vertical"' in sidebar
+    assert "Pinned" not in sidebar
+    assert "Shift-click a chat to pin" not in sidebar
+    assert 'name="pin"' not in sidebar
+    assert "sidebar-pinned-empty" not in css
+    assert "sidebar-kbd" not in sidebar
+    assert "sidebar-kbd" not in css
+    assert "⌘" not in sidebar
+    assert "sidebar-section-label" in css
+    assert "sidebar-session-dot" not in sidebar
+    assert "sidebar-session-dot" not in css
+
+
 def test_portal_html_metatags():
     """Verify that index.html contains correct product-level title and metadata, eliminating bot redundancy."""
     index_path = os.path.join(BUILD_DIR, "index.html")
@@ -182,7 +212,8 @@ def test_voice_uses_server_transcription_without_browser_speech_recognition():
     assert "downsampleAudio" in hook_content
     assert "/voice/transcribe" in chat_controller_content
     assert "FormData" in chat_controller_content
-    assert "Authorization: `Bearer ${accessToken}`" in chat_controller_content
+    assert "fetchWithAuth" in chat_controller_content
+    assert "getAccessToken" in chat_controller_content
 
 
 def test_voice_records_wav_then_submits_transcript():
@@ -205,7 +236,38 @@ def test_voice_interim_text_is_visible_in_composer():
 
     assert "voiceInterimTranscript" in content
     assert "cleanVoiceInterim" in content
-    assert "bg-[var(--color-warning)] text-white" in content
+    assert "bg-[var(--ui-control-active-background)] text-foreground" in content
+    assert "text-[var(--ui-text-secondary)]" in content
+
+
+def test_ai_provider_page_shows_active_items_first_with_add_more_sections():
+    page_path = os.path.join(SRC_DIR, "pages", "AIProvidersPage.tsx")
+    css_path = os.path.join(SRC_DIR, "index.css")
+    with open(page_path, "r", encoding="utf-8") as f:
+        page = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read()
+
+    assert "function isActiveProvider" in page
+    assert 'provider.api_key_status === "saved"' in page
+    assert "const allModelRows = useMemo" in page
+    assert "const activeProviderRows = useMemo" in page
+    assert "const availableProviderRows = useMemo" in page
+    assert "const activeModelRows = useMemo" in page
+    assert "const inactiveModelRows = useMemo" in page
+    assert "return providerRows.filter(row => isActiveProvider(row.provider));" in page
+    assert "return providerRows.filter(row => !isActiveProvider(row.provider));" in page
+    assert "return allModelRows.filter(row => isActiveProvider(row.provider) && boolValue(row.model.enabled));" in page
+    assert "return allModelRows.filter(row => !isActiveProvider(row.provider) || !boolValue(row.model.enabled));" in page
+    assert "Add more providers" in page
+    assert "Show inactive models" in page
+    assert "filteredActiveProviderRows.map(row => renderProviderRow(row))" in page
+    assert "filteredAvailableProviderRows.map(row => renderProviderRow(row))" in page
+    assert "filteredActiveModelRows.map(row => renderModelRow(row))" in page
+    assert "filteredInactiveModelRows.map(row => renderModelRow(row))" in page
+    assert ".settings-secondary-section" in css
+    assert ".settings-disclosure-row" in css
+    assert ".settings-count" in css
 
 
 def test_chat_composer_focuses_like_hermes_on_session_change():
@@ -256,7 +318,8 @@ def test_attachment_filename_hover_uses_portal_tooltip_not_native_title():
         css = f.read()
 
     assert 'import { Tip } from "../ui/tooltip";' in attachment
-    assert "<Tip label={filename} side=\"top\">" in attachment
+    assert "const tooltip = (" in attachment
+    assert "<Tip label={tooltip} side=\"top\">" in attachment
     assert "TooltipPrimitive.Portal" in tooltip
     assert "bg-[var(--color-surface-raised)]" in tooltip
     assert "text-[var(--color-text)]" in tooltip
@@ -264,8 +327,12 @@ def test_attachment_filename_hover_uses_portal_tooltip_not_native_title():
     assert "text-[var(--color-bg)]" not in tooltip
     assert "text-background" not in tooltip
     assert "title={filename}" not in attachment
+    assert "artifactType === \"chat-generated\"" in attachment
+    assert "file-attachment-tile-generated" in attachment
+    assert "aria-disabled={!interactive || undefined}" in attachment
     assert "file-attachment-tooltip" not in attachment
     assert ".file-attachment-tooltip" not in css
+    assert ".file-attachment-tip" in css
 
 
 def test_user_message_attachments_scroll_below_sticky_bubble():
@@ -357,8 +424,10 @@ def test_auth_session_restores_ios_pwa_accounts_promptlessly_once():
     assert "window.sessionStorage.setItem(key, \"1\")" in auth_session
     assert "const storedHint = readStoredAuthHint();" in auth_hook
     assert "instance.loginRedirect(promptlessLoginRequest(loginRequest, storedHint))" in auth_hook
-    assert "rememberAuthAccount(response.account || activeAccount)" in auth_hook
-    assert "instance.acquireTokenRedirect(promptlessLoginRequest(loginRequest, activeAccount))" in auth_hook
+    assert "rememberAuthAccount(response.account || account)" in auth_hook
+    assert "TOKEN_REFRESH_INTERVAL_MS" in auth_hook
+    assert "window.addEventListener(\"focus\", refreshWhenActive)" in auth_hook
+    assert "instance.acquireTokenRedirect(promptlessLoginRequest(loginRequest, account))" in auth_hook
     assert "clearStoredAuthHint()" in auth_hook
     assert "rememberAuthAccount(redirectResponse.account)" in main
     assert "loginRequestWithAuthHint(loginRequest, readStoredAuthHint())" in app
@@ -377,7 +446,7 @@ def test_connections_page_does_not_load_backend_platform_tools():
     assert "canonicalPlatformTools" not in content
 
 
-def test_microsoft_native_connectors_use_separate_native_sign_ins():
+def test_microsoft_native_connectors_use_backend_metadata_and_separate_native_sign_ins():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -386,12 +455,13 @@ def test_microsoft_native_connectors_use_separate_native_sign_ins():
     assert "MICROSOFT_CONSENT_STEPS" not in content
     assert "Authorize Missing Profiles" not in content
     assert "microsoft_admin" not in content
+    assert "CONNECTOR_FALLBACKS" not in content
+    assert "CONNECTOR_FALLBACK_BY_KEY" not in content
+    assert "connectorDefinitions(meta: Record<string, ConnectorMeta> | null)" in content
+    assert "if (!meta) return [];" in content
+    assert "connector.display_name || formatStatusLabel(key)" in content
+    assert 'connector.subtitle || connector.auth_method || "Connector"' in content
     assert "/connector/microsoft-native/" in content
-    assert "Azure CLI" in content
-    assert "Microsoft Graph" in content
-    assert "Exchange Online" in content
-    assert "Teams Admin" in content
-    assert "SharePoint / PnP" in content
     assert "azure_cli" in content
     assert "microsoft_graph" in content
     assert "exchange_online" in content
@@ -500,11 +570,71 @@ def test_reasoning_stream_matches_hermes_message_part_rules():
     assert "live && index === orderedParts.length - 1" not in assistant
 
 
+def test_thread_message_list_uses_hermes_part_count_signature():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+
+    assert "function contentWeight" not in assistant
+    assert "partText.length / 400" not in assistant
+    assert "message.content?.length ?? 1" in assistant
+    assert "MessageRenderBoundary resetKey={messageSignature}" in assistant
+
+
+def test_thinking_disclosure_body_matches_hermes_conditional_mount():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+
+    start = assistant.index("function ThinkingDisclosure")
+    end = assistant.index("function ReasoningGroup", start)
+    thinking = assistant[start:end]
+
+    assert "{open && (" in thinking
+    assert 'isPreview && "thinking-preview max-h-40"' in thinking
+    assert "useDisclosureOpen(disclosureId, Boolean(pending))" in thinking
+    assert "setOpen(true)" in thinking
+    assert "setOpen(value => !value)" in thinking
+    assert "userOpen" not in thinking
+    assert "userOpen ?? Boolean(pending)" not in thinking
+    assert "aria-hidden={!open}" not in thinking
+    assert '!open && "hidden"' not in thinking
+
+
+def test_reasoning_blocks_keep_independent_live_state():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+
+    assert 'timerKey={`reasoning:${messageId}:${startIndex}-${endIndex}`}' in assistant
+    assert 'const isRunning = status?.type === "running";' in assistant
+    assert 'status?.type === "running" || messageRunning' not in assistant
+
+
+def test_tool_and_thinking_disclosures_use_stable_row_state():
+    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
+    with open(assistant_path, "r", encoding="utf-8") as f:
+        assistant = f.read()
+
+    assert "const disclosureStates = new Map<string, boolean>();" in assistant
+    assert "function useDisclosureOpen" in assistant
+    assert "useSyncExternalStore(" in assistant
+    assert "DISCLOSURE_STATE_LIMIT = 240" in assistant
+    assert 'disclosureId={`reasoning:${messageId}:${startIndex}-${endIndex}`}' in assistant
+    assert 'const disclosureId = `tool-entry:${messageId}:${toolCallId || `${toolName}:${stableDisclosureHash(safeJson(args))}`}`;' in assistant
+    assert "const [open, setOpen] = useState(false);" not in assistant
+
+
 def test_live_reasoning_reveal_keeps_hermes_ref_sync():
     renderer_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
+    animation_path = os.path.join(SRC_DIR, "lib", "use-enter-animation.ts")
     with open(renderer_path, "r", encoding="utf-8") as f:
         renderer = f.read()
+    with open(animation_path, "r", encoding="utf-8") as f:
+        animation = f.read()
 
+    assert "const [displayed, setDisplayed] = useState(text);" in renderer
+    assert 'useState(isRunning ? "" : text)' not in renderer
     assert "shownRef.current = displayed;" in renderer
     assert "targetRef.current = text;" in renderer
     assert "function commonPrefixLength" in renderer
@@ -513,6 +643,12 @@ def test_live_reasoning_reveal_keeps_hermes_ref_sync():
     assert "}, [text, isRunning, displayed]);" not in renderer
     assert "const revealed = useSmoothReveal(text, isRunning)" in renderer
     assert "isRunning || revealed !== text" in renderer
+    assert "const enabledRef = useRef(enabled);" in animation
+    assert "const keyRef = useRef(animationKey);" in animation
+    assert "enabledRef.current = enabled;" in animation
+    assert "keyRef.current = animationKey;" in animation
+    assert "}, []);" in animation
+    assert "}, [animationKey, enabled]);" not in animation
 
 
 def test_stream_updates_apply_each_chunk_once():

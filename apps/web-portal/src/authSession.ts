@@ -5,7 +5,7 @@ const AUTH_HINT_COOKIE = "ai_platform_last_account";
 const RESTORE_ATTEMPT_PREFIX = "ai-platform.auth.promptlessRestore.";
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 90;
 
-export interface StoredAuthHint {
+interface StoredAuthHint {
   username: string;
   homeAccountId?: string;
   localAccountId?: string;

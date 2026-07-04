@@ -173,7 +173,7 @@ export function ChatComposer({
       disabled={isVoiceDisabled}
       className={`${controlButtonClass} ${
         isListening || isVoiceProcessing
-          ? "bg-[var(--color-warning)] text-white shadow-sm"
+          ? "border border-[var(--ui-stroke-secondary)] bg-[var(--ui-control-active-background)] text-foreground shadow-sm"
           : "text-[var(--ui-text-secondary)] hover:bg-[var(--ui-control-hover-background)] hover:text-foreground"
       } disabled:opacity-40 disabled:cursor-not-allowed`}
       title={isVoiceDisabled ? "Voice not supported" : isVoiceProcessing ? "Transcribing voice input" : isListening ? "Stop listening" : "Voice input"}
@@ -221,10 +221,10 @@ export function ChatComposer({
           <div className="flex flex-wrap gap-2 px-3 pt-2 pb-1">
             {cleanVoiceInterim && (
               <div
-                className="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[var(--color-warning)]/30 bg-[var(--color-warning)]/10 px-2.5 py-1 text-xs font-medium text-foreground"
+                className="flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[var(--ui-stroke-tertiary)] bg-[var(--ui-control-active-background)] px-2.5 py-1 text-xs font-medium text-foreground"
                 title={cleanVoiceInterim}
               >
-                <Mic className="h-3.5 w-3.5 shrink-0 text-[var(--color-warning)]" />
+                <Mic className="h-3.5 w-3.5 shrink-0 text-[var(--ui-text-secondary)]" />
                 <span className="max-w-[260px] truncate sm:max-w-[420px]">{cleanVoiceInterim}</span>
               </div>
             )}

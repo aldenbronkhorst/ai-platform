@@ -12,7 +12,7 @@ export interface TimelineEntry {
 const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/;
 const PREVIEW_MAX = 120;
 
-export function timelinePreview(text: string, max: number = PREVIEW_MAX): string {
+function timelinePreview(text: string, max: number = PREVIEW_MAX): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   if (collapsed.length <= max) return collapsed;
   return `${collapsed.slice(0, max - 1).trimEnd()}…`;

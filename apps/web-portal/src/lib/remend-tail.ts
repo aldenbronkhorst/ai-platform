@@ -23,7 +23,7 @@ const isSpace = (c: number) => c === SPACE || c === TAB
  * unclosed fence/math always begins after that blank, so it stays wholly
  * inside the window without separate tracking. One cheap char pass, no regex.
  */
-export function findRemendWindowStart(text: string): number {
+function findRemendWindowStart(text: string): number {
   const n = text.length
   let inFence = false
   let fenceChar = 0

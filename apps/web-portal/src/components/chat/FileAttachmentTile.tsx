@@ -26,11 +26,16 @@ function sourceArtifact(source: TileSource): ChatAttachment | null {
   if ("file" in source) {
     return source.artifact ?? (source.id && !source.uploading && !source.error ? {
       id: source.id,
+      artifact_type: "chat-upload",
       filename: source.file.name,
       mime_type: sourceMimeType(source),
     } : null);
   }
   return source;
+}
+
+function sourceArtifactType(source: TileSource) {
+  return "file" in source ? source.artifact?.artifact_type : source.artifact_type;
 }
 
 function sourceUploading(source: TileSource) {
@@ -99,12 +104,20 @@ export function FileAttachmentTile({
   const id = attachment.id;
   const filename = sourceFilename(attachment);
   const mimeType = sourceMimeType(attachment);
+  const artifactType = sourceArtifactType(attachment);
   const artifact = sourceArtifact(attachment);
   const uploading = sourceUploading(attachment);
   const error = sourceError(attachment);
   const previewUrl = useLocalImagePreview(attachment, mimeType);
-  const detail = error || (uploading ? "Uploading" : typeLabel(filename, mimeType));
+  const fileType = typeLabel(filename, mimeType);
+  const detail = error || (uploading ? "Uploading" : artifactType === "chat-generated" ? `Generated ${fileType}` : fileType);
   const interactive = Boolean(artifact && onOpen && !uploading && !error);
+  const tooltip = (
+    <span className="file-attachment-tip">
+      <span className="file-attachment-tip-name">{filename}</span>
+      <span className="file-attachment-tip-detail">{detail}</span>
+    </span>
+  );
 
   const handleOpen = () => {
     if (artifact && onOpen && !uploading && !error) onOpen(artifact);
@@ -113,17 +126,19 @@ export function FileAttachmentTile({
   const tile = (
     <button
       aria-busy={uploading || undefined}
+      aria-disabled={!interactive || undefined}
       aria-label={interactive ? `Open ${filename}` : filename}
       className={cn(
         "file-attachment-tile",
         error && "file-attachment-tile-error",
+        artifactType === "chat-generated" && "file-attachment-tile-generated",
         interactive && "file-attachment-tile-interactive",
       )}
-      disabled={!interactive}
       onClick={(event) => {
         event.stopPropagation();
         handleOpen();
       }}
+      tabIndex={interactive ? 0 : -1}
       type="button"
     >
       <span className="file-attachment-thumb">
@@ -148,8 +163,12 @@ export function FileAttachmentTile({
   );
 
   return (
-    <div className={cn("file-attachment-tile-wrap", variant === "composer" && "file-attachment-tile-wrap-composer")}>
-      <Tip label={filename} side="top">
+    <div
+      className={cn("file-attachment-tile-wrap", variant === "composer" && "file-attachment-tile-wrap-composer")}
+      data-slot="file-attachment"
+      data-variant={variant}
+    >
+      <Tip label={tooltip} side="top">
         {tile}
       </Tip>
       {onRemove && id && !uploading && (

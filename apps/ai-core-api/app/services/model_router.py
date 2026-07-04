@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import os
 import re
 import json
@@ -27,6 +29,7 @@ from app.services.tool_registry import (
 )
 from app.services.tool_guidance import tool_guidance_payload, tool_skill_markdown
 from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
+from app.services.agent_tool_executor import execute_model_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +47,15 @@ DOCUMENT_READER_DEFAULT_TABLE_LIMIT = 20
 DOCUMENT_READER_MAX_TABLE_LIMIT = 100
 DOCUMENT_READER_DEFAULT_PAGE_LIMIT = 20
 DOCUMENT_READER_MAX_PAGE_LIMIT = 100
+DOCUMENT_READER_DOWNLOAD_MAX_BYTES = int(os.environ.get("DOCUMENT_READER_DOWNLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
 TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "3000"))
-TOOL_LOOP_LENGTH_CONTINUATION_LIMIT = 3
-MAX_TOOL_LOOP_ITERATIONS = int(os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "20"))
+LENGTH_LIMIT_CONTINUATION_LIMIT = int(os.environ.get("MODEL_LENGTH_CONTINUATION_LIMIT", "3"))
+MAX_TOOL_LOOP_ITERATIONS = int(
+    os.environ.get(
+        "AI_PLATFORM_MAX_TURNS",
+        os.environ.get("HERMES_MAX_ITERATIONS", os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "90")),
+    )
+)
 TOOL_ERROR_SUMMARY_LIMIT = 8
 CONNECTOR_SKILL_MAX_CHARS = int(os.environ.get("CONNECTOR_SKILL_MAX_CHARS", "24000"))
 TOOL_SKILL_MAX_CHARS = int(os.environ.get("TOOL_SKILL_MAX_CHARS", "20000"))
@@ -58,6 +67,14 @@ TOOL_LOOP_FOLLOWUP_MESSAGE = {
         "Call another tool only when a necessary fact is still missing. "
         "Only state connected-system facts that are present in successful tool output. "
         "If another tool is needed, call it now instead of saying you will check next."
+    ),
+}
+INITIAL_BLANK_LENGTH_RETRY_MESSAGE = {
+    "role": "system",
+    "content": (
+        "Your previous response ended at the provider output limit before producing visible assistant content. "
+        "Continue the task now. If the task requires a tool, call the next necessary tool. "
+        "If enough facts are already available, answer visibly. Do not spend the response on hidden analysis."
     ),
 }
 TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE = {
@@ -78,9 +95,9 @@ TOOL_LOOP_CONTINUE_LENGTH_MESSAGE = {
 TOOL_LOOP_LIMIT_ANSWER_MESSAGE = {
     "role": "system",
     "content": (
-        "The tool step limit has been reached. Do not call more tools. "
-        "Answer the user from the successful tool results already present. "
-        "If the gathered results are insufficient, say exactly what is missing without guessing."
+        "You've reached the maximum number of tool-calling iterations allowed. "
+        "Please provide a final response summarizing what you've found and accomplished so far, "
+        "without calling any more tools."
     ),
 }
 OMITTED_TOOL_CONTENT_KEYS = {
@@ -518,12 +535,12 @@ async def _execute_document_reader_tool(
             "message": "artifact_id must be a valid UUID.",
         }
 
-    if mode not in {"status", "preview", "extract", "read", "tables", "layout"}:
+    if mode not in {"status", "preview", "extract", "read", "tables", "layout", "download"}:
         return {
             "error": True,
             "status": "failed",
             "error_type": "invalid_tool_arguments",
-            "message": "mode must be one of: guidance, status, preview, extract, read, tables, layout.",
+            "message": "mode must be one of: guidance, status, preview, extract, read, tables, layout, download.",
         }
 
     try:
@@ -586,6 +603,39 @@ async def _execute_document_reader_tool(
     from app.services.artifact import ArtifactService
 
     artifact_svc = ArtifactService(db)
+    if mode == "download":
+        content = await artifact_svc.download_content(artifact)
+        size = len(content)
+        if size > DOCUMENT_READER_DOWNLOAD_MAX_BYTES:
+            return {
+                "error": True,
+                "status": "failed",
+                "tool_name": "document_reader",
+                "mode": "download",
+                "error_type": "artifact_too_large",
+                "message": (
+                    f"Artifact is {size} bytes; maximum downloadable size is "
+                    f"{DOCUMENT_READER_DOWNLOAD_MAX_BYTES} bytes."
+                ),
+                "artifact_id": str(artifact.id),
+                "filename": artifact.filename,
+                "mime_type": artifact.mime_type,
+                "bytes": size,
+            }
+        payload.update(
+            {
+                "mode": "download",
+                "bytes": size,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "content_base64": base64.b64encode(content).decode("ascii"),
+                "hint": (
+                    "In Workspace, decode content_base64 to a local input file, create the requested output, "
+                    "and save the user-facing result with output_path(filename) so it is returned as a chat attachment."
+                ),
+            }
+        )
+        return payload
+
     if mode == "read":
         try:
             offset = int(arguments.get("offset") or 1)
@@ -754,6 +804,7 @@ async def _execute_tool_call_impl(
     arguments: dict[str, Any],
     *,
     workspace_session: WorkspaceSession | None = None,
+    workspace_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute a tool call by routing to the appropriate connector."""
     if tool_name == WORKSPACE_TOOL_NAME:
@@ -761,9 +812,15 @@ async def _execute_tool_call_impl(
             return await workspace_session.run(arguments)
 
         async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
-            return await _execute_tool_call_impl(db, user_id, nested_tool_name, nested_arguments)
+            return await _execute_tool_call_impl(
+                db,
+                user_id,
+                nested_tool_name,
+                nested_arguments,
+                workspace_artifacts=workspace_artifacts,
+            )
 
-        return await run_workspace(arguments, tool_executor=workspace_tool_executor)
+        return await run_workspace(arguments, tool_executor=workspace_tool_executor, artifacts=workspace_artifacts)
 
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
@@ -860,6 +917,7 @@ async def _execute_tool_call(
     arguments: dict[str, Any],
     *,
     workspace_session: WorkspaceSession | None = None,
+    workspace_artifacts: list[dict[str, Any]] | None = None,
     trace_svc: Any = None,
 ) -> dict[str, Any]:
     """Execute a tool call and record a troubleshooting span when tracing is enabled."""
@@ -875,7 +933,14 @@ async def _execute_tool_call(
             },
         )
     try:
-        result = await _execute_tool_call_impl(db, user_id, tool_name, arguments, workspace_session=workspace_session)
+        result = await _execute_tool_call_impl(
+            db,
+            user_id,
+            tool_name,
+            arguments,
+            workspace_session=workspace_session,
+            workspace_artifacts=workspace_artifacts,
+        )
     except Exception as exc:
         if trace_svc and span_id:
             trace_svc.span_error(span_id, type(exc).__name__, str(exc))
@@ -1056,6 +1121,12 @@ def _compact_document_reader_result(result: dict[str, Any]) -> dict[str, Any]:
 
     compact: dict[str, Any] = {}
     for key, value in result.items():
+        if key == "content_base64":
+            compact["content_base64_omitted"] = True
+            compact["content_base64_hint"] = (
+                "Use document_reader mode='download' from Workspace code when raw file bytes are needed."
+            )
+            continue
         if key in {"content", "text"} and isinstance(value, str):
             compact[key] = _truncate_tool_text(value, DOCUMENT_READER_MAX_CHARS)
             if len(value) > DOCUMENT_READER_MAX_CHARS:
@@ -1149,6 +1220,8 @@ def _workspace_generated_files(result: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         path = str(item.get("path") or "").strip()
         content_base64 = item.get("content_base64")
+        if not path.startswith("outputs/"):
+            continue
         if not path or path in input_paths or not isinstance(content_base64, str) or not content_base64:
             continue
         generated.append({
@@ -1285,20 +1358,31 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace\n"
             "Workspace is the platform cloud-computer surface. It runs Python or shell/terminal code in a temporary "
-            "directory. Python has `call(tool_name, arguments)` available by default. Shell scripts can call "
+            "directory. Python has `call(tool_name, arguments)`, `list_files()`, `file_info(ref)`, `download_file(ref)`, "
+            "`read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, `save_output(filename, data)`, and "
+            "`output_path(filename)` available by default. Shell scripts can call "
             "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
             "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
             "`github_cli`. Calls use the user's connected accounts; those account permissions decide what succeeds. "
             "When connector-owned skill text is included in the system context, follow that skill for the connector API shape. "
             "Use Workspace when live connected-system data, code execution, terminal work, files, or calculations are "
-            "needed. If a live system fact matters, check it in Workspace and answer from the tool result."
+            "needed. Uploaded and previously generated chat files are listed by `list_files()`; read OCR/table content "
+            "with `read_document`, `read_tables`, or `read_layout`, and download raw bytes with `download_file`. "
+            "If a live system fact matters, check it in Workspace and answer from the tool result. "
+            "Only files saved under `outputs/` are returned to the user as chat attachments. "
+            "Do not save deliverables to Desktop/Downloads or open local files."
         )
     if "document_reader" in available_names:
         guidance_parts.append(
             "Documents: use `document_reader` for uploaded PDFs/images when the injected attachment or available-file "
             "preview is missing or insufficient. It is read-only; use the artifact id from the file context. "
             "The Document Reader tool owns detailed SKILL.md guidance, and `mode='guidance'` can return it. "
-            "Workspace scripts can call it with `call('document_reader', {'artifact_id': id, 'mode': 'tables'})`."
+            "Workspace scripts should normally use `read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, or "
+            "`download_file(ref)`; those helpers wrap `document_reader` using the chat file manifest. "
+            "use it before ad hoc PDF libraries for uploaded document OCR, tables, and layout. "
+            "For transformed files such as searchable PDFs, Workspace code should call `document_reader` with "
+            "`mode='download'` through `download_file(ref)` to get the original uploaded bytes, then save the result under `outputs/`. "
+            "Do not search the local computer for uploaded files or open files on the local desktop."
         )
     return system_prompt + "\n".join(guidance_parts) if guidance_parts else system_prompt
 
@@ -1490,6 +1574,41 @@ def _assistant_tool_call_message(result: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+def _assistant_final_message(result: dict[str, Any]) -> dict[str, Any]:
+    provider_message = result.get("assistant_message")
+    if isinstance(provider_message, dict) and not result.get("tool_calls"):
+        message = _json_safe_copy(provider_message)
+        if isinstance(message, dict):
+            message["role"] = "assistant"
+            if "content" not in message:
+                message["content"] = result.get("content") or ""
+            return message
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": str(result.get("content") or ""),
+    }
+    reasoning_content = result.get("reasoning_content")
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    return message
+
+
+def _turn_conversation_messages(
+    intermediate_messages: list[dict[str, Any]],
+    final_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    messages = [
+        copied
+        for message in intermediate_messages
+        if isinstance((copied := _json_safe_copy(message)), dict)
+    ]
+    final_message = _assistant_final_message(final_result)
+    if str(final_message.get("content") or "").strip() or not messages:
+        messages.append(final_message)
+    return messages
+
+
 async def _call_model(
     model: AIModel,
     provider: AIProvider,
@@ -1630,16 +1749,19 @@ def _merge_continued_content(existing: str, continuation: str) -> str:
     return existing + continuation
 
 
-async def _complete_length_limited_tool_answer(
+async def _complete_length_limited_answer(
     state: ModelCallState,
     base_messages: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
+    retry_tools: list[dict[str, Any]] | None = None,
+    blank_retry_message: dict[str, str] = TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
+    attempt_prefix: str = "length_limit",
     trace_svc: Any = None,
     stream_event_sink: Optional[Any] = None,
 ) -> None:
     combined_content = str(state.result.get("content") or "")
-    for _ in range(TOOL_LOOP_LENGTH_CONTINUATION_LIMIT):
+    for _ in range(LENGTH_LIMIT_CONTINUATION_LIMIT):
         if not _is_length_limited_final_response(state.result):
             break
 
@@ -1649,10 +1771,12 @@ async def _complete_length_limited_tool_answer(
                 + [{"role": "assistant", "content": combined_content}]
                 + [TOOL_LOOP_CONTINUE_LENGTH_MESSAGE]
             )
-            attempt_reason = "tool_loop_continue"
+            attempt_reason = f"{attempt_prefix}_continue"
+            tools_for_retry: list[dict[str, Any]] = []
         else:
-            continuation_messages = base_messages + [TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE]
-            attempt_reason = "tool_loop_blank_retry"
+            continuation_messages = base_messages + [blank_retry_message]
+            attempt_reason = f"{attempt_prefix}_blank_retry"
+            tools_for_retry = retry_tools or []
 
         result, client = await _call_model(
             state.used_model,
@@ -1660,7 +1784,7 @@ async def _complete_length_limited_tool_answer(
             continuation_messages,
             temperature,
             max_tokens,
-            [],
+            tools_for_retry,
             trace_svc=trace_svc,
             attempt_reason=attempt_reason,
             client=state.client,
@@ -1677,6 +1801,8 @@ async def _complete_length_limited_tool_answer(
             result["content"] = combined_content
 
         state.result = result
+        if state.result.get("tool_calls"):
+            break
 
 
 async def _run_tool_loop(
@@ -1690,18 +1816,31 @@ async def _run_tool_loop(
     max_tokens: int,
     trace_svc: Any = None,
     stream_event_sink: Optional[Any] = None,
+    workspace_artifacts: list[dict[str, Any]] | None = None,
+    workspace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
     generated_files: list[dict[str, Any]] = []
     workspace_session: WorkspaceSession | None = None
 
     async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
-        return await _execute_tool_call_impl(db, user_id, nested_tool_name, nested_arguments)
+        return await _execute_tool_call_impl(
+            db,
+            user_id,
+            nested_tool_name,
+            nested_arguments,
+            workspace_artifacts=workspace_artifacts,
+        )
 
     async def get_workspace_session() -> WorkspaceSession:
         nonlocal workspace_session
         if workspace_session is None:
-            session = WorkspaceSession(tool_executor=workspace_tool_executor)
+            session = WorkspaceSession(
+                tool_executor=workspace_tool_executor,
+                artifacts=workspace_artifacts,
+                workspace_id=workspace_id,
+                persistent=bool(workspace_id),
+            )
             workspace_session = await session.__aenter__()
         return workspace_session
 
@@ -1711,58 +1850,82 @@ async def _run_tool_loop(
         if isinstance(definition, dict)
     }
     try:
-        for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
+        iteration = 0
+        while True:
+            if MAX_TOOL_LOOP_ITERATIONS > 0 and iteration >= MAX_TOOL_LOOP_ITERATIONS:
+                if state.result.get("tool_calls"):
+                    limit_messages = messages + [TOOL_LOOP_LIMIT_ANSWER_MESSAGE]
+                    result, client = await _call_model(
+                        state.used_model,
+                        state.used_provider,
+                        limit_messages,
+                        temperature,
+                        max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
+                        [],
+                        trace_svc=trace_svc,
+                        attempt_reason="tool_loop_limit_answer",
+                        stream_event_sink=stream_event_sink,
+                    )
+                    state.result = result
+                    state.client = client
+                    state.stats.add_result(state.result)
+                    await _complete_length_limited_answer(
+                        state,
+                        limit_messages,
+                        temperature,
+                        max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
+                        retry_tools=[],
+                        blank_retry_message=TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
+                        attempt_prefix="tool_loop_limit",
+                        trace_svc=trace_svc,
+                        stream_event_sink=stream_event_sink,
+                    )
+                break
+
             if state.result.get("error"):
                 break
             tool_calls = state.result.get("tool_calls")
             if not tool_calls:
                 break
 
+            iteration += 1
             state.result["tool_calls"] = tool_calls
             state.stats.tool_calls += len(tool_calls)
             messages.append(_assistant_tool_call_message(state.result))
 
-            for call in tool_calls:
-                if call.get("type") != "function":
-                    continue
-                function = call.get("function", {})
-                name = function.get("name", "")
-                try:
-                    args = json.loads(function.get("arguments", "{}"))
-                except (json.JSONDecodeError, TypeError):
-                    args = {}
+            async def run_exposed_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+                active_workspace_session = await get_workspace_session() if name == WORKSPACE_TOOL_NAME else None
+                return await _execute_tool_call(
+                    db,
+                    user_id,
+                    name,
+                    args,
+                    workspace_session=active_workspace_session,
+                    workspace_artifacts=workspace_artifacts,
+                    trace_svc=trace_svc,
+                )
 
-                if name not in exposed_tool_names:
-                    result = {
-                        "error": True,
-                        "status": "failed",
-                        "error_type": "unavailable_tool",
-                        "message": f"Tool '{name}' is not exposed for this chat turn.",
-                    }
-                else:
-                    active_workspace_session = await get_workspace_session() if name == WORKSPACE_TOOL_NAME else None
-                    result = await _execute_tool_call(
-                        db,
-                        user_id,
-                        name,
-                        args,
-                        workspace_session=active_workspace_session,
-                        trace_svc=trace_svc,
-                    )
-                    if isinstance(result, dict):
-                        await _record_delegated_tool_auth_failure(db, user_id, name, result)
-                        generated_files.extend(_workspace_generated_files(result))
-                compact_result = _compact_tool_result_for_model(result)
+            executed_tool_calls = await execute_model_tool_calls(
+                tool_calls,
+                exposed_tool_names=exposed_tool_names,
+                run_tool=run_exposed_tool,
+                compact_result=_compact_tool_result_for_model,
+                serial_tool_names={WORKSPACE_TOOL_NAME},
+            )
+            for executed in executed_tool_calls:
+                if executed.tool_name in exposed_tool_names:
+                    await _record_delegated_tool_auth_failure(db, user_id, executed.tool_name, executed.raw_result)
+                    generated_files.extend(_workspace_generated_files(executed.raw_result))
                 tool_results.append({
-                    "tool_call_id": call.get("id", ""),
-                    "tool_name": name,
-                    "arguments": args,
-                    "result": compact_result,
+                    "tool_call_id": executed.tool_call_id,
+                    "tool_name": executed.tool_name,
+                    "arguments": executed.arguments,
+                    "result": executed.model_result,
                 })
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": call.get("id", ""),
-                    "content": _tool_message_content(compact_result),
+                    "tool_call_id": executed.tool_call_id,
+                    "content": _tool_message_content(executed.model_result),
                 })
 
             followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
@@ -1782,39 +1945,17 @@ async def _run_tool_loop(
             state.result = result
             state.client = client
             state.stats.add_result(state.result)
-            await _complete_length_limited_tool_answer(
+            await _complete_length_limited_answer(
                 state,
                 followup_messages,
                 temperature,
                 followup_max_tokens,
+                retry_tools=[],
+                blank_retry_message=TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
+                attempt_prefix="tool_loop",
                 trace_svc=trace_svc,
                 stream_event_sink=stream_event_sink,
             )
-        else:
-            if state.result.get("tool_calls"):
-                limit_messages = messages + [TOOL_LOOP_LIMIT_ANSWER_MESSAGE]
-                result, client = await _call_model(
-                    state.used_model,
-                    state.used_provider,
-                    limit_messages,
-                    temperature,
-                    max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
-                    [],
-                    trace_svc=trace_svc,
-                    attempt_reason="tool_loop_limit_answer",
-                    stream_event_sink=stream_event_sink,
-                )
-                state.result = result
-                state.client = client
-                state.stats.add_result(state.result)
-                await _complete_length_limited_tool_answer(
-                    state,
-                    limit_messages,
-                    temperature,
-                    max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
-                    trace_svc=trace_svc,
-                    stream_event_sink=stream_event_sink,
-                )
     finally:
         if workspace_session is not None:
             await workspace_session.__aexit__(None, None, None)
@@ -1937,6 +2078,7 @@ async def execute_chat(
     trace_svc: Any = None,
     request_id: Optional[str] = None,
     stream_event_sink: Optional[Any] = None,
+    workspace_artifacts: list[dict[str, Any]] | None = None,
 ) -> dict:
     user_msg_text = _last_user_message(messages)
     context_span = None
@@ -2004,8 +2146,20 @@ async def execute_chat(
             trace_svc.span_error(context_span, type(exc).__name__, str(exc))
         raise
 
+    turn_start_index = len(full_messages)
     state = await _run_model_once(
         model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
+        trace_svc=trace_svc,
+        stream_event_sink=stream_event_sink,
+    )
+    await _complete_length_limited_answer(
+        state,
+        full_messages,
+        temperature,
+        max_tokens,
+        retry_tools=tool_definitions,
+        blank_retry_message=INITIAL_BLANK_LENGTH_RETRY_MESSAGE,
+        attempt_prefix="initial",
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
     )
@@ -2014,6 +2168,8 @@ async def execute_chat(
         db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
+        workspace_artifacts=workspace_artifacts,
+        workspace_id=f"chat-{chat_session_id}" if chat_session_id else None,
     ))
     tool_error_summary = _tool_result_error_summary(tool_results)
     await _log_usage(
@@ -2043,5 +2199,6 @@ async def execute_chat(
         "has_tool_errors": bool(tool_error_summary),
         "context": _context_metadata(injected, state, policy),
         "tool_call_count": state.stats.tool_calls,
+        "conversation_messages": _turn_conversation_messages(full_messages[turn_start_index:], state.result),
     }
     return response

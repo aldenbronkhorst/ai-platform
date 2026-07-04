@@ -11,6 +11,7 @@ from app.services.speech_transcription import (
     SpeechTranscriptionNoSpeechError,
     SpeechTranscriptionResult,
     SpeechTranscriptionService,
+    _elevenlabs_speech_to_text_url,
     _extract_transcript,
     _transcriptions_url,
 )
@@ -32,6 +33,15 @@ def test_transcriptions_url_normalizes_base_url():
     assert (
         _transcriptions_url("https://api.z.ai/api/paas/v4/audio/transcriptions")
         == "https://api.z.ai/api/paas/v4/audio/transcriptions"
+    )
+
+
+def test_elevenlabs_speech_to_text_url_normalizes_base_url():
+    assert _elevenlabs_speech_to_text_url("https://api.elevenlabs.io") == "https://api.elevenlabs.io/v1/speech-to-text"
+    assert _elevenlabs_speech_to_text_url("https://api.elevenlabs.io/v1") == "https://api.elevenlabs.io/v1/speech-to-text"
+    assert (
+        _elevenlabs_speech_to_text_url("https://api.elevenlabs.io/v1/speech-to-text")
+        == "https://api.elevenlabs.io/v1/speech-to-text"
     )
 
 
@@ -213,6 +223,67 @@ async def test_speech_transcription_service_selects_zai_asr_model_from_provider(
 
 
 @pytest.mark.asyncio
+async def test_speech_transcription_service_selects_elevenlabs_scribe_model(monkeypatch):
+    service = SpeechTranscriptionService()
+    captured = {}
+    monkeypatch.delenv("VOICE_TRANSCRIPTION_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    async def fake_get_secret(secret_name):
+        return "elevenlabs-key"
+
+    async def fake_post(config, audio_bytes, filename, content_type):
+        captured.update({
+            "provider": config.provider_name,
+            "provider_type": config.provider_type,
+            "base_url": config.base_url,
+            "api_key": config.api_key,
+            "model": config.model,
+        })
+        return {"text": "ElevenLabs dictated text."}
+
+    monkeypatch.setattr("app.services.speech_transcription.get_secret_value", fake_get_secret)
+    monkeypatch.setattr(service, "_post_transcription", fake_post)
+
+    async with TestingSessionLocal() as session:
+        provider_name = f"ElevenLabs Voice {uuid.uuid4()}"
+        provider = AIProvider(
+            id=uuid.uuid4(),
+            name=provider_name,
+            provider_type="elevenlabs",
+            base_url="https://api.elevenlabs.io/v1",
+            auth_type="key_vault_secret",
+            secret_reference="model-provider-elevenlabs-api-key",
+            enabled="true",
+            capabilities={},
+        )
+        session.add(provider)
+        await session.flush()
+        session.add(AIModel(
+            id=uuid.uuid4(),
+            provider_id=provider.id,
+            display_name="Scribe v2",
+            model_name="scribe_v2",
+            deployment_name="scribe_v2",
+            enabled="true",
+            config_json={"task_type": "voice_transcription"},
+        ))
+        await session.flush()
+
+        result = await service.transcribe(b"audio", "voice.wav", "audio/wav", db=session)
+
+    assert result.transcript == "ElevenLabs dictated text."
+    assert result.provider.endswith(":scribe_v2")
+    assert captured == {
+        "provider": provider_name,
+        "provider_type": "elevenlabs",
+        "base_url": "https://api.elevenlabs.io/v1",
+        "api_key": "elevenlabs-key",
+        "model": "scribe_v2",
+    }
+
+
+@pytest.mark.asyncio
 async def test_speech_transcription_service_requires_config(monkeypatch):
     monkeypatch.delenv("VOICE_TRANSCRIPTION_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -221,7 +292,7 @@ async def test_speech_transcription_service_requires_config(monkeypatch):
         await SpeechTranscriptionService().transcribe(b"audio", "voice.wav", "audio/wav")
 
     assert "Voice transcription is not configured" in str(exc.value)
-    assert "transcribe, whisper, or asr model" in str(exc.value)
+    assert "voice transcription model" in str(exc.value)
 
 
 @pytest.mark.asyncio

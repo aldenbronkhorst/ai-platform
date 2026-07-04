@@ -19,6 +19,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ComponentProps,
   type CSSProperties,
   type ReactNode,
@@ -81,6 +82,57 @@ type MessageGroup = { id: string; weight: number } & (
 );
 
 const RENDER_BUDGET = 300;
+const DISCLOSURE_STATE_LIMIT = 240;
+const disclosureStates = new Map<string, boolean>();
+const disclosureListeners = new Set<() => void>();
+
+function emitDisclosureChange() {
+  disclosureListeners.forEach(listener => listener());
+}
+
+function subscribeDisclosureState(listener: () => void) {
+  disclosureListeners.add(listener);
+  return () => {
+    disclosureListeners.delete(listener);
+  };
+}
+
+function setDisclosureState(disclosureId: string, open: boolean) {
+  if (disclosureStates.get(disclosureId) === open) return;
+
+  if (!disclosureStates.has(disclosureId) && disclosureStates.size >= DISCLOSURE_STATE_LIMIT) {
+    const oldest = disclosureStates.keys().next().value as string | undefined;
+    if (oldest) disclosureStates.delete(oldest);
+  }
+
+  disclosureStates.set(disclosureId, open);
+  emitDisclosureChange();
+}
+
+function useDisclosureOpen(disclosureId: string, defaultOpen = false) {
+  const getSnapshot = useCallback(
+    () => disclosureStates.get(disclosureId) ?? defaultOpen,
+    [defaultOpen, disclosureId],
+  );
+  const open = useSyncExternalStore(subscribeDisclosureState, getSnapshot, getSnapshot);
+  const setOpen = useCallback(
+    (next: boolean | ((value: boolean) => boolean)) => {
+      const current = disclosureStates.get(disclosureId) ?? defaultOpen;
+      setDisclosureState(disclosureId, typeof next === "function" ? next(current) : next);
+    },
+    [defaultOpen, disclosureId],
+  );
+
+  return [open, setOpen] as const;
+}
+
+function stableDisclosureHash(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index);
+  }
+  return Math.abs(hash).toString(36);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -218,6 +270,18 @@ function runtimeText(content: unknown): string {
   return content.map(part => (isRecord(part) && part.type === "text" ? text(part.text) : "")).join("");
 }
 
+function contentHasVisibleText(content: unknown): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  if (!Array.isArray(content)) return false;
+
+  for (const part of content) {
+    if (isRecord(part) && typeof part.text === "string" && part.text.trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function buildMessageGroups(signature: string): MessageGroup[] {
   if (!signature) return [];
 
@@ -248,17 +312,6 @@ function buildMessageGroups(signature: string): MessageGroup[] {
   return groups;
 }
 
-function contentWeight(content: unknown): number {
-  if (!Array.isArray(content)) return 1;
-  return content.reduce((weight, part) => {
-    if (isRecord(part)) {
-      const partText = typeof part.text === "string" ? part.text : "";
-      return weight + 1 + Math.ceil(partText.length / 400);
-    }
-    return weight + 1;
-  }, 0) || 1;
-}
-
 function ThreadMessageList({
   components,
   editingMessageId,
@@ -272,7 +325,7 @@ function ThreadMessageList({
 }) {
   const messageSignature = useAuiState(s =>
     s.thread.messages
-      .map((message, index) => `${index}:${message.id}:${message.role}:${contentWeight(message.content)}`)
+      .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
       .join("\n"),
   );
   const groups = buildMessageGroups(messageSignature);
@@ -353,8 +406,8 @@ function ThreadMessageList({
 
   return (
     <div
-      className="relative min-h-0 max-w-full flex-1 overflow-hidden contain-[layout_paint]"
-      style={{ height: "100%" } as CSSProperties}
+      className="relative min-h-0 max-w-full overflow-hidden contain-[layout_paint]"
+      style={{ height: "var(--thread-viewport-height)" } as CSSProperties}
     >
       <div
         className="conversation-scroll size-full overflow-x-hidden overflow-y-auto overscroll-contain scrollbar-transient"
@@ -547,22 +600,27 @@ function MarkdownTextPart({ status, text: value }: { status: { type: string }; t
 
 function ThinkingDisclosure({
   children,
+  disclosureId,
   messageRunning,
   pending,
   timerKey,
 }: {
   children: ReactNode;
+  disclosureId: string;
   messageRunning?: boolean;
   pending?: boolean;
   timerKey?: string;
 }) {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const [open, setOpen] = useDisclosureOpen(disclosureId, Boolean(pending));
   const elapsed = useElapsedSeconds(Boolean(pending), timerKey);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const enterRef = useEnterAnimation(Boolean(messageRunning), timerKey);
-  const open = userOpen ?? Boolean(pending);
-  const isPreview = Boolean(pending) && userOpen === null;
+  const isPreview = Boolean(pending) && open;
+
+  useEffect(() => {
+    if (pending) setOpen(true);
+  }, [pending, setOpen]);
 
   useEffect(() => {
     if (!isPreview) return;
@@ -584,7 +642,7 @@ function ThinkingDisclosure({
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
     >
-      <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
+      <DisclosureRow onToggle={() => setOpen(value => !value)} open={open}>
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span
             className={cn(
@@ -602,17 +660,17 @@ function ThinkingDisclosure({
           )}
         </span>
       </DisclosureRow>
-      <div
-        aria-hidden={!open}
-        className={cn(
-          "mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1",
-          isPreview && "thinking-preview max-h-40",
-          !open && "hidden",
-        )}
-        ref={scrollRef}
-      >
-        <div ref={contentRef}>{children}</div>
-      </div>
+      {open && (
+        <div
+          className={cn(
+            "mt-0.5 w-full min-w-0 max-w-full overflow-hidden wrap-anywhere pb-1",
+            isPreview && "thinking-preview max-h-40",
+          )}
+          ref={scrollRef}
+        >
+          <div ref={contentRef}>{children}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -637,7 +695,12 @@ function ReasoningGroup({ children, endIndex, startIndex }: { children?: ReactNo
   if (!hasContent) return null;
 
   return (
-    <ThinkingDisclosure messageRunning={messageRunning} pending={pending} timerKey={`reasoning:${messageId}`}>
+    <ThinkingDisclosure
+      disclosureId={`reasoning:${messageId}:${startIndex}-${endIndex}`}
+      messageRunning={messageRunning}
+      pending={pending}
+      timerKey={`reasoning:${messageId}:${startIndex}-${endIndex}`}
+    >
       {children}
     </ThinkingDisclosure>
   );
@@ -645,8 +708,7 @@ function ReasoningGroup({ children, endIndex, startIndex }: { children?: ReactNo
 
 function ReasoningTextPart({ status, text: value }: ReasoningMessagePartProps) {
   const displayText = value.trimStart();
-  const messageRunning = useAuiState(s => s.message.status?.type === "running");
-  const isRunning = status?.type === "running" || messageRunning;
+  const isRunning = status?.type === "running";
 
   return (
     <MarkdownTextContent
@@ -787,9 +849,11 @@ function ToolFallback({ args, argsText, isError, result, status, toolCallId, too
   const messageRunning = useAuiState(s => s.message.status?.type === "running");
   const running = status?.type === "running" && result === undefined;
   const error = resultFailed(isError, result);
-  const [open, setOpen] = useState(false);
   const elapsed = useElapsedSeconds(running, `tool:${messageId}:${toolCallId}`);
-  const enterRef = useEnterAnimation(messageRunning, `tool:${messageId}:${toolCallId}`);
+  const animationKey = toolCallId || `${toolName}:${stableDisclosureHash(safeJson(args))}`;
+  const disclosureId = `tool-entry:${messageId}:${toolCallId || `${toolName}:${stableDisclosureHash(safeJson(args))}`}`;
+  const [open, setOpen] = useDisclosureOpen(disclosureId, false);
+  const enterRef = useEnterAnimation(messageRunning, `tool:${messageId}:${animationKey}`);
   const resultRecord = payloadRecord(result);
   const codeText = text(payloadRecord(args).code) || text(payloadRecord(args).script) || text(payloadRecord(args).command);
   const stdout = text(resultRecord.stdout) || text(resultRecord.output);
@@ -912,7 +976,7 @@ function AssistantMessage({
 }: Pick<AssistantMessagesProps, "onCopyMessage" | "onOpenAttachment" | "onRetryMessage">) {
   const messageId = useAuiState(s => s.message.id);
   const status = useAuiState(s => s.message.status?.type);
-  const content = useAuiState(s => runtimeText(s.message.content));
+  const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content));
   const errorMessage = useAuiState(s => text(s.message.metadata.custom.errorMessage));
   const rawAttachments = useAuiState(s => s.message.metadata.custom.attachments);
   const attachments = useMemo(
@@ -962,9 +1026,9 @@ function AssistantMessage({
           </div>
         )}
       </div>
-      {content.trim() && (
+      {hasVisibleText && (
         <div className="flex min-h-6 flex-col items-end gap-1 pl-[var(--message-text-indent)] pr-[var(--message-text-indent)]">
-          <MessageActions content={content} onCopy={() => onCopyMessage?.(liveContent())} />
+          <MessageActions content={liveContent} onCopy={() => onCopyMessage?.(liveContent())} />
         </div>
       )}
     </MessagePrimitive.Root>
