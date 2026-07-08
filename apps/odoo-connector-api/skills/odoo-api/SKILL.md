@@ -1,7 +1,7 @@
 ---
 name: odoo-api
 description: "Use the AI Platform Odoo connector via JSON-RPC execute_kw."
-version: 2.3.0
+version: 2.4.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -355,6 +355,43 @@ Search users by `login ilike`; if no result, fall back to `name ilike`.
 Domains use `[('field', 'operator', value)]` expressed as JSON lists: `[["field", "operator", value]]`. Operators: `=`, `!=`, `in`, `not in`, `>`, `<`, `>=`, `<=`, `ilike`, `like`, `child_of`. Multiple filters are AND'd. OR uses explicit `"|"`.
 
 ## Troubleshooting
+
+When a user reports that something is *wrong* with Odoo (not just "how do I…"), do not improvise.
+Run a structured diagnostic loop and fetch the matching playbook on demand.
+
+**Diagnostic discipline (OODA):** Observe with read-only calls → Orient to ranked hypotheses →
+Decide the narrowest safe next step → Act → re-read to Confirm. Diagnose read-only first; stop for
+explicit user confirmation before any `create` / `write` / `unlink` or posted-entry change. Some
+symptoms are code/deployment defects you cannot fix through `execute_kw` — diagnose precisely and
+hand off rather than ORM-hacking around them.
+
+**Fetch the guidance on demand** with the connector's `playbook` operation:
+
+```python
+loop   = call("odoo", {"operation": "playbook", "name": "00-diagnostic-loop"})["content"]
+router = call("odoo", {"operation": "playbook", "name": "01-symptom-router"})["content"]
+pb     = call("odoo", {"operation": "playbook", "name": "records-missing"})["content"]
+```
+
+`call("odoo", {"operation": "guidance"})["documents"]` lists every fetchable document.
+
+**Symptom → playbook:**
+
+| The user reports… | Fetch `name` |
+|---|---|
+| can't find records / empty list / "it's gone" / reference-number gaps | `records-missing` |
+| access denied / can't edit / blank or missing fields | `access-denied` |
+| P&L or balance-sheet totals wrong / wrong currency | `report-numbers-wrong` |
+| won't save / validation error / duplicate reference / can't post-cancel | `write-failed` |
+| slow / timeout / truncated results / stale data | `performance-timeout` |
+| entry-name format / renumbering / move entries between journals | `sequence-journal` |
+| duplicates / broken links / reconciliation off | `data-integrity` |
+| start here to route any symptom | `01-symptom-router` |
+
+Worked references (also fetchable by `name`): `user-activity-timeline`,
+`resequence-and-rejournal`, `resequencing-and-journal-transitions`.
+
+**Quick symptom hints (fast reference; the playbooks go deeper):**
 
 - **External API unavailable**: Odoo docs note external API access depends on plan/hosting; verify permissions/plan if endpoints fail despite valid credentials.
 - **AccessDenied**: wrong API key, username, database, or permissions. API keys replace passwords but do not log into the web UI.

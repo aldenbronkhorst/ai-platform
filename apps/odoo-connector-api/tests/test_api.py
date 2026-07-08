@@ -57,7 +57,7 @@ def test_capabilities_exposes_only_raw_odoo_endpoint():
             "description": "Return Odoo connector package manifest",
         },
     ]
-    assert data["guidance_version"] == "2.3.0"
+    assert data["guidance_version"] == "2.4.0"
 
 
 def test_connector_serves_its_own_manifest_and_skill():
@@ -73,7 +73,7 @@ def test_connector_serves_its_own_manifest_and_skill():
     assert guidance_response.status_code == 200
     guidance = guidance_response.json()
     assert guidance["connector"] == "odoo"
-    assert guidance["version"] == "2.3.0"
+    assert guidance["version"] == "2.4.0"
     assert guidance["source"].endswith("apps/odoo-connector-api/skills/odoo-api/SKILL.md")
     assert "Direct integration with Odoo ERP via JSON-RPC" in guidance["content"]
     assert "call(\"odoo\"" in guidance["content"]
@@ -90,6 +90,74 @@ def test_raw_odoo_endpoint_can_return_connector_guidance():
     data = response.json()
     assert data["connector"] == "odoo"
     assert data["manifest"]["id"] == "odoo"
+
+
+def test_guidance_lists_fetchable_troubleshooting_documents():
+    guidance = client.get("/odoo/guidance", headers=AUTH_HEADERS).json()
+
+    documents = guidance["documents"]
+    assert "00-diagnostic-loop" in documents
+    assert "01-symptom-router" in documents
+    for playbook in (
+        "records-missing",
+        "access-denied",
+        "report-numbers-wrong",
+        "write-failed",
+        "performance-timeout",
+        "sequence-journal",
+        "data-integrity",
+    ):
+        assert playbook in documents
+    assert "playbook" in guidance["operations"]
+
+
+def test_playbook_operation_returns_a_document():
+    response = client.post(
+        "/odoo/orm/run",
+        json={"operation": "playbook", "name": "records-missing"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["operation"] == "playbook"
+    assert data["name"] == "records-missing"
+    assert data["format"] == "markdown"
+    assert "Records Missing" in data["content"]
+
+
+def test_playbook_operation_needs_no_credentials():
+    response = client.post(
+        "/odoo/orm/run",
+        json={"operation": "playbook", "name": "00-diagnostic-loop"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert "Diagnostic Loop" in response.json()["content"]
+
+
+def test_playbook_operation_rejects_unknown_name():
+    response = client.post(
+        "/odoo/orm/run",
+        json={"operation": "playbook", "name": "does-not-exist"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert detail["error"] == "playbook_not_found"
+    assert "records-missing" in detail["available"]
+
+
+def test_playbook_operation_is_path_traversal_safe():
+    for malicious in ("../SKILL", "../../connector", "/etc/passwd", "playbooks/records-missing"):
+        response = client.post(
+            "/odoo/orm/run",
+            json={"operation": "playbook", "name": malicious},
+            headers=AUTH_HEADERS,
+        )
+        assert response.status_code == 404
 
 
 def test_raw_odoo_endpoint_requires_credentials_for_model_calls():

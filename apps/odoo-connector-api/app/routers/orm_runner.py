@@ -5,7 +5,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.guidance import guidance_payload
+from app.core.guidance import available_documents, document_markdown, guidance_payload
 from app.core.odoo_client import OdooClient, OdooCredentials, OdooError
 from app.core.security import internal_api_key_auth
 from app.models.schemas import OdooCredentialsRequest
@@ -16,6 +16,7 @@ router = APIRouter()
 class OdooRunRequest(BaseModel):
     credentials: Optional[OdooCredentialsRequest] = None
     operation: Optional[str] = None
+    name: Optional[str] = None
     model: Optional[str] = None
     method: Optional[str] = None
     args: Optional[list[Any]] = None
@@ -78,6 +79,26 @@ def _single_call(client: OdooClient, call: dict[str, Any], index: int | None = N
 def odoo_runner(req: OdooRunRequest, _auth: dict = Depends(internal_api_key_auth)):
     if req.operation == "guidance":
         return guidance_payload()
+
+    if req.operation == "playbook":
+        name = (req.name or "").strip()
+        markdown = document_markdown(name)
+        if markdown is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "playbook_not_found",
+                    "message": f"No troubleshooting document named '{name}'.",
+                    "available": available_documents(),
+                },
+            )
+        return {
+            "connector": "odoo",
+            "operation": "playbook",
+            "name": name,
+            "format": "markdown",
+            "content": markdown,
+        }
 
     if req.credentials is None:
         raise HTTPException(
