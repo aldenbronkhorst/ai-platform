@@ -149,6 +149,15 @@ def _validate_startup_config() -> list:
             "message": "DEBUG=true is not allowed in production. Set DEBUG=false.",
         })
 
+    # APP_ENV=test disables authentication (unauthenticated admin path). It must
+    # never be set in a deployed environment (one with a Key Vault configured).
+    if settings.app_env == "test" and os.environ.get("KEY_VAULT_URI"):
+        issues.append({
+            "check": "APP_ENV",
+            "status": "FAIL",
+            "message": "APP_ENV=test disables authentication and must not be used in a deployed environment.",
+        })
+
     # ODOO_CONNECTOR_URL
     connector_url = os.environ.get("ODOO_CONNECTOR_URL", "")
     if not connector_url:
