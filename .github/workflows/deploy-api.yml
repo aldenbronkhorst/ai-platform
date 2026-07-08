@@ -8,6 +8,10 @@ on:
       - 'apps/odoo-connector-api/**'
       - 'apps/web-portal/**'
       - 'infra/bicep/**'
+      # evals/** runs the tests so the required test-* checks report on evals-only
+      # PRs (they're required by branch protection). Intentionally NOT in the push
+      # paths below, so merging an evals-only change does not trigger a deploy.
+      - 'evals/**'
       - '.github/workflows/deploy-api.yml'
   push:
     branches: [main]
