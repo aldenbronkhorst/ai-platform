@@ -108,6 +108,9 @@ def main(argv=None) -> int:
     ap.add_argument("--no-judge", action="store_true", help="skip the model judge (deterministic only)")
     ap.add_argument("--min-pass-rate", type=float, default=0.0,
                     help="exit non-zero if overall pass rate is below this (0-1)")
+    ap.add_argument("--require-conclusion", action="store_true",
+                    help="fail a scenario whose 'correct conclusion' axis was not scored "
+                         "(no judge / no known_answer), so an unjudged run cannot pass the gate")
     args = ap.parse_args(argv)
 
     scenarios = load_scenarios(args.scenarios)
@@ -127,8 +130,17 @@ def main(argv=None) -> int:
 
     print(render_scorecard(results))
 
+    def _passes_gate(r) -> bool:
+        if not r.passed():
+            return False
+        if args.require_conclusion:
+            concl = r.by_axis().get("conclusion")
+            if concl is None or concl.passed is not True:
+                return False
+        return True
+
     n = len(results)
-    rate = (sum(1 for r in results if r.passed()) / n) if n else 0.0
+    rate = (sum(1 for r in results if _passes_gate(r)) / n) if n else 0.0
     if rate < args.min_pass_rate:
         print(f"\nFAIL: pass rate {rate:.0%} < required {args.min_pass_rate:.0%}")
         return 1
