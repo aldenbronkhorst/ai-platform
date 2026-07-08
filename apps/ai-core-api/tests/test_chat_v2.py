@@ -91,14 +91,19 @@ class TestArtifactDownloadSurface:
 
 
 class TestChatResponseGuards:
-    def test_assistant_turn_messages_replays_tool_transcript(self):
+    def test_assistant_turn_messages_uses_final_content_only(self):
         from app.routers.chat import _assistant_turn_messages
 
         message = SimpleNamespace(
             id=uuid.uuid4(),
             role="assistant",
             content="The answer is 42.",
-            metadata_json={},
+            metadata_json={
+                "conversation_messages": [
+                    {"role": "assistant", "content": None, "tool_calls": [{"id": "stored_tool"}]},
+                    {"role": "tool", "tool_call_id": "stored_tool", "content": "{\"raw\": \"large\"}"},
+                ],
+            },
             tool_call_json=[
                 {
                     "tool_call_id": "call_workspace_1",
@@ -115,12 +120,7 @@ class TestChatResponseGuards:
 
         replay = _assistant_turn_messages(message)
 
-        assert [item["role"] for item in replay] == ["assistant", "tool", "assistant"]
-        assert replay[0]["tool_calls"][0]["id"] == "call_workspace_1"
-        assert replay[0]["tool_calls"][0]["function"]["name"] == "workspace"
-        assert replay[1]["tool_call_id"] == "call_workspace_1"
-        assert "system total: 42" in replay[1]["content"]
-        assert replay[2]["content"] == "The answer is 42."
+        assert replay == [{"role": "assistant", "content": "The answer is 42."}]
 
     def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):
         from app.routers.chat import _assistant_metadata
@@ -142,6 +142,7 @@ class TestChatResponseGuards:
         assert metadata["trace_id"] == "trace_123"
         assert metadata["has_tool_errors"] is True
         assert metadata["tool_error_summary"] == summary
+        assert "conversation_messages" not in metadata
 
     def test_assistant_metadata_includes_activity_events_without_raw_reasoning(self):
         from app.routers.chat import _assistant_metadata
@@ -161,6 +162,7 @@ class TestChatResponseGuards:
         assert metadata["activity_events"] == activity_events
         assert "stream_work_items" not in metadata
         assert "reasoning_content" not in metadata
+        assert "conversation_messages" not in metadata
 
     def test_assistant_metadata_includes_message_parts(self):
         from app.routers.chat import _assistant_metadata
@@ -353,6 +355,15 @@ class TestChatResponseGuards:
             role="assistant",
             content="<|tool_calls_section_begin|><|tool_call_begin|>functions.odoo:0",
         ))
+        assert not _is_valid_history_message(AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=session_id,
+            user_id=user_id,
+            role="assistant",
+            content="",
+            tool_call_json=[{"tool_name": "workspace", "result": {"stdout": "large raw output"}}],
+            metadata_json={"conversation_messages": [{"role": "tool", "content": "large raw output"}]},
+        ))
 
 
 class TestChatTitleOwnership:
@@ -408,6 +419,47 @@ class TestChatAttachments:
             "filename": "statement.csv",
             "mime_type": "text/csv",
         }]
+
+    def test_chat_message_payload_exposes_running_assistant_status(self):
+        from datetime import datetime, timezone
+        from app.models.models import AIChatMessage
+        from app.routers.chat import _chat_message_payload
+
+        message = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="assistant",
+            content="",
+            created_at=datetime.now(timezone.utc),
+            metadata_json={
+                "request_id": "req-live",
+                "status": "streaming",
+                "message_parts": [{"type": "reasoning", "text": "Checking Odoo"}],
+            },
+        )
+
+        payload = _chat_message_payload(message, [])
+
+        assert payload["status"] == "streaming"
+        assert payload["metadata_json"]["message_parts"] == [{"type": "reasoning", "text": "Checking Odoo"}]
+
+    def test_running_assistant_placeholder_is_not_model_history(self):
+        from datetime import datetime, timezone
+        from app.models.models import AIChatMessage
+        from app.routers.chat import _is_valid_history_message
+
+        message = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="assistant",
+            content="",
+            created_at=datetime.now(timezone.utc),
+            metadata_json={"request_id": "req-live", "status": "streaming"},
+        )
+
+        assert not _is_valid_history_message(message)
 
     def test_attachment_response_exposes_artifact_type_for_generated_outputs(self):
         import uuid

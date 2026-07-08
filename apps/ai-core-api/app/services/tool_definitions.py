@@ -11,11 +11,14 @@ CANONICAL_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "display_name": "Workspace",
         "description": (
             "Cloud workspace with Python and shell/terminal execution, file scratch work, and multi-step analysis. "
-            "Use when a task needs code, commands, iteration, aggregation, data cleanup, calculations, temporary files, "
-            "or connected-system access. Save files the user should receive under outputs/; only files in outputs/ "
-            "are returned as chat attachments. Workspace Python has call(tool_name, arguments), list_files(), file_info(ref), "
+            "Use this for multi-step work: 3+ connector/tool calls, loops, pagination, batch updates, retries, "
+            "conditional branching, large-output filtering, file transforms, aggregation, calculations, or temporary files. "
+            "Prefer one workspace script that performs the full loop and prints/saves the result over many model-managed "
+            "tool turns. Save files the user should receive under outputs/; only files in outputs/ "
+            "are returned as chat attachments. Workspace Python has call(tool_name, arguments), call_raw(tool_name, arguments), list_files(), file_info(ref), "
             "download_file(ref), read_document(ref), read_tables(ref), read_layout(ref), save_output(filename, data), "
             "and output_path(filename) available by default. "
+            "call() returns the connector result and raises on connector failure; use call_raw() only when the raw broker envelope is required. "
             "It can call connected-system broker targets through the connected user's credentials without exposing "
             "connector secrets. Uploaded/session files are visible through list_files(); use the document helpers for "
             "OCR text, tables, layout, and raw downloads before using ad hoc PDF libraries. Do not save deliverables to Desktop/Downloads "

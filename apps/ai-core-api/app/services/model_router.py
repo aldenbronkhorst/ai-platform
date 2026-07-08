@@ -11,15 +11,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, Any
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-import httpx
 
 from app.models.models import (
     AIProvider, AIModel, AIRoute, AIUsageLog, AIConnectedAccount, AITool,
     AIMemory, AIArtifact,
 )
 from app.services.model_provider_client import ModelProviderClient
-from app.services.key_vault import get_secret_value, key_vault_uri
+from app.services.key_vault import get_secret_value
 from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
+from app.services.external_connectors import (
+    EXTERNAL_CONNECTOR_DISPLAY_NAMES,
+    EXTERNAL_CONNECTOR_TOOL_NAMES,
+    EXTERNAL_CONNECTOR_TYPES,
+    connector_skill_context as external_connector_skill_context,
+    execute_external_connector_tool,
+)
 from app.services.model_tool_calls import (
     _build_tool_definitions,
 )
@@ -53,18 +59,18 @@ LENGTH_LIMIT_CONTINUATION_LIMIT = int(os.environ.get("MODEL_LENGTH_CONTINUATION_
 MAX_TOOL_LOOP_ITERATIONS = int(
     os.environ.get(
         "AI_PLATFORM_MAX_TURNS",
-        os.environ.get("HERMES_MAX_ITERATIONS", os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "90")),
+        os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "24"),
     )
 )
 TOOL_ERROR_SUMMARY_LIMIT = 8
-CONNECTOR_SKILL_MAX_CHARS = int(os.environ.get("CONNECTOR_SKILL_MAX_CHARS", "24000"))
 TOOL_SKILL_MAX_CHARS = int(os.environ.get("TOOL_SKILL_MAX_CHARS", "20000"))
-CONNECTOR_SKILL_TIMEOUT_SECONDS = float(os.environ.get("CONNECTOR_SKILL_TIMEOUT_SECONDS", "8"))
 TOOL_LOOP_FOLLOWUP_MESSAGE = {
     "role": "system",
     "content": (
         "Use the tool results already gathered to answer the user. "
         "Call another tool only when a necessary fact is still missing. "
+        "If the remaining work needs loops, batches, retries, pagination, file transforms, or 3+ connector calls, "
+        "make one Workspace call that performs the full operation instead of issuing many small tool turns. "
         "Only state connected-system facts that are present in successful tool output. "
         "If another tool is needed, call it now instead of saying you will check next."
     ),
@@ -288,10 +294,10 @@ async def build_model_client(provider: AIProvider, model: AIModel) -> ModelProvi
     )
 
 
-KNOWN_CONNECTOR_TYPES = ["odoo", *MICROSOFT_NATIVE_CONNECTOR_SYSTEMS, "github"]
+KNOWN_CONNECTOR_TYPES = [*EXTERNAL_CONNECTOR_TYPES, *MICROSOFT_NATIVE_CONNECTOR_SYSTEMS, "github"]
 
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
-    "odoo": "Odoo",
+    **EXTERNAL_CONNECTOR_DISPLAY_NAMES,
     "azure_cli": "Azure CLI",
     "microsoft_graph": "Microsoft Graph",
     "exchange_online": "Exchange Online",
@@ -300,8 +306,6 @@ CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     "github": "GitHub",
 }
 
-ODOO_CONNECTOR_URL: str = os.environ.get("ODOO_CONNECTOR_URL", "")
-ODOO_CONNECTOR_KEY: str = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
 DELEGATED_AUTH_FAILURE_MARKERS = (
     "does not exist in msal token cache",
     "run `az login`",
@@ -325,13 +329,6 @@ MICROSOFT_TOOL_PROVIDER_BY_NAME = {
 }
 
 
-def _truncate_connector_skill(content: str) -> str:
-    if len(content) <= CONNECTOR_SKILL_MAX_CHARS:
-        return content
-    omitted = len(content) - CONNECTOR_SKILL_MAX_CHARS
-    return content[:CONNECTOR_SKILL_MAX_CHARS].rstrip() + f"\n\n[connector skill truncated by {omitted} characters]"
-
-
 def _truncate_tool_skill(content: str) -> str:
     if len(content) <= TOOL_SKILL_MAX_CHARS:
         return content
@@ -339,68 +336,11 @@ def _truncate_tool_skill(content: str) -> str:
     return content[:TOOL_SKILL_MAX_CHARS].rstrip() + f"\n\n[tool skill truncated by {omitted} characters]"
 
 
-def _selected_tool_names(tools: list[AITool]) -> set[str]:
-    return {str(tool.name or "") for tool in tools}
-
-
-def _selected_connector_skill_systems(connected_systems: set[str], tools: list[AITool]) -> list[str]:
-    tool_names = _selected_tool_names(tools)
-    if WORKSPACE_TOOL_NAME not in tool_names and "odoo" not in tool_names:
-        return []
-    systems: list[str] = []
-    if "odoo" in connected_systems:
-        systems.append("odoo")
-    return systems
-
-
-async def _fetch_odoo_connector_skill() -> str | None:
-    if not ODOO_CONNECTOR_URL:
-        return None
-    url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/guidance"
-    headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY}
-    async with httpx.AsyncClient(timeout=CONNECTOR_SKILL_TIMEOUT_SECONDS) as client:
-        response = await client.get(url, headers=headers)
-    if response.status_code >= 400:
-        logger.warning("Odoo connector skill fetch failed with status %s", response.status_code)
-        return None
-    payload = response.json()
-    if not isinstance(payload, dict):
-        return None
-    content = payload.get("content")
-    if not isinstance(content, str) or not content.strip():
-        return None
-    version = str(payload.get("version") or "unknown")
-    source = str(payload.get("source") or "connector package")
-    return (
-        "### Odoo Connector Skill\n"
-        f"Version: {version}\n"
-        f"Source: {source}\n\n"
-        f"{_truncate_connector_skill(content)}"
-    )
-
-
 async def _connector_skill_context(connected_systems: set[str], tools: list[AITool]) -> str:
-    systems = _selected_connector_skill_systems(connected_systems, tools)
-    if not systems:
-        return ""
-
-    sections: list[str] = []
-    for system in systems:
-        try:
-            skill = await _fetch_odoo_connector_skill() if system == "odoo" else None
-        except Exception as exc:
-            logger.warning("Failed to fetch %s connector skill: %s", system, exc)
-            skill = None
-        if skill:
-            sections.append(skill)
-
-    if not sections:
-        return ""
-    return (
-        "## Connector Skills\n"
-        "The following skill text is owned by the connector package. Use it with Workspace and the connector broker target; "
-        "do not invent connector-specific API flows when the skill gives the raw method flow.\n\n"
-        + "\n\n".join(sections)
+    return await external_connector_skill_context(
+        connected_systems,
+        tools,
+        workspace_tool_name=WORKSPACE_TOOL_NAME,
     )
 
 
@@ -424,68 +364,6 @@ def _tool_skill_context(tools: list[AITool]) -> str:
         "do not replace it with ad hoc prompt rules.\n\n"
         + "\n\n".join(sections)
     )
-
-
-def _connector_error_payload(raw_detail: Any, default_message: str = "") -> dict[str, Any]:
-    detail = raw_detail.get("detail") if isinstance(raw_detail, dict) and "detail" in raw_detail else raw_detail
-    if not isinstance(detail, dict):
-        message = str(detail or default_message or "Connector returned an error.")
-        return {
-            "error_type": "connector_http_error",
-            "message": _truncate_tool_text(message, 1200),
-        }
-
-    error_type = str(detail.get("error_type") or detail.get("error") or "connector_error")
-    raw_message = detail.get("message") or detail.get("detail") or default_message or error_type
-    message = json.dumps(raw_message, ensure_ascii=False, default=str) if isinstance(raw_message, (dict, list)) else str(raw_message)
-
-    safe: dict[str, Any] = {
-        "error_type": error_type,
-        "message": _truncate_tool_text(message, 1200),
-    }
-    for key in ("model", "field", "suggestion", "correlation_id", "status_code"):
-        if key in detail and detail[key] not in (None, ""):
-            safe[key] = detail[key]
-    return safe
-
-
-async def _resolve_odoo_credentials_for_tool(db: AsyncSession, user_id: UUID) -> dict[str, str]:
-    """Resolve Odoo credentials for a given user (internal tool-execution path)."""
-    result = await db.execute(
-        select(AIConnectedAccount).where(
-            AIConnectedAccount.user_id == user_id,
-            AIConnectedAccount.provider == "odoo",
-            or_(AIConnectedAccount.status == "connected", AIConnectedAccount.status == "active"),
-        )
-    )
-    account = result.scalar_one_or_none()
-    if not account:
-        raise RuntimeError("No Odoo connected account found for tool execution")
-
-    api_key = ""
-    if account.secret_reference and key_vault_uri():
-        try:
-            api_key = await get_secret_value(account.secret_reference)
-        except Exception as e:
-            raise RuntimeError(f"Failed to retrieve Odoo credentials from Key Vault: {e}")
-
-    if not api_key:
-        raise RuntimeError("Odoo connected account has no valid credentials")
-
-    odoo_url = (account.odoo_url or "").strip()
-    odoo_db = (account.odoo_db or "").strip()
-    if not odoo_url or not odoo_db:
-        raise RuntimeError("Odoo connected account is missing its saved URL or database")
-
-    logger.info("Resolved Odoo credentials for tool execution: user=%s host=%s db=%s",
-                account.provider_username, odoo_url, odoo_db)
-
-    return {
-        "url": odoo_url,
-        "db": odoo_db,
-        "username": account.provider_username or "",
-        "api_key": api_key,
-    }
 
 
 async def _execute_document_reader_tool(
@@ -825,83 +703,8 @@ async def _execute_tool_call_impl(
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
-    if tool_name == "odoo":
-        if arguments.get("operation") == "guidance":
-            url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/guidance" if ODOO_CONNECTOR_URL else ""
-            if not url:
-                return {"error": "Odoo connector URL not configured"}
-            headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY}
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers)
-            if response.status_code >= 400:
-                try:
-                    raw_detail = response.json()
-                except Exception:
-                    raw_detail = {"error_type": "connector_http_error", "message": response.text}
-                detail = _connector_error_payload(raw_detail, response.text)
-                return {
-                    "error": True,
-                    "status_code": response.status_code,
-                    "connector_error": detail,
-                    "error_type": detail.get("error_type") or "connector_error",
-                    "message": detail.get("message") or "Connector returned an error.",
-                }
-            return response.json()
-
-        if arguments.get("operation") == "playbook":
-            url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/orm/run" if ODOO_CONNECTOR_URL else ""
-            if not url:
-                return {"error": "Odoo connector URL not configured"}
-            headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY, "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    url,
-                    json={"operation": "playbook", "name": arguments.get("name")},
-                    headers=headers,
-                )
-            if response.status_code >= 400:
-                try:
-                    raw_detail = response.json()
-                except Exception:
-                    raw_detail = {"error_type": "connector_http_error", "message": response.text}
-                detail = _connector_error_payload(raw_detail, response.text)
-                return {
-                    "error": True,
-                    "status_code": response.status_code,
-                    "connector_error": detail,
-                    "error_type": detail.get("error_type") or "connector_error",
-                    "message": detail.get("message") or "Connector returned an error.",
-                }
-            return response.json()
-
-        credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
-        payload = {
-            "credentials": credentials,
-            "identity_mode": "user-delegated",
-            **arguments,
-        }
-        path = "/odoo/orm/run"
-        url = f"{ODOO_CONNECTOR_URL.rstrip('/')}{path}" if ODOO_CONNECTOR_URL else ""
-        if not url:
-            return {"error": "Odoo connector URL not configured"}
-        headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY, "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload, headers=headers)
-        if response.status_code >= 400:
-            try:
-                raw_detail = response.json()
-            except Exception:
-                raw_detail = {"error_type": "connector_http_error", "message": response.text}
-            detail = _connector_error_payload(raw_detail, response.text)
-            return {
-                "error": True,
-                "status_code": response.status_code,
-                "connector_error": detail,
-                "error_type": detail.get("error_type") or "connector_error",
-                "message": detail.get("message") or "Connector returned an error.",
-            }
-        result = response.json()
-        return result
+    if tool_name in EXTERNAL_CONNECTOR_TOOL_NAMES:
+        return await execute_external_connector_tool(db, user_id, tool_name, arguments)
 
     if tool_name in MICROSOFT_NATIVE_TOOL_NAMES or tool_name == "github_cli":
         from app.services.connectors.github_cli import run_github_cli_command
@@ -1384,15 +1187,19 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace\n"
             "Workspace is the platform cloud-computer surface. It runs Python or shell/terminal code in a temporary "
-            "directory. Python has `call(tool_name, arguments)`, `list_files()`, `file_info(ref)`, `download_file(ref)`, "
+            "directory. Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, `list_files()`, `file_info(ref)`, `download_file(ref)`, "
             "`read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, `save_output(filename, data)`, and "
             "`output_path(filename)` available by default. Shell scripts can call "
             "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
             "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
             "`github_cli`. Calls use the user's connected accounts; those account permissions decide what succeeds. "
+            "`call()` returns the connector result and raises on connector failure; use `call_raw()` only when the raw broker envelope is needed. "
             "When connector-owned skill text is included in the system context, follow that skill for the connector API shape. "
-            "Use Workspace when live connected-system data, code execution, terminal work, files, or calculations are "
-            "needed. Uploaded and previously generated chat files are listed by `list_files()`; read OCR/table content "
+            "Use Workspace for multi-step work: 3+ connector/tool calls, loops, pagination, batch updates, retries, "
+            "conditional branching, large-output filtering, file transforms, aggregation, or calculations. Prefer one "
+            "workspace script that performs the full loop and prints/saves the result over many model-managed tool turns. "
+            "Use normal direct tool calls only for a single simple call where no processing loop is needed. "
+            "Uploaded and previously generated chat files are listed by `list_files()`; read OCR/table content "
             "with `read_document`, `read_tables`, or `read_layout`, and download raw bytes with `download_file`. "
             "If a live system fact matters, check it in Workspace and answer from the tool result. "
             "Only files saved under `outputs/` are returned to the user as chat attachments. "
@@ -1598,41 +1405,6 @@ def _assistant_tool_call_message(result: dict[str, Any]) -> dict[str, Any]:
     if reasoning_content:
         message["reasoning_content"] = reasoning_content
     return message
-
-
-def _assistant_final_message(result: dict[str, Any]) -> dict[str, Any]:
-    provider_message = result.get("assistant_message")
-    if isinstance(provider_message, dict) and not result.get("tool_calls"):
-        message = _json_safe_copy(provider_message)
-        if isinstance(message, dict):
-            message["role"] = "assistant"
-            if "content" not in message:
-                message["content"] = result.get("content") or ""
-            return message
-
-    message: dict[str, Any] = {
-        "role": "assistant",
-        "content": str(result.get("content") or ""),
-    }
-    reasoning_content = result.get("reasoning_content")
-    if reasoning_content:
-        message["reasoning_content"] = reasoning_content
-    return message
-
-
-def _turn_conversation_messages(
-    intermediate_messages: list[dict[str, Any]],
-    final_result: dict[str, Any],
-) -> list[dict[str, Any]]:
-    messages = [
-        copied
-        for message in intermediate_messages
-        if isinstance((copied := _json_safe_copy(message)), dict)
-    ]
-    final_message = _assistant_final_message(final_result)
-    if str(final_message.get("content") or "").strip() or not messages:
-        messages.append(final_message)
-    return messages
 
 
 async def _call_model(
@@ -2172,7 +1944,6 @@ async def execute_chat(
             trace_svc.span_error(context_span, type(exc).__name__, str(exc))
         raise
 
-    turn_start_index = len(full_messages)
     state = await _run_model_once(
         model_obj, provider, full_messages, temperature, max_tokens, tool_definitions,
         trace_svc=trace_svc,
@@ -2225,6 +1996,5 @@ async def execute_chat(
         "has_tool_errors": bool(tool_error_summary),
         "context": _context_metadata(injected, state, policy),
         "tool_call_count": state.stats.tool_calls,
-        "conversation_messages": _turn_conversation_messages(full_messages[turn_start_index:], state.result),
     }
     return response

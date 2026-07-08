@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from app.services.model_router import _execute_tool_call_impl
-from app.services.workspace_runtime import WorkspaceSession, run_workspace
+from app.services.workspace_runtime import WorkspaceSession, WorkspaceToolBroker, run_workspace
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_workspace_python_has_call_available_by_default():
 
 
 @pytest.mark.asyncio
-async def test_workspace_call_returns_connector_error_without_failing_script():
+async def test_workspace_call_raises_connector_errors():
     async def fake_tool(tool_name, arguments):
         return {
             "error": True,
@@ -133,9 +133,9 @@ async def test_workspace_call_returns_connector_error_without_failing_script():
         tool_executor=fake_tool,
     )
 
-    assert result["status"] == "success"
-    assert result["stdout"].strip() == "True odoo_error"
-    assert result["stderr"] == ""
+    assert result["status"] == "failed"
+    assert "PlatformToolError" in result["stderr"]
+    assert "Invalid field" in result["stderr"]
     assert result["connector_calls"] == {"odoo": 1}
     assert result["connector_error_calls"] == {"odoo": 1}
     assert result["connector_error_details"] == [{
@@ -145,6 +145,32 @@ async def test_workspace_call_returns_connector_error_without_failing_script():
         "model": "res.partner",
         "method": "read",
     }]
+
+
+@pytest.mark.asyncio
+async def test_workspace_call_raw_returns_connector_error_envelope():
+    async def fake_tool(tool_name, arguments):
+        return {
+            "error": True,
+            "error_type": "odoo_error",
+            "message": "Invalid field 'missing_field' on model 'res.partner'.",
+        }
+
+    result = await run_workspace(
+        {
+            "code": (
+                "response = call_raw('odoo', {'model': 'res.partner', 'method': 'read'})\n"
+                "print(response['error'], response['error_type'])"
+            ),
+            "timeout": 10,
+        },
+        tool_executor=fake_tool,
+    )
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "True odoo_error"
+    assert result["connector_calls"] == {"odoo": 1}
+    assert result["connector_error_calls"] == {"odoo": 1}
 
 
 @pytest.mark.asyncio
@@ -167,6 +193,15 @@ async def test_workspace_call_checked_keeps_explicit_exception_behavior():
     assert result["status"] == "failed"
     assert "PlatformToolError" in result["stderr"]
     assert "Invalid field" in result["stderr"]
+
+
+def test_workspace_tool_brokers_use_unique_socket_paths(tmp_path):
+    first = WorkspaceToolBroker(None, tmp_path / "chat-workspace")
+    second = WorkspaceToolBroker(None, tmp_path / "chat-workspace")
+
+    assert first.socket_path
+    assert second.socket_path
+    assert first.socket_path != second.socket_path
 
 
 @pytest.mark.asyncio

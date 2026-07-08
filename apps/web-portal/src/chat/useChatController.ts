@@ -82,6 +82,13 @@ function hasPersistedAssistantMessage(messages: ChatMessage[], requestId: string
   return messages.some(message => message.role === "assistant" && messageRequestId(message) === requestId);
 }
 
+function hasRunningAssistantMessage(messages: ChatMessage[]) {
+  return messages.some(message =>
+    message.role === "assistant"
+    && ["pending", "streaming", "tool_running", "sending"].includes(message.status || "")
+  );
+}
+
 function isAbortError(err: unknown) {
   return err instanceof DOMException
     ? err.name === "AbortError"
@@ -398,6 +405,8 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
       const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: await getHeaders() });
       if (res.ok) {
         const data = (await res.json() as ChatMessage[]).map(normalizeChatMessage);
+        if (hasRunningAssistantMessage(data)) markSessionSending(sid);
+        else unmarkSessionSending(sid);
         if (activeSessionIdRef.current === sid) {
           setChatMessages(mergeChatMessages(data, localMessagesBySessionRef.current[sid] || []));
         }
@@ -411,7 +420,7 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
       }
     }
     return null;
-  }, [getHeaders]);
+  }, [getHeaders, markSessionSending, unmarkSessionSending]);
 
   const deleteChatSession = useCallback(async (sid: string) => {
     try {
@@ -463,6 +472,14 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
     }, 0);
     return () => window.clearTimeout(timerId);
   }, [activeSessionId, accessToken, fetchSessionMessages]);
+
+  useEffect(() => {
+    if (!activeSessionId || !accessToken || !isActiveChatSending) return;
+    const timerId = window.setInterval(() => {
+      void fetchSessionMessages(activeSessionId, false);
+    }, CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timerId);
+  }, [activeSessionId, accessToken, fetchSessionMessages, isActiveChatSending]);
 
   const markAssistantFailed = useCallback((sessionId: string, pendingMessageId: string, failure: ChatFailurePayload) => {
     const patch = { status: "failed" as const, error_message: JSON.stringify(failure) };

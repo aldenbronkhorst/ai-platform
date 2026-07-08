@@ -5,6 +5,7 @@ import json
 import uuid
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -71,6 +72,8 @@ class ChatMessageResponse(BaseModel):
     token_usage_json: Optional[Any] = None
     tool_call_json: Optional[Any] = None
     metadata_json: Optional[Any] = None
+    status: Optional[str] = None
+    error_message: Optional[str] = None
     attachments: List[ChatMessageAttachmentResponse] = Field(default_factory=list)
 
 
@@ -368,6 +371,40 @@ async def _persist_user_message(db: AsyncSession, session_id: UUID, user_id: UUI
     return message
 
 
+def _pending_assistant_metadata(request_id: str, content: str, artifact_count: int = 0) -> dict[str, Any]:
+    return {
+        "request_id": request_id,
+        "status": "streaming",
+        "progress_context": {
+            "summary": " ".join(str(content or "").split())[:120],
+            "has_artifacts": artifact_count > 0,
+            "started_at": _utcnow().isoformat(),
+        },
+        "activity_events": [],
+        "message_parts": [],
+    }
+
+
+async def _persist_pending_assistant_message(
+    db: AsyncSession,
+    session_id: UUID,
+    user_id: UUID,
+    content: str,
+    request_id: str,
+    artifact_count: int = 0,
+) -> AIChatMessage:
+    message = _new_chat_message(
+        session_id,
+        user_id,
+        "assistant",
+        "",
+        metadata_json=_pending_assistant_metadata(request_id, content, artifact_count),
+    )
+    db.add(message)
+    await db.flush()
+    return message
+
+
 def _session_metadata(session: AIChatSession) -> dict[str, Any]:
     return dict(session.metadata_json or {})
 
@@ -658,97 +695,9 @@ def _content_with_attachment_context(content: str, attachment_context: str) -> s
     return f"{clean_content}\n\n{attachment_context}"
 
 
-def _json_value(value: Any) -> Any:
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    return value
-
-
-def _json_safe_copy(value: Any) -> Any:
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _history_message_from_raw(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    role = str(raw.get("role") or "").strip()
-    if role not in {"assistant", "user", "system", "tool"}:
-        return None
-    message = _json_safe_copy(raw)
-    if not isinstance(message, dict):
-        return None
-    message["role"] = role
-    if role == "tool" and not message.get("tool_call_id"):
-        return None
-    if role != "assistant" and "content" not in message:
-        return None
-    if role == "assistant" and "content" not in message:
-        message["content"] = None
-    return message
-
-
-def _tool_result_history_messages(message: AIChatMessage) -> list[dict[str, Any]]:
-    tool_results = _json_value(message.tool_call_json)
-    if not isinstance(tool_results, list) or not tool_results:
-        content = message.content or ""
-        return [{"role": "assistant", "content": content}] if content.strip() else []
-
-    assistant_tool_calls: list[dict[str, Any]] = []
-    tool_messages: list[dict[str, Any]] = []
-    for index, tool_result in enumerate(tool_results):
-        if not isinstance(tool_result, dict):
-            continue
-        tool_name = str(tool_result.get("tool_name") or "").strip()
-        if not tool_name:
-            continue
-        tool_call_id = str(tool_result.get("tool_call_id") or f"stored_tool_{message.id}_{index}")
-        arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
-        assistant_tool_calls.append({
-            "id": tool_call_id,
-            "type": "function",
-            "function": {
-                "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False, default=str),
-            },
-        })
-        tool_messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": json.dumps(tool_result.get("result") or {}, ensure_ascii=False, default=str),
-        })
-
-    if not assistant_tool_calls:
-        content = message.content or ""
-        return [{"role": "assistant", "content": content}] if content.strip() else []
-
-    messages: list[dict[str, Any]] = [
-        {"role": "assistant", "content": None, "tool_calls": assistant_tool_calls},
-        *tool_messages,
-    ]
-    final_content = message.content or ""
-    if final_content.strip():
-        messages.append({"role": "assistant", "content": final_content})
-    return messages
-
-
 def _assistant_turn_messages(message: AIChatMessage) -> list[dict[str, Any]]:
-    metadata = message.metadata_json or {}
-    stored_messages = metadata.get("conversation_messages")
-    if isinstance(stored_messages, list):
-        replay = [
-            history_message
-            for raw_message in stored_messages
-            if (history_message := _history_message_from_raw(raw_message)) is not None
-        ]
-        if replay:
-            return replay
-    return _tool_result_history_messages(message)
+    content = message.content or ""
+    return [{"role": "assistant", "content": content}] if content.strip() else []
 
 
 async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: AIChatMessage, content: str) -> list[dict[str, Any]]:
@@ -774,14 +723,25 @@ def _is_valid_history_message(message: AIChatMessage) -> bool:
     if message.role != "assistant":
         return True
     metadata = message.metadata_json or {}
+    if metadata.get("status") in {"pending", "streaming", "tool_running"}:
+        return False
     if metadata.get("failed"):
         return False
-    if metadata.get("conversation_messages") or message.tool_call_json:
-        return True
     content = message.content or ""
     if not content.strip():
         return False
     return not TEXT_TOOL_MARKER_RE.search(content)
+
+
+def _failed_metadata(error_type: str, error_message: str, request_id: str, trace_id: str) -> dict[str, Any]:
+    return {
+        "failed": True,
+        "status": "failed",
+        "error_type": error_type,
+        "error_message": error_message,
+        "request_id": request_id,
+        "trace_id": trace_id,
+    }
 
 
 def _failed_assistant_message(session_id: UUID, user_id: UUID, error_type: str, error_message: str, request_id: str, trace_id: str) -> AIChatMessage:
@@ -790,13 +750,7 @@ def _failed_assistant_message(session_id: UUID, user_id: UUID, error_type: str, 
         user_id,
         "assistant",
         "",
-        metadata_json={
-            "failed": True,
-            "error_type": error_type,
-            "error_message": error_message,
-            "request_id": request_id,
-            "trace_id": trace_id,
-        },
+        metadata_json=_failed_metadata(error_type, error_message, request_id, trace_id),
     )
 
 
@@ -808,8 +762,15 @@ async def _persist_failed_message(
     error_message: str,
     request_id: str,
     trace_id: str,
+    assistant_msg: AIChatMessage | None = None,
 ) -> None:
-    db.add(_failed_assistant_message(session_id, user_id, error_type, error_message, request_id, trace_id))
+    if assistant_msg is not None:
+        assistant_msg.content = ""
+        assistant_msg.metadata_json = _failed_metadata(error_type, error_message, request_id, trace_id)
+        assistant_msg.updated_at = _utcnow()
+        db.add(assistant_msg)
+    else:
+        db.add(_failed_assistant_message(session_id, user_id, error_type, error_message, request_id, trace_id))
     await db.flush()
 
 
@@ -817,6 +778,38 @@ async def _commit_user_turn_start(db: AsyncSession, session: AIChatSession) -> N
     session.last_message_at = _utcnow()
     session.updated_at = _utcnow()
     await db.commit()
+
+
+async def _persist_live_assistant_snapshot(
+    assistant_msg_id: UUID,
+    user_id: UUID,
+    *,
+    request_id: str,
+    activity_events: list[dict[str, Any]],
+    message_parts: list[dict[str, Any]],
+) -> None:
+    async with AsyncSessionLocal() as live_db:
+        result = await live_db.execute(
+            select(AIChatMessage).where(
+                AIChatMessage.id == assistant_msg_id,
+                AIChatMessage.user_id == user_id,
+                AIChatMessage.role == "assistant",
+            )
+        )
+        message = result.scalar_one_or_none()
+        if not message:
+            return
+        metadata = dict(message.metadata_json or {})
+        if metadata.get("status") in {"completed", "failed", "cancelled"}:
+            return
+        metadata["request_id"] = request_id
+        metadata["status"] = "streaming"
+        metadata["activity_events"] = list(activity_events[-160:])
+        compact_parts = _compact_message_parts([dict(part) for part in message_parts if isinstance(part, dict)])
+        metadata["message_parts"] = compact_parts or []
+        message.metadata_json = metadata
+        message.updated_at = _utcnow()
+        await live_db.commit()
 
 
 async def _run_model_router(
@@ -830,6 +823,7 @@ async def _run_model_router(
     activity_event_sink=None,
     agent_event_sink=None,
     workspace_artifacts: list[dict[str, Any]] | None = None,
+    pending_assistant_msg: AIChatMessage | None = None,
 ):
     from app.services.trace_service import TraceService
     from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
@@ -860,6 +854,16 @@ async def _run_model_router(
     except RouteNotFoundError as exc:
         trace_svc.span_error(model_span, "configuration_error", str(exc))
         await trace_svc.commit(status="failed", error_type="configuration_error", error_message=str(exc))
+        await _persist_failed_message(
+            db,
+            session_id,
+            user_id,
+            "configuration_error",
+            str(exc),
+            request_id,
+            trace_svc.trace_id,
+            pending_assistant_msg,
+        )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -875,7 +879,16 @@ async def _run_model_router(
         error_msg = str(exc)
         trace_svc.span_error(model_span, "model_error", error_msg)
         await trace_svc.commit(status="failed", error_type="model_error", error_message=error_msg)
-        await _persist_failed_message(db, session_id, user_id, "model_error", error_msg, request_id, trace_svc.trace_id)
+        await _persist_failed_message(
+            db,
+            session_id,
+            user_id,
+            "model_error",
+            error_msg,
+            request_id,
+            trace_svc.trace_id,
+            pending_assistant_msg,
+        )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -891,7 +904,16 @@ async def _run_model_router(
         error_msg = str(exc)
         trace_svc.span_error(model_span, "server_error", error_msg)
         await trace_svc.commit(status="failed", error_type="server_error", error_message=error_msg)
-        await _persist_failed_message(db, session_id, user_id, "server_error", error_msg, request_id, trace_svc.trace_id)
+        await _persist_failed_message(
+            db,
+            session_id,
+            user_id,
+            "server_error",
+            error_msg,
+            request_id,
+            trace_svc.trace_id,
+            pending_assistant_msg,
+        )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -1296,15 +1318,6 @@ def _assistant_metadata(
         metadata["activity_events"] = activity_events
     if message_parts:
         metadata["message_parts"] = message_parts
-    conversation_messages = router_result.get("conversation_messages")
-    if isinstance(conversation_messages, list):
-        replay = [
-            history_message
-            for raw_message in conversation_messages
-            if (history_message := _history_message_from_raw(raw_message)) is not None
-        ]
-        if replay:
-            metadata["conversation_messages"] = replay
     return metadata
 
 
@@ -1330,6 +1343,28 @@ def _build_assistant_message(
         tool_call_json=router_result.get("tool_calls"),
         metadata_json=_assistant_metadata(router_result, request_id, trace_id, activity_events, stored_parts),
     )
+
+
+def _apply_assistant_result(
+    assistant_msg: AIChatMessage,
+    router_result: dict[str, Any],
+    request_id: str,
+    trace_id: str,
+    activity_events: list[dict[str, Any]] | None = None,
+    message_parts: list[dict[str, Any]] | None = None,
+) -> AIChatMessage:
+    content = router_result.get("content", "")
+    stored_parts = _message_parts_with_final_text(message_parts, content)
+    metadata = _assistant_metadata(router_result, request_id, trace_id, activity_events, stored_parts)
+    metadata["status"] = "completed"
+    assistant_msg.content = content
+    assistant_msg.model_provider = router_result.get("model_provider", "unknown")
+    assistant_msg.model_name = router_result.get("model_name", "unknown")
+    assistant_msg.token_usage_json = _token_usage(router_result)
+    assistant_msg.tool_call_json = router_result.get("tool_calls")
+    assistant_msg.metadata_json = metadata
+    assistant_msg.updated_at = _utcnow()
+    return assistant_msg
 
 
 async def _record_memory_usage(
@@ -1466,6 +1501,30 @@ async def _process_chat_turn(
 ) -> AIChatMessage:
     activity_events: list[dict[str, Any]] = []
     message_parts: list[dict[str, Any]] = []
+    pending_assistant_msg: AIChatMessage | None = None
+    live_snapshot_tasks: list[asyncio.Task[None]] = []
+    last_live_snapshot_at = 0.0
+
+    def schedule_live_snapshot(event_type: str | None = None) -> None:
+        nonlocal last_live_snapshot_at
+        if pending_assistant_msg is None:
+            return
+        event_name = str(event_type or "")
+        now = time.monotonic()
+        high_volume_event = event_name in {"reasoning.delta", "message.delta", "thinking.delta"}
+        if high_volume_event and now - last_live_snapshot_at < 0.8:
+            return
+        last_live_snapshot_at = now
+        live_snapshot_tasks[:] = [task for task in live_snapshot_tasks if not task.done()]
+        if len(live_snapshot_tasks) >= 8:
+            return
+        live_snapshot_tasks.append(asyncio.create_task(_persist_live_assistant_snapshot(
+            pending_assistant_msg.id,
+            user_id,
+            request_id=request_id,
+            activity_events=[dict(event) for event in activity_events if isinstance(event, dict)],
+            message_parts=[dict(part) for part in message_parts if isinstance(part, dict)],
+        )))
 
     def collect_agent_event(event: dict[str, Any]) -> None:
         event_type = event.get("type")
@@ -1484,6 +1543,7 @@ async def _process_chat_turn(
             _upsert_tool_call_part(message_parts, event)
         if len(message_parts) > 240:
             del message_parts[:-240]
+        schedule_live_snapshot(str(event_type or ""))
         if agent_event_sink:
             agent_event_sink(event)
 
@@ -1498,6 +1558,14 @@ async def _process_chat_turn(
     session = await _get_owned_session(db, session_id, user_id)
     artifacts = await _owned_artifacts_for_chat(db, user_id, req.artifact_ids or [])
     user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
+    pending_assistant_msg = await _persist_pending_assistant_message(
+        db,
+        session_id,
+        user_id,
+        req.content,
+        request_id,
+        len(artifacts),
+    )
     await _apply_natural_language_feedback(db, session_id, user_id, req.content)
     _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
 
@@ -1531,6 +1599,7 @@ async def _process_chat_turn(
         activity_event_sink=collect_activity,
         agent_event_sink=collect_agent_event,
         workspace_artifacts=workspace_artifacts,
+        pending_assistant_msg=pending_assistant_msg,
     )
     try:
         _raise_on_blank_response(router_result, request_id, user_id, session_id)
@@ -1543,16 +1612,24 @@ async def _process_chat_turn(
             error_message = str(exc.detail.get("error_message") or error_message)
         await trace_svc.commit(status="failed", error_type=error_type, error_message=error_message)
         await _mark_usage_failed(db, request_id, trace_svc.trace_id, error_message)
-        await _persist_failed_message(db, session_id, user_id, error_type, error_message, request_id, trace_svc.trace_id)
+        await _persist_failed_message(
+            db,
+            session_id,
+            user_id,
+            error_type,
+            error_message,
+            request_id,
+            trace_svc.trace_id,
+            pending_assistant_msg,
+        )
         await db.commit()
         raise
 
     context_data = router_result.get("context")
     tool_error_summary = _tool_error_summary(router_result)
 
-    assistant_msg = _build_assistant_message(
-        session_id,
-        user_id,
+    assistant_msg = _apply_assistant_result(
+        pending_assistant_msg,
         router_result,
         request_id,
         trace_svc.trace_id,
@@ -1594,6 +1671,22 @@ def _stream_heartbeat_payload(request_id: str, started_at: datetime) -> dict[str
 
 def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     payload = ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
+    metadata = payload.get("metadata_json") if isinstance(payload.get("metadata_json"), dict) else {}
+    status_value = str(metadata.get("status") or "").strip()
+    if metadata.get("failed"):
+        payload["status"] = "failed"
+        payload["error_message"] = json.dumps({
+            "requestId": metadata.get("request_id") or "",
+            "errorType": metadata.get("error_type") or "server_error",
+            "errorMessage": metadata.get("error_message") or "The model service could not generate a response right now.",
+            "httpStatus": 502,
+        })
+    elif status_value:
+        payload["status"] = status_value
+    elif message.role == "assistant":
+        payload["status"] = "completed"
+    else:
+        payload["status"] = "completed"
     payload["attachments"] = attachments or []
     return payload
 

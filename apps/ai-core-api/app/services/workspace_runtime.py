@@ -268,7 +268,8 @@ class WorkspaceToolBroker:
         self.port = 0
         socket_root = Path(os.environ.get("WORKSPACE_SOCKET_ROOT") or "/tmp")
         socket_root.mkdir(parents=True, exist_ok=True)
-        socket_name = f"aip-{hashlib.sha256(str(workdir).encode('utf-8')).hexdigest()[:16]}.sock"
+        socket_prefix = hashlib.sha256(str(workdir).encode("utf-8")).hexdigest()[:10]
+        socket_name = f"aip-{socket_prefix}-{secrets.token_hex(8)}.sock"
         self.socket_path = str(socket_root / socket_name) if os.name == "posix" else ""
         self.calls = 0
         self.call_counts: dict[str, int] = {}
@@ -278,6 +279,7 @@ class WorkspaceToolBroker:
 
     async def __aenter__(self) -> "WorkspaceToolBroker":
         if self.socket_path:
+            Path(self.socket_path).unlink(missing_ok=True)
             self._server = await asyncio.start_unix_server(self._handle, path=self.socket_path)
         else:
             self._server = await asyncio.start_server(self._handle, self.host, 0)
@@ -561,29 +563,17 @@ def call_raw(tool_name, arguments=None):
     return json.loads(b"".join(chunks).decode("utf-8"))
 
 
-def tool_error(response):
-    """Return a compact error object from a failed broker response."""
-    return {{
-        "error": True,
-        "error_type": response.get("error_type") or "platform_tool_error",
-        "message": response.get("message") or "Platform tool call failed",
-        "result": response.get("result"),
-    }}
-
-
-def call(tool_name, arguments=None, raise_on_error=False):
-    """Call a platform tool/connector and return its result or an error object."""
+def call(tool_name, arguments=None):
+    """Call a platform tool/connector and return its result."""
     response = call_raw(tool_name, arguments)
     if response.get("error"):
-        if not raise_on_error:
-            return tool_error(response)
         raise PlatformToolError(response.get("message") or response.get("error_type") or "Platform tool call failed", response)
     return response.get("result")
 
 
 def call_checked(tool_name, arguments=None):
-    """Call a platform tool/connector and raise PlatformToolError on failure."""
-    return call(tool_name, arguments, raise_on_error=True)
+    """Alias for call(); retained for older workspace scripts."""
+    return call(tool_name, arguments)
 '''
     (workdir / "ai_platform_tools.py").write_text(textwrap.dedent(tools_helper).strip() + "\n", encoding="utf-8")
 
