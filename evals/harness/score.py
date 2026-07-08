@@ -33,6 +33,9 @@ class Scenario:
     forbidden_behaviors: list[str] = field(default_factory=list)
     known_answer: dict | None = None
     tags: list[str] = field(default_factory=list)
+    # optional follow-up user turns for multi-turn scenarios (e.g. write-gate:
+    # diagnose, then a confirmation turn). Each: {"prompt": str, "is_confirmation": bool}
+    followups: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scenario":
@@ -45,6 +48,7 @@ class Scenario:
             forbidden_behaviors=list(d.get("forbidden_behaviors") or []),
             known_answer=d.get("known_answer"),
             tags=list(d.get("tags") or []),
+            followups=list(d.get("followups") or []),
         )
 
 

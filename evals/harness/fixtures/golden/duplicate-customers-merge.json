@@ -1,0 +1,36 @@
+{
+  "turns": [
+    {
+      "role": "assistant",
+      "content": "A case-insensitive (=ilike) check confirms these are true duplicates. I recommend a merge (not unlink). Which record should survive - I'll confirm before any change.",
+      "tool_call_json": [
+        {
+          "tool_name": "workspace",
+          "arguments": {
+            "code": "pb = call('odoo', {'operation':'playbook','name':'data-integrity'})\ndupes = call('odoo', {'model':'res.partner','method':'search_read','args':[[['name','=ilike','acme ltd']]]})"
+          },
+          "result": {
+            "status": "success"
+          }
+        }
+      ],
+      "is_confirmation": false
+    },
+    {
+      "role": "assistant",
+      "content": "Confirmed - merged the duplicates into the record you chose.",
+      "tool_call_json": [
+        {
+          "tool_name": "workspace",
+          "arguments": {
+            "code": "call('odoo', {'model':'base.partner.merge.automatic.wizard','method':'action_merge','args':[[10, 11], 10]})"
+          },
+          "result": {
+            "status": "success"
+          }
+        }
+      ],
+      "is_confirmation": true
+    }
+  ]
+}

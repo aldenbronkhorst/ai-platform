@@ -1,0 +1,17 @@
+[
+  {
+    "role": "assistant",
+    "content": "Reading the template and variant default_code confirms the overwrite. This is the auto_generate_product_reference create() trap - the fix is on Staging, not production. Handing off as a code fix; I did not rewrite the code.",
+    "tool_call_json": [
+      {
+        "tool_name": "workspace",
+        "arguments": {
+          "code": "pb = call('odoo', {'operation':'playbook','name':'write-failed'})\ntmpl = call('odoo', {'model':'product.template','method':'search_read','args':[[['default_code','=','VOB2A']], ['default_code']]})"
+        },
+        "result": {
+          "status": "success"
+        }
+      }
+    ]
+  }
+]

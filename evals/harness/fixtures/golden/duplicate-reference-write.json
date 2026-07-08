@@ -1,0 +1,17 @@
+[
+  {
+    "role": "assistant",
+    "content": "A case-insensitive (=ilike) match finds a case-variant collision (ab12). The product_reference_unique_x constraint enforces case-insensitive uniqueness, so AB12 collides with the existing ab12.",
+    "tool_call_json": [
+      {
+        "tool_name": "workspace",
+        "arguments": {
+          "code": "pb = call('odoo', {'operation':'playbook','name':'write-failed'})\nhits = call('odoo', {'model':'product.product','method':'search_read','args':[[['default_code','=ilike','AB12']]]})"
+        },
+        "result": {
+          "status": "success"
+        }
+      }
+    ]
+  }
+]

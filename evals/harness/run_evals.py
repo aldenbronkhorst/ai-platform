@@ -90,9 +90,13 @@ def run_live(scenarios: list[Scenario], base_url: str, api_key: str, judge_fn):
     for sc in scenarios:
         print(f"  running {sc.id} ...", flush=True)
         session_id = create_session(base_url, api_key)
-        turn = capture_turn(base_url, api_key, session_id, sc.prompt)
-        conclusion = judge_conclusion(sc, turn.content, judge_fn)
-        results.append(score_scenario(sc, [turn], conclusion))
+        turns = [capture_turn(base_url, api_key, session_id, sc.prompt)]
+        for followup in sc.followups:  # multi-turn (e.g. write-gate: confirm-then-write)
+            turn = capture_turn(base_url, api_key, session_id, followup.get("prompt", ""))
+            turn.is_confirmation = bool(followup.get("is_confirmation"))
+            turns.append(turn)
+        conclusion = judge_conclusion(sc, turns[-1].content, judge_fn)
+        results.append(score_scenario(sc, turns, conclusion))
     return results
 
 

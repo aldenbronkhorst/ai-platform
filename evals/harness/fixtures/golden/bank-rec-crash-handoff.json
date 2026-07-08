@@ -1,0 +1,17 @@
+[
+  {
+    "role": "assistant",
+    "content": "This is the known code defect: move_id.payment_id was removed in Odoo 18 and renamed origin_payment_id. The fix already exists on Staging pending promotion - it is a code/deployment fix, not a data change.",
+    "tool_call_json": [
+      {
+        "tool_name": "workspace",
+        "arguments": {
+          "code": "pb = call('odoo', {'operation':'playbook','name':'write-failed'})\ninfo = call('odoo', {'model':'ir.model.fields','method':'search_read','args':[[['model','=','account.move'],['name','=','origin_payment_id']]]})"
+        },
+        "result": {
+          "status": "success"
+        }
+      }
+    ]
+  }
+]
