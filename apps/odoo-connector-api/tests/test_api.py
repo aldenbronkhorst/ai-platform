@@ -8,6 +8,7 @@ os.environ["DEBUG"] = "true"
 os.environ["INTERNAL_API_KEY"] = "test-internal-key"
 
 from app.core.odoo_client import (  # noqa: E402
+    OdooAuthError,
     OdooClient,
     OdooCredentials,
     OdooError,
@@ -74,7 +75,7 @@ def test_connector_serves_its_own_manifest_and_skill():
     guidance = guidance_response.json()
     assert guidance["connector"] == "odoo"
     assert guidance["version"] == "2.5.0"
-    assert guidance["source"].endswith("apps/odoo-connector-api/skills/odoo-api/SKILL.md")
+    assert guidance["source"].replace("\\", "/").endswith("apps/odoo-connector-api/skills/odoo-api/SKILL.md")
     assert "Direct integration with Odoo ERP via JSON-RPC" in guidance["content"]
     assert "call(\"odoo\"" in guidance["content"]
 
@@ -481,3 +482,113 @@ def test_raw_odoo_endpoint_requires_model_and_method():
 
     assert response.status_code == 400
     assert response.json()["detail"]["error"] == "odoo_call_requires_model_and_method"
+
+
+# --- F2: Odoo auth failures are 401, distinct from a failed call ---
+@patch("app.routers.orm_runner._get_client")
+def test_single_call_odoo_auth_error_returns_401(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.execute_kw.side_effect = OdooAuthError(
+        "Odoo authentication failed for the linked user."
+    )
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "model": "res.partner",
+            "method": "search_count",
+            "args": [[]],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 401
+    detail = response.json()["detail"]
+    assert detail["error"] == "odoo_auth_failed"
+    assert detail["error_type"] == "OdooAuthError"
+    assert detail["model"] == "res.partner"
+
+
+# --- F3: Odoo errors get a specific, classified error_type ---
+@patch("app.routers.orm_runner._get_client")
+def test_single_call_invalid_field_error_is_classified(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.execute_kw.side_effect = OdooError(
+        "Odoo JSON-RPC error: Invalid field account.move.bogus in leaf ('bogus', '=', 1)"
+    )
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "model": "account.move",
+            "method": "search_read",
+            "args": [[["bogus", "=", 1]]],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["error_type"] == "invalid_domain_field"
+    assert "bogus" in detail["message"] and "account.move" in detail["message"]
+    assert "Invalid field" not in detail["message"]  # friendly message, not raw text
+
+
+@patch("app.routers.orm_runner._get_client")
+def test_single_call_pos_delete_blocked_is_classified(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.execute_kw.side_effect = OdooError(
+        "Odoo JSON-RPC error: You cannot delete a point of sale session that is still active."
+    )
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "model": "pos.session",
+            "method": "unlink",
+            "args": [[5]],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error_type"] == "odoo_delete_blocked_active_pos_session"
+
+
+# --- F1: a batch abort surfaces the calls that already executed ---
+@patch("app.routers.orm_runner._get_client")
+def test_batch_default_abort_reports_partial_progress(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.execute_kw.side_effect = [
+        {"id": 5},  # call 0 (write) succeeds and IS applied to Odoo
+        OdooError("Odoo JSON-RPC error: boom on call 1"),  # call 1 (unlink) fails
+    ]
+    mock_get_client.return_value = mock_client
+
+    response = client.post(
+        "/odoo/orm/run",
+        json={
+            "credentials": CREDENTIALS,
+            "calls": [
+                {"name": "step1", "model": "account.move", "method": "write", "args": [[5], {"ref": "x"}]},
+                {"name": "step2", "model": "account.move", "method": "unlink", "args": [[6]]},
+            ],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["aborted_at_index"] == 1
+    assert detail["non_transactional"] is True
+    assert detail["completed_count"] == 1
+    assert detail["completed"][0]["name"] == "step1"
+    assert detail["completed"][0]["result"] == {"id": 5}
+    # call 0's write really did execute before the abort (non-transactional)
+    assert mock_client.execute_kw.call_count == 2

@@ -383,17 +383,34 @@ def _raise_connector_auth_error(err_body: dict, request_id: str = "") -> None:
     )
 
 
+def _connector_error_code(err_body: dict) -> str | None:
+    """Read the connector's error code whether it is top-level or nested.
+
+    The connector raises FastAPI HTTPException, so its payload is wrapped under
+    'detail' (e.g. {"detail": {"error": "odoo_auth_failed", ...}}); its app-level
+    handler returns the code top-level. A bad *internal* API key yields a plain
+    string detail, so this returns None for it (correctly NOT an Odoo-auth error).
+    """
+    detail = err_body.get("detail")
+    if isinstance(detail, dict) and detail.get("error"):
+        return detail.get("error")
+    return err_body.get("error")
+
+
 def _raise_verify_response_error(response: httpx.Response, request_id: str = "") -> None:
     err_body = _response_error_body(response)
     raw_detail = str(err_body.get("message", err_body.get("detail", str(err_body))))
     classified = _classify_odoo_error(raw_detail, response.status_code)
+    error_code = _connector_error_code(err_body)
 
+    # Bad Odoo credentials (connector 401/400 with error 'odoo_auth_failed') must be
+    # reported as invalid Odoo creds, NOT as an internal connector-key mismatch.
     if response.status_code == 401:
-        if err_body.get("error") == "odoo_auth_failed":
+        if error_code == "odoo_auth_failed":
             _raise_odoo_auth_error(classified, err_body, request_id)
         _raise_connector_auth_error(err_body, request_id)
 
-    if response.status_code == 400 and err_body.get("error") == "odoo_auth_failed":
+    if response.status_code == 400 and error_code == "odoo_auth_failed":
         _raise_odoo_auth_error(classified, err_body, request_id)
 
     logger.info(
