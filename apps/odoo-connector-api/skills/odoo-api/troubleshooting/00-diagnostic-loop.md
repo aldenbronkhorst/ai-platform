@@ -21,6 +21,12 @@ This boundary decides many cases below: if the fix requires changing **module co
 **deployment**, that is not something you can do through `execute_kw` — your job there is to
 *diagnose precisely and hand off*, not to improvise an ORM workaround around a code defect.
 
+A multi-step investigation often runs Workspace code across several steps. **Workspace runs
+don't share variables** — each run is a fresh process, so a later run referencing a variable set
+in an earlier one fails with `NameError`. Do the fetch-and-analyze in one script, or persist the
+intermediate data to a file and reload it (files in the workspace survive between runs). See the
+main `SKILL.md` for detail.
+
 ## The loop: Observe → Orient → Decide → Act
 
 Run every investigation as this loop. Do not skip to Act.
