@@ -1,9 +1,9 @@
 import logging
-import re
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from app.core.config import get_settings
-from app.core.odoo_client import OdooError, OdooAuthError
+from app.core.errors import classify_odoo_error
+from app.core.odoo_client import OdooError
 from app.core.middleware import CorrelationIdMiddleware
 from app.routers import health
 from app.routers import guidance as guidance_router
@@ -29,19 +29,6 @@ if settings.appinsights_connection_string:
     )
 else:
     tracer = None
-
-MAX_CONNECTOR_ERROR_CHARS = 1200
-INVALID_FIELD_RE = re.compile(r"Invalid field (?P<model>[\w.]+)\.(?P<field>[\w_]+) in leaf", re.IGNORECASE)
-
-
-def _classify_odoo_error_message(message: str, default: str) -> str:
-    lower = message.lower()
-    if "cannot delete" in lower:
-        if any(marker in lower for marker in ("pos config", "pos session", "active pos", "point of sale")):
-            return "odoo_delete_blocked_active_pos_session"
-        return "odoo_delete_blocked"
-    return default
-
 
 app = FastAPI(
     title=settings.app_name,
@@ -72,53 +59,14 @@ app.include_router(guidance_router.router, prefix="/odoo", tags=["Odoo"])
 app.include_router(orm_runner_router.router, prefix="/odoo/orm", tags=["Odoo"])
 
 
-@app.exception_handler(OdooAuthError)
-async def odoo_auth_error_handler(request: Request, exc: OdooAuthError):
-    return JSONResponse(
-        status_code=401,
-        content={
-            "error": "odoo_auth_failed",
-            "message": str(exc),
-            "correlation_id": getattr(request.state, "correlation_id", None),
-        },
-    )
-
-
 @app.exception_handler(OdooError)
 async def odoo_error_handler(request: Request, exc: OdooError):
-    raw_message = str(exc)
-    invalid_field = INVALID_FIELD_RE.search(raw_message)
-    if invalid_field:
-        message = (
-            f"Field '{invalid_field.group('field')}' does not exist on "
-            f"Odoo model '{invalid_field.group('model')}'."
-        )
-        error_type = "invalid_domain_field"
-    else:
-        message = raw_message
-        error_type = "odoo_error"
-        if "Traceback" in message:
-            prefix = message.split("Traceback", 1)[0].strip(" ;:\n")
-            message = (
-                prefix
-                if prefix and len(prefix) < 500
-                else "Odoo returned an internal error while processing the request."
-            )
-        if len(message) > MAX_CONNECTOR_ERROR_CHARS:
-            message = (
-                message[:MAX_CONNECTOR_ERROR_CHARS].rstrip()
-                + f"... [truncated {len(raw_message) - MAX_CONNECTOR_ERROR_CHARS} chars]"
-            )
-        error_type = _classify_odoo_error_message(message, error_type)
-    return JSONResponse(
-        status_code=400,
-        content={
-            "error": error_type,
-            "error_type": error_type,
-            "message": message,
-            "correlation_id": getattr(request.state, "correlation_id", None),
-        },
-    )
+    # Fallback for any OdooError (incl. OdooAuthError) that bubbles up outside the
+    # run endpoint. The run endpoint classifies inline via the same function, so a
+    # failed Odoo call looks the same whichever path handles it.
+    status_code, content = classify_odoo_error(exc)
+    content["correlation_id"] = getattr(request.state, "correlation_id", None)
+    return JSONResponse(status_code=status_code, content=content)
 
 
 @app.exception_handler(Exception)
