@@ -38,6 +38,43 @@ def guidance_version() -> str:
     return match.group(1).strip().strip('"') if match else "unknown"
 
 
+def _document_roots() -> list[Path]:
+    """Directories whose markdown is fetchable on demand via the 'playbook' operation."""
+    skill_dir = _primary_skill_path().parent
+    return [skill_dir / "troubleshooting", skill_dir / "references"]
+
+
+@lru_cache(maxsize=1)
+def _document_index() -> dict[str, Path]:
+    """Map a short document name (file stem) -> its path.
+
+    Built once by scanning the troubleshooting/ and references/ trees. Callers look
+    documents up only through this prebuilt index, never by constructing a path from a
+    caller-supplied name, so path traversal is impossible: an unknown name is simply
+    not a key.
+    """
+    index: dict[str, Path] = {}
+    for base in _document_roots():
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.md")):
+            index.setdefault(path.stem, path)
+    return index
+
+
+def available_documents() -> list[str]:
+    """Names of the on-demand troubleshooting documents (loop, router, playbooks, references)."""
+    return sorted(_document_index().keys())
+
+
+def document_markdown(name: str) -> str | None:
+    """Return one troubleshooting document's markdown, or None if the name is unknown."""
+    path = _document_index().get((name or "").strip())
+    if path is None:
+        return None
+    return path.read_text(encoding="utf-8")
+
+
 def guidance_payload() -> dict[str, object]:
     return {
         "connector": "odoo",
@@ -47,8 +84,10 @@ def guidance_payload() -> dict[str, object]:
         "source": str(_primary_skill_path()),
         "manifest": connector_manifest(),
         "content": skill_markdown(),
+        "documents": available_documents(),
         "operations": {
             "guidance": "Return this connector-owned SKILL.md.",
+            "playbook": "Return one on-demand troubleshooting document by name (see 'documents').",
             "execute_kw": "Run raw Odoo model methods through JSON-RPC execute_kw.",
             "batch": "Run multiple raw execute_kw calls in one connector request.",
         },

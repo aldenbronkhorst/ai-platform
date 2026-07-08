@@ -848,6 +848,32 @@ async def _execute_tool_call_impl(
                 }
             return response.json()
 
+        if arguments.get("operation") == "playbook":
+            url = f"{ODOO_CONNECTOR_URL.rstrip('/')}/odoo/orm/run" if ODOO_CONNECTOR_URL else ""
+            if not url:
+                return {"error": "Odoo connector URL not configured"}
+            headers = {"X-Internal-API-Key": ODOO_CONNECTOR_KEY, "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    json={"operation": "playbook", "name": arguments.get("name")},
+                    headers=headers,
+                )
+            if response.status_code >= 400:
+                try:
+                    raw_detail = response.json()
+                except Exception:
+                    raw_detail = {"error_type": "connector_http_error", "message": response.text}
+                detail = _connector_error_payload(raw_detail, response.text)
+                return {
+                    "error": True,
+                    "status_code": response.status_code,
+                    "connector_error": detail,
+                    "error_type": detail.get("error_type") or "connector_error",
+                    "message": detail.get("message") or "Connector returned an error.",
+                }
+            return response.json()
+
         credentials = await _resolve_odoo_credentials_for_tool(db, user_id)
         payload = {
             "credentials": credentials,
