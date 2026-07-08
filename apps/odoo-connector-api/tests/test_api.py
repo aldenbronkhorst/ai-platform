@@ -57,7 +57,7 @@ def test_capabilities_exposes_only_raw_odoo_endpoint():
             "description": "Return Odoo connector package manifest",
         },
     ]
-    assert data["guidance_version"] == "2.4.0"
+    assert data["guidance_version"] == "2.5.0"
 
 
 def test_connector_serves_its_own_manifest_and_skill():
@@ -73,7 +73,7 @@ def test_connector_serves_its_own_manifest_and_skill():
     assert guidance_response.status_code == 200
     guidance = guidance_response.json()
     assert guidance["connector"] == "odoo"
-    assert guidance["version"] == "2.4.0"
+    assert guidance["version"] == "2.5.0"
     assert guidance["source"].endswith("apps/odoo-connector-api/skills/odoo-api/SKILL.md")
     assert "Direct integration with Odoo ERP via JSON-RPC" in guidance["content"]
     assert "call(\"odoo\"" in guidance["content"]

@@ -1,7 +1,7 @@
 ---
 name: odoo-api
 description: "Use the AI Platform Odoo connector via JSON-RPC execute_kw."
-version: 2.4.0
+version: 2.5.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -22,6 +22,8 @@ Reference baseline: Odoo 18 External API docs (`developer/reference/external_api
 ## AI Platform Usage
 
 The Odoo connector owns credentials and this `SKILL.md`. Do not place Odoo-specific instructions in Workspace. Workspace is only the execution environment; call the connector through the broker target `odoo`.
+
+**Workspace state does not carry across runs.** Each Workspace run is a fresh Python process, so variables and imports from a previous run are gone — a later run that references them raises `NameError` (e.g. defining `rows` in one run and using it in the next). Files *do* persist: the session reuses one working directory, so write intermediate data to a file (e.g. `open("scratch.json","w")` or `output_path(...)`) in one run and reload it in the next. For a multi-step analysis, prefer doing the whole thing — fetch, transform, report — in a **single script**; only split across runs if you persist the data to a file and reload it.
 
 In Workspace Python:
 

@@ -580,3 +580,78 @@ async def test_model_router_dispatches_workspace_tool():
 
     assert result["status"] == "success"
     assert result["stdout"].strip() == "5"
+
+
+# --- Layer-1 capability tests: complex-troubleshooting behaviours of the runtime ---
+
+
+@pytest.mark.asyncio
+async def test_workspace_variables_do_not_persist_between_runs():
+    # Regression guard for the statelessness gotcha: a variable defined in one run is
+    # NOT available in the next (each run is a fresh process). The guidance tells the
+    # model to persist to a file instead; see test below.
+    async with WorkspaceSession() as session:
+        first = await session.run({"code": "rows = [1, 2, 3, 4]", "timeout": 10})
+        second = await session.run({"code": "print(sum(rows))", "timeout": 10})
+
+    assert first["status"] == "success"
+    assert second["status"] == "failed"
+    assert "NameError" in second["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_data_persists_across_runs_via_files():
+    # The supported way to carry data across runs: write a file in one run, reload it
+    # in the next (the session reuses the same working directory).
+    async with WorkspaceSession() as session:
+        first = await session.run({
+            "code": "import json\nopen('scratch.json', 'w').write(json.dumps([1, 2, 3, 4]))",
+            "timeout": 10,
+        })
+        second = await session.run({
+            "code": "import json\nprint(sum(json.load(open('scratch.json'))))",
+            "timeout": 10,
+        })
+
+    assert first["status"] == "success"
+    assert second["status"] == "success"
+    assert second["stdout"].strip() == "10"
+
+
+@pytest.mark.asyncio
+async def test_workspace_handles_large_payload_in_one_script():
+    # A realistic complex task: build a large dataset, compute a gap analysis over it,
+    # and write a summary — all in a single script, within the runtime limits.
+    code = (
+        "rows = [{'id': i, 'code': str(i)} for i in range(50000)]\n"
+        "present = {r['id'] for r in rows}\n"
+        "missing = [i for i in range(50000) if i not in present]\n"
+        "print(len(rows), len(missing))"
+    )
+    result = await run_workspace({"code": code, "timeout": 25})
+
+    assert result["status"] == "success"
+    assert result["stdout"].strip() == "50000 0"
+
+
+@pytest.mark.asyncio
+async def test_workspace_surfaces_runtime_exception_cleanly():
+    # An exception must come back as a structured failure with the error visible in
+    # stderr — never a hang or a swallowed error.
+    result = await run_workspace({"code": "raise ValueError('boom')", "timeout": 10})
+
+    assert result["status"] == "failed"
+    assert result["timed_out"] is False
+    assert result["exit_code"] not in (0, None)
+    assert "ValueError" in result["stderr"]
+    assert "boom" in result["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_enforces_timeout():
+    # A runaway script is stopped at the timeout and reported as timed out, not left
+    # to spin.
+    result = await run_workspace({"code": "while True:\n    pass", "timeout": 2})
+
+    assert result["status"] == "failed"
+    assert result["timed_out"] is True
