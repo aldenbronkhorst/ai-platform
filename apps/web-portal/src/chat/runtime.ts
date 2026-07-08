@@ -426,7 +426,14 @@ export function messageRequestId(message: ChatMessage): string | null {
 
 export function normalizeChatMessage(message: ChatMessage): ChatMessage {
   const metadata = message.metadata_json;
-  if (!isRecord(metadata) || metadata.failed !== true) return message;
+  if (!isRecord(metadata)) return message;
+
+  const metadataStatus = typeof metadata.status === "string" ? metadata.status : "";
+  if (metadata.failed !== true) {
+    return metadataStatus
+      ? { ...message, status: metadataStatus as ChatMessage["status"] }
+      : message;
+  }
 
   const requestId = typeof metadata.request_id === "string" ? metadata.request_id : "";
   const errorType = typeof metadata.error_type === "string" ? metadata.error_type : "server_error";

@@ -428,7 +428,7 @@ async def mock_get_db_empty():
 
 @pytest.mark.asyncio
 async def test_odoo_tool_credentials_require_saved_connection_details():
-    from app.services.model_router import _resolve_odoo_credentials_for_tool
+    from app.services.external_connectors import EXTERNAL_CONNECTORS, resolve_connector_credentials
 
     user_id = uuid.uuid4()
     account = AIConnectedAccount(
@@ -456,11 +456,11 @@ async def test_odoo_tool_credentials_require_saved_connection_details():
                 return FakeResult(scalar=account)
             return FakeResult()
 
-    with patch("app.services.model_router.key_vault_uri", return_value="https://vault.example.com"), patch(
-        "app.services.model_router.get_secret_value", new=AsyncMock(return_value="api-key")
+    with patch("app.services.external_connectors.key_vault_uri", return_value="https://vault.example.com"), patch(
+        "app.services.external_connectors.get_secret_value", new=AsyncMock(return_value="api-key")
     ):
         with pytest.raises(RuntimeError, match="missing its saved URL or database"):
-            await _resolve_odoo_credentials_for_tool(FakeSession(), user_id)
+            await resolve_connector_credentials(FakeSession(), user_id, EXTERNAL_CONNECTORS["odoo"])
 
 
 @pytest.mark.asyncio
@@ -1260,6 +1260,8 @@ class TestToolExecution:
         assert not hasattr(model_router, "detect_odoo_report_intent")
         assert not hasattr(model_router, "detect_odoo_lookup_intent")
         assert not hasattr(model_router, "_validate_odoo_arguments")
+        assert not hasattr(model_router, "ODOO_CONNECTOR_URL")
+        assert not hasattr(model_router, "_resolve_odoo_credentials_for_tool")
 
     @pytest.mark.asyncio
     async def test_odoo_raw_orm_posts_to_raw_endpoint(self):
@@ -1296,12 +1298,9 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            "app.services.external_connectors.resolve_connector_credentials",
             new=AsyncMock(return_value=fake_credentials),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+        ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
                 uuid.uuid4(),
@@ -1352,12 +1351,9 @@ class TestToolExecution:
                 return FakeResponse()
 
         with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            "app.services.external_connectors.resolve_connector_credentials",
             new=AsyncMock(side_effect=AssertionError("guidance must not require user credentials")),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+        ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
                 uuid.uuid4(),
@@ -1369,6 +1365,56 @@ class TestToolExecution:
         assert requested["headers"]["X-Internal-API-Key"] == "test-key"
         assert result["connector"] == "odoo"
         assert result["manifest"]["skills"][0]["path"] == "skills/odoo-api/SKILL.md"
+
+    @pytest.mark.asyncio
+    async def test_odoo_playbook_reads_connector_package_without_user_credentials(self):
+        from app.services.model_router import _execute_tool_call_impl
+
+        requested = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "connector": "odoo",
+                    "operation": "playbook",
+                    "name": "records-missing",
+                    "content": "# Records Missing",
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, *args, **kwargs):
+                requested["url"] = url
+                requested["payload"] = kwargs["json"]
+                requested["headers"] = kwargs["headers"]
+                return FakeResponse()
+
+        with patch(
+            "app.services.external_connectors.resolve_connector_credentials",
+            new=AsyncMock(side_effect=AssertionError("playbook must not require user credentials")),
+        ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
+            result = await _execute_tool_call_impl(
+                MockSession(has_config=True),
+                uuid.uuid4(),
+                "odoo",
+                {"operation": "playbook", "name": "records-missing"},
+            )
+
+        assert requested["url"] == "http://mock-connector:8000/odoo/orm/run"
+        assert requested["payload"] == {"operation": "playbook", "name": "records-missing"}
+        assert requested["headers"]["X-Internal-API-Key"] == "test-key"
+        assert result["operation"] == "playbook"
+        assert result["content"] == "# Records Missing"
 
     @pytest.mark.asyncio
     async def test_connector_skill_context_injects_odoo_skill_from_connector(self):
@@ -1411,10 +1457,7 @@ class TestToolExecution:
             )
         ]
 
-        with patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+        with patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             context = await _connector_skill_context({"odoo"}, tools)
 
         assert requested["url"] == "http://mock-connector:8000/odoo/guidance"
@@ -1737,12 +1780,9 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            "app.services.external_connectors.resolve_connector_credentials",
             new=AsyncMock(return_value=fake_credentials),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+        ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call(
                 db,
                 uuid.uuid4(),
@@ -1817,12 +1857,9 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.model_router._resolve_odoo_credentials_for_tool",
+            "app.services.external_connectors.resolve_connector_credentials",
             new=AsyncMock(return_value=fake_credentials),
-        ), patch("app.services.model_router.ODOO_CONNECTOR_URL", "http://mock-connector:8000"), patch(
-            "app.services.model_router.ODOO_CONNECTOR_KEY",
-            "test-key",
-        ), patch("app.services.model_router.httpx.AsyncClient", FakeAsyncClient):
+        ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call(
                 db,
                 uuid.uuid4(),
