@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # Internal API key for service-to-service calls; user auth uses Entra JWT.
     api_key: str = os.environ.get("API_KEY", "")
 
+    # When true, only principals carrying a recognized Entra app role may sign
+    # in, which stops open auto-provisioning of any tenant user. Off by default
+    # so existing deployments keep working until app roles are assigned in
+    # Entra; enable it once roles are in place.
+    require_app_role: bool = os.environ.get("REQUIRE_APP_ROLE", "false").lower() == "true"
+
     @field_validator("app_env", mode="before")
     @classmethod
     def normalize_app_env(_cls, value: str | None) -> str:
