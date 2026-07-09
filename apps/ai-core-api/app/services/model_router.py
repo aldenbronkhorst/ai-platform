@@ -18,7 +18,7 @@ from app.models.models import (
 )
 from app.services.model_provider_client import ModelProviderClient
 from app.services.key_vault import get_secret_value
-from app.services.connected_account_state import effective_connected_accounts, upsert_delegated_account
+from app.services.connected_account_state import effective_connected_accounts
 from app.services.external_connectors import (
     EXTERNAL_CONNECTOR_DISPLAY_NAMES,
     EXTERNAL_CONNECTOR_TOOL_NAMES,
@@ -28,10 +28,6 @@ from app.services.external_connectors import (
 )
 from app.services.model_tool_calls import (
     _build_tool_definitions,
-)
-from app.services.tool_registry import (
-    MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
-    MICROSOFT_NATIVE_TOOL_NAMES,
 )
 from app.services.tool_guidance import tool_guidance_payload, tool_skill_markdown
 from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
@@ -130,7 +126,7 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, GitHub, Azure CLI, Microsoft Graph, Exchange Online, Teams Admin, SharePoint/PnP, documents, and Workspace "
+    "You may use connected tools such as Odoo, documents, and Workspace "
     "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
@@ -294,40 +290,11 @@ async def build_model_client(provider: AIProvider, model: AIModel) -> ModelProvi
     )
 
 
-KNOWN_CONNECTOR_TYPES = [*EXTERNAL_CONNECTOR_TYPES, *MICROSOFT_NATIVE_CONNECTOR_SYSTEMS, "github"]
+KNOWN_CONNECTOR_TYPES = [*EXTERNAL_CONNECTOR_TYPES]
 
 CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     **EXTERNAL_CONNECTOR_DISPLAY_NAMES,
-    "azure_cli": "Azure CLI",
-    "microsoft_graph": "Microsoft Graph",
-    "exchange_online": "Exchange Online",
-    "teams_admin": "Teams Admin",
-    "sharepoint_pnp": "SharePoint / PnP",
-    "github": "GitHub",
 }
-
-DELEGATED_AUTH_FAILURE_MARKERS = (
-    "does not exist in msal token cache",
-    "run `az login`",
-    "azure cli profile",
-    "azure is not connected",
-    "azure token is expired",
-    "microsoft graph is not connected",
-    "exchange online is not connected",
-    "teams admin is not connected",
-    "sharepoint is not connected",
-    "microsoft delegated credentials",
-)
-
-
-MICROSOFT_TOOL_PROVIDER_BY_NAME = {
-    "ms_azure_cli": "azure_cli",
-    "ms_graph": "microsoft_graph",
-    "ms_exchange_powershell": "exchange_online",
-    "ms_teams_powershell": "teams_admin",
-    "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
-}
-
 
 def _truncate_tool_skill(content: str) -> str:
     if len(content) <= TOOL_SKILL_MAX_CHARS:
@@ -706,35 +673,13 @@ async def _execute_tool_call_impl(
     if tool_name in EXTERNAL_CONNECTOR_TOOL_NAMES:
         return await execute_external_connector_tool(db, user_id, tool_name, arguments)
 
-    if tool_name in MICROSOFT_NATIVE_TOOL_NAMES or tool_name == "github_cli":
-        from app.services.connectors.github_cli import run_github_cli_command
-        from app.services.connectors.microsoft_admin.azure_cli import run_ms_azure_cli_tool
-        from app.services.connectors.microsoft_admin.graph import run_ms_graph_tool
-        from app.services.connectors.microsoft_admin.powershell_exchange import run_ms_exchange_powershell_tool
-        from app.services.connectors.microsoft_admin.powershell_pnp import run_ms_sharepoint_pnp_powershell_tool
-        from app.services.connectors.microsoft_admin.powershell_teams import run_ms_teams_powershell_tool
-
-        command = str(arguments.get("command", ""))
-        timeout = int(arguments.get("timeout", 60))
-        if tool_name == "ms_azure_cli":
-            return await run_ms_azure_cli_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_graph":
-            return await run_ms_graph_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_exchange_powershell":
-            return await run_ms_exchange_powershell_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_teams_powershell":
-            return await run_ms_teams_powershell_tool(arguments, user_id, timeout=timeout)
-        if tool_name == "ms_sharepoint_pnp_powershell":
-            return await run_ms_sharepoint_pnp_powershell_tool(arguments, user_id, timeout=timeout)
-        return await run_github_cli_command(command, user_id, timeout=timeout)
-
     return {
             "status": "failed",
             "error": f"Unknown tool: {tool_name}",
             "error_type": "unknown_tool",
             "message": (
                 "This tool name is not part of the current tool registry. "
-                "Use the registered native Microsoft tool surfaces."
+                "Use a registered platform tool or external connector broker target."
             ),
         }
 
@@ -791,36 +736,6 @@ async def _execute_tool_call(
         )
     return result
 
-
-async def _record_delegated_tool_auth_failure(
-    db: AsyncSession,
-    user_id: Optional[UUID],
-    tool_name: str,
-    result: dict[str, Any],
-) -> None:
-    if not user_id or tool_name not in MICROSOFT_NATIVE_TOOL_NAMES or result.get("status") != "failed":
-        return
-
-    message = " ".join(
-        str(result.get(key) or "")
-        for key in ("error", "message", "stderr")
-    ).strip()
-    lower_message = message.lower()
-    if not any(marker in lower_message for marker in DELEGATED_AUTH_FAILURE_MARKERS):
-        return
-
-    provider = MICROSOFT_TOOL_PROVIDER_BY_NAME.get(tool_name)
-    if not provider:
-        return
-
-    status = "expired" if "expired" in lower_message else "error"
-    await upsert_delegated_account(
-        db,
-        provider,
-        user_id,
-        status=status,
-        permission_summary=message[:500] if message else "Native Microsoft delegated credentials are not usable.",
-    )
 
 def _truncate_tool_text(value: str, limit: int = MAX_TOOL_RESULT_STRING_CHARS) -> str:
     if len(value) <= limit:
@@ -1120,13 +1035,6 @@ async def _get_connector_context(
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"
             lines.append(f"  {icon} {display_name}: {status}")
-            if conn_type in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS and status == "connected":
-                lines.append(
-                    "    Native Microsoft connector access is scoped to this connector's signed-in account. "
-                    "Do not claim a specific Microsoft resource is accessible until that operation succeeds. "
-                    "Operations can fail because consent is missing or because the signed-in user lacks the needed "
-                    "Microsoft 365 role, Azure RBAC role, Exchange role, Intune role, SharePoint permission, Teams role, or billing permission."
-                )
         else:
             lines.append(f"  - {display_name}: not connected")
 
@@ -1190,9 +1098,8 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
             "directory. Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, `list_files()`, `file_info(ref)`, `download_file(ref)`, "
             "`read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, `save_output(filename, data)`, and "
             "`output_path(filename)` available by default. Shell scripts can call "
-            "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`, `ms_azure_cli`, "
-            "`ms_graph`, `ms_exchange_powershell`, `ms_teams_powershell`, `ms_sharepoint_pnp_powershell`, and "
-            "`github_cli`. Calls use the user's connected accounts; those account permissions decide what succeeds. "
+            "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`. "
+            "Calls use the user's connected accounts; those account permissions decide what succeeds. "
             "`call()` returns the connector result and raises on connector failure; use `call_raw()` only when the raw broker envelope is needed. "
             "When connector-owned skill text is included in the system context, follow that skill for the connector API shape. "
             "Use Workspace for multi-step work: 3+ connector/tool calls, loops, pagination, batch updates, retries, "
@@ -1712,7 +1619,6 @@ async def _run_tool_loop(
             )
             for executed in executed_tool_calls:
                 if executed.tool_name in exposed_tool_names:
-                    await _record_delegated_tool_auth_failure(db, user_id, executed.tool_name, executed.raw_result)
                     generated_files.extend(_workspace_generated_files(executed.raw_result))
                 tool_results.append({
                     "tool_call_id": executed.tool_call_id,

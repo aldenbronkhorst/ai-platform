@@ -10,17 +10,15 @@ from sqlalchemy import select, update
 from app.core.config import get_settings
 from app.models.models import AITool
 from app.services.tool_definitions import CANONICAL_TOOL_DEFINITIONS
-from app.services.tool_registry import CONSOLIDATED_TOOL_NAMES, CONNECTOR_SYSTEMS
 
 settings = get_settings()
-
-STALE_CONNECTOR_TARGET_SYSTEMS = {"azure", "microsoft_admin"}
 
 
 async def seed_tools():
     database_url = settings.database_url
     engine = create_async_engine(database_url, echo=False)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    canonical_tool_names = frozenset(str(tool["name"]) for tool in CANONICAL_TOOL_DEFINITIONS)
 
     async with session_factory() as session:
         for tool_data in CANONICAL_TOOL_DEFINITIONS:
@@ -47,16 +45,7 @@ async def seed_tools():
             update(AITool)
             .where(
                 AITool.status == "active",
-                AITool.target_system.in_(STALE_CONNECTOR_TARGET_SYSTEMS),
-            )
-            .values(status="archived", updated_at=datetime.now(timezone.utc))
-        )
-        archived = await session.execute(
-            update(AITool)
-            .where(
-                AITool.status == "active",
-                AITool.target_system.in_(CONNECTOR_SYSTEMS),
-                ~AITool.name.in_(CONSOLIDATED_TOOL_NAMES),
+                ~AITool.name.in_(canonical_tool_names),
             )
             .values(status="archived", updated_at=datetime.now(timezone.utc))
         )

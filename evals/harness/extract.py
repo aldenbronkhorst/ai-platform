@@ -1,8 +1,7 @@
 """Extract Odoo calls from Workspace tool-call code.
 
 Ground truth (verified against ai-core-api): the model has NO first-class `odoo`
-tool. CANONICAL_TOOL_DEFINITIONS exposes only workspace / ms_* / github_cli /
-document_reader. The model reaches Odoo by writing Python that calls
+tool. CANONICAL_TOOL_DEFINITIONS exposes only workspace / document_reader. The model reaches Odoo by writing Python that calls
 `call('odoo', {...})` INSIDE the `workspace` tool, so a
 `message.complete.tool_call_json` entry is `tool_name='workspace'` with the Odoo
 operation/method buried in `arguments.code`.

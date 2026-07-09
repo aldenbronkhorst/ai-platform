@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -31,7 +31,7 @@ class AIConnectedAccount(Base, AuditMixin):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
-    provider = Column(String(50), nullable=False)  # microsoft_admin, odoo, github
+    provider = Column(String(50), nullable=False)
     provider_user_id = Column(String(255), nullable=True)
     provider_username = Column(String(255), nullable=True)
     provider_display_name = Column(String(255), nullable=True)
@@ -48,23 +48,6 @@ class AIConnectedAccount(Base, AuditMixin):
     odoo_company_name = Column(String(255), nullable=True)
     odoo_currency_code = Column(String(10), nullable=True)
     odoo_currency_symbol = Column(String(10), nullable=True)
-
-
-class AIMicrosoftDeviceAuthSession(Base, AuditMixin):
-    __tablename__ = "ai_microsoft_device_auth_sessions"
-    __table_args__ = (
-        UniqueConstraint("user_id", "provider", name="uq_ms_device_auth_user_provider"),
-    )
-
-    auth_session_id = Column(String(64), primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
-    provider = Column(String(50), nullable=False)
-    device_code_hash = Column(String(64), nullable=False)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    poll_interval = Column(Integer, default=5, nullable=False)
-    last_poll_at = Column(DateTime(timezone=True), nullable=True)
-    poll_in_flight_until = Column(DateTime(timezone=True), nullable=True)
-    request_id = Column(String(64), nullable=True)
 
 
 class AIArtifact(Base, AuditMixin):
@@ -91,7 +74,7 @@ class AITool(Base, AuditMixin):
     name = Column(String(100), unique=True, nullable=False, index=True)
     display_name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    target_system = Column(String(50), nullable=False)  # odoo, github, azure_cli, microsoft_graph, runner, ai-platform
+    target_system = Column(String(50), nullable=False)
     input_schema = Column(JSON, nullable=True)
     output_schema = Column(JSON, nullable=True)
     version = Column(String(20), default="1.0.0", nullable=False)

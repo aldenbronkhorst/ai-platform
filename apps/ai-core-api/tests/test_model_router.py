@@ -23,7 +23,6 @@ from app.services.model_router import (
     _workspace_generated_files,
 )
 from app.services.chat_titles import _sanitize_chat_title
-from app.services.tool_registry import MICROSOFT_NATIVE_TOOL_NAMES
 
 
 # ── Canonical prompt sanity ──
@@ -232,20 +231,6 @@ def test_chat_title_sanitizer_returns_short_plain_title():
     assert _sanitize_chat_title("New Chat") is None
 
 
-MICROSOFT_TOOL_NAMES = tuple(sorted(MICROSOFT_NATIVE_TOOL_NAMES))
-MICROSOFT_TOOL_TARGET_SYSTEMS = {
-    "ms_azure_cli": "azure_cli",
-    "ms_graph": "microsoft_graph",
-    "ms_exchange_powershell": "exchange_online",
-    "ms_teams_powershell": "teams_admin",
-    "ms_sharepoint_pnp_powershell": "sharepoint_pnp",
-}
-
-
-def _microsoft_tool_target(tool_name: str) -> str:
-    return MICROSOFT_TOOL_TARGET_SYSTEMS[tool_name]
-
-
 def _odoo_tool() -> AITool:
     return AITool(
         name="odoo",
@@ -257,15 +242,15 @@ def _odoo_tool() -> AITool:
 
 
 @pytest.mark.asyncio
-async def test_model_router_rejects_removed_microsoft_tool_names():
-    for old_tool_name in ("azure_cli", "ms_admin", "ms_powershell", "ms_az_powershell", "ms_graph_powershell", "ms_bicep"):
+async def test_model_router_rejects_removed_connector_tool_names():
+    for old_tool_name in ("azure_cli", "github_cli", "ms_graph", "ms_admin", "ms_powershell", "ms_bicep"):
         result = await _execute_tool_call_impl(AsyncMock(), uuid.uuid4(), old_tool_name, {"command": "account show"})
         assert result["status"] == "failed"
         assert result["error_type"] == "unknown_tool"
         assert "current tool registry" in result["message"]
 
 
-def test_microsoft_guidance_uses_workspace_broker_targets():
+def test_workspace_guidance_uses_odoo_broker_target():
     tools = [
         AITool(
             name="workspace",
@@ -282,27 +267,21 @@ def test_microsoft_guidance_uses_workspace_broker_targets():
     )
 
     assert "Broker targets include" in prompt
-    assert "`ms_azure_cli`" in prompt
-    assert "`ms_graph`" in prompt
-    assert "`ms_exchange_powershell`" in prompt
-    assert "`ms_teams_powershell`" in prompt
-    assert "`ms_sharepoint_pnp_powershell`" in prompt
-    assert "ms_graph_powershell" not in prompt
-    assert "ms_az_powershell" not in prompt
-    assert "ms_bicep" not in prompt
+    assert "`odoo`" in prompt
+    assert "ms_graph" not in prompt
+    assert "github_cli" not in prompt
     assert "account permissions decide what succeeds" in prompt
     assert "If a live system fact matters, check it in Workspace" in prompt
     assert "`list_files()`" in prompt
     assert "`download_file(ref)`" in prompt
 
-def test_compact_tool_result_preserves_small_graph_collections():
+def test_compact_tool_result_preserves_small_collections():
     result = {
         "status": "success",
-        "connector": "ms_graph",
-        "mode": "graph_request",
+        "connector": "odoo",
+        "mode": "query",
         "result": {
-            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
-            "value": [{"id": str(index), "displayName": f"User {index}"} for index in range(14)],
+            "value": [{"id": str(index), "name": f"Record {index}"} for index in range(14)],
         },
     }
 
@@ -534,8 +513,8 @@ class TestConnectorContext:
         result = await _get_connector_context(db, user_id=uuid.uuid4())
         assert "not connected" in result
         assert "Odoo" in result
-        assert "GitHub" in result
         assert "Microsoft 365" not in result
+        assert "GitHub" not in result
 
     @pytest.mark.asyncio
     async def test_get_connector_context_odoo_connected(self):
@@ -548,22 +527,7 @@ class TestConnectorContext:
         result = await _get_connector_context(db, user_id=uuid.uuid4())
         assert "✓" in result
         assert "Odoo: connected" in result
-        assert "GitHub: not connected" in result
-
-    @pytest.mark.asyncio
-    async def test_get_connector_context_azure_cli_connected_names_azure_capability(self):
-        from app.services.model_router import _get_connector_context
-        account = AIConnectedAccount(
-            id=uuid.uuid4(), user_id=uuid.uuid4(),
-            provider="azure_cli", status="connected",
-        )
-        db = MockSession(has_config=False, connected_accounts=[account])
-
-        result = await _get_connector_context(db, user_id=uuid.uuid4())
-
-        assert "Azure CLI: connected" in result
-        assert "Do not claim a specific Microsoft resource is accessible until that operation succeeds" in result
-        assert "Azure RBAC" in result
+        assert "GitHub" not in result
 
     @pytest.mark.asyncio
     async def test_connector_context_not_injected_without_user_id(self):
@@ -638,89 +602,6 @@ class TestConnectorContext:
         assert "Current date: 2026-06-03" in system_prompt_content
         assert "this month starts on 2026-06-01 and ends today, 2026-06-03" in system_prompt_content
         assert result["context"]["current_date"] == "2026-06-03"
-
-    @pytest.mark.asyncio
-    async def test_execute_chat_treats_stored_azure_cli_account_as_connected_without_token_lookup(self):
-        from app.services.model_router import execute_chat
-
-        account = AIConnectedAccount(
-            provider="azure_cli",
-            status="connected",
-            user_id=uuid.uuid4(),
-            provider_username="admin-user",
-        )
-        db = MockSession(has_config=True, connected_accounts=[account])
-
-        class MockToolResult:
-            def scalars(self):
-                class Scalars:
-                    def all(self):
-                        return [
-                            AITool(
-                                name="workspace",
-                                display_name="Workspace",
-                                description="Run workspace code",
-                                target_system="ai-platform",
-                                input_schema={"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
-                            ),
-                            *[
-                            AITool(
-                                name=name,
-                                display_name=name,
-                                description="Run Microsoft admin tooling",
-                                target_system=_microsoft_tool_target(name),
-                                input_schema={"type": "object", "properties": {}, "required": []},
-                            )
-                            for name in MICROSOFT_TOOL_NAMES
-                            ],
-                        ]
-                return Scalars()
-
-        original_execute = db.execute
-
-        async def mock_execute(stmt, *args, **kwargs):
-            if "ai_tools" in str(stmt):
-                return MockToolResult()
-            return await original_execute(stmt, *args, **kwargs)
-
-        async def fake_token_status(provider, _user_id):
-            raise AssertionError(f"unexpected token lookup for {provider}")
-
-        db.execute = mock_execute
-        mock_chat_completion = AsyncMock(return_value={
-            "content": "Azure is connected.",
-            "finish_reason": "stop",
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "latency_ms": 100,
-        })
-
-        with patch.object(
-            type(db), 'add'
-        ), patch.object(
-            type(db), 'flush'
-        ), patch(
-            'app.services.connected_account_state.token_status',
-            new=AsyncMock(side_effect=fake_token_status),
-        ), patch(
-            'app.services.model_router.build_model_client',
-            new=AsyncMock(return_value=AsyncMock(chat_completion=mock_chat_completion))
-        ):
-            result = await execute_chat(
-                db,
-                [{"role": "user", "content": "can you access my azure?"}],
-                user_id=uuid.uuid4(),
-            )
-
-        called_kwargs = mock_chat_completion.call_args[1]
-        system_prompt_content = called_kwargs["messages"][0]["content"]
-        tool_names = [tool["function"]["name"] for tool in called_kwargs["tools"]]
-        assert "Azure CLI: connected" in system_prompt_content
-        assert tool_names == ["workspace"]
-        assert "`ms_azure_cli`" in system_prompt_content
-        assert "ms_admin" not in tool_names
-        assert result["content"] == "Azure is connected."
 
     @pytest.mark.asyncio
     async def test_execute_chat_injects_active_memories(self):
@@ -971,8 +852,8 @@ class TestToolDefinitions:
 
         assert "Broker targets include" in system_prompt
         assert "`odoo`" in system_prompt
-        assert "`ms_graph`" in system_prompt
-        assert "`github_cli`" in system_prompt
+        assert "ms_graph" not in system_prompt
+        assert "github_cli" not in system_prompt
         assert "connector-owned skill text is included in the system context" in system_prompt
         assert "account permissions decide what succeeds" in system_prompt
         assert "If a live system fact matters, check it in Workspace" in system_prompt

@@ -42,7 +42,6 @@ jobs:
       matrix:
         app:
           - apps/ai-core-api
-          - apps/odoo-connector-api
     steps:
       - name: Checkout
         uses: actions/checkout@v6

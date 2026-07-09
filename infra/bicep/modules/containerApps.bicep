@@ -28,9 +28,6 @@ param acrLoginServer string
 @description('AI Core API container image tag')
 param apiImageTag string = 'latest'
 
-@description('Odoo Connector container image tag')
-param odooConnectorImageTag string = 'latest'
-
 @description('Application Insights connection string')
 param appInsightsConnectionString string
 
@@ -58,17 +55,10 @@ param postgresAdminUsername string
 @description('Azure Document Intelligence endpoint for OCR extraction')
 param documentIntelligenceEndpoint string = ''
 
-@description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')
-param microsoftAdminClientId string = ''
-
-@description('Microsoft Admin public client display name')
-param microsoftAdminAppDisplayName string = 'AI Platform Microsoft Admin'
-
 var environmentName = 'cae-${workload}-${environment}-${regionCode}-${instance}'
 var containerAppName = 'ca-${workload}-api-${environment}-${regionCode}-${instance}'
 var odooConnectorAppName = 'ca-odoo-connector-${environment}-${regionCode}-${instance}'
 var containerImage = '${acrLoginServer}/ai-core-api:${apiImageTag}'
-var odooConnectorImage = '${acrLoginServer}/odoo-connector-api:${odooConnectorImageTag}'
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' existing = {
   name: logAnalyticsWorkspaceName
@@ -91,6 +81,10 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
       internal: false
     }
   }
+}
+
+resource odooConnectorApp 'Microsoft.App/containerApps@2024-03-01' existing = {
+  name: odooConnectorAppName
 }
 
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
@@ -160,8 +154,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'DOCUMENT_OCR_PROVIDER', value: 'azure_document_intelligence' }
             { name: 'DOCUMENT_OCR_READ_MODEL_ID', value: 'prebuilt-read' }
             { name: 'DOCUMENT_OCR_LAYOUT_MODEL_ID', value: 'prebuilt-layout' }
-            { name: 'MICROSOFT_ADMIN_CLIENT_ID', value: microsoftAdminClientId }
-            { name: 'MICROSOFT_ADMIN_APP_DISPLAY_NAME', value: microsoftAdminAppDisplayName }
           ]
           resources: {
             cpu: json('0.5')
@@ -183,100 +175,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               type: 'Readiness'
               httpGet: {
                 path: '/health/ready'
-                port: 8000
-              }
-              initialDelaySeconds: 10
-              periodSeconds: 10
-              timeoutSeconds: 5
-              failureThreshold: 3
-            }
-          ]
-        }
-      ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 2
-        rules: [
-          {
-            name: 'http-rule'
-            custom: {
-              type: 'http'
-              metadata: {
-                concurrentRequests: '50'
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-}
-
-resource odooConnectorApp 'Microsoft.App/containerApps@2024-03-01' = {
-  name: odooConnectorAppName
-  location: location
-  tags: tags
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${apiManagedIdentityResourceId}': {}
-    }
-  }
-  properties: {
-    managedEnvironmentId: containerAppsEnvironment.id
-    configuration: {
-      ingress: {
-        external: false
-        targetPort: 8000
-        transport: 'auto'
-        allowInsecure: false
-      }
-      registries: [
-        {
-          server: acrLoginServer
-          identity: apiManagedIdentityResourceId
-        }
-      ]
-      secrets: [
-        {
-          name: 'odoo-connector-api-key'
-          keyVaultUrl: '${keyVaultUri}secrets/odoo-connector-api-key'
-          identity: apiManagedIdentityResourceId
-        }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'odoo-connector'
-          image: odooConnectorImage
-          env: [
-            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
-            { name: 'ENVIRONMENT', value: environment }
-            { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
-            { name: 'VERSION', value: odooConnectorImageTag }
-            { name: 'INTERNAL_API_KEY', secretRef: 'odoo-connector-api-key' }
-          ]
-          resources: {
-            cpu: json('0.25')
-            memory: '0.5Gi'
-          }
-          probes: [
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/health'
-                port: 8000
-              }
-              initialDelaySeconds: 30
-              periodSeconds: 30
-              timeoutSeconds: 5
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/health'
                 port: 8000
               }
               initialDelaySeconds: 10

@@ -4,27 +4,11 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    apt-transport-https \
     ca-certificates \
     curl \
     gcc \
-    gnupg \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Install native Microsoft shell tooling. GitHub tooling stays in the GitHub connector.
-RUN curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/microsoft.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/microsoft-prod.list \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ bookworm main" > /etc/apt/sources.list.d/azure-cli.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends azure-cli jq powershell \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pwsh -NoLogo -NoProfile -NonInteractive -Command "\
-    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; \
-    Install-Module ExchangeOnlineManagement -Scope AllUsers -Force -AllowClobber; \
-    Install-Module MicrosoftTeams -Scope AllUsers -Force -AllowClobber; \
-    Install-Module PnP.PowerShell -Scope AllUsers -Force -AllowClobber"
 
 # Copy requirements first for better layer caching
 COPY requirements.txt .

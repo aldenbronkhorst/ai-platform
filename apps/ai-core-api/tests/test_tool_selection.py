@@ -6,8 +6,6 @@ from app.models.models import AITool
 from app.services.tool_selection import get_tool_selection
 from app.services.tool_registry import (
     CONNECTOR_TOOLS_BY_SYSTEM,
-    MICROSOFT_NATIVE_CONNECTOR_SYSTEMS,
-    MICROSOFT_NATIVE_TOOL_NAMES,
     is_model_facing_tool,
 )
 
@@ -21,13 +19,6 @@ def _tool(name: str, target_system: str, status: str = "active") -> AITool:
         status=status,
         input_schema={"type": "object"},
     )
-
-
-def _microsoft_tools() -> list[AITool]:
-    tools: list[AITool] = []
-    for system in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS:
-        tools.extend(_tool(name, system) for name in sorted(CONNECTOR_TOOLS_BY_SYSTEM[system]))
-    return tools
 
 
 class FakeDb:
@@ -47,48 +38,32 @@ class FakeDb:
         return Result()
 
 
-def test_connector_tool_registry_keeps_connectors_broker_only():
+def test_connector_tool_registry_keeps_odoo_broker_only():
+    assert CONNECTOR_TOOLS_BY_SYSTEM == {"odoo": frozenset()}
     assert not is_model_facing_tool("odoo", "odoo")
-    assert set(MICROSOFT_NATIVE_TOOL_NAMES) == {
-        "ms_graph",
-        "ms_exchange_powershell",
-        "ms_teams_powershell",
-        "ms_sharepoint_pnp_powershell",
-        "ms_azure_cli",
-    }
-    for system in MICROSOFT_NATIVE_CONNECTOR_SYSTEMS:
-        for tool_name in CONNECTOR_TOOLS_BY_SYSTEM[system]:
-            assert not is_model_facing_tool(tool_name, system)
-    assert not is_model_facing_tool("github_cli", "github")
     assert not is_model_facing_tool("odoo_query", "odoo")
-    assert not is_model_facing_tool("ms_admin", "microsoft_graph")
-    assert not is_model_facing_tool("azure_cli", "azure_cli")
-    assert not is_model_facing_tool("github_pr_tool", "github")
     assert not is_model_facing_tool("runner.run_python", "runner")
     assert not is_model_facing_tool("ai.save_artifact", "ai-platform")
 
 
 @pytest.mark.asyncio
-async def test_tool_selection_exposes_workspace_not_connectors_for_meta_followup():
+async def test_tool_selection_exposes_workspace_not_connector_tool_for_meta_followup():
     tools = [
         _tool("workspace", "ai-platform"),
         _tool("odoo", "odoo"),
         _tool("odoo_query", "odoo"),
-        *_microsoft_tools(),
-        _tool("github_cli", "github"),
-        _tool("github_pr_tool", "github"),
     ]
 
     result = await get_tool_selection(
         FakeDb(tools),
         uuid.uuid4(),
         "did you read the value straight from the report or calc yourself?",
-        connected_systems={"odoo", "microsoft_graph", "github"},
+        connected_systems={"odoo"},
     )
 
     assert [tool.name for tool in result.selected] == ["workspace"]
     assert result.excluded == []
-    assert result.intent == "github,microsoft_graph,odoo,ai-platform"
+    assert result.intent == "odoo,ai-platform"
     assert result.selection_reason == "model_facing_tools_available"
 
 
@@ -98,42 +73,19 @@ async def test_tool_selection_exposes_workspace_for_connected_system_request():
         _tool("workspace", "ai-platform"),
         _tool("odoo", "odoo"),
         _tool("odoo_query", "odoo"),
-        *_microsoft_tools(),
-        _tool("github_cli", "github"),
-        _tool("github_pr_tool", "github"),
     ]
 
     result = await get_tool_selection(
         FakeDb(tools),
         uuid.uuid4(),
         "in odoo what is the total shown on a system report for last month?",
-        connected_systems={"odoo", "microsoft_graph", "github"},
-    )
-
-    assert [tool.name for tool in result.selected] == ["workspace"]
-    assert result.excluded == []
-    assert result.intent == "github,microsoft_graph,odoo,ai-platform"
-    assert result.selection_reason == "model_facing_tools_available"
-
-
-@pytest.mark.asyncio
-async def test_tool_selection_does_not_expose_connectors_directly():
-    tools = [
-        _tool("workspace", "ai-platform"),
-        _tool("odoo", "odoo"),
-        *_microsoft_tools(),
-        _tool("github_cli", "github"),
-    ]
-
-    result = await get_tool_selection(
-        FakeDb(tools),
-        uuid.uuid4(),
-        "check Azure resources",
         connected_systems={"odoo"},
     )
 
     assert [tool.name for tool in result.selected] == ["workspace"]
+    assert result.excluded == []
     assert result.intent == "odoo,ai-platform"
+    assert result.selection_reason == "model_facing_tools_available"
 
 
 @pytest.mark.asyncio
@@ -142,14 +94,13 @@ async def test_tool_selection_ignores_inactive_and_legacy_tools():
         _tool("workspace", "ai-platform"),
         _tool("odoo", "odoo", status="inactive"),
         _tool("odoo_query", "odoo"),
-        _tool("github_cli", "github"),
     ]
 
     result = await get_tool_selection(
         FakeDb(tools),
         uuid.uuid4(),
         "hi",
-        connected_systems={"odoo", "github"},
+        connected_systems={"odoo"},
     )
 
     assert [tool.name for tool in result.selected] == ["workspace"]
@@ -161,7 +112,6 @@ async def test_tool_selection_selects_document_reader_for_uploaded_pdf_without_c
     tools = [
         _tool("workspace", "ai-platform"),
         _tool("document_reader", "ai-platform"),
-        _tool("ms_azure_cli", "azure_cli"),
     ]
 
     result = await get_tool_selection(

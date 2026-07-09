@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_PORT="${API_PORT:-8000}"
 ODOO_PORT="${ODOO_PORT:-8010}"
 WEB_PORT="${WEB_PORT:-5173}"
+DEFAULT_ODOO_CONNECTOR_DIR="$(cd "$ROOT_DIR/.." && pwd)/ai-platform-connector-odoo"
+ODOO_CONNECTOR_DIR="${ODOO_CONNECTOR_DIR:-$DEFAULT_ODOO_CONNECTOR_DIR}"
 UVICORN_RELOAD="${UVICORN_RELOAD:-false}"
 API_STARTUP_ATTEMPTS="${API_STARTUP_ATTEMPTS:-180}"
 ODOO_STARTUP_ATTEMPTS="${ODOO_STARTUP_ATTEMPTS:-60}"
@@ -25,7 +27,6 @@ STORAGE_ACCOUNT_NAME="${STORAGE_ACCOUNT_NAME:-staiplatformprodsan001}"
 ENTRA_TENANT_ID="${ENTRA_TENANT_ID:-03af606c-d85a-48ff-ad4b-a5a8895a6d98}"
 ENTRA_CLIENT_ID="${ENTRA_CLIENT_ID:-fcefb508-bb9d-4d5d-b1c5-6d2ef04c0208}"
 PORTAL_CLIENT_ID="${PORTAL_CLIENT_ID:-ff6a9526-c27a-42a6-b317-56060d11b14e}"
-MICROSOFT_ADMIN_CLIENT_ID="${MICROSOFT_ADMIN_CLIENT_ID:-8a178920-de9e-41cf-af4e-c3012fc3bbd2}"
 AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT="${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT:-https://fr-ai-platform-prod-san-001.cognitiveservices.azure.com/}"
 DOCUMENT_OCR_PROVIDER="${DOCUMENT_OCR_PROVIDER:-azure_document_intelligence}"
 DOCUMENT_OCR_READ_MODEL_ID="${DOCUMENT_OCR_READ_MODEL_ID:-prebuilt-read}"
@@ -231,6 +232,12 @@ require_free_port "$API_PORT" api
 require_free_port "$ODOO_PORT" odoo
 require_free_port "$WEB_PORT" web
 
+if [[ ! -d "$ODOO_CONNECTOR_DIR" ]]; then
+  echo "Odoo connector repo not found: $ODOO_CONNECTOR_DIR" >&2
+  echo "Set ODOO_CONNECTOR_DIR to the local ai-platform-connector-odoo checkout." >&2
+  exit 1
+fi
+
 echo "Checking Azure login..."
 az account show >/dev/null
 
@@ -247,7 +254,7 @@ fi
 
 echo "Preparing Python environments..."
 ensure_python_env "$ROOT_DIR/apps/ai-core-api" "$ROOT_DIR/apps/ai-core-api/requirements.txt"
-ensure_python_env "$ROOT_DIR/apps/odoo-connector-api" "$ROOT_DIR/apps/odoo-connector-api/requirements.txt"
+ensure_python_env "$ODOO_CONNECTOR_DIR" "$ODOO_CONNECTOR_DIR/requirements.txt"
 
 if [[ ! -d "$ROOT_DIR/apps/web-portal/node_modules" ]]; then
   echo "Installing portal dependencies..."
@@ -270,8 +277,6 @@ export API_KEY
 export ODOO_CONNECTOR_URL="http://127.0.0.1:$ODOO_PORT"
 export ODOO_CONNECTOR_API_KEY
 export ENTRA_TENANT_ID ENTRA_CLIENT_ID
-export MICROSOFT_ADMIN_CLIENT_ID
-export MICROSOFT_ADMIN_APP_DISPLAY_NAME="${MICROSOFT_ADMIN_APP_DISPLAY_NAME:-AI Platform Microsoft Admin}"
 export AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT DOCUMENT_OCR_PROVIDER DOCUMENT_OCR_READ_MODEL_ID DOCUMENT_OCR_LAYOUT_MODEL_ID
 export AZURE_SEARCH_ENABLE="${AZURE_SEARCH_ENABLE:-false}"
 export HEALTH_CHECK_DEEP="${HEALTH_CHECK_DEEP:-false}"
@@ -288,7 +293,7 @@ fi
 
 echo "Starting local Odoo connector on http://127.0.0.1:$ODOO_PORT ..."
 (
-  cd "$ROOT_DIR/apps/odoo-connector-api"
+  cd "$ODOO_CONNECTOR_DIR"
   APP_ENV=development \
   DEBUG=false \
   INTERNAL_API_KEY="$ODOO_CONNECTOR_API_KEY" \

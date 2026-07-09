@@ -287,7 +287,7 @@ async def test_workspace_can_bulk_odoo_through_raw_connector():
 
 
 @pytest.mark.asyncio
-async def test_workspace_python_can_call_any_platform_tool():
+async def test_workspace_python_can_call_platform_tool_broker():
     calls = []
 
     async def fake_tool(tool_name, arguments):
@@ -298,7 +298,7 @@ async def test_workspace_python_can_call_any_platform_tool():
         {
             "code": (
                 "from ai_platform_tools import call\n"
-                "print(call('github_cli', {'value': 42})['value'])"
+                "print(call('odoo', {'value': 42})['value'])"
             ),
             "timeout": 10,
         },
@@ -307,8 +307,8 @@ async def test_workspace_python_can_call_any_platform_tool():
 
     assert result["status"] == "success"
     assert result["stdout"].strip() == "42"
-    assert result["connector_calls"] == {"github_cli": 1}
-    assert calls == [("github_cli", {"value": 42})]
+    assert result["connector_calls"] == {"odoo": 1}
+    assert calls == [("odoo", {"value": 42})]
 
 
 @pytest.mark.asyncio
@@ -444,14 +444,14 @@ async def test_workspace_file_helpers_reject_ambiguous_names():
 
 
 @pytest.mark.asyncio
-async def test_workspace_shell_can_call_any_platform_tool():
+async def test_workspace_shell_can_call_platform_tool_broker():
     async def fake_tool(tool_name, arguments):
         return {"status": "success", "connector": tool_name, "value": arguments["value"]}
 
     result = await run_workspace(
         {
             "language": "shell",
-            "code": "ai-platform-tool github_cli '{\"value\": 42}'",
+            "code": "ai-platform-tool odoo '{\"value\": 42}'",
             "timeout": 10,
         },
         tool_executor=fake_tool,
@@ -459,7 +459,7 @@ async def test_workspace_shell_can_call_any_platform_tool():
 
     assert result["status"] == "success"
     assert '"value": 42' in result["stdout"]
-    assert result["connector_calls"] == {"github_cli": 1}
+    assert result["connector_calls"] == {"odoo": 1}
 
 
 @pytest.mark.asyncio

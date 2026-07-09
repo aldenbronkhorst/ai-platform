@@ -2,20 +2,14 @@ import type { FormEvent, ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
-  GitBranch,
   Trash2,
 } from "lucide-react";
 import { Button } from "../ui/Button";
 import { TextField } from "../ui/TextField";
 import {
-  MICROSOFT_NATIVE_CONNECTOR_KEY_SET,
   formatDateTime,
-  formatOptionalStatus,
   formatStatusLabel,
   getStatusTone,
-  type ConnectorDef,
-  type ConnectorMeta,
-  type MicrosoftNativeDeviceCode,
   type OdooStatus,
   type StatusTone,
 } from "./connectionShared";
@@ -94,56 +88,16 @@ function InfoGrid({ rows }: { rows: { label: string; value: ReactNode }[] }) {
   );
 }
 
-function isMicrosoftNativeConnector(key: string) {
-  return MICROSOFT_NATIVE_CONNECTOR_KEY_SET.has(key);
-}
-
 export function ConnectorLogo({ connectorKey, className = "w-5 h-5" }: { connectorKey: string; className?: string }) {
-  if (connectorKey === "odoo") {
-    return (
-      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Odoo logo">
-        <path
-          fill="#714B67"
-          d="M21.1002 15.7957c-1.6015 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2979 2.8998-2.8998 2.8998zm0-1.2c.9388.0006 1.7003-.7601 1.7008-1.6989.0004-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zm-6.0655 1.2c-1.6014 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2999 2.8998-2.8998 2.8998zm0-1.2c.9389.0006 1.7003-.7601 1.7008-1.6989.0005-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zM11.865 12.858c0 1.6199-1.2979 2.9378-2.8977 2.9378s-2.8998-1.314-2.8998-2.9358 1.1799-2.8597 2.8998-2.8597c.6359 0 1.2239.134 1.6998.484v-1.68a.6.6 0 0 1 1.2 0v4.0537h-.002zm-2.8977 1.7399c.9388.0005 1.7002-.7602 1.7007-1.699.0005-.9388-.7602-1.7003-1.699-1.7007h-.0017c-.9389.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699zm-6.0675 1.1979C1.2983 15.7957 0 14.4974 0 12.8959s1.2983-2.8997 2.8998-2.8997 2.8997 1.2982 2.8997 2.8997c0 1.5999-1.2999 2.8998-2.8997 2.8998zm0-1.2c.9388.0006 1.7002-.7601 1.7007-1.699.0005-.9387-.7602-1.7002-1.699-1.7006h-.0017c-.9388.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699z"
-        />
-      </svg>
-    );
-  }
+  if (connectorKey !== "odoo") return <div className={`${className} rounded-full bg-muted`} />;
 
-  if (isMicrosoftNativeConnector(connectorKey)) {
-    return (
-      <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Microsoft connector logo">
-        <rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1" fill="#F25022" />
-        <rect x="13" y="2.5" width="8.5" height="8.5" rx="1" fill="#7FBA00" />
-        <rect x="2.5" y="13" width="8.5" height="8.5" rx="1" fill="#00A4EF" />
-        <rect x="13" y="13" width="8.5" height="8.5" rx="1" fill="#FFB900" />
-      </svg>
-    );
-  }
-
-  if (connectorKey === "github") {
-    return (
-      <svg className={`${className} text-default`} viewBox="0 0 24 24" role="img" aria-label="GitHub logo">
-        <path
-          fill="currentColor"
-          d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
-        />
-      </svg>
-    );
-  }
-
-  return <div className={`${className} rounded-full bg-muted`} />;
-}
-
-function ConnectorDetailShell({
-  children,
-}: {
-  children: ReactNode;
-}) {
   return (
-    <div className="space-y-5">
-      {children}
-    </div>
+    <svg className={className} viewBox="0 0 24 24" role="img" aria-label="Odoo logo">
+      <path
+        fill="#714B67"
+        d="M21.1002 15.7957c-1.6015 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2979 2.8998-2.8998 2.8998zm0-1.2c.9388.0006 1.7003-.7601 1.7008-1.6989.0004-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zm-6.0655 1.2c-1.6014 0-2.8997-1.2983-2.8997-2.8998s1.2983-2.8997 2.8997-2.8997c1.6015 0 2.8998 1.2982 2.8998 2.8997 0 1.5999-1.2999 2.8998-2.8998 2.8998zm0-1.2c.9389.0006 1.7003-.7601 1.7008-1.6989.0005-.9388-.7602-1.7003-1.699-1.7007h-.0018c-.9388.0004-1.6994.7619-1.699 1.7007.0005.9381.761 1.6985 1.699 1.699zM11.865 12.858c0 1.6199-1.2979 2.9378-2.8977 2.9378s-2.8998-1.314-2.8998-2.9358 1.1799-2.8597 2.8998-2.8597c.6359 0 1.2239.134 1.6998.484v-1.68a.6.6 0 0 1 1.2 0v4.0537h-.002zm-2.8977 1.7399c.9388.0005 1.7002-.7602 1.7007-1.699.0005-.9388-.7602-1.7003-1.699-1.7007h-.0017c-.9389.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699zm-6.0675 1.1979C1.2983 15.7957 0 14.4974 0 12.8959s1.2983-2.8997 2.8998-2.8997 2.8997 1.2982 2.8997 2.8997c0 1.5999-1.2999 2.8998-2.8997 2.8998zm0-1.2c.9388.0006 1.7002-.7601 1.7007-1.699.0005-.9387-.7602-1.7002-1.699-1.7006h-.0017c-.9388.0004-1.6995.7619-1.699 1.7007.0004.9381.7608 1.6985 1.699 1.699z"
+      />
+    </svg>
   );
 }
 
@@ -178,7 +132,7 @@ export function OdooConnectorSection({
   const isOdooDisconnected = odooStatus?.status === "not_connected";
 
   return (
-    <ConnectorDetailShell>
+    <div className="space-y-5">
       {!isOdooStatusLoaded ? (
         <DetailCard>
           <p className="text-sm text-muted">Loading connection details...</p>
@@ -187,10 +141,10 @@ export function OdooConnectorSection({
         <InfoGrid
           rows={[
             { label: "Status", value: formatStatusLabel(odooStatus.status) },
-            { label: "Instance URL", value: <span className="break-all">{odooStatus.odoo_url || "—"}</span> },
-            { label: "Database", value: odooStatus.odoo_db || "—" },
-            { label: "Username", value: odooStatus.provider_username || "—" },
-            { label: "Environment", value: odooStatus.target_environment || "—" },
+            { label: "Instance URL", value: <span className="break-all">{odooStatus.odoo_url || "-"}</span> },
+            { label: "Database", value: odooStatus.odoo_db || "-" },
+            { label: "Username", value: odooStatus.provider_username || "-" },
+            { label: "Environment", value: odooStatus.target_environment || "-" },
             { label: "Last Verified", value: formatDateTime(odooStatus.last_verified_at) },
           ]}
         />
@@ -208,7 +162,7 @@ export function OdooConnectorSection({
         </ActionGroup>
       ) : null}
 
-      {isOdooStatusLoaded && isOdooDisconnected && (
+      {isOdooStatusLoaded && isOdooDisconnected ? (
         <form onSubmit={onConnect} className="space-y-4">
           <div className="grid gap-3">
             <FormField label="Instance URL">
@@ -230,123 +184,7 @@ export function OdooConnectorSection({
             </Button>
           </ActionGroup>
         </form>
-      )}
-    </ConnectorDetailShell>
-  );
-}
-
-export function MicrosoftNativeConnectorSection({
-  connector,
-  meta,
-  status,
-  isStarting,
-  isPolling,
-  activeDeviceCode,
-  onConnect,
-  onDisconnect,
-  onOpenDeviceLogin,
-}: {
-  connector: ConnectorDef;
-  meta?: ConnectorMeta;
-  status?: string;
-  isStarting: boolean;
-  isPolling: boolean;
-  activeDeviceCode: (MicrosoftNativeDeviceCode & { connectorKey: string }) | null;
-  onConnect: () => void;
-  onDisconnect: () => void;
-  onOpenDeviceLogin: (verificationUrl?: string) => void;
-}) {
-  const readinessStatus = meta?.state?.readiness_status
-    || meta?.metadata?.overall_status
-    || status;
-  const tooling = meta?.metadata?.tooling || [];
-  const authAppName = meta?.metadata?.auth_app_name;
-
-  return (
-    <ConnectorDetailShell>
-      <DetailCard>
-        <div className="space-y-2 text-sm text-muted">
-          <p>
-            Separate native Microsoft connector. This stores only the {connector.name} token; access is still limited by the signed-in user's Microsoft roles, Azure RBAC, workload permissions, and tenant consent.
-          </p>
-          {authAppName ? <p className="text-xs">Microsoft sign-in app: {authAppName}</p> : null}
-          {tooling.length > 0 ? <p className="text-xs">Tools: {tooling.join(", ")}</p> : null}
-        </div>
-      </DetailCard>
-
-      <InfoGrid
-        rows={[
-          { label: "Account", value: formatOptionalStatus(meta?.state?.account_status || status) },
-          { label: "Readiness", value: formatOptionalStatus(readinessStatus) },
-          { label: "Token", value: formatOptionalStatus(meta?.state?.token_status) },
-          { label: "User", value: meta?.metadata?.provider_username || "—" },
-          { label: "Last Verified", value: formatDateTime(meta?.last_verified_at) },
-        ]}
-      />
-
-      <ActionGroup>
-        <Button size="sm" onClick={onConnect} disabled={isStarting || isPolling}>
-          {isStarting ? "Starting sign-in..." : isPolling ? "Waiting for authentication..." : status === "connected" ? "Reconnect" : `Connect ${connector.name}`}
-        </Button>
-        <Button size="sm" variant="danger" onClick={onDisconnect}>
-          <Trash2 className="w-3.5 h-3.5" /> Disconnect
-        </Button>
-      </ActionGroup>
-
-      {activeDeviceCode && (
-        <DetailCard>
-          <div className="text-sm space-y-3">
-            <div className="space-y-1">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted">{connector.name} sign-in</p>
-              <p className="font-semibold text-default">Device Code: <span className="font-mono text-lg">{activeDeviceCode.user_code}</span></p>
-              <p className="text-muted text-xs">
-                {activeDeviceCode.scope_label || connector.name} via {activeDeviceCode.auth_app_name || "Microsoft"}.
-              </p>
-              <p className="text-muted text-xs">
-                Open <a href={activeDeviceCode.verification_url} target="_blank" rel="noopener noreferrer" className="underline">{activeDeviceCode.verification_url}</a> and enter the code above.
-              </p>
-            </div>
-            <ActionGroup>
-              <Button size="sm" onClick={() => onOpenDeviceLogin(activeDeviceCode.verification_url)}>
-                Open Microsoft Sign-In
-              </Button>
-            </ActionGroup>
-          </div>
-        </DetailCard>
-      )}
-    </ConnectorDetailShell>
-  );
-}
-
-export function GitHubConnectorSection({
-  meta,
-  status,
-  onConnect,
-}: {
-  meta?: ConnectorMeta;
-  status?: string;
-  onConnect: () => void;
-}) {
-  return (
-    <ConnectorDetailShell>
-      <DetailCard>
-        <p className="text-sm text-muted">Connect with GitHub OAuth.</p>
-      </DetailCard>
-
-      <InfoGrid
-        rows={[
-          { label: "Account", value: formatOptionalStatus(meta?.state?.account_status || status) },
-          { label: "Token", value: formatOptionalStatus(meta?.state?.token_status) },
-          { label: "User", value: meta?.metadata?.provider_username || "—" },
-          { label: "Last Verified", value: formatDateTime(meta?.last_verified_at) },
-        ]}
-      />
-
-      <ActionGroup>
-        <Button size="sm" onClick={onConnect}>
-          <GitBranch className="w-4 h-4" /> Connect with GitHub
-        </Button>
-      </ActionGroup>
-    </ConnectorDetailShell>
+      ) : null}
+    </div>
   );
 }
