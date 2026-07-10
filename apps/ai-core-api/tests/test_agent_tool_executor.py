@@ -64,3 +64,24 @@ async def test_execute_model_tool_calls_keeps_serial_tools_sequential():
     assert max_active == 1
     assert order == ["workspace", "workspace"]
     assert [result.tool_call_id for result in results] == ["call_1", "call_2"]
+
+
+@pytest.mark.asyncio
+async def test_execute_model_tool_calls_returns_tool_exceptions_to_the_model():
+    async def run_tool(_name, _arguments):
+        raise ConnectionError("connector unavailable")
+
+    results = await execute_model_tool_calls(
+        [_tool_call("call_1", "workspace")],
+        exposed_tool_names={"workspace"},
+        run_tool=run_tool,
+        compact_result=lambda value: value,
+    )
+
+    assert results[0].raw_result == {
+        "error": True,
+        "status": "failed",
+        "error_type": "ConnectionError",
+        "message": "connector unavailable",
+    }
+    assert results[0].model_result == results[0].raw_result

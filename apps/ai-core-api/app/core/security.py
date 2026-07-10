@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal
 from app.models.models import AIUser
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -161,7 +161,6 @@ async def api_key_auth(
     api_key: str = Security(api_key_header),
     bearer: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     x_user_id: str = Header(None, alias="X-User-Id"),
-    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Production-ready unified authentication dependency.
 
@@ -170,7 +169,8 @@ async def api_key_auth(
     settings = get_settings()
 
     if bearer and bearer.credentials:
-        return await validate_entra_jwt(bearer.credentials, db)
+        async with AsyncSessionLocal() as db:
+            return await validate_entra_jwt(bearer.credentials, db)
 
     if settings.app_env == "test" and _running_under_pytest():
         try:
@@ -193,20 +193,21 @@ async def api_key_auth(
     # through to 401. Byte comparison is unrestricted and still constant-time.
     if settings.api_key and api_key and hmac.compare_digest(api_key.encode("utf-8"), settings.api_key.encode("utf-8")):
         api_user_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
-        result = await db.execute(select(AIUser).where(AIUser.id == api_user_id))
-        existing_user = result.scalar_one_or_none()
-        if not existing_user:
-            db_user = AIUser(
-                id=api_user_id,
-                email=f"api-key-{api_user_id}@internal",
-                display_name=f"API User ({str(api_user_id)[:8]})",
-                role="user",
-                is_active="true",
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
-            )
-            db.add(db_user)
-            await db.commit()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(AIUser).where(AIUser.id == api_user_id))
+            existing_user = result.scalar_one_or_none()
+            if not existing_user:
+                db_user = AIUser(
+                    id=api_user_id,
+                    email=f"api-key-{api_user_id}@internal",
+                    display_name=f"API User ({str(api_user_id)[:8]})",
+                    role="user",
+                    is_active="true",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+                db.add(db_user)
+                await db.commit()
         return {
             "user_id": api_user_id,
             "email": "api-key@internal",

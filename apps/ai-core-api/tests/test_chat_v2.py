@@ -91,7 +91,7 @@ class TestArtifactDownloadSurface:
 
 
 class TestChatResponseGuards:
-    def test_assistant_turn_messages_uses_final_content_only(self):
+    def test_assistant_turn_messages_replays_provider_safe_tool_history(self):
         from app.routers.chat import _assistant_turn_messages
 
         message = SimpleNamespace(
@@ -99,9 +99,10 @@ class TestChatResponseGuards:
             role="assistant",
             content="The answer is 42.",
             metadata_json={
-                "conversation_messages": [
+                "model_history": [
                     {"role": "assistant", "content": None, "tool_calls": [{"id": "stored_tool"}]},
                     {"role": "tool", "tool_call_id": "stored_tool", "content": "{\"raw\": \"large\"}"},
+                    {"role": "assistant", "content": "The answer is 42."},
                 ],
             },
             tool_call_json=[
@@ -120,7 +121,7 @@ class TestChatResponseGuards:
 
         replay = _assistant_turn_messages(message)
 
-        assert replay == [{"role": "assistant", "content": "The answer is 42."}]
+        assert replay == message.metadata_json["model_history"]
 
     def test_assistant_metadata_includes_successful_turn_tool_error_summary(self):
         from app.routers.chat import _assistant_metadata
@@ -142,27 +143,21 @@ class TestChatResponseGuards:
         assert metadata["trace_id"] == "trace_123"
         assert metadata["has_tool_errors"] is True
         assert metadata["tool_error_summary"] == summary
-        assert "conversation_messages" not in metadata
+        assert "model_history" not in metadata
 
-    def test_assistant_metadata_includes_activity_events_without_raw_reasoning(self):
+    def test_assistant_metadata_excludes_trace_activity_and_raw_reasoning(self):
         from app.routers.chat import _assistant_metadata
-
-        activity_events = [
-            {"span_type": "context_build", "event": "span_started"},
-            {"span_type": "tool_call", "span_name": "odoo"},
-        ]
 
         metadata = _assistant_metadata(
             {"content": "I answered.", "reasoning_content": "raw provider reasoning"},
             "req-123",
             "trace_123",
-            activity_events=activity_events,
         )
 
-        assert metadata["activity_events"] == activity_events
+        assert "activity_events" not in metadata
         assert "stream_work_items" not in metadata
         assert "reasoning_content" not in metadata
-        assert "conversation_messages" not in metadata
+        assert "model_history" not in metadata
 
     def test_assistant_metadata_includes_message_parts(self):
         from app.routers.chat import _assistant_metadata
@@ -195,10 +190,8 @@ class TestChatResponseGuards:
 
         parts = []
         _append_message_text_part(parts, "reasoning", "Checking ")
-        _append_message_text_part(parts, "reasoning", "Odoo")
-        _append_message_text_part(parts, "reasoning", "Checking Odoo records")
+        _append_message_text_part(parts, "reasoning", "Odoo records")
         _append_message_text_part(parts, "reasoning", " and reports")
-        _append_message_text_part(parts, "reasoning", "Checking Odoo records and reports")
 
         assert [part["type"] for part in parts] == ["reasoning"]
         assert parts[0]["text"] == "Checking Odoo records and reports"
@@ -221,16 +214,21 @@ class TestChatResponseGuards:
 
         assert parts[-1]["text"] == "Final after tool"
 
-    def test_stream_disconnect_does_not_cancel_background_turn(self):
+    def test_turn_execution_is_server_owned_and_event_stream_is_separate(self):
         import inspect
         from app.routers import chat
 
-        stream_source = inspect.getsource(chat.stream_chat_message)
+        start_source = inspect.getsource(chat.start_chat_turn)
+        stream_source = inspect.getsource(chat.stream_chat_events)
         cancel_source = inspect.getsource(chat.cancel_stream_chat_message)
 
+        assert "asyncio.create_task" in start_source
+        assert "StreamingResponse" not in start_source
+        assert "_events_after" in stream_source
+        assert "_finish_database_read" in stream_source
+        assert 'event.event_type == "turn.complete"' in stream_source
         assert "ACTIVE_STREAM_TURNS" in cancel_source
         assert "task.cancel()" in cancel_source
-        assert "allowing turn to finish" in stream_source
         assert "task.cancel()" not in stream_source
 
     def test_final_message_parts_preserve_markdown_line_breaks(self):
@@ -244,68 +242,6 @@ class TestChatResponseGuards:
         assert parts[-1]["type"] == "text"
         assert parts[-1]["text"] == content
         assert parts[-1]["text"].count("\n") == content.count("\n")
-
-    def test_activity_event_maps_to_agent_tool_event(self):
-        from app.routers.chat import _agent_event_from_activity
-
-        event = {
-            "event": "span_started",
-            "span_id": "span_1",
-            "span_type": "tool_call",
-            "span_name": "workspace",
-            "started_at": "2026-06-30T10:00:00+00:00",
-            "input_summary": {
-                "tool_name": "workspace",
-                "arguments": {"task": "Inspect the account.move fields"},
-            },
-        }
-
-        agent_event = _agent_event_from_activity(event)
-
-        assert agent_event is not None
-        assert agent_event["type"] == "tool.start"
-        assert agent_event["id"] == "span_1"
-        assert agent_event["name"] == "workspace"
-        assert agent_event["context"] == "Run Python: Inspect the account.move fields"
-        assert agent_event["startedAt"] == "2026-06-30T10:00:00+00:00"
-        assert agent_event["args"] == {"task": "Inspect the account.move fields"}
-        assert '"task": "Inspect the account.move fields"' in agent_event["verboseArgs"]
-        assert "created_at" in agent_event
-
-    def test_finished_activity_maps_to_structured_tool_payload(self):
-        from app.routers.chat import _agent_event_from_activity
-
-        event = {
-            "event": "span_finished",
-            "span_id": "span_1",
-            "span_type": "tool_call",
-            "span_name": "workspace",
-            "duration_ms": 1250,
-            "ended_at": "2026-06-30T10:00:01+00:00",
-            "status": "success",
-            "input_summary": {
-                "tool_name": "workspace",
-                "arguments": {"language": "python", "task": "Read P&L report"},
-            },
-            "output_summary": {
-                "result": {
-                    "message": "Completed",
-                    "stdout": "Revenue: R 5,890,107.02",
-                },
-            },
-        }
-
-        agent_event = _agent_event_from_activity(event)
-
-        assert agent_event is not None
-        assert agent_event["type"] == "tool.complete"
-        assert agent_event["name"] == "workspace"
-        assert agent_event["error"] is False
-        assert agent_event["isError"] is False
-        assert agent_event["args"] == {"language": "python", "task": "Read P&L report"}
-        assert agent_event["result"] == {"message": "Completed", "stdout": "Revenue: R 5,890,107.02"}
-        assert agent_event["durationMs"] == 1250
-        assert "line" not in agent_event
 
     def test_unprocessed_textual_tool_call_is_rejected(self):
         import uuid
@@ -362,7 +298,7 @@ class TestChatResponseGuards:
             role="assistant",
             content="",
             tool_call_json=[{"tool_name": "workspace", "result": {"stdout": "large raw output"}}],
-            metadata_json={"conversation_messages": [{"role": "tool", "content": "large raw output"}]},
+            metadata_json={"model_history": [{"role": "tool", "content": "large raw output"}]},
         ))
 
 
@@ -443,6 +379,33 @@ class TestChatAttachments:
 
         assert payload["status"] == "streaming"
         assert payload["metadata_json"]["message_parts"] == [{"type": "reasoning", "text": "Checking Odoo"}]
+
+    def test_chat_message_payload_hides_internal_model_history(self):
+        from datetime import datetime, timezone
+        from app.models.models import AIChatMessage
+        from app.routers.chat import _chat_message_payload
+
+        message = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="assistant",
+            content="Finished.",
+            created_at=datetime.now(timezone.utc),
+            metadata_json={
+                "status": "completed",
+                "message_parts": [{"type": "text", "text": "Finished."}],
+                "model_history": [{"role": "tool", "tool_call_id": "call-1", "content": "private"}],
+            },
+        )
+
+        payload = _chat_message_payload(message, [])
+
+        assert payload["metadata_json"] == {
+            "status": "completed",
+            "message_parts": [{"type": "text", "text": "Finished."}],
+        }
+        assert "model_history" in message.metadata_json
 
     def test_running_assistant_placeholder_is_not_model_history(self):
         from datetime import datetime, timezone
@@ -640,8 +603,8 @@ class TestChatAttachments:
         context = await chat._attachment_context(object(), [artifact])
 
         assert "COSMETIC CONNECTION GRV141814.pdf" in context
-        assert "Use document_reader mode='tables' for tabular documents" in context
-        assert "mode='read' for text" in context
+        assert "Use document_reader with this artifact id" in context
+        assert "mode='guidance'" in context
         assert "extraction_status=pending" in context
 
     def test_artifact_manifest_context_exposes_previous_upload_ids(self):

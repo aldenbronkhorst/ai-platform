@@ -41,7 +41,7 @@ async def seed_tools():
                 )
                 session.add(tool)
 
-        await session.execute(
+        archived = await session.execute(
             update(AITool)
             .where(
                 AITool.status == "active",

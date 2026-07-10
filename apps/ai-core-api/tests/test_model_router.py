@@ -62,7 +62,7 @@ def test_canonical_prompt_requires_grounded_connected_system_numbers():
 
 
 def test_trace_redaction_keeps_token_counts_visible():
-    from app.services.trace_service import activity_safe_event, redact_value, summarize_payload
+    from app.services.trace_service import redact_value
 
     assert redact_value("prompt_tokens", 123) == 123
     assert redact_value("completion_tokens", 45) == 45
@@ -70,28 +70,6 @@ def test_trace_redaction_keeps_token_counts_visible():
     assert redacted_secret["present"] is True
     assert "fingerprint" not in redacted_secret
     assert "super-secret-token" not in str(redacted_secret)
-    assert summarize_payload({"messages": [{"role": "user", "content": "hi"}]}) == {
-        "messages": [1, {"role": "user", "content": "hi"}]
-    }
-    event = activity_safe_event({
-        "span_type": "tool_call",
-        "input_summary": {
-            "tool_name": "workspace",
-            "arguments": {"language": "python", "code": "print('hello')"},
-        },
-        "output_summary": {
-            "result": {
-                "workspace_id": "ws1",
-                "status": "success",
-                "language": "python",
-                "stdout": "hello\n",
-                "stderr": "",
-                "tool_calls": 0,
-            },
-        },
-    })
-    assert event["input_summary"]["arguments"]["code"] == "print('hello')"
-    assert event["output_summary"]["result"]["stdout"] == "hello"
 
 
 def test_workspace_generated_files_extracts_only_downloadable_outputs():
@@ -157,36 +135,9 @@ def test_workspace_tool_description_tells_model_to_return_created_files():
     workspace = next(tool for tool in CANONICAL_TOOL_DEFINITIONS if tool["name"] == "workspace")
     description = workspace["description"]
 
-    assert "Save files the user should receive under outputs/" in description
-    assert "are returned as chat attachments" in description
-    assert "list_files()" in description
-    assert "read_tables(ref)" in description
-    assert "download_file(ref)" in description
-
-
-def test_finished_trace_activity_keeps_tool_input_summary():
-    from app.services.trace_service import TraceService
-
-    events = []
-    trace = TraceService(MagicMock(), activity_event_sink=events.append)
-    span_id = trace.start_span(
-        "tool_call",
-        "workspace",
-        input_summary={
-            "tool_name": "workspace",
-            "arguments": {
-                "language": "python",
-                "code": "print('hello')",
-            },
-        },
-    )
-    trace.end_span(span_id, output_summary={"result": {"status": "success", "stdout": "hello"}})
-
-    finished = events[-1]
-    assert finished["event"] == "span_finished"
-    assert finished["input_summary"]["action"].startswith("Run Python: print('hello')")
-    assert finished["input_summary"]["arguments"]["purpose"] == "print('hello')"
-    assert finished["input_summary"]["arguments"]["code"] == "print('hello')"
+    assert "Files saved under outputs/ are returned to the user" in description
+    assert "brokered access" in description
+    assert "reading documents" in description
 
 
 def test_agent_stream_event_maps_reasoning_and_content_deltas():
@@ -250,7 +201,7 @@ async def test_model_router_rejects_removed_connector_tool_names():
         assert "current tool registry" in result["message"]
 
 
-def test_workspace_guidance_uses_odoo_broker_target():
+def test_workspace_guidance_stays_connector_agnostic():
     tools = [
         AITool(
             name="workspace",
@@ -266,14 +217,14 @@ def test_workspace_guidance_uses_odoo_broker_target():
         [{"type": "function", "function": {"name": tool.name, "parameters": {"type": "object"}}} for tool in tools],
     )
 
-    assert "Broker targets include" in prompt
-    assert "`odoo`" in prompt
+    assert "brokered connected-system access" in prompt
+    assert "Odoo" not in prompt
+    assert "`odoo`" not in prompt
     assert "ms_graph" not in prompt
     assert "github_cli" not in prompt
-    assert "account permissions decide what succeeds" in prompt
-    assert "If a live system fact matters, check it in Workspace" in prompt
-    assert "`list_files()`" in prompt
-    assert "`download_file(ref)`" in prompt
+    assert "saved credentials and permissions" in prompt
+    assert "`list_files`" in prompt
+    assert "`download_file`" in prompt
 
 def test_compact_tool_result_preserves_small_collections():
     result = {
@@ -837,7 +788,7 @@ class TestToolDefinitions:
         assert defs[0]["function"]["name"] == "odoo"
         assert "parameters" in defs[0]["function"]
 
-    def test_workspace_guidance_exposes_connector_broker_names(self):
+    def test_workspace_guidance_leaves_connector_details_to_connector_skills(self):
         from app.services.model_router import _append_tool_guidance
         from app.services.model_tool_calls import _build_tool_definitions
         tool = AITool(
@@ -850,13 +801,12 @@ class TestToolDefinitions:
 
         system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
 
-        assert "Broker targets include" in system_prompt
-        assert "`odoo`" in system_prompt
+        assert "brokered connected-system access" in system_prompt
+        assert "`odoo`" not in system_prompt
         assert "ms_graph" not in system_prompt
         assert "github_cli" not in system_prompt
-        assert "connector-owned skill text is included in the system context" in system_prompt
-        assert "account permissions decide what succeeds" in system_prompt
-        assert "If a live system fact matters, check it in Workspace" in system_prompt
+        assert "connector-owned skills define connector behavior" in system_prompt
+        assert "saved credentials and permissions" in system_prompt
         assert "router infers mode" not in system_prompt
 
     def test_workspace_guidance_describes_workspace_broker(self):
@@ -874,11 +824,10 @@ class TestToolDefinitions:
 
         system_prompt = _append_tool_guidance("Base prompt.", tools, _build_tool_definitions(tools))
 
-        assert "cloud-computer surface" in system_prompt
-        assert "available by default" in system_prompt
-        assert "Broker targets include" in system_prompt
-        assert "connector-owned skill text" in system_prompt
-        assert "If a live system fact matters" in system_prompt
+        assert "Workspace runs Python and shell/terminal code" in system_prompt
+        assert "`ai-platform-tool`" in system_prompt
+        assert "connector-owned skills" in system_prompt
+        assert "3+ connector/tool calls" not in system_prompt
         assert "prefer the direct `odoo` tool" not in system_prompt
 
     def test_document_reader_guidance_is_tool_owned(self):
@@ -896,11 +845,11 @@ class TestToolDefinitions:
         system_prompt = _append_tool_guidance("Base prompt.", [tool], _build_tool_definitions([tool]))
         skill_context = _tool_skill_context([tool])
 
-        assert "Document Reader tool owns detailed SKILL.md guidance" in system_prompt
+        assert "Its detailed SKILL.md is available" in system_prompt
         assert "## Tool Skills" in skill_context
-        assert "### Document Reader Tool Skill" in skill_context
-        assert "OCR Profile Selection" in skill_context
-        assert "prebuilt-layout" in skill_context
+        assert "document-reader" in skill_context
+        assert "Load with `document_reader` mode `guidance`" in skill_context
+        assert "OCR Profile Selection" not in skill_context
 
     @pytest.mark.asyncio
     async def test_document_reader_guidance_mode_does_not_require_artifact_id(self):
@@ -1298,35 +1247,8 @@ class TestToolExecution:
         assert result["content"] == "# Records Missing"
 
     @pytest.mark.asyncio
-    async def test_connector_skill_context_injects_odoo_skill_from_connector(self):
+    async def test_connector_skill_context_exposes_compact_loadable_index(self):
         from app.services.model_router import _connector_skill_context
-
-        requested = {}
-
-        class FakeResponse:
-            status_code = 200
-
-            def json(self):
-                return {
-                    "version": "2.3.0",
-                    "source": "/app/skills/odoo-api/SKILL.md",
-                    "content": "# Odoo API\n\n## Financial Reports\nUse account.report.get_report_information.",
-                }
-
-        class FakeAsyncClient:
-            def __init__(self, *args, **kwargs):
-                requested["timeout"] = kwargs.get("timeout")
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            async def get(self, url, *args, **kwargs):
-                requested["url"] = url
-                requested["headers"] = kwargs["headers"]
-                return FakeResponse()
 
         tools = [
             AITool(
@@ -1338,16 +1260,13 @@ class TestToolExecution:
             )
         ]
 
-        with patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
-            context = await _connector_skill_context({"odoo"}, tools)
+        context = await _connector_skill_context({"odoo"}, tools)
 
-        assert requested["url"] == "http://mock-connector:8000/odoo/guidance"
-        assert requested["headers"]["X-Internal-API-Key"] == "test-key"
         assert "## Connector Skills" in context
-        assert "### Odoo Connector Skill" in context
-        assert "Version: 2.3.0" in context
-        assert "## Financial Reports" in context
-        assert "account.report.get_report_information" in context
+        assert "odoo-api" in context
+        assert "operation': 'guidance'" in context
+        assert "Financial Reports" not in context
+        assert len(context) < 800
 
     @pytest.mark.asyncio
     async def test_document_reader_returns_read_only_artifact_preview(self):
@@ -1934,7 +1853,7 @@ class TestToolExecution:
     async def test_execute_chat_with_tools(self):
         """When model supports tools and tools are registered, they should be
         sent to the model. If model returns tool_calls, execute and loop."""
-        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
+        from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -2033,7 +1952,13 @@ class TestToolExecution:
             'app.services.model_router._execute_tool_call',
             new=AsyncMock(return_value={"records": [{"id": 1, "name": "Partner A"}]})
         ):
-            result = await execute_chat(db, [{"role": "user", "content": "find partners"}], user_id=uuid.uuid4())
+            events = []
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "find partners"}],
+                user_id=uuid.uuid4(),
+                stream_event_sink=events.append,
+            )
             assert result["content"] == "I found 5 partners in Odoo."
             assert result["tool_calls"] is not None
             assert len(result["tool_calls"]) == 1
@@ -2041,17 +1966,21 @@ class TestToolExecution:
             assert result["total_tokens"] == 43
             assert client.chat_completion.call_count == 2
             post_tool_call = client.chat_completion.call_args_list[1]
-            assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
-            assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
-            replayed_assistant = post_tool_call.kwargs["messages"][-3]
+            assert post_tool_call.kwargs["max_tokens"] == 2000
+            assert post_tool_call.kwargs["messages"][-1]["role"] == "tool"
+            replayed_assistant = post_tool_call.kwargs["messages"][-2]
             assert replayed_assistant["reasoning_content"] == "Need Odoo."
             assert replayed_assistant["thought_signature"] == "assistant-signature"
             assert replayed_assistant["tool_calls"][0]["thought_signature"] == "top-level-signature"
             assert replayed_assistant["tool_calls"][0]["function"]["thought_signature"] == "function-signature"
+            assert [message["role"] for message in result["model_history"]] == ["assistant", "tool", "assistant"]
+            assert result["model_history"][0]["thought_signature"] == "assistant-signature"
+            assert result["model_history"][-1]["content"] == "I found 5 partners in Odoo."
+            assert [event["type"] for event in events if event["type"].startswith("tool.")] == ["tool.start", "tool.complete"]
 
     @pytest.mark.asyncio
-    async def test_execute_chat_recovers_blank_length_initial_response_with_tools(self):
-        """A blank first pass should continue without removing the model's tool choice."""
+    async def test_execute_chat_does_not_inject_a_retry_for_blank_length_response(self):
+        """Provider output is returned as-is; the router does not add hidden recovery prompts."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2142,14 +2071,11 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == "I found one sales order from Odoo and can continue the import."
-        assert result["finish_reason"] == "stop"
-        assert result["tool_call_count"] == 1
-        assert client.chat_completion.call_count == 3
-        retry_call = client.chat_completion.call_args_list[1]
-        assert retry_call.kwargs["tools"] is not None
-        assert "provider output limit" in retry_call.kwargs["messages"][-1]["content"]
-        execute_tool.assert_awaited_once()
+        assert result["content"] == ""
+        assert result["finish_reason"] == "length"
+        assert result["tool_call_count"] == 0
+        assert client.chat_completion.call_count == 1
+        execute_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_execute_chat_reuses_workspace_session_across_tool_calls(self):
@@ -2345,9 +2271,9 @@ class TestToolExecution:
         assert execute_tool.await_count == tool_step_count
 
     @pytest.mark.asyncio
-    async def test_execute_chat_answers_without_tools_at_configured_tool_loop_cap(self):
-        """If ops explicitly configures a cap, the router should answer from gathered results."""
-        from app.services.model_router import execute_chat
+    async def test_execute_chat_fails_cleanly_at_configured_tool_loop_cap(self):
+        """A configured safety cap stops the loop without injecting a synthetic answer prompt."""
+        from app.services.model_router import execute_chat, ProviderCallError
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -2441,19 +2367,17 @@ class TestToolExecution:
             'app.services.model_router._execute_tool_call',
             new=execute_tool,
         ):
-            result = await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
+            with pytest.raises(ProviderCallError):
+                await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
 
-        assert result["content"] == "I found INV-2026-02128 from the gathered Odoo result. I did not run the extra lookup."
-        assert result["finish_reason"] == "stop"
-        assert result["tool_calls"] is not None
-        assert client.chat_completion.call_count == 3
-        assert client.chat_completion.call_args_list[-1].kwargs["tools"] is None
+        assert client.chat_completion.call_count == 2
+        assert client.chat_completion.call_args_list[-1].kwargs["tools"] is not None
         execute_tool.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_execute_chat_retries_blank_length_response_after_tools(self):
-        """A blank length-limited post-tool response is retried before it reaches the chat guard."""
-        from app.services.model_router import TOOL_LOOP_RESPONSE_MAX_TOKENS, execute_chat
+    async def test_execute_chat_does_not_retry_blank_length_response_after_tools(self):
+        """The provider finish state is preserved without a model-specific retry prompt."""
+        from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -2540,24 +2464,19 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == "The receipt has one matching line."
-        assert result["finish_reason"] == "stop"
-        assert result["total_tokens"] == 8073
-        assert client.chat_completion.call_count == 3
+        assert result["content"] == ""
+        assert result["finish_reason"] == "length"
+        assert result["total_tokens"] == 8035
+        assert client.chat_completion.call_count == 2
 
         post_tool_call = client.chat_completion.call_args_list[1]
-        assert post_tool_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
+        assert post_tool_call.kwargs["max_tokens"] == 2000
         assert post_tool_call.kwargs["tools"] is not None
-        assert "Use the tool results already gathered" in post_tool_call.kwargs["messages"][-1]["content"]
-
-        retry_call = client.chat_completion.call_args_list[2]
-        assert retry_call.kwargs["max_tokens"] == TOOL_LOOP_RESPONSE_MAX_TOKENS
-        assert retry_call.kwargs["tools"] is None
-        assert "without producing visible assistant content" in retry_call.kwargs["messages"][-1]["content"]
+        assert post_tool_call.kwargs["messages"][-1]["role"] == "tool"
 
     @pytest.mark.asyncio
-    async def test_execute_chat_continues_nonblank_length_response_after_tools(self):
-        """A visible but length-limited post-tool table is continued instead of returned mid-row."""
+    async def test_execute_chat_preserves_nonblank_length_response_after_tools(self):
+        """A partial provider response is not rewritten by a hidden continuation prompt."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2644,13 +2563,9 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == "| SO | Product | Ordered | Delivered |\n| SO1 | A | 1 |1 |\n| SO2 | B | 2 | 2 |"
-        assert result["finish_reason"] == "stop"
-        assert client.chat_completion.call_count == 3
-
-        continuation_call = client.chat_completion.call_args_list[2]
-        assert continuation_call.kwargs["tools"] is None
-        assert "Continue the visible answer exactly where it stopped" in continuation_call.kwargs["messages"][-1]["content"]
+        assert result["content"] == "| SO | Product | Ordered | Delivered |\n| SO1 | A | 1 |"
+        assert result["finish_reason"] == "length"
+        assert client.chat_completion.call_count == 2
 
 # ── Security Tests ──
 
