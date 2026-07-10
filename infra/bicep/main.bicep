@@ -50,17 +50,8 @@ param budgetEndDate string = '${string(int(utcNow('yyyy')) + 1)}-${utcNow('MM')}
 @description('AI Core API container image tag')
 param apiImageTag string = 'latest'
 
-@description('Odoo Connector container image tag')
-param odooConnectorImageTag string = 'latest'
-
 @description('Optional Azure Document Intelligence endpoint override for OCR extraction')
 param documentIntelligenceEndpoint string = ''
-
-@description('Microsoft Admin public client app ID for Graph/Exchange/Azure Resource Manager delegated device auth')
-param microsoftAdminClientId string = '8a178920-de9e-41cf-af4e-c3012fc3bbd2'
-
-@description('Microsoft Admin public client display name')
-param microsoftAdminAppDisplayName string = 'AI Platform Microsoft Admin'
 
 // Naming helper variables
 var resourceGroupName = 'rg-${workload}-${environment}-${regionCode}-${instance}'
@@ -206,7 +197,6 @@ module containerApps 'modules/containerApps.bicep' = {
     apiManagedIdentityResourceId: identity.outputs.apiManagedIdentityResourceId
     acrLoginServer: acr.outputs.loginServer
     apiImageTag: apiImageTag
-    odooConnectorImageTag: odooConnectorImageTag
     appInsightsConnectionString: monitoring.outputs.connectionString
     logAnalyticsWorkspaceName: monitoring.outputs.logAnalyticsWorkspaceName
     keyVaultUri: keyVault.outputs.vaultUri
@@ -216,8 +206,6 @@ module containerApps 'modules/containerApps.bicep' = {
     postgresDatabaseName: postgres.outputs.databaseName
     postgresAdminUsername: postgresAdminUsername
     documentIntelligenceEndpoint: empty(documentIntelligenceEndpoint) ? documentIntelligence.outputs.endpoint : documentIntelligenceEndpoint
-    microsoftAdminClientId: microsoftAdminClientId
-    microsoftAdminAppDisplayName: microsoftAdminAppDisplayName
   }
 }
 

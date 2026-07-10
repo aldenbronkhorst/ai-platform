@@ -22,9 +22,6 @@ export interface ConnectorMeta {
     provider_username?: string | null;
     permission_summary?: string | null;
     overall_status?: string | null;
-    tooling?: string[];
-    auth_app_name?: string | null;
-    native_connector?: boolean;
     odoo_url?: string | null;
     odoo_db?: string | null;
   };
@@ -39,35 +36,7 @@ export interface OdooStatus {
   last_verified_at?: string;
 }
 
-export interface MicrosoftNativeDeviceCode {
-  status: string;
-  connector?: string;
-  auth_session_id?: string;
-  device_code: string;
-  user_code: string;
-  verification_url: string;
-  site_url?: string | null;
-  scope_label?: string;
-  scope_summary?: string;
-  auth_app_name?: string;
-  client_id?: string;
-  interval?: number;
-  expires_in?: number;
-  expires_at?: number;
-  request_id?: string;
-}
-
 export type StatusTone = "success" | "danger" | "warning" | "neutral";
-
-const MICROSOFT_NATIVE_CONNECTOR_KEYS = [
-  "azure_cli",
-  "microsoft_graph",
-  "exchange_online",
-  "teams_admin",
-  "sharepoint_pnp",
-];
-
-export const MICROSOFT_NATIVE_CONNECTOR_KEY_SET = new Set(MICROSOFT_NATIVE_CONNECTOR_KEYS);
 
 export function formatStatusLabel(status: string) {
   return status
@@ -77,12 +46,8 @@ export function formatStatusLabel(status: string) {
     .join(" ");
 }
 
-export function formatOptionalStatus(status?: string | null) {
-  return status ? formatStatusLabel(status) : "—";
-}
-
 export function formatDateTime(value?: string | null) {
-  return value ? new Date(value).toLocaleString() : "—";
+  return value ? new Date(value).toLocaleString() : "-";
 }
 
 export function getStatusTone(status?: string, hasError = false): StatusTone {

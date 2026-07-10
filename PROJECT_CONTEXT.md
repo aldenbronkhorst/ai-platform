@@ -7,8 +7,9 @@ Core repo: `aldenbronkhorst/ai-platform`
 Current production shape:
 - `apps/web-portal` - React frontend for chat, connector setup, and admin review.
 - `apps/ai-core-api` - FastAPI backend and AI orchestration layer.
-- `apps/odoo-connector-api` - internal Odoo connector service.
 - `infra/bicep` - Azure infrastructure.
+- Odoo connector source is external in `aldenbronkhorst/ai-platform-connector-odoo`;
+  AI Platform consumes it through `ODOO_CONNECTOR_URL`.
 
 Architecture direction:
 - Keep the main workflow chat-first.

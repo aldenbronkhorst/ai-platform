@@ -3,7 +3,6 @@
 
 # API services
 /apps/ai-core-api/ @aldenbronkhorst
-/apps/odoo-connector-api/ @aldenbronkhorst
 
 # Web portal
 /apps/web-portal/ @aldenbronkhorst

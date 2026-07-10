@@ -18,7 +18,7 @@ The script starts:
 
 - web portal: `http://localhost:5173`
 - AI core API: `http://127.0.0.1:8000`
-- Odoo connector API: `http://127.0.0.1:8010`
+- Odoo connector API from the sibling `ai-platform-connector-odoo` repo: `http://127.0.0.1:8010`
 
 It pulls required secrets from Azure Container Apps at runtime and does not write production secrets into repo files. It also creates or updates a single PostgreSQL firewall rule for this Mac's current public IP so the local API can reach the live database. You must be logged into Azure CLI as an account with access to the production resource group:
 
@@ -33,6 +33,7 @@ Optional local overrides:
 ```bash
 UVICORN_RELOAD=true ./scripts/dev-local-stack.sh
 LOCAL_POSTGRES_FIREWALL=false ./scripts/dev-local-stack.sh
+ODOO_CONNECTOR_DIR=/path/to/ai-platform-connector-odoo ./scripts/dev-local-stack.sh
 ```
 
 Cloud-hosted AI workspace for Lots Lots More.
@@ -47,8 +48,11 @@ separate admin tools.
 - `apps/web-portal` - React web app for chat, connector setup, and admin review.
 - `apps/ai-core-api` - FastAPI orchestration API for auth, chat, memory, tools,
   chat file uploads, tracing, and connector routing.
-- `apps/odoo-connector-api` - Internal Odoo execution service.
 - `infra/bicep` - Azure infrastructure for the deployed app.
+
+Odoo connector source lives in the separate `aldenbronkhorst/ai-platform-connector-odoo`
+repo. AI Platform consumes that service through `ODOO_CONNECTOR_URL`; it does not own
+or build the connector implementation.
 
 ## Core Runtime
 

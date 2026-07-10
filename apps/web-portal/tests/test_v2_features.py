@@ -446,45 +446,42 @@ def test_connections_page_does_not_load_backend_platform_tools():
     assert "canonicalPlatformTools" not in content
 
 
-def test_microsoft_native_connectors_use_backend_metadata_and_separate_native_sign_ins():
+def test_connections_page_is_odoo_only_and_has_no_removed_connector_flows():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert 'body: JSON.stringify({ scope_profile: "graph" })' not in content
+    assert "OdooConnectorSection" in content
     assert "MICROSOFT_CONSENT_STEPS" not in content
     assert "Authorize Missing Profiles" not in content
     assert "microsoft_admin" not in content
     assert "CONNECTOR_FALLBACKS" not in content
     assert "CONNECTOR_FALLBACK_BY_KEY" not in content
     assert "connectorDefinitions(meta: Record<string, ConnectorMeta> | null)" in content
-    assert "if (!meta) return [];" in content
-    assert "connector.display_name || formatStatusLabel(key)" in content
-    assert 'connector.subtitle || connector.auth_method || "Connector"' in content
-    assert "/connector/microsoft-native/" in content
-    assert "azure_cli" in content
-    assert "microsoft_graph" in content
-    assert "exchange_online" in content
-    assert "teams_admin" in content
-    assert "sharepoint_pnp" in content
-    assert 'connectorKey === "sharepoint_pnp"' in content
-    assert "window.prompt" in content
-    assert "site_url" in content
-    assert "openMicrosoftDeviceLogin(data.verification_url, authWindow)" in content
-    assert 'window.open(data.verification_url, "_blank")' not in content
+    assert "/connector/microsoft-native/" not in content
+    assert "/connector/github/" not in content
+    assert "azure_cli" not in content
+    assert "microsoft_graph" not in content
+    assert "exchange_online" not in content
+    assert "teams_admin" not in content
+    assert "sharepoint_pnp" not in content
+    assert "github" not in content.lower()
+    assert "window.prompt" not in content
 
 
-def test_microsoft_native_device_login_uses_verification_url_directly():
+def test_connections_shared_types_have_no_device_code_contract():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
-        content = f.read()
+        page = f.read()
+    shared_path = os.path.join(SRC_DIR, "components", "connections", "connectionShared.ts")
+    with open(shared_path, "r", encoding="utf-8") as f:
+        shared = f.read()
 
-    assert "MICROSOFT_SESSION_RESET_URL" not in content
-    assert "https://login.microsoftonline.com/common/oauth2/v2.0/logout" not in content
-    assert "MICROSOFT_SESSION_RESET_DELAY_MS" not in content
-    assert "openMicrosoftAuthWindow()" in content
-    assert "openMicrosoftDeviceLogin" in content
-    assert "targetWindow.location.href = targetUrl" in content
+    combined = page + shared
+    assert "MicrosoftNativeDeviceCode" not in combined
+    assert "openMicrosoftAuthWindow" not in combined
+    assert "openMicrosoftDeviceLogin" not in combined
+    assert "verification_url" not in combined
 
 
 def test_chat_uses_assistant_ui_message_parts_not_local_tool_trail():
