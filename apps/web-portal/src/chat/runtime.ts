@@ -247,6 +247,19 @@ export function sortChatSessions(sessions: ChatSession[]) {
   return [...sessions].sort((a, b) => chatSessionTime(b) - chatSessionTime(a));
 }
 
+export function mergeFetchedChatSessions(
+  fetched: ChatSession[],
+  existing: ChatSession[],
+  activeSessionId: string | null,
+) {
+  const byId = new Map(fetched.map(session => [session.id, session]));
+  if (activeSessionId && !byId.has(activeSessionId)) {
+    const activeLocal = existing.find(session => session.id === activeSessionId);
+    if (activeLocal) byId.set(activeLocal.id, activeLocal);
+  }
+  return sortChatSessions(Array.from(byId.values()));
+}
+
 export function mobileViewportMatches() {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
 }

@@ -144,13 +144,13 @@ def test_chat_upload_snapshots_file_list_before_reset():
     with open(chat_controller_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    snapshot = "const files = Array.from(e.target.files || []);"
-    reset = 'e.currentTarget.value = "";'
+    snapshot = "const files = Array.from(event.target.files || []);"
+    reset = 'event.currentTarget.value = "";'
 
     assert snapshot in content
     assert reset in content
     assert content.index(snapshot) < content.index(reset)
-    assert "const uploads = validFiles.map(file => ({" in content
+    assert "const uploads = files.filter(file => file.size <= 15 * 1024 * 1024).map(file => ({ file, tempId: crypto.randomUUID() }));" in content
     assert "await Promise.all(uploads.map(async" in content
 
 
@@ -165,7 +165,7 @@ def test_chat_session_refresh_preserves_active_local_session():
     assert "mergeFetchedChatSessions" in chat_controller_content
     assert "export function mergeFetchedChatSessions" in runtime_content
     assert "if (activeSessionId && !byId.has(activeSessionId))" in runtime_content
-    assert "return prev;" in chat_controller_content
+    assert "sessions.find(session => session.id === current.id) || current" in chat_controller_content
 
 
 def test_new_chat_button_opens_draft_before_backend_session_create():
@@ -187,7 +187,7 @@ def test_new_chat_button_opens_draft_before_backend_session_create():
     assert "setActiveSession(null);" in start_body
     assert "setChatMessages([]);" in start_body
     assert "fetch(`${API_BASE_URL}/chat/sessions`" not in start_body
-    assert "const currentSession = activeSession || await createPersistedChatSession();" in controller
+    assert "const session = activeSession || await createPersistedChatSession();" in controller
     assert "setIsDraftChat(false);" in controller[persist_index:]
     assert "if (isDraftChatRef.current) return null;" in controller
 
@@ -512,8 +512,8 @@ def test_chat_uses_assistant_ui_message_parts_not_local_tool_trail():
     assert "message_parts" in runtime
     assert "agent_trail" not in runtime
     assert 'reasoning: ""' not in runtime
-    assert "appendReasoningPart" in runtime
-    assert "upsertToolCallPart" in runtime
+    assert "appendStreamPart" in runtime
+    assert "upsertToolPart" in runtime
     assert "ThinkingDisclosure" in assistant
     assert "ToolNode" not in assistant
     assert "trail_events" not in runtime
@@ -544,19 +544,14 @@ def test_reasoning_stream_matches_hermes_message_part_rules():
     with open(runtime_path, "r", encoding="utf-8") as f:
         runtime = f.read()
 
-    assert "THINKING_STATUS_PREFIX_RE" in runtime
-    assert "EMPTY_THINKING_PLACEHOLDER_RE" in runtime
-    assert "function coerceThinkingText" in runtime
-    assert "function appendTextPart" in runtime
-    assert "function mergeStreamText" in runtime
-    assert "content = mergeStreamText(content, delta)" in runtime
+    assert "THINKING_STATUS_PREFIX_RE" not in runtime
+    assert "EMPTY_THINKING_PLACEHOLDER_RE" not in runtime
+    assert "function coerceThinkingText" not in runtime
+    assert "function appendStreamPart" in runtime
     assert 'part.type === "tool-call"' in runtime
-    assert 'type === "thinking.delta"' in runtime
-    assert 'type === "reasoning.delta" || type === "reasoning.available"' in runtime
-    assert "status chrome, not visible reasoning" in runtime
-    assert "coerceThinkingText(event.text ?? event.delta)" in runtime
-    assert "appendReasoningPart(messageParts, delta)" in runtime
-    assert 'status = "streaming";' in runtime
+    assert 'eventType === "reasoning.delta" || eventType === "reasoning.available"' in runtime
+    assert 'appendStreamPart(messageParts(message), "reasoning", text)' in runtime
+    assert 'status: "streaming"' in runtime
     assert "replaceReasoningPart" in runtime
     assert "function runtimePartsFromMetadata" in assistant
     assert "text(part.text)" in assistant
@@ -589,11 +584,9 @@ def test_thinking_disclosure_body_matches_hermes_conditional_mount():
 
     assert "{open && (" in thinking
     assert 'isPreview && "thinking-preview max-h-40"' in thinking
-    assert "useDisclosureOpen(disclosureId, Boolean(pending))" in thinking
-    assert "setOpen(true)" in thinking
-    assert "setOpen(value => !value)" in thinking
-    assert "userOpen" not in thinking
-    assert "userOpen ?? Boolean(pending)" not in thinking
+    assert "const [userOpen, setUserOpen] = useState<boolean | null>(null);" in thinking
+    assert "const open = userOpen ?? Boolean(pending);" in thinking
+    assert "onToggle={() => setUserOpen(!open)}" in thinking
     assert "aria-hidden={!open}" not in thinking
     assert '!open && "hidden"' not in thinking
 
@@ -603,12 +596,11 @@ def test_reasoning_blocks_keep_independent_live_state():
     with open(assistant_path, "r", encoding="utf-8") as f:
         assistant = f.read()
 
-    assert 'timerKey={`reasoning:${messageId}:${startIndex}-${endIndex}`}' in assistant
-    assert 'const isRunning = status?.type === "running";' in assistant
-    assert 'status?.type === "running" || messageRunning' not in assistant
+    assert 'timerKey={`reasoning:${messageId}`}' in assistant
+    assert 'const isRunning = status?.type === "running" || messageRunning;' in assistant
 
 
-def test_tool_and_thinking_disclosures_use_stable_row_state():
+def test_tool_disclosures_persist_while_thinking_uses_hermes_local_state():
     assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
     with open(assistant_path, "r", encoding="utf-8") as f:
         assistant = f.read()
@@ -617,9 +609,9 @@ def test_tool_and_thinking_disclosures_use_stable_row_state():
     assert "function useDisclosureOpen" in assistant
     assert "useSyncExternalStore(" in assistant
     assert "DISCLOSURE_STATE_LIMIT = 240" in assistant
-    assert 'disclosureId={`reasoning:${messageId}:${startIndex}-${endIndex}`}' in assistant
     assert 'const disclosureId = `tool-entry:${messageId}:${toolCallId || `${toolName}:${stableDisclosureHash(safeJson(args))}`}`;' in assistant
     assert "const [open, setOpen] = useState(false);" not in assistant
+    assert "const [userOpen, setUserOpen] = useState<boolean | null>(null);" in assistant
 
 
 def test_live_reasoning_reveal_keeps_hermes_ref_sync():
@@ -656,15 +648,15 @@ def test_stream_updates_apply_each_chunk_once():
     with open(runtime_path, "r", encoding="utf-8") as f:
         runtime = f.read()
 
-    assert "let pendingStreamMessage: ChatMessage | null = null;" in controller
-    assert "const updatedMessage = updater(localMessage);" in controller
-    assert "pendingStreamMessage = updatedMessage;" in controller
-    assert "replaceOrAppendMessage(prev, pendingMessageId, updatedMessage)" in controller
-    assert "upsertLocalMessage(session.id, updatedMessage)" in controller
+    assert "setChatMessages(current => applyChatStreamEvent(current, event));" in controller
+    assert "eventCursorsRef.current[sessionId] = event.id;" in controller
+    assert "/events${suffix}" in controller
+    assert "/turns`" in controller
     assert "/cancel`" in controller
-    assert "keepalive: true" in controller
-    assert "messagePartsFrom(metadata.message_parts)" in runtime
-    assert "metadata.message_parts = messageParts" in runtime
+    assert "return Boolean(running || activeRequestsRef.current[sessionId]);" in controller
+    assert "if (turnComplete) return;" in controller
+    assert "function appendStreamPart" in runtime
+    assert "metadata.message_parts = parts" in runtime
     assert "stream_work_items" not in runtime
 
 

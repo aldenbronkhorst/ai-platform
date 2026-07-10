@@ -8,6 +8,7 @@ import {
   applyChatStreamEvent,
   chatFailureFromResponse,
   CHAT_EVENT_RECONNECT_MS,
+  mergeFetchedChatSessions,
   messageRequestId,
   normalizeChatMessage,
   parseSseChunk,
@@ -123,10 +124,10 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
       const response = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: await getHeaders() });
       if (!response.ok) throw new Error(`Could not load chats (HTTP ${response.status}).`);
       const sessions = sortChatSessions(await response.json() as ChatSession[]);
-      setChatSessions(sessions);
+      setChatSessions(current => mergeFetchedChatSessions(sessions, current, activeSessionIdRef.current));
       setActiveSession(current => {
         if (isDraftChatRef.current) return null;
-        if (current) return sessions.find(session => session.id === current.id) || null;
+        if (current) return sessions.find(session => session.id === current.id) || current;
         return sessions[0] || null;
       });
     } catch (error) {
