@@ -22,8 +22,6 @@ from app.services.key_vault import get_secret_value, key_vault_uri
 
 logger = logging.getLogger(__name__)
 
-CONNECTOR_SKILL_MAX_CHARS = int(os.environ.get("CONNECTOR_SKILL_MAX_CHARS", "24000"))
-CONNECTOR_SKILL_TIMEOUT_SECONDS = float(os.environ.get("CONNECTOR_SKILL_TIMEOUT_SECONDS", "8"))
 CONNECTOR_ERROR_MAX_CHARS = 1200
 
 
@@ -31,6 +29,8 @@ CONNECTOR_ERROR_MAX_CHARS = 1200
 class ExternalConnector:
     id: str
     display_name: str
+    skill_name: str
+    skill_description: str
     broker_target: str
     connected_account_provider: str
     base_url_env: str
@@ -39,7 +39,6 @@ class ExternalConnector:
     run_path: str
     credentialless_operations: frozenset[str] = frozenset()
     run_timeout_seconds: float = 120.0
-    guidance_timeout_seconds: float = CONNECTOR_SKILL_TIMEOUT_SECONDS
 
     @property
     def base_url(self) -> str:
@@ -64,6 +63,8 @@ EXTERNAL_CONNECTORS: dict[str, ExternalConnector] = {
     "odoo": ExternalConnector(
         id="odoo",
         display_name="Odoo",
+        skill_name="odoo-api",
+        skill_description="Use Odoo through its raw JSON-RPC object and report APIs.",
         broker_target="odoo",
         connected_account_provider="odoo",
         base_url_env="ODOO_CONNECTOR_URL",
@@ -96,13 +97,6 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[:limit]}... [truncated {len(value) - limit} chars]"
-
-
-def _truncate_connector_skill(content: str) -> str:
-    if len(content) <= CONNECTOR_SKILL_MAX_CHARS:
-        return content
-    omitted = len(content) - CONNECTOR_SKILL_MAX_CHARS
-    return content[:CONNECTOR_SKILL_MAX_CHARS].rstrip() + f"\n\n[connector skill truncated by {omitted} characters]"
 
 
 def connector_error_payload(raw_detail: Any, default_message: str = "") -> dict[str, Any]:
@@ -150,31 +144,6 @@ def _selected_connector_skill_systems(
     return systems
 
 
-async def fetch_connector_skill(connector: ExternalConnector) -> str | None:
-    url = connector.url_for(connector.guidance_path)
-    if not url:
-        return None
-    async with httpx.AsyncClient(timeout=connector.guidance_timeout_seconds) as client:
-        response = await client.get(url, headers=connector.headers())
-    if response.status_code >= 400:
-        logger.warning("%s connector skill fetch failed with status %s", connector.id, response.status_code)
-        return None
-    payload = response.json()
-    if not isinstance(payload, dict):
-        return None
-    content = payload.get("content")
-    if not isinstance(content, str) or not content.strip():
-        return None
-    version = str(payload.get("version") or "unknown")
-    source = str(payload.get("source") or "connector package")
-    return (
-        f"### {connector.display_name} Connector Skill\n"
-        f"Version: {version}\n"
-        f"Source: {source}\n\n"
-        f"{_truncate_connector_skill(content)}"
-    )
-
-
 async def connector_skill_context(
     connected_systems: set[str],
     tools: list[AITool],
@@ -189,26 +158,17 @@ async def connector_skill_context(
     if not systems:
         return ""
 
-    sections: list[str] = []
-    for system in systems:
-        connector = EXTERNAL_CONNECTORS.get(system)
-        if connector is None:
-            continue
-        try:
-            skill = await fetch_connector_skill(connector)
-        except Exception as exc:
-            logger.warning("Failed to fetch %s connector skill: %s", system, exc)
-            skill = None
-        if skill:
-            sections.append(skill)
-
-    if not sections:
+    connectors = [EXTERNAL_CONNECTORS[system] for system in systems if system in EXTERNAL_CONNECTORS]
+    if not connectors:
         return ""
     return (
         "## Connector Skills\n"
-        "The following skill text is owned by the connector package. Use it with Workspace and the connector broker target; "
-        "do not invent connector-specific API flows when the skill gives the raw method flow.\n\n"
-        + "\n\n".join(sections)
+        "Load a relevant connector-owned skill before using that connector. In Workspace, load one with "
+        "`call('<connector>', {'operation': 'guidance'})`. The connector package remains the source of truth.\n"
+        + "\n".join(
+            f"- {connector.skill_name}: {connector.skill_description} Connector target: `{connector.broker_target}`."
+            for connector in connectors
+        )
     )
 
 

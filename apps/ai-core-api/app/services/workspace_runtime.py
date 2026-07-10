@@ -775,28 +775,19 @@ class WorkspaceSession:
         *,
         tool_executor: WorkspaceToolExecutor | None = None,
         artifacts: list[dict[str, Any]] | None = None,
-        workspace_id: str | None = None,
-        persistent: bool = False,
     ) -> None:
         self.tool_executor = tool_executor
         self.artifacts = _normalize_manifest_artifacts(artifacts)
-        self.workspace_id = workspace_id or uuid.uuid4().hex
-        self.persistent = persistent
+        self.workspace_id = uuid.uuid4().hex
         self.workdir = _workspace_root() / self.workspace_id
-        self._run_index_file = self.workdir / ".run_index"
         self._broker: WorkspaceToolBroker | None = None
         self._entered = False
         self._run_index = 0
 
     async def __aenter__(self) -> "WorkspaceSession":
-        self.workdir.mkdir(parents=True, exist_ok=self.persistent)
+        self.workdir.mkdir(parents=True, exist_ok=False)
         (self.workdir / WORKSPACE_INPUT_DIR).mkdir(parents=True, exist_ok=True)
         (self.workdir / WORKSPACE_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        if self.persistent and self._run_index_file.exists():
-            try:
-                self._run_index = int(self._run_index_file.read_text(encoding="utf-8").strip() or "0")
-            except ValueError:
-                self._run_index = 0
         _write_workspace_manifest(self.workdir, self.artifacts)
         broker = WorkspaceToolBroker(self.tool_executor, self.workdir)
         self._broker = await broker.__aenter__()
@@ -810,7 +801,7 @@ class WorkspaceSession:
                 await self._broker.__aexit__(*exc)
         finally:
             self._entered = False
-            if not self.persistent and os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
+            if os.environ.get("WORKSPACE_KEEP_RUN_DIRS", "").lower() not in {"1", "true", "yes"}:
                 shutil.rmtree(self.workdir, ignore_errors=True)
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -838,8 +829,6 @@ class WorkspaceSession:
             return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}
 
         self._run_index += 1
-        if self.persistent:
-            self._run_index_file.write_text(str(self._run_index), encoding="utf-8")
         before_calls = self._broker.calls
         before_call_counts = dict(self._broker.call_counts)
         before_error_counts = dict(self._broker.error_counts)

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric
+from sqlalchemy import Boolean, Column, String, DateTime, Text, Integer, ForeignKey, JSON, Numeric, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -107,6 +107,39 @@ class AIChatMessage(Base, AuditMixin):
     token_usage_json = Column(JSON, nullable=True)
     tool_call_json = Column(JSON, nullable=True)
     metadata_json = Column(JSON, nullable=True)
+
+
+class AIChatEvent(Base):
+    __tablename__ = "ai_chat_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
+    request_id = Column(String(100), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False)
+    payload_json = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
+
+
+class AIChatTurn(Base):
+    __tablename__ = "ai_chat_turns"
+    __table_args__ = (
+        Index(
+            "uq_ai_chat_turns_active_session",
+            "chat_session_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
+
+    request_id = Column(String(100), primary_key=True)
+    chat_session_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_sessions.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
+    status = Column(String(20), default="active", nullable=False, index=True)
+    cancel_requested = Column(Boolean, default=False, nullable=False)
+    started_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False, index=True)
 
 
 class AIChatArtifact(Base, AuditMixin):

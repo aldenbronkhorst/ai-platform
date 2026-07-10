@@ -32,6 +32,7 @@ from app.services.model_tool_calls import (
 from app.services.tool_guidance import tool_guidance_payload, tool_skill_markdown
 from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
 from app.services.agent_tool_executor import execute_model_tool_calls
+from app.services.context_compressor import prepare_conversation_context
 
 logger = logging.getLogger(__name__)
 
@@ -50,58 +51,13 @@ DOCUMENT_READER_MAX_TABLE_LIMIT = 100
 DOCUMENT_READER_DEFAULT_PAGE_LIMIT = 20
 DOCUMENT_READER_MAX_PAGE_LIMIT = 100
 DOCUMENT_READER_DOWNLOAD_MAX_BYTES = int(os.environ.get("DOCUMENT_READER_DOWNLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
-TOOL_LOOP_RESPONSE_MAX_TOKENS = int(os.environ.get("TOOL_LOOP_RESPONSE_MAX_TOKENS", "3000"))
-LENGTH_LIMIT_CONTINUATION_LIMIT = int(os.environ.get("MODEL_LENGTH_CONTINUATION_LIMIT", "3"))
 MAX_TOOL_LOOP_ITERATIONS = int(
     os.environ.get(
         "AI_PLATFORM_MAX_TURNS",
-        os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "24"),
+        os.environ.get("MAX_TOOL_LOOP_ITERATIONS", "90"),
     )
 )
 TOOL_ERROR_SUMMARY_LIMIT = 8
-TOOL_SKILL_MAX_CHARS = int(os.environ.get("TOOL_SKILL_MAX_CHARS", "20000"))
-TOOL_LOOP_FOLLOWUP_MESSAGE = {
-    "role": "system",
-    "content": (
-        "Use the tool results already gathered to answer the user. "
-        "Call another tool only when a necessary fact is still missing. "
-        "If the remaining work needs loops, batches, retries, pagination, file transforms, or 3+ connector calls, "
-        "make one Workspace call that performs the full operation instead of issuing many small tool turns. "
-        "Only state connected-system facts that are present in successful tool output. "
-        "If another tool is needed, call it now instead of saying you will check next."
-    ),
-}
-INITIAL_BLANK_LENGTH_RETRY_MESSAGE = {
-    "role": "system",
-    "content": (
-        "Your previous response ended at the provider output limit before producing visible assistant content. "
-        "Continue the task now. If the task requires a tool, call the next necessary tool. "
-        "If enough facts are already available, answer visibly. Do not spend the response on hidden analysis."
-    ),
-}
-TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE = {
-    "role": "system",
-    "content": (
-        "Your previous response used the answer budget without producing visible assistant content. "
-        "Produce the final answer now using the gathered tool results. Do not call tools. "
-        "Do not include reasoning or analysis. If the user asked for a full table, output the full table."
-    ),
-}
-TOOL_LOOP_CONTINUE_LENGTH_MESSAGE = {
-    "role": "system",
-    "content": (
-        "Continue the visible answer exactly where it stopped. Do not repeat completed rows or headings. "
-        "Do not call tools. Do not include reasoning or analysis."
-    ),
-}
-TOOL_LOOP_LIMIT_ANSWER_MESSAGE = {
-    "role": "system",
-    "content": (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
-    ),
-}
 OMITTED_TOOL_CONTENT_KEYS = {
     "datas",
     "raw",
@@ -126,7 +82,7 @@ CANONICAL_SYSTEM_PROMPT = (
     "You help employees work across company knowledge, workflows, documents, "
     "connected accounts, and business systems. "
     "You are not tied to one system. "
-    "You may use connected tools such as Odoo, documents, and Workspace "
+    "You may use connected systems, documents, and Workspace "
     "only when they are available, authorised, and relevant. "
     "Never claim live access to a system unless that connector is connected and "
     "permitted for the current user. "
@@ -296,13 +252,6 @@ CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
     **EXTERNAL_CONNECTOR_DISPLAY_NAMES,
 }
 
-def _truncate_tool_skill(content: str) -> str:
-    if len(content) <= TOOL_SKILL_MAX_CHARS:
-        return content
-    omitted = len(content) - TOOL_SKILL_MAX_CHARS
-    return content[:TOOL_SKILL_MAX_CHARS].rstrip() + f"\n\n[tool skill truncated by {omitted} characters]"
-
-
 async def _connector_skill_context(connected_systems: set[str], tools: list[AITool]) -> str:
     return await external_connector_skill_context(
         connected_systems,
@@ -312,24 +261,23 @@ async def _connector_skill_context(connected_systems: set[str], tools: list[AITo
 
 
 def _tool_skill_context(tools: list[AITool]) -> str:
-    sections: list[str] = []
+    entries: list[str] = []
     for tool in tools:
         name = str(tool.name or "")
         content = tool_skill_markdown(name)
         if not content:
             continue
-        sections.append(
-            f"### {tool.display_name or name} Tool Skill\n"
-            f"Source: app/tools/{name}/SKILL.md\n\n"
-            f"{_truncate_tool_skill(content)}"
-        )
-    if not sections:
+        skill_name_match = re.search(r"(?m)^name:\s*([^\n]+)$", content)
+        description_match = re.search(r"(?m)^description:\s*[\"']?([^\n\"']+)", content)
+        skill_name = skill_name_match.group(1).strip().strip("\"'") if skill_name_match else name
+        description = description_match.group(1).strip() if description_match else str(tool.description or "")
+        entries.append(f"- {skill_name}: {description} Load with `{name}` mode `guidance`.")
+    if not entries:
         return ""
     return (
         "## Tool Skills\n"
-        "The following skill text is owned by selected platform tools. Use it with the tool directly or from Workspace; "
-        "do not replace it with ad hoc prompt rules.\n\n"
-        + "\n\n".join(sections)
+        "Load a relevant tool-owned skill before using that tool. The tool package remains the source of truth.\n"
+        + "\n".join(entries)
     )
 
 
@@ -1081,48 +1029,27 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
 
     available_names = [tool.name for tool in tools]
     system_prompt += (
-        "\n\nYou have access to the following tools. "
-        "Use a tool only when the user asks for live connected-system data, file work, code execution, "
-        "calculation, or document reading. Answer ordinary conversation and questions about the previous "
-        "assistant answer from the chat context without calling tools. "
-        "When the previous assistant message proposed a connected-system action plan and the user approves "
-        "or clarifies it, continue by calling the relevant tool in the same response. Do not only say "
-        "`starting now`, `let me proceed`, or `I will do that`; either execute with the tool or state the blocker."
+        "\n\nYou have access to the tools listed in this request. Decide whether and how to use them from the user's "
+        "request and the conversation context. Tool descriptions define capabilities; connector-owned skills define "
+        "connector behavior. When the user asks you to take an action, complete it with the available tools or explain "
+        "the concrete blocker."
     )
 
     guidance_parts: list[str] = []
     if WORKSPACE_TOOL_NAME in available_names:
         guidance_parts.append(
             "\n\n### Workspace\n"
-            "Workspace is the platform cloud-computer surface. It runs Python or shell/terminal code in a temporary "
-            "directory. Python has `call(tool_name, arguments)`, `call_raw(tool_name, arguments)`, `list_files()`, `file_info(ref)`, `download_file(ref)`, "
-            "`read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, `save_output(filename, data)`, and "
-            "`output_path(filename)` available by default. Shell scripts can call "
-            "`ai-platform-tool <tool_name> '<json arguments>'`. Broker targets include `odoo`. "
-            "Calls use the user's connected accounts; those account permissions decide what succeeds. "
-            "`call()` returns the connector result and raises on connector failure; use `call_raw()` only when the raw broker envelope is needed. "
-            "When connector-owned skill text is included in the system context, follow that skill for the connector API shape. "
-            "Use Workspace for multi-step work: 3+ connector/tool calls, loops, pagination, batch updates, retries, "
-            "conditional branching, large-output filtering, file transforms, aggregation, or calculations. Prefer one "
-            "workspace script that performs the full loop and prints/saves the result over many model-managed tool turns. "
-            "Use normal direct tool calls only for a single simple call where no processing loop is needed. "
-            "Uploaded and previously generated chat files are listed by `list_files()`; read OCR/table content "
-            "with `read_document`, `read_tables`, or `read_layout`, and download raw bytes with `download_file`. "
-            "If a live system fact matters, check it in Workspace and answer from the tool result. "
-            "Only files saved under `outputs/` are returned to the user as chat attachments. "
-            "Do not save deliverables to Desktop/Downloads or open local files."
+            "Workspace runs Python and shell/terminal code with session files and brokered connected-system access. "
+            "Python provides `call`, `call_raw`, `list_files`, `file_info`, `download_file`, `read_document`, "
+            "`read_tables`, `read_layout`, `save_output`, and `output_path`. Shell provides `ai-platform-tool`. "
+            "Connected-system calls run with the user's saved credentials and permissions. Save user-facing files under "
+            "`outputs/` so the platform returns them as attachments."
         )
     if "document_reader" in available_names:
         guidance_parts.append(
-            "Documents: use `document_reader` for uploaded PDFs/images when the injected attachment or available-file "
-            "preview is missing or insufficient. It is read-only; use the artifact id from the file context. "
-            "The Document Reader tool owns detailed SKILL.md guidance, and `mode='guidance'` can return it. "
-            "Workspace scripts should normally use `read_document(ref)`, `read_tables(ref)`, `read_layout(ref)`, or "
-            "`download_file(ref)`; those helpers wrap `document_reader` using the chat file manifest. "
-            "use it before ad hoc PDF libraries for uploaded document OCR, tables, and layout. "
-            "For transformed files such as searchable PDFs, Workspace code should call `document_reader` with "
-            "`mode='download'` through `download_file(ref)` to get the original uploaded bytes, then save the result under `outputs/`. "
-            "Do not search the local computer for uploaded files or open files on the local desktop."
+            "\n\n### Document Reader\n"
+            "Document Reader exposes uploaded PDFs and images as text, OCR, tables, layout, or raw bytes. Its detailed "
+            "SKILL.md is available through `mode='guidance'`."
         )
     return system_prompt + "\n".join(guidance_parts) if guidance_parts else system_prompt
 
@@ -1438,78 +1365,6 @@ async def _run_model_once(
     return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
 
 
-def _is_length_limited_final_response(result: dict[str, Any]) -> bool:
-    return (
-        not result.get("error")
-        and not result.get("tool_calls")
-        and str(result.get("finish_reason") or "").lower() == "length"
-    )
-
-
-def _merge_continued_content(existing: str, continuation: str) -> str:
-    if not existing.strip():
-        return continuation
-    if not continuation.strip():
-        return existing
-    return existing + continuation
-
-
-async def _complete_length_limited_answer(
-    state: ModelCallState,
-    base_messages: list[dict[str, Any]],
-    temperature: float,
-    max_tokens: int,
-    retry_tools: list[dict[str, Any]] | None = None,
-    blank_retry_message: dict[str, str] = TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
-    attempt_prefix: str = "length_limit",
-    trace_svc: Any = None,
-    stream_event_sink: Optional[Any] = None,
-) -> None:
-    combined_content = str(state.result.get("content") or "")
-    for _ in range(LENGTH_LIMIT_CONTINUATION_LIMIT):
-        if not _is_length_limited_final_response(state.result):
-            break
-
-        if combined_content.strip():
-            continuation_messages = (
-                base_messages
-                + [{"role": "assistant", "content": combined_content}]
-                + [TOOL_LOOP_CONTINUE_LENGTH_MESSAGE]
-            )
-            attempt_reason = f"{attempt_prefix}_continue"
-            tools_for_retry: list[dict[str, Any]] = []
-        else:
-            continuation_messages = base_messages + [blank_retry_message]
-            attempt_reason = f"{attempt_prefix}_blank_retry"
-            tools_for_retry = retry_tools or []
-
-        result, client = await _call_model(
-            state.used_model,
-            state.used_provider,
-            continuation_messages,
-            temperature,
-            max_tokens,
-            tools_for_retry,
-            trace_svc=trace_svc,
-            attempt_reason=attempt_reason,
-            client=state.client,
-            stream_event_sink=stream_event_sink,
-        )
-        state.client = client
-        state.stats.add_result(result)
-
-        new_content = str(result.get("content") or "")
-        if new_content:
-            combined_content = _merge_continued_content(combined_content, new_content)
-            result["content"] = combined_content
-        elif combined_content:
-            result["content"] = combined_content
-
-        state.result = result
-        if state.result.get("tool_calls"):
-            break
-
-
 async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1522,7 +1377,6 @@ async def _run_tool_loop(
     trace_svc: Any = None,
     stream_event_sink: Optional[Any] = None,
     workspace_artifacts: list[dict[str, Any]] | None = None,
-    workspace_id: str | None = None,
 ) -> list[dict[str, Any]]:
     tool_results: list[dict[str, Any]] = []
     generated_files: list[dict[str, Any]] = []
@@ -1543,8 +1397,6 @@ async def _run_tool_loop(
             session = WorkspaceSession(
                 tool_executor=workspace_tool_executor,
                 artifacts=workspace_artifacts,
-                workspace_id=workspace_id,
-                persistent=bool(workspace_id),
             )
             workspace_session = await session.__aenter__()
         return workspace_session
@@ -1558,33 +1410,14 @@ async def _run_tool_loop(
         iteration = 0
         while True:
             if MAX_TOOL_LOOP_ITERATIONS > 0 and iteration >= MAX_TOOL_LOOP_ITERATIONS:
-                if state.result.get("tool_calls"):
-                    limit_messages = messages + [TOOL_LOOP_LIMIT_ANSWER_MESSAGE]
-                    result, client = await _call_model(
-                        state.used_model,
-                        state.used_provider,
-                        limit_messages,
-                        temperature,
-                        max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
-                        [],
-                        trace_svc=trace_svc,
-                        attempt_reason="tool_loop_limit_answer",
-                        stream_event_sink=stream_event_sink,
-                    )
-                    state.result = result
-                    state.client = client
-                    state.stats.add_result(state.result)
-                    await _complete_length_limited_answer(
-                        state,
-                        limit_messages,
-                        temperature,
-                        max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS),
-                        retry_tools=[],
-                        blank_retry_message=TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
-                        attempt_prefix="tool_loop_limit",
-                        trace_svc=trace_svc,
-                        stream_event_sink=stream_event_sink,
-                    )
+                state.result = {
+                    "error": True,
+                    "error_type": "max_iterations_exceeded",
+                    "message": f"The agent exceeded {MAX_TOOL_LOOP_ITERATIONS} tool iterations.",
+                    "status_code": 502,
+                    "content": "",
+                    "tool_calls": None,
+                }
                 break
 
             if state.result.get("error"):
@@ -1597,6 +1430,23 @@ async def _run_tool_loop(
             state.result["tool_calls"] = tool_calls
             state.stats.tool_calls += len(tool_calls)
             messages.append(_assistant_tool_call_message(state.result))
+
+            if stream_event_sink:
+                for index, call in enumerate(tool_calls):
+                    function = call.get("function") if isinstance(call, dict) else {}
+                    function = function if isinstance(function, dict) else {}
+                    raw_arguments = function.get("arguments")
+                    try:
+                        arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    stream_event_sink({
+                        "type": "tool.start",
+                        "id": str(call.get("id") or f"tool:{iteration}:{index}"),
+                        "name": str(function.get("name") or "tool"),
+                        "args": arguments if isinstance(arguments, dict) else {},
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    })
 
             async def run_exposed_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 active_workspace_session = await get_workspace_session() if name == WORKSPACE_TOOL_NAME else None
@@ -1626,20 +1476,41 @@ async def _run_tool_loop(
                     "arguments": executed.arguments,
                     "result": executed.model_result,
                 })
+                if stream_event_sink:
+                    failed = bool(
+                        executed.raw_result.get("error")
+                        or str(executed.raw_result.get("status") or "").lower() in {"error", "failed"}
+                    )
+                    display_result = executed.model_result
+                    if isinstance(display_result, dict):
+                        display_result = {
+                            **display_result,
+                            "duration_s": executed.duration_ms / 1000,
+                        }
+                    stream_event_sink({
+                        "type": "tool.complete",
+                        "id": executed.tool_call_id,
+                        "name": executed.tool_name,
+                        "args": executed.arguments,
+                        "result": display_result,
+                        "error": failed,
+                        "isError": failed,
+                        "durationMs": executed.duration_ms,
+                        "duration_s": executed.duration_ms / 1000,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": executed.tool_call_id,
                     "content": _tool_message_content(executed.model_result),
                 })
 
-            followup_messages = messages + [TOOL_LOOP_FOLLOWUP_MESSAGE]
-            followup_max_tokens = max(max_tokens, TOOL_LOOP_RESPONSE_MAX_TOKENS)
             result, client = await _call_model(
                 state.used_model,
                 state.used_provider,
-                followup_messages,
+                messages,
                 temperature,
-                followup_max_tokens,
+                max_tokens,
                 tool_definitions,
                 trace_svc=trace_svc,
                 attempt_reason="tool_loop",
@@ -1649,17 +1520,6 @@ async def _run_tool_loop(
             state.result = result
             state.client = client
             state.stats.add_result(state.result)
-            await _complete_length_limited_answer(
-                state,
-                followup_messages,
-                temperature,
-                followup_max_tokens,
-                retry_tools=[],
-                blank_retry_message=TOOL_LOOP_BLANK_LENGTH_RETRY_MESSAGE,
-                attempt_prefix="tool_loop",
-                trace_svc=trace_svc,
-                stream_event_sink=stream_event_sink,
-            )
     finally:
         if workspace_session is not None:
             await workspace_session.__aexit__(None, None, None)
@@ -1824,9 +1684,37 @@ async def execute_chat(
         system_prompt = _append_context_section(system_prompt, connector_skill_context)
         system_prompt = _append_context_section(system_prompt, _tool_skill_context(tools))
         injected = await _inject_context_sections(db, user_id, messages, system_prompt, connected_accounts)
-        full_messages = [{"role": "system", "content": injected.system_prompt}] + messages if injected.system_prompt else messages
         temperature = float(route.temperature) if route.temperature is not None else 0.3
         max_tokens = route.max_tokens or 2000
+
+        async def summarize_context(summary_messages: list[dict[str, Any]], summary_tokens: int) -> dict[str, Any]:
+            summary_result, _client = await _call_model(
+                model_obj,
+                provider,
+                summary_messages,
+                0.0,
+                summary_tokens,
+                [],
+                trace_svc=trace_svc,
+                attempt_reason="context_compaction",
+            )
+            return summary_result
+
+        prepared_context = await prepare_conversation_context(
+            db,
+            chat_session_id=chat_session_id,
+            messages=messages,
+            system_prompt=injected.system_prompt,
+            tool_definitions=tool_definitions,
+            context_window=model_obj.context_window,
+            max_output_tokens=max_tokens,
+            summarize=summarize_context,
+        )
+        full_messages = (
+            [{"role": "system", "content": injected.system_prompt}, *prepared_context.messages]
+            if injected.system_prompt
+            else prepared_context.messages
+        )
         if trace_svc and context_span:
             trace_svc.end_span(
                 context_span,
@@ -1841,6 +1729,9 @@ async def execute_chat(
                     "memories_injected": len(injected.memories),
                     "system_prompt_chars": len(injected.system_prompt or ""),
                     "full_message_count": len(full_messages),
+                    "context_compacted": prepared_context.compacted,
+                    "estimated_tokens_before": prepared_context.estimated_tokens_before,
+                    "estimated_tokens_after": prepared_context.estimated_tokens_after,
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 },
@@ -1855,24 +1746,15 @@ async def execute_chat(
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
     )
-    await _complete_length_limited_answer(
-        state,
-        full_messages,
-        temperature,
-        max_tokens,
-        retry_tools=tool_definitions,
-        blank_retry_message=INITIAL_BLANK_LENGTH_RETRY_MESSAGE,
-        attempt_prefix="initial",
-        trace_svc=trace_svc,
-        stream_event_sink=stream_event_sink,
-    )
+    if prepared_context.summary_result:
+        state.stats.add_result(prepared_context.summary_result)
+    turn_history_start = len(full_messages)
     tool_results: list[dict[str, Any]] = []
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
         workspace_artifacts=workspace_artifacts,
-        workspace_id=f"chat-{chat_session_id}" if chat_session_id else None,
     ))
     tool_error_summary = _tool_result_error_summary(tool_results)
     await _log_usage(
@@ -1887,6 +1769,11 @@ async def execute_chat(
         tool_error_summary=tool_error_summary,
     )
     _raise_if_provider_failed(state, model_obj, provider, user_id, chat_session_id, bool(tool_definitions))
+    model_history = [_json_safe_copy(message) for message in full_messages[turn_history_start:]]
+    final_assistant = _assistant_tool_call_message(state.result)
+    if not final_assistant.get("tool_calls"):
+        final_assistant.pop("tool_calls", None)
+    model_history.append(final_assistant)
     response = {
         "content": str(state.result.get("content") or ""),
         "finish_reason": state.result.get("finish_reason", ""),
@@ -1902,5 +1789,6 @@ async def execute_chat(
         "has_tool_errors": bool(tool_error_summary),
         "context": _context_metadata(injected, state, policy),
         "tool_call_count": state.stats.tool_calls,
+        "model_history": model_history,
     }
     return response

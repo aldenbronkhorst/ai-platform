@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -15,6 +16,7 @@ class ExecutedToolCall:
     arguments: dict[str, Any]
     raw_result: dict[str, Any]
     model_result: dict[str, Any]
+    duration_ms: int
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
@@ -72,11 +74,22 @@ async def execute_model_tool_calls(
 
     async def execute_one(parsed: tuple[str, str, dict[str, Any]]) -> ExecutedToolCall:
         tool_call_id, name, arguments = parsed
-        raw_result = (
-            await run_tool(name, arguments)
-            if name in exposed_tool_names
-            else _unavailable_tool_result(name)
-        )
+        started_at = time.monotonic()
+        try:
+            raw_result = (
+                await run_tool(name, arguments)
+                if name in exposed_tool_names
+                else _unavailable_tool_result(name)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raw_result = {
+                "error": True,
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "message": str(exc) or f"Tool '{name}' failed.",
+            }
         model_result = compact_result(raw_result if isinstance(raw_result, dict) else {"result": raw_result})
         return ExecutedToolCall(
             tool_call_id=tool_call_id,
@@ -84,6 +97,7 @@ async def execute_model_tool_calls(
             arguments=arguments,
             raw_result=raw_result if isinstance(raw_result, dict) else {"result": raw_result},
             model_result=model_result,
+            duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )
 
     if not parsed_calls:

@@ -12,6 +12,7 @@ import {
 } from "@assistant-ui/react";
 import { AlertCircle } from "lucide-react";
 import {
+  Children,
   memo,
   useCallback,
   useEffect,
@@ -366,7 +367,7 @@ function ThreadMessageList({
       node.scrollTop = height;
 
       if (stableFrames >= 5 || frame >= 90) {
-        void scrollToBottom();
+        void scrollToBottom("instant");
         return;
       }
 
@@ -392,9 +393,8 @@ function ThreadMessageList({
   const showEarlier = useCallback(() => {
     const el = scrollRef.current;
     restoreFromBottomRef.current = el ? el.scrollHeight - el.scrollTop : null;
-    stopScroll();
     setRenderBudget(budget => budget + RENDER_BUDGET);
-  }, [scrollRef, stopScroll]);
+  }, [scrollRef]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -600,27 +600,22 @@ function MarkdownTextPart({ status, text: value }: { status: { type: string }; t
 
 function ThinkingDisclosure({
   children,
-  disclosureId,
   messageRunning,
   pending,
   timerKey,
 }: {
   children: ReactNode;
-  disclosureId: string;
   messageRunning?: boolean;
   pending?: boolean;
   timerKey?: string;
 }) {
-  const [open, setOpen] = useDisclosureOpen(disclosureId, Boolean(pending));
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const elapsed = useElapsedSeconds(Boolean(pending), timerKey);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const enterRef = useEnterAnimation(Boolean(messageRunning), timerKey);
-  const isPreview = Boolean(pending) && open;
-
-  useEffect(() => {
-    if (pending) setOpen(true);
-  }, [pending, setOpen]);
+  const open = userOpen ?? Boolean(pending);
+  const isPreview = Boolean(pending) && userOpen === null;
 
   useEffect(() => {
     if (!isPreview) return;
@@ -642,7 +637,7 @@ function ThinkingDisclosure({
       data-slot="aui_thinking-disclosure"
       ref={enterRef}
     >
-      <DisclosureRow onToggle={() => setOpen(value => !value)} open={open}>
+      <DisclosureRow onToggle={() => setUserOpen(!open)} open={open}>
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span
             className={cn(
@@ -696,10 +691,9 @@ function ReasoningGroup({ children, endIndex, startIndex }: { children?: ReactNo
 
   return (
     <ThinkingDisclosure
-      disclosureId={`reasoning:${messageId}:${startIndex}-${endIndex}`}
       messageRunning={messageRunning}
       pending={pending}
-      timerKey={`reasoning:${messageId}:${startIndex}-${endIndex}`}
+      timerKey={`reasoning:${messageId}`}
     >
       {children}
     </ThinkingDisclosure>
@@ -708,7 +702,8 @@ function ReasoningGroup({ children, endIndex, startIndex }: { children?: ReactNo
 
 function ReasoningTextPart({ status, text: value }: ReasoningMessagePartProps) {
   const displayText = value.trimStart();
-  const isRunning = status?.type === "running";
+  const messageRunning = useAuiState(s => s.message.status?.type === "running");
+  const isRunning = status?.type === "running" || messageRunning;
 
   return (
     <MarkdownTextContent
@@ -872,6 +867,7 @@ function ToolFallback({ args, argsText, isError, result, status, toolCallId, too
         open && hasDetail && "rounded-[0.3125rem] border border-[var(--ui-stroke-tertiary)]",
       )}
       data-slot="tool-block"
+      data-tool-open={open ? "" : undefined}
       data-tool-row=""
       ref={enterRef}
     >
@@ -919,14 +915,63 @@ function ToolFallback({ args, argsText, isError, result, status, toolCallId, too
   );
 }
 
+const TOOL_GROUP_SCROLL_THRESHOLD = 3;
+
+function useToolWindow(enabled: boolean) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const stickRef = useRef(true);
+  const [faded, setFaded] = useState(false);
+
+  const syncFade = useCallback(() => setFaded((scrollRef.current?.scrollTop ?? 0) > 4), []);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
+    syncFade();
+  }, [syncFade]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    const content = contentRef.current;
+    if (!enabled || !el || !content) return;
+
+    const pin = () => {
+      if (stickRef.current) el.scrollTop = el.scrollHeight;
+      syncFade();
+    };
+
+    pin();
+    const observer = new ResizeObserver(pin);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [enabled, syncFade]);
+
+  return { contentRef, faded, onScroll, scrollRef };
+}
+
 function ToolGroup({ children, startIndex }: { children?: ReactNode; endIndex: number; startIndex: number }) {
   const messageId = useAuiState(s => s.message.id);
   const messageRunning = useAuiState(s => s.message.status?.type === "running");
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`);
+  const bounded = Children.count(children) >= TOOL_GROUP_SCROLL_THRESHOLD;
+  const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded);
 
   return (
-    <div className="grid min-w-0 max-w-full gap-[var(--tool-row-gap)] overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
-      {children}
+    <div className="min-w-0 max-w-full overflow-hidden" data-slot="tool-block" data-tool-group="" ref={enterRef}>
+      <div
+        className={cn(
+          bounded && "tool-group-scroll max-h-[var(--tool-group-scroll-max-h)] overflow-y-auto",
+          bounded && faded && "tool-group-scroll--faded",
+        )}
+        onScroll={bounded ? onScroll : undefined}
+        ref={scrollRef}
+      >
+        <div className="grid min-w-0 max-w-full gap-[var(--tool-row-gap)]" ref={contentRef}>
+          {children}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,29 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+
 import type { AttachedFile, ChatAttachment, ChatMessage, ChatSession } from "../types";
 import { API_BASE_URL, fetchWithAuth, fetchWithTimeout, type AccessTokenGetter } from "../hooks/useApi";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import {
-  appendActivityEvent,
-  appendMessagePartEvent,
-  chatFailureFromDetail,
-  chatFailureFromNetwork,
+  applyChatStreamEvent,
   chatFailureFromResponse,
-  CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS,
-  CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS,
-  CHAT_STREAM_INACTIVITY_TIMEOUT_MS,
-  type ChatFailurePayload,
-  mergeStreamMetadata,
-  mergeFetchedChatSessions,
+  CHAT_EVENT_RECONNECT_MS,
   messageRequestId,
   normalizeChatMessage,
   parseSseChunk,
   patchChatSession,
   pendingProgressMetadata,
-  readCachedChatSessions,
   sortChatSessions,
   uploadFailureFromResponse,
-  writeCachedChatSessions,
 } from "./runtime";
 
 interface UseChatControllerOptions {
@@ -33,70 +24,38 @@ interface UseChatControllerOptions {
   onOpenChat: () => void;
 }
 
-function errorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
-function mergeChatMessages(persistedMessages: ChatMessage[], localMessages: ChatMessage[]) {
-  const normalizedPersisted = persistedMessages.map(normalizeChatMessage);
-  if (localMessages.length === 0) return normalizedPersisted;
-
-  const persistedIds = new Set(normalizedPersisted.map(message => message.id));
-  const persistedRequestRoles = new Set(
-    normalizedPersisted
-      .map(message => {
-        const requestId = messageRequestId(message);
-        return requestId ? `${message.role}:${requestId}` : null;
-      })
-      .filter((value): value is string => Boolean(value))
-  );
-
-  const localOnly = localMessages.filter(message => {
-    if (persistedIds.has(message.id)) return false;
-    const requestId = messageRequestId(message);
-    return !requestId || !persistedRequestRoles.has(`${message.role}:${requestId}`);
+function wait(ms: number, signal?: AbortSignal) {
+  return new Promise<void>(resolve => {
+    const timer = window.setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      resolve();
+    }, { once: true });
   });
-
-  return [...normalizedPersisted, ...localOnly];
-}
-
-function removeRequestMessages(messages: ChatMessage[], requestId: string) {
-  return messages.filter(message => messageRequestId(message) !== requestId);
-}
-
-function replaceOrAppendMessage(messages: ChatMessage[], messageId: string, replacement: ChatMessage) {
-  const index = messages.findIndex(message => message.id === messageId);
-  if (index === -1) return [...messages, replacement];
-  return messages.map(message => message.id === messageId ? replacement : message);
-}
-
-const STREAM_DELTA_FLUSH_MS = 33;
-const STREAM_DELTA_EVENTS = new Set(["reasoning.delta", "reasoning.available", "message.delta"]);
-const TOOL_EVENTS = new Set(["tool.start", "tool.complete"]);
-
-function wait(ms: number) {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
-}
-
-function hasPersistedAssistantMessage(messages: ChatMessage[], requestId: string) {
-  return messages.some(message => message.role === "assistant" && messageRequestId(message) === requestId);
-}
-
-function hasRunningAssistantMessage(messages: ChatMessage[]) {
-  return messages.some(message =>
-    message.role === "assistant"
-    && ["pending", "streaming", "tool_running", "sending"].includes(message.status || "")
-  );
-}
-
-function isAbortError(err: unknown) {
-  return err instanceof DOMException
-    ? err.name === "AbortError"
-    : err instanceof Error && err.name === "AbortError";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRunningMessage(message: ChatMessage) {
+  return message.role === "assistant" && ["pending", "sending", "streaming", "tool_running"].includes(message.status || "");
+}
+
+function failedMessage(requestId: string, message: string): Partial<ChatMessage> {
+  return {
+    status: "failed",
+    error_message: JSON.stringify({
+      requestId,
+      errorType: "network",
+      errorMessage: message,
+      httpStatus: 0,
+    }),
+  };
 }
 
 export function useChatController({ accessToken, activeUserEmail, getAccessToken, onOpenChat }: UseChatControllerOptions) {
@@ -108,56 +67,14 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
   const [isDraftChat, setIsDraftChat] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [sendingSessionIds, setSendingSessionIds] = useState<string[]>([]);
-  const [localMessagesBySession, setLocalMessagesBySession] = useState<Record<string, ChatMessage[]>>({});
+  const [streamVersion, setStreamVersion] = useState(0);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeSessionId = activeSession?.id ?? null;
   const activeSessionIdRef = useRef<string | null>(activeSessionId);
   const isDraftChatRef = useRef(isDraftChat);
-  const localMessagesBySessionRef = useRef<Record<string, ChatMessage[]>>({});
-  const streamControllersRef = useRef<Record<string, { controller: AbortController; requestId: string }>>({});
-  const stoppedRequestIdsRef = useRef<Set<string>>(new Set());
-  const messageLoadSeqRef = useRef(0);
-
-  const handleTranscript = useCallback((transcript: string) => {
-    setChatInput(prev => (prev ? prev + " " + transcript : transcript));
-  }, []);
-
-  const transcribeVoiceAudio = useCallback(async (audioBlob: Blob) => {
-    if (!accessToken) throw new Error("Please sign in again before using voice input.");
-    const formData = new FormData();
-    const extension = audioBlob.type.includes("ogg")
-      ? "ogg"
-      : audioBlob.type.includes("mp4")
-        ? "m4a"
-        : audioBlob.type.includes("wav")
-          ? "wav"
-          : "webm";
-    formData.append("file", audioBlob, `voice-input.${extension}`);
-    const res = await fetchWithAuth(`${API_BASE_URL}/voice/transcribe`, {
-      method: "POST",
-      body: formData,
-    }, getAccessToken, { timeoutMs: 120_000 });
-    if (!res.ok) {
-      let message = `Voice transcription failed with HTTP ${res.status}.`;
-      try {
-        const detail = await res.json();
-        const payload = detail?.detail || detail;
-        message = payload?.error_message || payload?.message || message;
-      } catch {
-        // Keep the HTTP status message if the response is not JSON.
-      }
-      throw new Error(message);
-    }
-    const data = await res.json() as { transcript?: string };
-    return (data.transcript || "").trim();
-  }, [accessToken, getAccessToken]);
-
-  const {
-    voiceState,
-    toggleVoice: handleToggleVoice,
-    interimTranscript: voiceInterimTranscript,
-  } = useSpeechRecognition(handleTranscript, { transcribeAudio: transcribeVoiceAudio });
+  const eventCursorsRef = useRef<Record<string, number>>({});
+  const activeRequestsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -167,806 +84,403 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
     isDraftChatRef.current = isDraftChat;
   }, [isDraftChat]);
 
-  useEffect(() => {
-    localMessagesBySessionRef.current = localMessagesBySession;
-  }, [localMessagesBySession]);
+  const markSessionSending = useCallback((sessionId: string, requestId?: string) => {
+    if (requestId) activeRequestsRef.current[sessionId] = requestId;
+    setSendingSessionIds(current => current.includes(sessionId) ? current : [...current, sessionId]);
+  }, []);
+
+  const unmarkSessionSending = useCallback((sessionId: string, requestId?: string) => {
+    if (requestId && activeRequestsRef.current[sessionId] && activeRequestsRef.current[sessionId] !== requestId) return;
+    delete activeRequestsRef.current[sessionId];
+    setSendingSessionIds(current => current.filter(id => id !== sessionId));
+  }, []);
 
   const isActiveChatSending = activeSessionId ? sendingSessionIds.includes(activeSessionId) : false;
 
   const getHeaders = useCallback(async () => {
     const token = await getAccessToken({ redirectOnFailure: true });
     if (!token) throw new Error("Microsoft session expired. Please sign in again.");
-    return {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    };
+    return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   }, [getAccessToken]);
 
   const updateLocalChatSession = useCallback((sessionId: string, patch: Partial<ChatSession>) => {
-    setChatSessions(prev => {
-      let changed = false;
-      const next = prev.map(session => {
-        if (session.id !== sessionId) return session;
-        const updated = patchChatSession(session, patch);
-        if (updated !== session) changed = true;
-        return updated;
-      });
-
-      if (!changed) return prev;
-      return patch.last_message_at ? sortChatSessions(next) : next;
-    });
-
-    setActiveSession(prev => {
-      if (!prev || prev.id !== sessionId) return prev;
-      return patchChatSession(prev, patch);
-    });
+    setChatSessions(current => sortChatSessions(current.map(session => session.id === sessionId ? patchChatSession(session, patch) : session)));
+    setActiveSession(current => current?.id === sessionId ? patchChatSession(current, patch) : current);
   }, []);
 
   const upsertChatSession = useCallback((session: ChatSession) => {
-    setChatSessions(prev => {
-      const exists = prev.some(item => item.id === session.id);
-      const next = exists
-        ? prev.map(item => item.id === session.id ? session : item)
-        : [session, ...prev];
-      const sorted = sortChatSessions(next);
-      writeCachedChatSessions(activeUserEmail, sorted);
-      return sorted;
-    });
-
-    setActiveSession(prev => prev?.id === session.id ? session : prev);
-  }, [activeUserEmail]);
+    setChatSessions(current => sortChatSessions([
+      session,
+      ...current.filter(item => item.id !== session.id),
+    ]));
+    setActiveSession(current => current?.id === session.id ? session : current);
+  }, []);
 
   const fetchChatSessions = useCallback(async () => {
     if (!accessToken || !activeUserEmail) return;
     setIsSessionsLoading(true);
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: await getHeaders() });
-      if (res.ok) {
-        const data = sortChatSessions(await res.json() as ChatSession[]);
-        setChatSessions(prev => {
-          const merged = mergeFetchedChatSessions(data, prev, activeSessionIdRef.current);
-          writeCachedChatSessions(activeUserEmail, merged);
-          return merged;
-        });
-        setActiveSession(prev => {
-          if (isDraftChatRef.current) return null;
-          if (prev) {
-            const updatedActive = data.find(session => session.id === prev.id);
-            if (updatedActive) return updatedActive;
-            return prev;
-          }
-          return data.length > 0 ? data[0] : null;
-        });
-      } else {
-        console.error("Failed to fetch sessions:", res.status, await res.text().catch(() => ""));
-      }
-    } catch (err) {
-      console.error("Failed to fetch chat sessions:", err);
+      const response = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions`, { headers: await getHeaders() });
+      if (!response.ok) throw new Error(`Could not load chats (HTTP ${response.status}).`);
+      const sessions = sortChatSessions(await response.json() as ChatSession[]);
+      setChatSessions(sessions);
+      setActiveSession(current => {
+        if (isDraftChatRef.current) return null;
+        if (current) return sessions.find(session => session.id === current.id) || null;
+        return sessions[0] || null;
+      });
+    } catch (error) {
+      console.error("Failed to fetch chat sessions:", error);
     } finally {
       setIsSessionsLoading(false);
     }
   }, [accessToken, activeUserEmail, getHeaders]);
 
   const refreshChatSession = useCallback(async (sessionId: string) => {
-    if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}`, { headers: await getHeaders() });
-      if (res.ok) {
-        upsertChatSession(await res.json() as ChatSession);
-      }
-    } catch (err) {
-      console.error("Failed to refresh chat session:", err);
+      const response = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}`, { headers: await getHeaders() });
+      if (response.ok) upsertChatSession(await response.json() as ChatSession);
+    } catch (error) {
+      console.error("Failed to refresh chat session:", error);
     }
-  }, [accessToken, getHeaders, upsertChatSession]);
+  }, [getHeaders, upsertChatSession]);
 
-  const touchChatSessionForMessage = useCallback((session: ChatSession) => {
-    updateLocalChatSession(session.id, {
-      last_message_at: new Date().toISOString(),
-    });
-  }, [updateLocalChatSession]);
+  const fetchSessionMessages = useCallback(async (sessionId: string) => {
+    const response = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sessionId}/messages`, { headers: await getHeaders() });
+    if (!response.ok) throw new Error(`Could not load messages (HTTP ${response.status}).`);
+    const messages = (await response.json() as ChatMessage[]).map(normalizeChatMessage);
+    if (activeSessionIdRef.current === sessionId) setChatMessages(messages);
+    const running = [...messages].reverse().find(isRunningMessage);
+    if (running) markSessionSending(sessionId, messageRequestId(running) || undefined);
+    else if (!activeRequestsRef.current[sessionId]) unmarkSessionSending(sessionId);
+    return Boolean(running || activeRequestsRef.current[sessionId]);
+  }, [getHeaders, markSessionSending, unmarkSessionSending]);
 
-  const renameChatSession = useCallback(async (sessionId: string, title: string) => {
-    const cleanTitle = title.trim().replace(/\s+/g, " ");
-    if (!cleanTitle) return;
-
-    const previous = chatSessions.find(session => session.id === sessionId);
-    updateLocalChatSession(sessionId, { title: cleanTitle });
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`, {
-        method: "PATCH",
-        headers: await getHeaders(),
-        body: JSON.stringify({ title: cleanTitle }),
-      });
-      if (!res.ok) throw new Error(`Rename failed with HTTP ${res.status}`);
-      upsertChatSession(await res.json() as ChatSession);
-    } catch (err) {
-      console.error("Rename session failed:", err);
-      if (previous) updateLocalChatSession(sessionId, { title: previous.title });
-      alert("Failed to rename chat. Please try again.");
-    }
-  }, [chatSessions, getHeaders, updateLocalChatSession, upsertChatSession]);
-
-  const addLocalMessages = useCallback((sessionId: string, messages: ChatMessage[]) => {
-    setLocalMessagesBySession(prev => ({
-      ...prev,
-      [sessionId]: [...(prev[sessionId] || []), ...messages],
-    }));
-  }, []);
-
-  const upsertLocalMessage = useCallback((sessionId: string, message: ChatMessage) => {
-    setLocalMessagesBySession(prev => {
-      const current = prev[sessionId] || [];
-      return {
-        ...prev,
-        [sessionId]: replaceOrAppendMessage(current, message.id, message),
-      };
-    });
-  }, []);
-
-  const updateLocalMessage = useCallback((sessionId: string, messageId: string, patch: Partial<ChatMessage>) => {
-    setLocalMessagesBySession(prev => {
-      const current = prev[sessionId] || [];
-      if (current.length === 0) return prev;
-      return {
-        ...prev,
-        [sessionId]: current.map(message => message.id === messageId ? { ...message, ...patch } : message),
-      };
-    });
-  }, []);
-
-  const clearLocalRequestMessages = useCallback((sessionId: string, requestId: string) => {
-    setLocalMessagesBySession(prev => {
-      const current = prev[sessionId] || [];
-      if (current.length === 0) return prev;
-      const nextMessages = removeRequestMessages(current, requestId);
-      if (nextMessages.length === current.length) return prev;
-
-      const next = { ...prev };
-      if (nextMessages.length > 0) next[sessionId] = nextMessages;
-      else delete next[sessionId];
-      return next;
-    });
-  }, []);
-
-  const removeLocalMessage = useCallback((sessionId: string, messageId: string) => {
-    setLocalMessagesBySession(prev => {
-      const current = prev[sessionId] || [];
-      if (current.length === 0) return prev;
-      const nextMessages = current.filter(message => message.id !== messageId);
-      if (nextMessages.length === current.length) return prev;
-
-      const next = { ...prev };
-      if (nextMessages.length > 0) next[sessionId] = nextMessages;
-      else delete next[sessionId];
-      return next;
-    });
+  const handleStreamEvent = useCallback((sessionId: string, event: ReturnType<typeof parseSseChunk>["events"][number]) => {
+    if (event.id !== null) eventCursorsRef.current[sessionId] = event.id;
     if (activeSessionIdRef.current === sessionId) {
-      setChatMessages(prev => prev.filter(message => message.id !== messageId));
+      setChatMessages(current => applyChatStreamEvent(current, event));
     }
-  }, []);
+    const payload = isRecord(event.data) ? event.data : {};
+    const requestId = typeof payload.request_id === "string" ? payload.request_id : undefined;
+    if (event.event === "message.start") {
+      markSessionSending(sessionId, requestId);
+    } else if (["message.cancelled", "error", "turn.complete"].includes(event.event)) {
+      unmarkSessionSending(sessionId, requestId);
+      void refreshChatSession(sessionId);
+    } else if (event.event === "session.title" && typeof payload.title === "string") {
+      updateLocalChatSession(sessionId, { title: payload.title });
+    }
+  }, [markSessionSending, refreshChatSession, unmarkSessionSending, updateLocalChatSession]);
 
-  const markSessionSending = useCallback((sessionId: string) => {
-    setSendingSessionIds(prev => prev.includes(sessionId) ? prev : [...prev, sessionId]);
-  }, []);
+  useEffect(() => {
+    if (!activeSessionId || !accessToken) {
+      setChatMessages([]);
+      setIsMessagesLoading(false);
+      return;
+    }
 
-  const unmarkSessionSending = useCallback((sessionId: string) => {
-    setSendingSessionIds(prev => prev.filter(id => id !== sessionId));
-  }, []);
+    const controller = new AbortController();
+    let mounted = true;
+    const followSession = async () => {
+      setIsMessagesLoading(true);
+      let shouldFollow = false;
+      try {
+        shouldFollow = await fetchSessionMessages(activeSessionId);
+      } catch (error) {
+        if (!controller.signal.aborted) console.error("Failed to fetch messages:", error);
+      } finally {
+        if (mounted) setIsMessagesLoading(false);
+      }
+      if (!shouldFollow || controller.signal.aborted) return;
+
+      while (!controller.signal.aborted) {
+        let turnComplete = false;
+        try {
+          const cursor = eventCursorsRef.current[activeSessionId];
+          const suffix = cursor ? `?after=${cursor}` : "";
+          const response = await fetch(`${API_BASE_URL}/chat/sessions/${activeSessionId}/events${suffix}`, {
+            headers: await getHeaders(),
+            signal: controller.signal,
+          });
+          if (!response.ok || !response.body) throw new Error(`Chat event stream failed with HTTP ${response.status}.`);
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!controller.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = parseSseChunk(buffer);
+            buffer = parsed.rest;
+            parsed.events.forEach(event => {
+              if (event.event === "turn.complete") turnComplete = true;
+              handleStreamEvent(activeSessionId, event);
+            });
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) console.error("Chat event stream disconnected:", error);
+        }
+        if (turnComplete) return;
+        if (!controller.signal.aborted) await wait(CHAT_EVENT_RECONNECT_MS, controller.signal);
+      }
+    };
+
+    void followSession();
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
+  }, [accessToken, activeSessionId, fetchSessionMessages, getHeaders, handleStreamEvent, streamVersion]);
+
+  useEffect(() => {
+    if (!activeUserEmail) {
+      setChatSessions([]);
+      setActiveSession(null);
+      setChatMessages([]);
+      return;
+    }
+    setIsDraftChat(false);
+    isDraftChatRef.current = false;
+    void fetchChatSessions();
+  }, [activeUserEmail, fetchChatSessions]);
+
+  useEffect(() => {
+    const refresh = () => void fetchChatSessions();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [fetchChatSessions]);
 
   const startNewChat = useCallback(() => {
-    messageLoadSeqRef.current += 1;
     isDraftChatRef.current = true;
     setIsDraftChat(true);
     setActiveSession(null);
     setChatMessages([]);
-    setIsMessagesLoading(false);
     setChatInput("");
     setAttachedFiles([]);
     onOpenChat();
   }, [onOpenChat]);
 
-  const createPersistedChatSession = useCallback(async (): Promise<ChatSession | null> => {
-    if (!accessToken) return null;
-    try {
-      const res = await fetch(`${API_BASE_URL}/chat/sessions`, {
-        method: "POST",
-        headers: await getHeaders(),
-        body: JSON.stringify({ title: "New Chat" }),
-      });
-      if (res.ok) {
-        const newSession = await res.json() as ChatSession;
-        isDraftChatRef.current = false;
-        setIsDraftChat(false);
-        upsertChatSession(newSession);
-        setActiveSession(newSession);
-        onOpenChat();
-        return newSession;
-      } else {
-        const errBody = await res.text().catch(() => "");
-        console.error("Failed to create chat:", res.status, errBody);
-        alert(`Failed to create new chat (HTTP ${res.status}). The API may be unavailable.`);
-      }
-    } catch (err) {
-      console.error("Failed to create new chat:", err);
-      alert("Failed to create new chat. Please check your connection.");
-    }
-    return null;
-  }, [accessToken, getHeaders, onOpenChat, upsertChatSession]);
+  const createPersistedChatSession = useCallback(async () => {
+    const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
+      method: "POST",
+      headers: await getHeaders(),
+      body: JSON.stringify({ title: "New Chat" }),
+    });
+    if (!response.ok) throw new Error(`Failed to create a chat (HTTP ${response.status}).`);
+    const session = await response.json() as ChatSession;
+    isDraftChatRef.current = false;
+    setIsDraftChat(false);
+    upsertChatSession(session);
+    setActiveSession(session);
+    onOpenChat();
+    return session;
+  }, [getHeaders, onOpenChat, upsertChatSession]);
 
-  const fetchSessionMessages = useCallback(async (sid: string, showLoading = true): Promise<ChatMessage[] | null> => {
-    const loadSeq = showLoading ? messageLoadSeqRef.current + 1 : messageLoadSeqRef.current;
-    if (showLoading) {
-      messageLoadSeqRef.current = loadSeq;
-      setChatMessages([]);
-      setIsMessagesLoading(true);
-    }
-    try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/chat/sessions/${sid}/messages`, { headers: await getHeaders() });
-      if (res.ok) {
-        const data = (await res.json() as ChatMessage[]).map(normalizeChatMessage);
-        if (hasRunningAssistantMessage(data)) markSessionSending(sid);
-        else unmarkSessionSending(sid);
-        if (activeSessionIdRef.current === sid) {
-          setChatMessages(mergeChatMessages(data, localMessagesBySessionRef.current[sid] || []));
-        }
-        return data;
-      }
-    } catch (err) {
-      console.error("Failed to fetch messages:", err);
-    } finally {
-      if (showLoading && messageLoadSeqRef.current === loadSeq) {
-        setIsMessagesLoading(false);
-      }
-    }
-    return null;
-  }, [getHeaders, markSessionSending, unmarkSessionSending]);
-
-  const deleteChatSession = useCallback(async (sid: string) => {
-    try {
-      await fetch(`${API_BASE_URL}/chat/sessions/${sid}`, { method: "DELETE", headers: await getHeaders() });
-      setChatSessions(prev => prev.filter(s => s.id !== sid));
-      if (activeSession?.id === sid) setActiveSession(null);
-      void fetchChatSessions();
-    } catch (err) {
-      console.error("Delete session failed:", err);
-    }
-  }, [activeSession?.id, fetchChatSessions, getHeaders]);
-
-  useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      if (!activeUserEmail) {
-        setChatSessions([]);
-        setActiveSession(null);
-        setChatMessages([]);
-        return;
-      }
-
-      const cached = readCachedChatSessions(activeUserEmail);
-      isDraftChatRef.current = false;
-      setIsDraftChat(false);
-      setChatSessions(cached);
-      setActiveSession(cached[0] || null);
-      setChatMessages([]);
-    }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [activeUserEmail]);
-
-  useEffect(() => {
-    if (!accessToken || !activeUserEmail) return;
-    const timerId = window.setTimeout(() => {
-      void fetchChatSessions();
-    }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [accessToken, activeUserEmail, fetchChatSessions]);
-
-  useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      if (activeSessionId && accessToken) {
-        void fetchSessionMessages(activeSessionId);
-      } else {
-        messageLoadSeqRef.current += 1;
-        setChatMessages([]);
-        setIsMessagesLoading(false);
-      }
-    }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [activeSessionId, accessToken, fetchSessionMessages]);
-
-  useEffect(() => {
-    if (!activeSessionId || !accessToken || !isActiveChatSending) return;
-    const timerId = window.setInterval(() => {
-      void fetchSessionMessages(activeSessionId, false);
-    }, CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timerId);
-  }, [activeSessionId, accessToken, fetchSessionMessages, isActiveChatSending]);
-
-  const markAssistantFailed = useCallback((sessionId: string, pendingMessageId: string, failure: ChatFailurePayload) => {
-    const patch = { status: "failed" as const, error_message: JSON.stringify(failure) };
-    updateLocalMessage(sessionId, pendingMessageId, patch);
-    if (activeSessionIdRef.current === sessionId) {
-      setChatMessages(prev => prev.map(m =>
-        m.id === pendingMessageId ? { ...m, ...patch } : m
-      ));
-    }
-  }, [updateLocalMessage]);
-
-  const waitForPersistedAssistantMessage = useCallback(async (sessionId: string, requestId: string) => {
-    const deadline = Date.now() + CHAT_STREAM_COMPLETION_POLL_TIMEOUT_MS;
-    while (Date.now() <= deadline) {
-      const messages = await fetchSessionMessages(sessionId, false);
-      if (messages && hasPersistedAssistantMessage(messages, requestId)) {
-        clearLocalRequestMessages(sessionId, requestId);
-        return true;
-      }
-      await wait(CHAT_STREAM_COMPLETION_POLL_INTERVAL_MS);
-    }
-    return false;
-  }, [clearLocalRequestMessages, fetchSessionMessages]);
-
-  const postChatMessage = useCallback(async (
+  const postChatTurn = useCallback(async (
     session: ChatSession,
     content: string,
     artifactIds: string[],
-    pendingMessageId: string,
     requestId: string,
+    pendingMessageId: string,
+    replaceMessageId?: string,
   ) => {
-    const abortController = new AbortController();
-    streamControllersRef.current[session.id] = { controller: abortController, requestId };
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let pendingStreamMessage: ChatMessage | null = null;
-    const resetStreamTimeout = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => abortController.abort(), CHAT_STREAM_INACTIVITY_TIMEOUT_MS);
-    };
-    const clearStreamTimeout = () => {
-      if (!timeoutId) return;
-      clearTimeout(timeoutId);
-      timeoutId = null;
-    };
-    resetStreamTimeout();
-    markSessionSending(session.id);
-
+    markSessionSending(session.id, requestId);
     try {
-      const res = await fetch(`${API_BASE_URL}/chat/sessions/${session.id}/messages/stream`, {
+      const response = await fetch(`${API_BASE_URL}/chat/sessions/${session.id}/turns`, {
         method: "POST",
         headers: { ...(await getHeaders()), "X-Request-ID": requestId },
-        body: JSON.stringify({
-          content,
-          artifact_ids: artifactIds,
-        }),
-        signal: abortController.signal,
+        body: JSON.stringify({ content, artifact_ids: artifactIds, replace_message_id: replaceMessageId }),
       });
-
-      if (res.ok) {
-        if (!res.body) {
-          throw new Error("Streaming response did not include a body");
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let finalMessage: ChatMessage | null = null;
-        let streamFailure: ChatFailurePayload | null = null;
-        const createPendingStreamMessage = (): ChatMessage => ({
-          id: pendingMessageId,
-          chat_session_id: session.id,
-          role: "assistant",
-          content: "",
-          created_at: new Date().toISOString(),
-          status: "pending",
-        });
-        const updatePendingMessage = (updater: (message: ChatMessage) => ChatMessage) => {
-          const localMessage = pendingStreamMessage
-            || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
-            || createPendingStreamMessage();
-          const updatedMessage = updater(localMessage);
-          pendingStreamMessage = updatedMessage;
-          upsertLocalMessage(session.id, updatedMessage);
-          if (activeSessionIdRef.current === session.id) {
-            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, updatedMessage));
-          }
-        };
-        let queuedPartEvents: unknown[] = [];
-        let flushHandle: number | null = null;
-        let flushHandleType: "raf" | "timeout" | null = null;
-        let lastFlushAt = 0;
-        const flushQueuedPartEvents = () => {
-          if (queuedPartEvents.length === 0) return;
-          const events = queuedPartEvents;
-          queuedPartEvents = [];
-          updatePendingMessage(message => events.reduce<ChatMessage>(
-            (nextMessage, event) => appendMessagePartEvent(nextMessage, event),
-            message,
-          ));
-        };
-        const schedulePartEventFlush = () => {
-          if (flushHandle !== null) return;
-
-          const runFlush = () => {
-            flushHandle = null;
-            flushHandleType = null;
-            lastFlushAt = performance.now();
-            flushQueuedPartEvents();
-          };
-          const sinceLastFlush = performance.now() - lastFlushAt;
-
-          if (sinceLastFlush >= STREAM_DELTA_FLUSH_MS && typeof window.requestAnimationFrame === "function") {
-            flushHandleType = "raf";
-            flushHandle = window.requestAnimationFrame(runFlush);
-            return;
-          }
-
-          flushHandleType = "timeout";
-          flushHandle = window.setTimeout(runFlush, Math.max(0, STREAM_DELTA_FLUSH_MS - sinceLastFlush));
-        };
-        const queuePartEvent = (event: unknown) => {
-          queuedPartEvents.push(event);
-          schedulePartEventFlush();
-        };
-        const cancelScheduledPartEventFlush = () => {
-          if (flushHandle === null) return;
-          if (flushHandleType === "raf") window.cancelAnimationFrame(flushHandle);
-          else window.clearTimeout(flushHandle);
-          flushHandle = null;
-          flushHandleType = null;
-        };
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          resetStreamTimeout();
-          buffer += decoder.decode(value, { stream: true });
-          const parsed = parseSseChunk(buffer);
-          buffer = parsed.rest;
-
-          for (const item of parsed.events) {
-            if (item.event === "activity") {
-              updatePendingMessage(message => appendActivityEvent(message, item.data));
-            } else if (STREAM_DELTA_EVENTS.has(item.event)) {
-              queuePartEvent(item.data);
-            } else if (item.event === "thinking.delta") {
-              // Provider status chrome only; visible reasoning comes through reasoning.delta/available.
-            } else if (TOOL_EVENTS.has(item.event)) {
-              cancelScheduledPartEventFlush();
-              flushQueuedPartEvents();
-              updatePendingMessage(message => appendMessagePartEvent(message, item.data));
-            } else if (item.event === "message" || item.event === "message.complete") {
-              cancelScheduledPartEventFlush();
-              flushQueuedPartEvents();
-              const pendingMessage = pendingStreamMessage
-                || (localMessagesBySessionRef.current[session.id] || []).find(m => m.id === pendingMessageId)
-                || null;
-              finalMessage = mergeStreamMetadata(normalizeChatMessage(item.data as ChatMessage), pendingMessage);
-              finalMessage.status = "completed";
-            } else if (item.event === "session.title" && isRecord(item.data)) {
-              const title = typeof item.data.title === "string" ? item.data.title.trim() : "";
-              const titleSessionId = typeof item.data.session_id === "string" ? item.data.session_id : session.id;
-              if (title && titleSessionId === session.id) {
-                updateLocalChatSession(session.id, { title });
-              }
-            } else if (item.event === "error") {
-              streamFailure = chatFailureFromDetail(item.data, requestId, 502);
-            }
-          }
-        }
-        cancelScheduledPartEventFlush();
-        flushQueuedPartEvents();
-
-        if (streamFailure) {
-          if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
-          markAssistantFailed(session.id, pendingMessageId, streamFailure);
-        } else if (finalMessage) {
-          clearLocalRequestMessages(session.id, requestId);
-          if (activeSessionIdRef.current === session.id) {
-            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, finalMessage));
-          }
-        } else {
-          if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
-          markAssistantFailed(session.id, pendingMessageId, {
-            requestId,
-            errorType: "stream_error",
-            errorMessage: "The AI service finished without returning a response.",
-            httpStatus: 0,
-          });
-        }
+      if (!response.ok) {
+        const failure = await chatFailureFromResponse(response, requestId);
+        setChatMessages(current => current.map(message => message.id === pendingMessageId ? {
+          ...message,
+          status: "failed",
+          error_message: JSON.stringify(failure),
+        } : message));
+        unmarkSessionSending(session.id, requestId);
       } else {
-        markAssistantFailed(session.id, pendingMessageId, await chatFailureFromResponse(res, requestId));
+        setStreamVersion(current => current + 1);
       }
-    } catch (err: unknown) {
-      if (isAbortError(err) && stoppedRequestIdsRef.current.delete(requestId)) {
-        const stoppedPendingMessage = (localMessagesBySessionRef.current[session.id] || [])
-          .find(message => message.id === pendingMessageId) || null;
-        if (stoppedPendingMessage?.content.trim()) {
-          const metadata = isRecord(stoppedPendingMessage.metadata_json) ? stoppedPendingMessage.metadata_json : {};
-          const stoppedMessage: ChatMessage = {
-            ...stoppedPendingMessage,
-            status: "completed",
-            metadata_json: {
-              ...metadata,
-              stopped: true,
-            },
-          };
-          upsertLocalMessage(session.id, stoppedMessage);
-          if (activeSessionIdRef.current === session.id) {
-            setChatMessages(prev => replaceOrAppendMessage(prev, pendingMessageId, stoppedMessage));
-          }
-        } else {
-          removeLocalMessage(session.id, pendingMessageId);
-        }
-        return;
-      }
-      if (await waitForPersistedAssistantMessage(session.id, requestId)) return;
-      markAssistantFailed(session.id, pendingMessageId, chatFailureFromNetwork(err, requestId));
-    } finally {
-      clearStreamTimeout();
-      const activeController = streamControllersRef.current[session.id];
-      if (activeController?.requestId === requestId) {
-        delete streamControllersRef.current[session.id];
-      }
-      unmarkSessionSending(session.id);
-      void refreshChatSession(session.id);
+    } catch (error) {
+      setChatMessages(current => current.map(message => message.id === pendingMessageId ? {
+        ...message,
+        ...failedMessage(requestId, errorMessage(error)),
+      } : message));
+      unmarkSessionSending(session.id, requestId);
     }
-  }, [
-    clearLocalRequestMessages,
-    getHeaders,
-    markAssistantFailed,
-    markSessionSending,
-    removeLocalMessage,
-    refreshChatSession,
-    unmarkSessionSending,
-    updateLocalChatSession,
-    upsertLocalMessage,
-    waitForPersistedAssistantMessage,
-  ]);
+  }, [getHeaders, markSessionSending, unmarkSessionSending]);
 
-  const handleStopActiveChat = useCallback(() => {
-    if (!activeSessionId) return;
-    const activeStream = streamControllersRef.current[activeSessionId];
-    if (!activeStream) return;
-    stoppedRequestIdsRef.current.add(activeStream.requestId);
-    void getHeaders().then(headers => fetch(`${API_BASE_URL}/chat/sessions/${activeSessionId}/messages/${activeStream.requestId}/cancel`, {
-      method: "POST",
-      headers,
-      keepalive: true,
-    })).catch(() => undefined);
-    activeStream.controller.abort();
-  }, [activeSessionId, getHeaders]);
-
-  const handleSendMessage = useCallback(async (e: FormEvent) => {
-    e.preventDefault();
-    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken) return;
-    if (activeSessionId && sendingSessionIds.includes(activeSessionId)) return;
-    if (attachedFiles.some(file => file.uploading || file.error)) return;
-
-    const content = chatInput;
-    const attachedArtifacts: ChatAttachment[] = attachedFiles
-      .filter(file => !file.uploading && !file.error && file.id)
-      .map(file => file.artifact || {
-        id: file.id as string,
-        filename: file.file.name,
-        mime_type: file.file.type || "application/octet-stream",
-      });
-    const artifactIds = attachedArtifacts.map(artifact => artifact.id);
-
-    const currentSession = activeSession || await createPersistedChatSession();
-    if (!currentSession) return;
-    setChatInput("");
-    setAttachedFiles([]);
-    touchChatSessionForMessage(currentSession);
-
+  const sendTurn = useCallback(async (
+    session: ChatSession,
+    content: string,
+    attachments: ChatAttachment[],
+    replaceMessageId?: string,
+  ) => {
     const requestId = crypto.randomUUID();
-    const pendingMsgId = crypto.randomUUID();
+    const pendingMessageId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const localTurn: ChatMessage[] = [
       {
         id: crypto.randomUUID(),
-        chat_session_id: currentSession.id,
+        chat_session_id: session.id,
         role: "user",
         content,
         created_at: createdAt,
         status: "completed",
-        metadata_json: { request_id: requestId, attachments: attachedArtifacts },
-        attachments: attachedArtifacts,
+        metadata_json: { request_id: requestId, attachments },
+        attachments,
       },
       {
-        id: pendingMsgId,
-        chat_session_id: currentSession.id,
+        id: pendingMessageId,
+        chat_session_id: session.id,
         role: "assistant",
         content: "",
         created_at: createdAt,
         status: "pending",
-        metadata_json: pendingProgressMetadata(requestId, content, artifactIds.length, createdAt),
+        metadata_json: pendingProgressMetadata(requestId, content, attachments.length, createdAt),
       },
     ];
-    addLocalMessages(currentSession.id, localTurn);
-    setChatMessages(prev => [...prev, ...localTurn]);
+    setChatMessages(current => [...current, ...localTurn]);
+    updateLocalChatSession(session.id, { last_message_at: createdAt });
+    await postChatTurn(
+      session,
+      content,
+      attachments.map(attachment => attachment.id),
+      requestId,
+      pendingMessageId,
+      replaceMessageId,
+    );
+  }, [postChatTurn, updateLocalChatSession]);
 
-    await postChatMessage(currentSession, content, artifactIds, pendingMsgId, requestId);
-  }, [
-    accessToken,
-    activeSession,
-    activeSessionId,
-    addLocalMessages,
-    attachedFiles,
-    chatInput,
-    createPersistedChatSession,
-    postChatMessage,
-    sendingSessionIds,
-    touchChatSessionForMessage,
-  ]);
+  const handleSendMessage = useCallback(async (event: FormEvent) => {
+    event.preventDefault();
+    if ((!chatInput.trim() && attachedFiles.length === 0) || !accessToken || isActiveChatSending) return;
+    if (attachedFiles.some(file => file.uploading || file.error)) return;
+    const content = chatInput;
+    const attachments = attachedFiles.filter(file => file.artifact).map(file => file.artifact as ChatAttachment);
+    setChatInput("");
+    setAttachedFiles([]);
+    try {
+      const session = activeSession || await createPersistedChatSession();
+      await sendTurn(session, content, attachments);
+    } catch (error) {
+      console.error("Failed to send chat message:", error);
+      alert(errorMessage(error));
+    }
+  }, [accessToken, activeSession, attachedFiles, chatInput, createPersistedChatSession, isActiveChatSending, sendTurn]);
+
+  const handleStopActiveChat = useCallback(() => {
+    if (!activeSessionId) return;
+    const requestId = activeRequestsRef.current[activeSessionId];
+    if (!requestId) return;
+    void getHeaders().then(headers => fetch(
+      `${API_BASE_URL}/chat/sessions/${activeSessionId}/messages/${requestId}/cancel`,
+      { method: "POST", headers },
+    )).catch(error => console.error("Failed to stop chat turn:", error));
+  }, [activeSessionId, getHeaders]);
 
   const handleRetryMessage = useCallback(async (messageId: string) => {
-    if (!chatMessages.find(m => m.id === messageId) || !activeSession) return;
-
-    const failedIdx = chatMessages.findIndex(m => m.id === messageId);
-    const userMessage = [...chatMessages.slice(0, failedIdx)].reverse()
-      .find(m => m.role === "user" && m.status === "completed");
+    if (!activeSession) return;
+    const failedIndex = chatMessages.findIndex(message => message.id === messageId);
+    const userMessage = [...chatMessages.slice(0, failedIndex)].reverse().find(message => message.role === "user");
     if (!userMessage) return;
+    const userIndex = chatMessages.findIndex(message => message.id === userMessage.id);
+    setChatMessages(current => current.slice(0, userIndex));
+    await sendTurn(activeSession, userMessage.content, userMessage.attachments || [], userMessage.id);
+  }, [activeSession, chatMessages, sendTurn]);
 
-    const requestId = crypto.randomUUID();
-    const pendingMsgId = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    const pendingMessage: ChatMessage = {
-      id: pendingMsgId,
-      chat_session_id: activeSession.id,
-      role: "assistant",
-      content: "",
-      created_at: createdAt,
-      status: "pending",
-      metadata_json: pendingProgressMetadata(requestId, userMessage.content, 0, createdAt),
-    };
-    addLocalMessages(activeSession.id, [pendingMessage]);
-    setChatMessages(prev => [
-      ...prev.filter(m => m.id !== messageId),
-      pendingMessage,
-    ]);
-
-    await postChatMessage(activeSession, userMessage.content, [], pendingMsgId, requestId);
-  }, [activeSession, addLocalMessages, chatMessages, postChatMessage]);
+  const handleEditResend = useCallback(async (originalMessageId: string, content: string) => {
+    if (!activeSession || !content.trim()) return;
+    const index = chatMessages.findIndex(message => message.id === originalMessageId);
+    if (index < 0) return;
+    const attachments = chatMessages[index].attachments || [];
+    setChatMessages(current => current.slice(0, index));
+    await sendTurn(activeSession, content, attachments, originalMessageId);
+  }, [activeSession, chatMessages, sendTurn]);
 
   const handleCopyMessage = useCallback((content: string) => {
-    navigator.clipboard.writeText(content).catch(() => {});
+    navigator.clipboard.writeText(content).catch(() => undefined);
   }, []);
 
-  const handleEditResend = useCallback(async (originalMessageId: string, newContent: string) => {
-    if (!activeSession || !newContent.trim()) return;
-
-    const editIndex = chatMessages.findIndex(m => m.id === originalMessageId);
-    if (editIndex === -1) return;
-
-    const requestId = crypto.randomUUID();
-    const pendingMsgId = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    const updatedUserMsg: ChatMessage = {
-      ...chatMessages[editIndex],
-      content: newContent,
-    };
-    const pendingMessage: ChatMessage = {
-      id: pendingMsgId,
-      chat_session_id: activeSession.id,
-      role: "assistant",
-      content: "",
-      created_at: createdAt,
-      status: "pending",
-      metadata_json: pendingProgressMetadata(requestId, newContent, 0, createdAt),
-    };
-    addLocalMessages(activeSession.id, [pendingMessage]);
-
-    setChatMessages(prev => {
-      const idx = prev.findIndex(m => m.id === originalMessageId);
-      if (idx === -1) return prev;
-      return [
-        ...prev.slice(0, idx),
-        updatedUserMsg,
-        pendingMessage,
-      ];
+  const renameChatSession = useCallback(async (sessionId: string, title: string) => {
+    const cleanTitle = title.trim().replace(/\s+/g, " ");
+    if (!cleanTitle) return;
+    const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: await getHeaders(),
+      body: JSON.stringify({ title: cleanTitle }),
     });
+    if (!response.ok) throw new Error(`Rename failed with HTTP ${response.status}.`);
+    upsertChatSession(await response.json() as ChatSession);
+  }, [getHeaders, upsertChatSession]);
 
-    await postChatMessage(activeSession, newContent, [], pendingMsgId, requestId);
-  }, [activeSession, addLocalMessages, chatMessages, postChatMessage]);
+  const deleteChatSession = useCallback(async (sessionId: string) => {
+    const response = await fetch(`${API_BASE_URL}/chat/sessions/${sessionId}`, { method: "DELETE", headers: await getHeaders() });
+    if (!response.ok) throw new Error(`Delete failed with HTTP ${response.status}.`);
+    setChatSessions(current => current.filter(session => session.id !== sessionId));
+    if (activeSessionIdRef.current === sessionId) startNewChat();
+  }, [getHeaders, startNewChat]);
 
-  const handleFileUpload = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    e.currentTarget.value = "";
-    if (files.length === 0) return;
-    if (!accessToken) {
-      alert("Please sign in again before uploading files.");
-      return;
-    }
-    const validFiles = files.filter(file => {
-      const isValid = file.size <= 15 * 1024 * 1024;
-      if (!isValid) alert(`File ${file.name} exceeds 15MB limit.`);
-      return isValid;
-    });
-    const uploads = validFiles.map(file => ({
-      file,
-      tempId: crypto.randomUUID(),
-    }));
-    if (uploads.length === 0) return;
+  const handleTranscript = useCallback((transcript: string) => {
+    setChatInput(current => current ? `${current} ${transcript}` : transcript);
+  }, []);
 
-    setAttachedFiles(prev => [
-      ...prev,
-      ...uploads.map(({ file, tempId }) => ({ file, id: tempId, uploading: true })),
-    ]);
+  const transcribeVoiceAudio = useCallback(async (audioBlob: Blob) => {
+    if (!accessToken) throw new Error("Please sign in again before using voice input.");
+    const formData = new FormData();
+    const extension = audioBlob.type.includes("ogg") ? "ogg" : audioBlob.type.includes("mp4") ? "m4a" : audioBlob.type.includes("wav") ? "wav" : "webm";
+    formData.append("file", audioBlob, `voice-input.${extension}`);
+    const response = await fetchWithAuth(`${API_BASE_URL}/voice/transcribe`, { method: "POST", body: formData }, getAccessToken, { timeoutMs: 120_000 });
+    if (!response.ok) throw new Error(await uploadFailureFromResponse(response, `Voice transcription failed with HTTP ${response.status}.`));
+    const data = await response.json() as { transcript?: string };
+    return (data.transcript || "").trim();
+  }, [accessToken, getAccessToken]);
 
+  const { voiceState, toggleVoice: handleToggleVoice, interimTranscript: voiceInterimTranscript } = useSpeechRecognition(
+    handleTranscript,
+    { transcribeAudio: transcribeVoiceAudio },
+  );
+
+  const handleFileUpload = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.currentTarget.value = "";
+    if (!accessToken || files.length === 0) return;
+    const uploads = files.filter(file => file.size <= 15 * 1024 * 1024).map(file => ({ file, tempId: crypto.randomUUID() }));
+    setAttachedFiles(current => [...current, ...uploads.map(({ file, tempId }) => ({ file, id: tempId, uploading: true }))]);
     await Promise.all(uploads.map(async ({ file, tempId }) => {
-      const formData = new FormData();
-      formData.append("file", file);
+      const body = new FormData();
+      body.append("file", file);
       try {
-        const response = await fetchWithAuth(`${API_BASE_URL}/artifacts`, {
-          method: "POST",
-          body: formData,
-        }, getAccessToken, { timeoutMs: 120_000 });
-        if (response.ok) {
-          const art = await response.json() as ChatAttachment;
-          const attachment: ChatAttachment = {
-            id: art.id,
-            artifact_type: art.artifact_type,
-            filename: art.filename || file.name,
-            mime_type: art.mime_type || file.type || "application/octet-stream",
-          };
-          setAttachedFiles(prev => prev.map(f => f.id === tempId ? {
-            file,
-            id: attachment.id,
-            artifact: attachment,
-            uploading: false,
-          } : f));
-        } else {
-          const error = await uploadFailureFromResponse(response, `Upload failed with HTTP ${response.status}.`);
-          setAttachedFiles(prev => prev.map(f => f.id === tempId ? { ...f, uploading: false, error } : f));
-        }
-      } catch (err) {
-        setAttachedFiles(prev => prev.map(f => f.id === tempId ? {
-          ...f,
-          uploading: false,
-          error: `Upload failed: ${errorMessage(err)}`,
-        } : f));
+        const response = await fetchWithAuth(`${API_BASE_URL}/artifacts`, { method: "POST", body }, getAccessToken, { timeoutMs: 120_000 });
+        if (!response.ok) throw new Error(await uploadFailureFromResponse(response, `Upload failed with HTTP ${response.status}.`));
+        const artifact = await response.json() as ChatAttachment;
+        setAttachedFiles(current => current.map(item => item.id === tempId ? { file, id: artifact.id, artifact, uploading: false } : item));
+      } catch (error) {
+        setAttachedFiles(current => current.map(item => item.id === tempId ? { ...item, uploading: false, error: errorMessage(error) } : item));
       }
     }));
   }, [accessToken, getAccessToken]);
 
-  const handleRemoveFile = useCallback((id: string) => {
-    setAttachedFiles(prev => prev.filter(f => f.id !== id));
-  }, []);
+  const handleRemoveFile = useCallback((id: string) => setAttachedFiles(current => current.filter(file => file.id !== id)), []);
 
   const handleOpenAttachment = useCallback(async (attachment: ChatAttachment) => {
-    if (!accessToken) return;
-    try {
-      const response = await fetchWithAuth(
-        `${API_BASE_URL}/artifacts/${attachment.id}/download`,
-        {},
-        getAccessToken,
-        { timeoutMs: 120_000 },
-      );
-      if (!response.ok) {
-        throw new Error(await uploadFailureFromResponse(response, `Download failed with HTTP ${response.status}.`));
-      }
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const shouldPreview = attachment.mime_type.startsWith("image/")
-        || attachment.mime_type === "application/pdf"
-        || attachment.mime_type.startsWith("text/");
-
-      if (shouldPreview) {
-        window.open(objectUrl, "_blank", "noopener,noreferrer");
-        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-        return;
-      }
-
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = attachment.filename || "download";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5_000);
-    } catch (err) {
-      console.error("Open attachment failed:", err);
-      alert(errorMessage(err));
+    const response = await fetchWithAuth(`${API_BASE_URL}/artifacts/${attachment.id}/download`, {}, getAccessToken, { timeoutMs: 120_000 });
+    if (!response.ok) throw new Error(await uploadFailureFromResponse(response, `Download failed with HTTP ${response.status}.`));
+    const objectUrl = URL.createObjectURL(await response.blob());
+    if (attachment.mime_type.startsWith("image/") || attachment.mime_type === "application/pdf" || attachment.mime_type.startsWith("text/")) {
+      window.open(objectUrl, "_blank", "noopener,noreferrer");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      return;
     }
-  }, [accessToken, getAccessToken]);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = attachment.filename || "download";
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5_000);
+  }, [getAccessToken]);
 
   const selectSession = useCallback((session: ChatSession) => {
     isDraftChatRef.current = false;

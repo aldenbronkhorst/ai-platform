@@ -5,13 +5,13 @@ import json
 import uuid
 import logging
 import re
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Any
@@ -20,9 +20,11 @@ from app.core.config import get_settings
 from app.core.security import api_key_auth
 from app.core.database import AsyncSessionLocal, get_db
 from app.models.models import (
-    AIArtifact, AIChatSession, AIChatMessage, AIChatArtifact, AIMemory, AIMemoryUsageEvent, AIUsageLog,
+    AIArtifact, AIChatSession, AIChatMessage, AIChatEvent, AIChatTurn, AIChatArtifact,
+    AIMemory, AIMemoryUsageEvent, AIUsageLog,
 )
 from app.services.artifact import ArtifactService
+from app.services.chat_event_stream import ChatEventWriter
 from app.services.document_processing import is_supported_document
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,9 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
+STREAM_EVENT_POLL_SECONDS = 0.25
+TURN_HEARTBEAT_SECONDS = 5
+TURN_STALE_SECONDS = 45
 ACTIVE_STREAM_TURNS: dict[str, tuple[UUID, UUID, asyncio.Task[None]]] = {}
 
 
@@ -49,6 +54,7 @@ class ChatSessionUpdate(BaseModel):
 class ChatMessageCreate(BaseModel):
     content: str
     artifact_ids: Optional[List[UUID]] = Field(default_factory=list)
+    replace_message_id: Optional[UUID] = None
 
 
 class ChatMessageAttachmentResponse(BaseModel):
@@ -240,16 +246,6 @@ async def list_chat_messages(
     ]
 
 
-POSITIVE_FEEDBACK_KEYWORDS = [
-    "that worked", "thanks, fixed", "yes that's right", "that solved it",
-    "perfect, remember that", "it worked",
-]
-NEGATIVE_FEEDBACK_KEYWORDS = [
-    "no that's wrong", "that is outdated", "don't use that anymore",
-    "that no longer applies", "forget that", "that didn't work",
-]
-
-
 async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: UUID) -> AIChatSession:
     result = await db.execute(
         select(AIChatSession).where(
@@ -261,89 +257,6 @@ async def _get_owned_session(db: AsyncSession, session_id: UUID, user_id: UUID) 
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
     return session
-
-
-def _feedback_kind(content: str) -> str | None:
-    clean = content.strip().lower()
-    if any(keyword in clean for keyword in POSITIVE_FEEDBACK_KEYWORDS):
-        return "worked"
-    if any(keyword in clean for keyword in NEGATIVE_FEEDBACK_KEYWORDS):
-        return "wrong"
-    return None
-
-
-async def _last_assistant_message(db: AsyncSession, session_id: UUID) -> AIChatMessage | None:
-    result = await db.execute(
-        select(AIChatMessage).where(
-            AIChatMessage.chat_session_id == session_id,
-            AIChatMessage.role == "assistant",
-        ).order_by(AIChatMessage.created_at.desc()).limit(1)
-    )
-    return result.scalar_one_or_none()
-
-
-def _adjust_memory_confidence(memory: AIMemory, feedback_kind: str) -> str:
-    if feedback_kind == "worked":
-        memory.success_count = (memory.success_count or 0) + 1
-        memory.last_confirmed_at = _utcnow()
-        if memory.confidence == "low":
-            memory.confidence = "medium"
-        elif memory.confidence == "medium":
-            memory.confidence = "high"
-        return "memory_confidence_increased"
-
-    memory.failure_count = (memory.failure_count or 0) + 1
-    if memory.confidence == "high":
-        memory.confidence = "medium"
-    elif memory.confidence == "medium":
-        memory.confidence = "low"
-    if (memory.failure_count or 0) > 3:
-        memory.status = "needs_review"
-        return "memory_flagged_for_review"
-    return "memory_confidence_decreased"
-
-
-async def _apply_memory_feedback(
-    db: AsyncSession,
-    memory_id: UUID,
-    feedback_kind: str,
-    user_id: UUID,
-    content: str,
-) -> None:
-    mem_q = await db.execute(select(AIMemory).where(AIMemory.id == memory_id))
-    memory = mem_q.scalar_one_or_none()
-    if not memory:
-        return
-
-    old_confidence = memory.confidence
-    action = _adjust_memory_confidence(memory, feedback_kind)
-    memory.updated_at = _utcnow()
-    logger.info(
-        "Applied memory feedback | memory_id=%s user_id=%s action=%s old_confidence=%s new_confidence=%s",
-        memory.id, user_id, action, old_confidence, memory.confidence,
-    )
-
-
-async def _apply_natural_language_feedback(
-    db: AsyncSession,
-    session_id: UUID,
-    user_id: UUID,
-    content: str,
-) -> None:
-    feedback_kind = _feedback_kind(content)
-    if not feedback_kind:
-        return
-
-    last_assistant = await _last_assistant_message(db, session_id)
-    if not last_assistant or not last_assistant.metadata_json:
-        return
-
-    injected = last_assistant.metadata_json.get("context", {}).get("memories_injected", [])
-    for memory_ref in injected:
-        try:
-            await _apply_memory_feedback(db, UUID(memory_ref["id"]), feedback_kind, user_id, content)
-        except Exception as exc:
-            logger.warning("Failed to apply natural language feedback to memory: %s", exc)
 
 
 def _new_chat_message(session_id: UUID, user_id: UUID, role: str, content: str, **extra: Any) -> AIChatMessage:
@@ -380,7 +293,6 @@ def _pending_assistant_metadata(request_id: str, content: str, artifact_count: i
             "has_artifacts": artifact_count > 0,
             "started_at": _utcnow().isoformat(),
         },
-        "activity_events": [],
         "message_parts": [],
     }
 
@@ -583,8 +495,7 @@ async def _attachment_context(db: AsyncSession, artifacts: list[AIArtifact]) -> 
             blocks.append(
                 f"{header}\n"
                 f"[Document text is not in the prompt. extraction_status={status_text}. "
-                "Use document_reader mode='tables' for tabular documents or mode='read' for text. "
-                "Use mode='guidance' for the tool-owned document guidance.]"
+                "Use document_reader with this artifact id. Load mode='guidance' when document-specific instructions are needed.]"
             )
         else:
             blocks.append(f"{header}\n[No text preview available for this file type.]")
@@ -643,10 +554,7 @@ def _artifact_manifest_context(artifacts: list[AIArtifact]) -> str:
     return (
         "[Available files in this chat]\n"
         "These files were uploaded earlier in this chat and remain available for follow-up questions. "
-        "When the user refers to the same files, previous PDFs, attachments, or uploaded documents, use "
-        "`document_reader` with the listed artifact id. Use mode='tables' for invoices, GRVs, statements, "
-        "price lists, or other tabular documents; use mode='read' for extracted text. "
-        "Use mode='guidance' for Document Reader's tool-owned skill.\n"
+        "Use `document_reader` with the listed artifact id, and load its mode='guidance' skill when needed.\n"
         + "\n".join(lines)
     )
 
@@ -696,6 +604,12 @@ def _content_with_attachment_context(content: str, attachment_context: str) -> s
 
 
 def _assistant_turn_messages(message: AIChatMessage) -> list[dict[str, Any]]:
+    metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
+    stored = metadata.get("model_history")
+    if isinstance(stored, list):
+        history = [dict(item) for item in stored if isinstance(item, dict) and item.get("role") in {"assistant", "tool"}]
+        if history:
+            return history
     content = message.content or ""
     return [{"role": "assistant", "content": content}] if content.strip() else []
 
@@ -717,6 +631,52 @@ async def _conversation_messages(db: AsyncSession, session_id: UUID, user_msg: A
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+async def _truncate_conversation_from_message(
+    db: AsyncSession,
+    session: AIChatSession,
+    message_id: UUID,
+    user_id: UUID,
+) -> None:
+    """Replace an old branch instead of appending edited text to hidden history."""
+    target_result = await db.execute(
+        select(AIChatMessage).where(
+            AIChatMessage.id == message_id,
+            AIChatMessage.chat_session_id == session.id,
+            AIChatMessage.user_id == user_id,
+        )
+    )
+    target = target_result.scalar_one_or_none()
+    if target is None or target.role != "user":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User message not found")
+
+    ordered_result = await db.execute(
+        select(AIChatMessage.id).where(
+            AIChatMessage.chat_session_id == session.id,
+            AIChatMessage.user_id == user_id,
+        ).order_by(AIChatMessage.created_at.asc(), AIChatMessage.id.asc())
+    )
+    ordered_ids = list(ordered_result.scalars().all())
+    try:
+        target_index = ordered_ids.index(message_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User message not found") from exc
+    removed_ids = ordered_ids[target_index:]
+    if not removed_ids:
+        return
+
+    await db.execute(delete(AIChatArtifact).where(AIChatArtifact.linked_message_id.in_(removed_ids)))
+    await db.execute(delete(AIMemoryUsageEvent).where(AIMemoryUsageEvent.chat_message_id.in_(removed_ids)))
+    await db.execute(delete(AIMemory).where(AIMemory.message_id.in_(removed_ids)))
+    await db.execute(delete(AIChatMessage).where(AIChatMessage.id.in_(removed_ids)))
+    await db.execute(delete(AIChatEvent).where(AIChatEvent.chat_session_id == session.id))
+
+    metadata = dict(session.metadata_json or {})
+    metadata.pop("context_compaction", None)
+    session.metadata_json = metadata or None
+    session.updated_at = _utcnow()
+    await db.flush()
 
 
 def _is_valid_history_message(message: AIChatMessage) -> bool:
@@ -780,38 +740,6 @@ async def _commit_user_turn_start(db: AsyncSession, session: AIChatSession) -> N
     await db.commit()
 
 
-async def _persist_live_assistant_snapshot(
-    assistant_msg_id: UUID,
-    user_id: UUID,
-    *,
-    request_id: str,
-    activity_events: list[dict[str, Any]],
-    message_parts: list[dict[str, Any]],
-) -> None:
-    async with AsyncSessionLocal() as live_db:
-        result = await live_db.execute(
-            select(AIChatMessage).where(
-                AIChatMessage.id == assistant_msg_id,
-                AIChatMessage.user_id == user_id,
-                AIChatMessage.role == "assistant",
-            )
-        )
-        message = result.scalar_one_or_none()
-        if not message:
-            return
-        metadata = dict(message.metadata_json or {})
-        if metadata.get("status") in {"completed", "failed", "cancelled"}:
-            return
-        metadata["request_id"] = request_id
-        metadata["status"] = "streaming"
-        metadata["activity_events"] = list(activity_events[-160:])
-        compact_parts = _compact_message_parts([dict(part) for part in message_parts if isinstance(part, dict)])
-        metadata["message_parts"] = compact_parts or []
-        message.metadata_json = metadata
-        message.updated_at = _utcnow()
-        await live_db.commit()
-
-
 async def _run_model_router(
     db: AsyncSession,
     session_id: UUID,
@@ -820,7 +748,6 @@ async def _run_model_router(
     content: str,
     messages: list[dict[str, str]],
     request_id: str,
-    activity_event_sink=None,
     agent_event_sink=None,
     workspace_artifacts: list[dict[str, Any]] | None = None,
     pending_assistant_msg: AIChatMessage | None = None,
@@ -828,7 +755,7 @@ async def _run_model_router(
     from app.services.trace_service import TraceService
     from app.services.model_router import execute_chat, RouteNotFoundError, ProviderCallError
 
-    trace_svc = TraceService(db, request_id=request_id, activity_event_sink=activity_event_sink)
+    trace_svc = TraceService(db, request_id=request_id)
     trace_svc.begin("chat_message", f"chat: {content[:60]}", user_id=user_id, chat_session_id=session_id, message_id=user_msg.id)
     try:
         model_span = trace_svc.start_span("model_request", "Model request")
@@ -1066,90 +993,13 @@ def _safe_block_text(value: Any, max_chars: int = 2200) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
-def _display_name(value: Any) -> str:
-    text = _safe_text(value, 80).replace("_", " ").replace("-", " ").strip()
-    return text.title() if text else "Step"
-
-
-def _join_detail(parts: list[Any]) -> str:
-    return " · ".join(_safe_text(part, 120) for part in parts if _safe_text(part, 120))
-
-
-def _tool_context(input_summary: dict[str, Any]) -> str:
-    arguments = input_summary.get("arguments") if isinstance(input_summary.get("arguments"), dict) else {}
-    action = _safe_text(input_summary.get("action"), 160)
-    tool_name = _safe_text(input_summary.get("tool_name"), 80)
-    language = _safe_text(arguments.get("language") or "python", 40)
-    detail = _safe_text(
-        arguments.get("purpose")
-        or arguments.get("task")
-        or arguments.get("query")
-        or arguments.get("command")
-        or arguments.get("action"),
-        120,
-    )
-    if action and (not detail or detail.lower() in action.lower()):
-        return action
-    if not action and tool_name == "workspace":
-        language_label = "Shell" if language.lower() in {"sh", "bash", "shell", "terminal"} else language.title()
-        return f"Run {language_label}{f': {detail}' if detail else ''}"
-    return _join_detail([action, arguments.get("mode"), language, detail])
-
-
-def _tool_args_text(input_summary: dict[str, Any]) -> str:
-    arguments = input_summary.get("arguments") if isinstance(input_summary.get("arguments"), dict) else {}
-    if arguments:
-        return _safe_block_text(arguments, 3000)
-    return _safe_block_text(input_summary, 1200)
-
-
-def _tool_failed(event: dict[str, Any], output_summary: dict[str, Any]) -> bool:
-    result = output_summary.get("result") if isinstance(output_summary.get("result"), dict) else {}
-    status = str(event.get("status") or result.get("status") or "").lower()
-    return bool(event.get("error_message") or result.get("error") or status in {"failed", "error"})
-
-
-def _tool_args_payload(input_summary: dict[str, Any]) -> Any:
-    arguments = input_summary.get("arguments")
-    return arguments if isinstance(arguments, dict) else input_summary
-
-
-def _tool_result_payload(output_summary: dict[str, Any]) -> Any:
-    if "result" in output_summary:
-        return output_summary.get("result")
-    return output_summary
-
-
 def _compact_message_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     compact = [
         part
         for part in parts
         if isinstance(part, dict) and part.get("type") in {"text", "reasoning", "tool-call"}
-    ][-240:]
+    ]
     return compact or None
-
-
-def _stream_text_overlap(existing: str, incoming: str) -> int:
-    max_len = min(len(existing), len(incoming))
-    for size in range(max_len, 0, -1):
-        if existing.endswith(incoming[:size]):
-            return size
-    return 0
-
-
-def _merged_stream_text(existing: str, incoming: str) -> str:
-    if not incoming:
-        return existing
-    if not existing:
-        return incoming
-    if incoming == existing or existing.endswith(incoming):
-        return existing
-    if incoming.startswith(existing):
-        return incoming
-    overlap = _stream_text_overlap(existing, incoming)
-    if overlap >= 12:
-        return f"{existing}{incoming[overlap:]}"
-    return f"{existing}{incoming}"
 
 
 def _append_message_text_part(parts: list[dict[str, Any]], part_type: str, text: str) -> None:
@@ -1159,16 +1009,14 @@ def _append_message_text_part(parts: list[dict[str, Any]], part_type: str, text:
     for index in range(len(parts) - 1, -1, -1):
         part = parts[index]
         if part.get("type") == part_type:
-            existing = str(part.get("text") or "")
-            part["type"] = part_type
-            part["text"] = re.sub(r"\n{4,}", "\n\n\n", _merged_stream_text(existing, text))[:24000]
+            part["text"] = str(part.get("text") or "") + text
             return
         if part.get("type") not in {"text", "reasoning"}:
             break
 
     parts.append({
         "type": part_type,
-        "text": re.sub(r"\n{4,}", "\n\n\n", text)[:24000],
+        "text": text,
     })
 
 
@@ -1179,15 +1027,14 @@ def _replace_message_text_part(parts: list[dict[str, Any]], part_type: str, text
     for index in range(len(parts) - 1, -1, -1):
         part = parts[index]
         if part.get("type") == part_type:
-            part["type"] = part_type
-            part["text"] = re.sub(r"\n{4,}", "\n\n\n", text)[:24000]
+            part["text"] = text
             return
         if part.get("type") not in {"text", "reasoning"}:
             break
 
     parts.append({
         "type": part_type,
-        "text": re.sub(r"\n{4,}", "\n\n\n", text)[:24000],
+        "text": text,
     })
 
 
@@ -1222,86 +1069,16 @@ def _upsert_tool_call_part(parts: list[dict[str, Any]], event: dict[str, Any]) -
 
 def _message_parts_with_final_text(parts: list[dict[str, Any]] | None, content: str) -> list[dict[str, Any]] | None:
     next_parts = [dict(part) for part in (parts or []) if isinstance(part, dict)]
-    text = _safe_block_text(content, 24000)
+    text = str(content or "")
     if text and not any(part.get("type") == "text" and _safe_text(part.get("text"), 1).strip() for part in next_parts):
         next_parts.append({"type": "text", "text": text})
     return _compact_message_parts(next_parts)
-
-
-def _agent_status_event(event: dict[str, Any], finished: bool) -> dict[str, Any] | None:
-    span_type = str(event.get("span_type") or "step")
-    span_name = str(event.get("span_name") or "")
-    output_summary = event.get("output_summary") if isinstance(event.get("output_summary"), dict) else {}
-    if span_type == "context_build":
-        title = "Context ready" if finished else "Preparing context"
-        detail = ""
-        if finished:
-            detail = _join_detail([
-                f"{output_summary.get('tool_count')} tools" if output_summary.get("tool_count") is not None else "",
-                f"{output_summary.get('memories_injected')} memories" if output_summary.get("memories_injected") is not None else "",
-            ])
-        return {"type": "status.update", "title": title, "detail": detail, "created_at": _utcnow().isoformat()}
-    if span_type == "provider_call":
-        title = "Model pass complete" if finished else "Thinking"
-        detail = f"{_display_name(span_name)}"
-        if finished and output_summary.get("latency_ms") is not None:
-            detail = _join_detail([detail, f"{output_summary.get('latency_ms')}ms"])
-        return {"type": "status.update", "title": title, "detail": detail, "created_at": _utcnow().isoformat()}
-    if span_type == "model_request":
-        title = "Model request complete" if finished else "Running model request"
-        return {"type": "status.update", "title": title, "detail": "", "created_at": _utcnow().isoformat()}
-    return None
-
-
-def _agent_tool_event(event: dict[str, Any], finished: bool) -> dict[str, Any] | None:
-    if str(event.get("span_type") or "") != "tool_call":
-        return None
-    input_summary = event.get("input_summary") if isinstance(event.get("input_summary"), dict) else {}
-    output_summary = event.get("output_summary") if isinstance(event.get("output_summary"), dict) else {}
-    span_name = str(event.get("span_name") or "")
-    tool_name = str(input_summary.get("tool_name") or span_name or "tool")
-    context = _tool_context(input_summary)
-    if not finished:
-        return {
-            "type": "tool.start",
-            "id": event.get("span_id"),
-            "name": tool_name,
-            "context": context,
-            "args": _tool_args_payload(input_summary),
-            "verboseArgs": _tool_args_text(input_summary),
-            "startedAt": event.get("started_at"),
-            "created_at": _utcnow().isoformat(),
-        }
-    failed = _tool_failed(event, output_summary)
-    return {
-        "type": "tool.complete",
-        "id": event.get("span_id"),
-        "name": tool_name,
-        "context": context,
-        "args": _tool_args_payload(input_summary),
-        "result": _tool_result_payload(output_summary),
-        "error": failed,
-        "isError": failed,
-        "durationMs": event.get("duration_ms"),
-        "completedAt": event.get("ended_at"),
-        "created_at": _utcnow().isoformat(),
-    }
-
-
-def _agent_event_from_activity(event: dict[str, Any]) -> dict[str, Any] | None:
-    phase = str(event.get("event") or "")
-    if phase not in {"span_started", "span_finished"}:
-        return None
-
-    finished = phase == "span_finished"
-    return _agent_tool_event(event, finished) or _agent_status_event(event, finished)
 
 
 def _assistant_metadata(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
-    activity_events: list[dict[str, Any]] | None = None,
     message_parts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     metadata = {
@@ -1314,35 +1091,12 @@ def _assistant_metadata(
     if tool_error_summary:
         metadata["has_tool_errors"] = True
         metadata["tool_error_summary"] = tool_error_summary
-    if activity_events:
-        metadata["activity_events"] = activity_events
     if message_parts:
         metadata["message_parts"] = message_parts
+    model_history = router_result.get("model_history")
+    if isinstance(model_history, list) and model_history:
+        metadata["model_history"] = model_history
     return metadata
-
-
-def _build_assistant_message(
-    session_id: UUID,
-    user_id: UUID,
-    router_result: dict[str, Any],
-    request_id: str,
-    trace_id: str,
-    activity_events: list[dict[str, Any]] | None = None,
-    message_parts: list[dict[str, Any]] | None = None,
-) -> AIChatMessage:
-    content = router_result.get("content", "")
-    stored_parts = _message_parts_with_final_text(message_parts, content)
-    return _new_chat_message(
-        session_id,
-        user_id,
-        "assistant",
-        content,
-        model_provider=router_result.get("model_provider", "unknown"),
-        model_name=router_result.get("model_name", "unknown"),
-        token_usage_json=_token_usage(router_result),
-        tool_call_json=router_result.get("tool_calls"),
-        metadata_json=_assistant_metadata(router_result, request_id, trace_id, activity_events, stored_parts),
-    )
 
 
 def _apply_assistant_result(
@@ -1350,12 +1104,11 @@ def _apply_assistant_result(
     router_result: dict[str, Any],
     request_id: str,
     trace_id: str,
-    activity_events: list[dict[str, Any]] | None = None,
     message_parts: list[dict[str, Any]] | None = None,
 ) -> AIChatMessage:
     content = router_result.get("content", "")
     stored_parts = _message_parts_with_final_text(message_parts, content)
-    metadata = _assistant_metadata(router_result, request_id, trace_id, activity_events, stored_parts)
+    metadata = _assistant_metadata(router_result, request_id, trace_id, stored_parts)
     metadata["status"] = "completed"
     assistant_msg.content = content
     assistant_msg.model_provider = router_result.get("model_provider", "unknown")
@@ -1463,68 +1216,15 @@ async def _persist_generated_files(
         ))
 
 
-async def _enqueue_or_extract_memories(
-    db: AsyncSession,
-    session_id: UUID,
-    user_id: UUID,
-    user_msg: AIChatMessage,
-    assistant_msg: AIChatMessage,
-) -> None:
-    try:
-        from app.services.memory import MemoryCandidateService
-        memory_svc = MemoryCandidateService(db)
-        candidates = await memory_svc.extract_from_messages(messages=[user_msg, assistant_msg], user_id=user_id)
-        if candidates:
-            logger.info("Memory candidates found | session=%s count=%d types=%s", session_id, len(candidates), [c.type for c in candidates])
-        for candidate in candidates:
-            is_dup = await memory_svc.check_duplicate(candidate)
-            if not is_dup and candidate.save_mode == "auto":
-                saved = await memory_svc.save_candidate(
-                    candidate=candidate,
-                    user_id=user_id,
-                    conversation_id=session_id,
-                    message_id=assistant_msg.id,
-                )
-                logger.info("Auto-saved memory | id=%s type=%s", saved.id, candidate.type)
-    except Exception as exc:
-        logger.warning("Inline memory extraction failed: %s", exc)
-
-
 async def _process_chat_turn(
     db: AsyncSession,
     session_id: UUID,
     req: ChatMessageCreate,
     request_id: str,
     user_id: UUID,
-    activity_event_sink=None,
     agent_event_sink=None,
 ) -> AIChatMessage:
-    activity_events: list[dict[str, Any]] = []
     message_parts: list[dict[str, Any]] = []
-    pending_assistant_msg: AIChatMessage | None = None
-    live_snapshot_tasks: list[asyncio.Task[None]] = []
-    last_live_snapshot_at = 0.0
-
-    def schedule_live_snapshot(event_type: str | None = None) -> None:
-        nonlocal last_live_snapshot_at
-        if pending_assistant_msg is None:
-            return
-        event_name = str(event_type or "")
-        now = time.monotonic()
-        high_volume_event = event_name in {"reasoning.delta", "message.delta", "thinking.delta"}
-        if high_volume_event and now - last_live_snapshot_at < 0.8:
-            return
-        last_live_snapshot_at = now
-        live_snapshot_tasks[:] = [task for task in live_snapshot_tasks if not task.done()]
-        if len(live_snapshot_tasks) >= 8:
-            return
-        live_snapshot_tasks.append(asyncio.create_task(_persist_live_assistant_snapshot(
-            pending_assistant_msg.id,
-            user_id,
-            request_id=request_id,
-            activity_events=[dict(event) for event in activity_events if isinstance(event, dict)],
-            message_parts=[dict(part) for part in message_parts if isinstance(part, dict)],
-        )))
 
     def collect_agent_event(event: dict[str, Any]) -> None:
         event_type = event.get("type")
@@ -1536,26 +1236,19 @@ async def _process_chat_turn(
                 else:
                     _append_message_text_part(message_parts, "reasoning", delta)
         elif event_type == "message.delta":
-            pass
+            delta = event.get("text") or event.get("delta")
+            if isinstance(delta, str):
+                _append_message_text_part(message_parts, "text", delta)
         elif event_type == "tool.start":
             _upsert_tool_call_part(message_parts, event)
         elif event_type == "tool.complete":
             _upsert_tool_call_part(message_parts, event)
-        if len(message_parts) > 240:
-            del message_parts[:-240]
-        schedule_live_snapshot(str(event_type or ""))
         if agent_event_sink:
             agent_event_sink(event)
 
-    def collect_activity(event: dict[str, Any]) -> None:
-        activity_events.append(event)
-        agent_event = _agent_event_from_activity(event)
-        if agent_event:
-            collect_agent_event(agent_event)
-        if activity_event_sink:
-            activity_event_sink(event)
-
     session = await _get_owned_session(db, session_id, user_id)
+    if req.replace_message_id:
+        await _truncate_conversation_from_message(db, session, req.replace_message_id, user_id)
     artifacts = await _owned_artifacts_for_chat(db, user_id, req.artifact_ids or [])
     user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
     pending_assistant_msg = await _persist_pending_assistant_message(
@@ -1566,7 +1259,6 @@ async def _process_chat_turn(
         request_id,
         len(artifacts),
     )
-    await _apply_natural_language_feedback(db, session_id, user_id, req.content)
     _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
 
     attachment_context = await _attachment_context(db, artifacts)
@@ -1588,6 +1280,23 @@ async def _process_chat_turn(
         ),
     )
     await _commit_user_turn_start(db, session)
+    if agent_event_sink:
+        attachment_payloads = [
+            {
+                "id": artifact.id,
+                "artifact_type": artifact.artifact_type,
+                "filename": artifact.filename,
+                "mime_type": artifact.mime_type,
+            }
+            for artifact in artifacts
+        ]
+        agent_event_sink({
+            "type": "message.start",
+            "request_id": request_id,
+            "user_message": _chat_message_payload(user_msg, attachment_payloads),
+            "assistant_message": _chat_message_payload(pending_assistant_msg),
+            "created_at": _utcnow().isoformat(),
+        })
     router_result, trace_svc = await _run_model_router(
         db,
         session_id,
@@ -1596,7 +1305,6 @@ async def _process_chat_turn(
         req.content,
         messages,
         request_id,
-        activity_event_sink=collect_activity,
         agent_event_sink=collect_agent_event,
         workspace_artifacts=workspace_artifacts,
         pending_assistant_msg=pending_assistant_msg,
@@ -1633,7 +1341,6 @@ async def _process_chat_turn(
         router_result,
         request_id,
         trace_svc.trace_id,
-        activity_events,
         _compact_message_parts(message_parts),
     )
     await _persist_success(
@@ -1647,7 +1354,6 @@ async def _process_chat_turn(
         router_result.get("generated_files") if isinstance(router_result.get("generated_files"), list) else [],
         tool_error_summary,
     )
-    await _enqueue_or_extract_memories(db, session_id, user_id, user_msg, assistant_msg)
     trace_status = "partial_failure" if tool_error_summary else "success"
     await trace_svc.commit(
         status=trace_status,
@@ -1658,8 +1364,9 @@ async def _process_chat_turn(
     return assistant_msg
 
 
-def _sse(event_type: str, payload: Any) -> str:
-    return f"event: {event_type}\ndata: {json.dumps(jsonable_encoder(payload), default=str)}\n\n"
+def _sse(event_type: str, payload: Any, event_id: int | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{prefix}event: {event_type}\ndata: {json.dumps(jsonable_encoder(payload), default=str)}\n\n"
 
 
 def _stream_heartbeat_payload(request_id: str, started_at: datetime) -> dict[str, Any]:
@@ -1669,9 +1376,56 @@ def _stream_heartbeat_payload(request_id: str, started_at: datetime) -> dict[str
     return {"request_id": request_id, "elapsed_seconds": elapsed_seconds}
 
 
+async def _finish_database_read(coro):
+    """Let an in-flight database read return its connection before an SSE client disconnects."""
+    task = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
+async def _latest_event_cursor(session_id: UUID, user_id: UUID) -> int:
+    async with AsyncSessionLocal() as event_db:
+        latest = await event_db.execute(
+            select(AIChatEvent).where(
+                AIChatEvent.chat_session_id == session_id,
+                AIChatEvent.user_id == user_id,
+            ).order_by(AIChatEvent.id.desc()).limit(1)
+        )
+        latest_event = latest.scalar_one_or_none()
+        if not latest_event:
+            return 0
+        first = await event_db.execute(
+            select(AIChatEvent.id).where(
+                AIChatEvent.chat_session_id == session_id,
+                AIChatEvent.user_id == user_id,
+                AIChatEvent.request_id == latest_event.request_id,
+            ).order_by(AIChatEvent.id.asc()).limit(1)
+        )
+        first_id = first.scalar_one_or_none()
+        return max(0, int(first_id or latest_event.id) - 1)
+
+
+async def _events_after(session_id: UUID, user_id: UUID, cursor: int) -> list[AIChatEvent]:
+    async with AsyncSessionLocal() as event_db:
+        result = await event_db.execute(
+            select(AIChatEvent).where(
+                AIChatEvent.chat_session_id == session_id,
+                AIChatEvent.user_id == user_id,
+                AIChatEvent.id > cursor,
+            ).order_by(AIChatEvent.id.asc()).limit(256)
+        )
+        return list(result.scalars().all())
+
+
 def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     payload = ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
     metadata = payload.get("metadata_json") if isinstance(payload.get("metadata_json"), dict) else {}
+    if "model_history" in metadata:
+        metadata = {key: value for key, value in metadata.items() if key != "model_history"}
+        payload["metadata_json"] = metadata
     status_value = str(metadata.get("status") or "").strip()
     if metadata.get("failed"):
         payload["status"] = "failed"
@@ -1707,16 +1461,191 @@ def _stream_task_done(request_id: str, session_id: UUID, task: asyncio.Task[None
         )
 
 
+async def _turn_heartbeat(request_id: str, parent_task: asyncio.Task[Any]) -> None:
+    """Keep the distributed turn lease alive and honour cancellation on any replica."""
+    while not parent_task.done():
+        await asyncio.sleep(TURN_HEARTBEAT_SECONDS)
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(AIChatTurn).where(AIChatTurn.request_id == request_id))
+            turn = result.scalar_one_or_none()
+            if turn is None or turn.status != "active":
+                return
+            if turn.cancel_requested:
+                parent_task.cancel()
+                return
+            turn.updated_at = _utcnow()
+            await db.commit()
+
+
+async def _finish_chat_turn(request_id: str, turn_status: str) -> None:
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            update(AIChatTurn)
+            .where(AIChatTurn.request_id == request_id)
+            .values(status=turn_status, updated_at=_utcnow())
+        )
+        await db.commit()
+
+
+async def _reserve_chat_turn(
+    db: AsyncSession,
+    session_id: UUID,
+    user_id: UUID,
+    request_id: str,
+) -> tuple[AIChatTurn, bool]:
+    existing_result = await db.execute(select(AIChatTurn).where(AIChatTurn.request_id == request_id))
+    existing = existing_result.scalar_one_or_none()
+    if existing is not None:
+        if existing.chat_session_id != session_id or existing.user_id != user_id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request ID is already in use")
+        return existing, False
+
+    stale_before = _utcnow() - timedelta(seconds=TURN_STALE_SECONDS)
+    await db.execute(
+        update(AIChatTurn)
+        .where(
+            AIChatTurn.chat_session_id == session_id,
+            AIChatTurn.status == "active",
+            AIChatTurn.updated_at < stale_before,
+        )
+        .values(status="failed", updated_at=_utcnow())
+    )
+    turn = AIChatTurn(
+        request_id=request_id,
+        chat_session_id=session_id,
+        user_id=user_id,
+        status="active",
+        cancel_requested=False,
+        started_at=_utcnow(),
+        updated_at=_utcnow(),
+    )
+    db.add(turn)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        active_result = await db.execute(
+            select(AIChatTurn).where(
+                AIChatTurn.chat_session_id == session_id,
+                AIChatTurn.status == "active",
+            )
+        )
+        active = active_result.scalar_one_or_none()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error_type": "turn_already_active",
+                "error_message": "This chat already has a response in progress.",
+                "active_request_id": active.request_id if active else None,
+            },
+        ) from exc
+    return turn, True
+
+
+async def _mark_cancelled_assistant(session_id: UUID, user_id: UUID, request_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AIChatMessage).where(
+                AIChatMessage.chat_session_id == session_id,
+                AIChatMessage.user_id == user_id,
+                AIChatMessage.role == "assistant",
+            ).order_by(AIChatMessage.created_at.desc())
+        )
+        for message in result.scalars().all():
+            metadata = dict(message.metadata_json or {})
+            if metadata.get("request_id") != request_id:
+                continue
+            metadata["status"] = "cancelled"
+            metadata["cancelled"] = True
+            message.metadata_json = metadata
+            message.updated_at = _utcnow()
+            await db.commit()
+            return
+
+
+async def _run_detached_turn(
+    session_id: UUID,
+    req: ChatMessageCreate,
+    request_id: str,
+    user_id: UUID,
+) -> None:
+    writer = ChatEventWriter(session_id, user_id, request_id)
+    writer.start()
+    parent_task = asyncio.current_task()
+    heartbeat_task = asyncio.create_task(_turn_heartbeat(request_id, parent_task)) if parent_task else None
+    turn_status = "completed"
+    try:
+        async with AsyncSessionLocal() as db:
+            assistant_msg = await _process_chat_turn(
+                db,
+                session_id,
+                req,
+                request_id,
+                user_id,
+                writer.emit_agent_event,
+            )
+            attachments_by_message = await _attachments_by_message(db, [assistant_msg.id])
+            writer.emit(
+                "message.complete",
+                _chat_message_payload(assistant_msg, attachments_by_message.get(assistant_msg.id, [])),
+            )
+            title = await _refresh_session_title(session_id)
+            if title:
+                writer.emit("session.title", {"session_id": str(session_id), "title": title})
+    except asyncio.CancelledError:
+        turn_status = "cancelled"
+        await _mark_cancelled_assistant(session_id, user_id, request_id)
+        writer.emit("message.cancelled", {"request_id": request_id})
+        raise
+    except HTTPException as exc:
+        turn_status = "failed"
+        writer.emit("error", exc.detail if isinstance(exc.detail, dict) else {"error_message": str(exc.detail)})
+    except Exception as exc:
+        turn_status = "failed"
+        logger.exception("Detached chat turn failed | request_id=%s", request_id)
+        writer.emit(
+            "error",
+            {
+                "request_id": request_id,
+                "error_type": "server_error",
+                "error_message": "Something went wrong while generating the response. Please try again.",
+                "technical_detail": str(exc),
+            },
+        )
+    finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        writer.emit("turn.complete", {"request_id": request_id})
+        try:
+            await writer.close()
+        finally:
+            await _finish_chat_turn(request_id, turn_status)
+
+
 @router.post("/sessions/{session_id}/messages/{request_id}/cancel")
 async def cancel_stream_chat_message(
     session_id: UUID,
     request_id: str,
+    db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
     user_id = auth["user_id"]
+    await _get_owned_session(db, session_id, user_id)
+    cancel_result = await db.execute(
+        update(AIChatTurn)
+        .where(
+            AIChatTurn.request_id == request_id,
+            AIChatTurn.chat_session_id == session_id,
+            AIChatTurn.user_id == user_id,
+            AIChatTurn.status == "active",
+        )
+        .values(cancel_requested=True, updated_at=_utcnow())
+    )
+    await db.commit()
     active = ACTIVE_STREAM_TURNS.get(request_id)
     if not active:
-        return {"cancelled": False}
+        return {"cancelled": bool(cancel_result.rowcount)}
 
     active_session_id, active_user_id, task = active
     if active_session_id != session_id or active_user_id != user_id:
@@ -1725,113 +1654,84 @@ async def cancel_stream_chat_message(
     if not task.done():
         task.cancel()
         return {"cancelled": True}
-    return {"cancelled": False}
+    return {"cancelled": bool(cancel_result.rowcount)}
 
 
-@router.post("/sessions/{session_id}/messages/stream")
-async def stream_chat_message(
+@router.post("/sessions/{session_id}/turns", status_code=status.HTTP_202_ACCEPTED)
+async def start_chat_turn(
     session_id: UUID,
     req: ChatMessageCreate,
     request: Request,
+    db: AsyncSession = Depends(get_db),
     auth: dict = Depends(api_key_auth),
 ):
-    """Streams user-safe agent activity while the chat turn runs."""
+    """Starts one server-owned chat turn; clients observe it through the session event stream."""
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     user_id = auth["user_id"]
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    stream_started_at = _utcnow()
-    stream_open = True
+    await _get_owned_session(db, session_id, user_id)
+    turn, created = await _reserve_chat_turn(db, session_id, user_id, request_id)
+    if not created:
+        return {"request_id": request_id, "accepted": turn.status == "active"}
 
-    def emit_stream_event(event_type: str, payload: Any) -> None:
-        if stream_open:
-            queue.put_nowait({"type": event_type, "payload": payload})
+    await db.execute(
+        delete(AIChatEvent).where(
+            AIChatEvent.chat_session_id == session_id,
+            AIChatEvent.request_id != request_id,
+        )
+    )
+    await db.commit()
+    active = ACTIVE_STREAM_TURNS.get(request_id)
+    if active and not active[2].done():
+        return {"request_id": request_id, "accepted": True}
 
-    def collect_activity(event: dict[str, Any]) -> None:
-        emit_stream_event("activity", event)
+    task = asyncio.create_task(_run_detached_turn(session_id, req, request_id, user_id))
+    ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
+    task.add_done_callback(lambda done_task: _stream_task_done(request_id, session_id, done_task))
+    return {"request_id": request_id, "accepted": True}
 
-    def collect_agent_event(event: dict[str, Any]) -> None:
-        event_type = str(event.get("type") or "status.update")
-        emit_stream_event(event_type, event)
 
-    async def run_turn() -> None:
-        cancelled = False
-        async with AsyncSessionLocal() as db:
-            try:
-                assistant_msg = await _process_chat_turn(
-                    db,
-                    session_id,
-                    req,
-                    request_id,
-                    user_id,
-                    collect_activity,
-                    collect_agent_event,
-                )
-                attachments_by_message = await _attachments_by_message(db, [assistant_msg.id])
-                emit_stream_event("message.complete", _chat_message_payload(assistant_msg, attachments_by_message.get(assistant_msg.id, [])))
-                title = await _refresh_session_title(session_id)
-                if title:
-                    emit_stream_event(
-                        "session.title",
-                        {
-                            "session_id": str(session_id),
-                            "title": title,
-                        },
-                    )
-            except asyncio.CancelledError:
-                cancelled = True
-                await db.rollback()
-                logger.info(
-                    "Streaming chat turn cancelled | request_id=%s session_id=%s",
-                    request_id,
-                    session_id,
-                )
-                raise
-            except HTTPException as exc:
-                await db.rollback()
-                emit_stream_event("error", exc.detail)
-            except Exception as exc:
-                await db.rollback()
-                logger.exception("Streaming chat turn failed | request_id=%s", request_id)
-                emit_stream_event(
-                    "error",
-                    {
-                        "request_id": request_id,
-                        "error_type": "server_error",
-                        "error_message": "Something went wrong while generating the response. Please try again.",
-                        "technical_detail": str(exc),
-                    },
-                )
-            finally:
-                if not cancelled:
-                    emit_stream_event("done", {"request_id": request_id})
+@router.get("/sessions/{session_id}/events")
+async def stream_chat_events(
+    session_id: UUID,
+    request: Request,
+    after: int | None = None,
+    auth: dict = Depends(api_key_auth),
+):
+    """Replays the latest turn and follows the durable event stream for this session."""
+    user_id = auth["user_id"]
+    async with AsyncSessionLocal() as ownership_db:
+        await _get_owned_session(ownership_db, session_id, user_id)
 
     async def event_stream():
-        nonlocal stream_open
-        task = asyncio.create_task(run_turn())
-        ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
-        task.add_done_callback(lambda done_task: _stream_task_done(request_id, session_id, done_task))
-        yield _sse("started", {"request_id": request_id})
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=STREAM_HEARTBEAT_SECONDS)
-                except asyncio.TimeoutError:
-                    yield _sse("heartbeat", _stream_heartbeat_payload(request_id, stream_started_at))
-                    continue
-                yield _sse(item["type"], item["payload"])
-                if item["type"] == "done":
-                    break
-        finally:
-            stream_open = False
-            if not task.done():
-                logger.info(
-                    "Chat stream client disconnected; allowing turn to finish | request_id=%s session_id=%s",
-                    request_id,
-                    session_id,
-                )
+        cursor = max(0, int(after or 0))
+        if after is None:
+            cursor = await _finish_database_read(_latest_event_cursor(session_id, user_id))
+
+        heartbeat_started = _utcnow()
+        last_activity = asyncio.get_running_loop().time()
+        while not await request.is_disconnected():
+            events = await _finish_database_read(_events_after(session_id, user_id, cursor))
+
+            if events:
+                for event in events:
+                    cursor = event.id
+                    yield _sse(event.event_type, event.payload_json, event.id)
+                    if event.event_type == "turn.complete":
+                        return
+                last_activity = asyncio.get_running_loop().time()
+                continue
+
+            now = asyncio.get_running_loop().time()
+            if now - last_activity >= STREAM_HEARTBEAT_SECONDS:
+                yield _sse("heartbeat", _stream_heartbeat_payload("", heartbeat_started), cursor or None)
+                last_activity = now
+            await asyncio.sleep(STREAM_EVENT_POLL_SECONDS)
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={"X-Request-ID": request_id, "Cache-Control": "no-cache"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )

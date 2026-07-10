@@ -51,7 +51,7 @@ def setup_database():
 
 
 @pytest.fixture(autouse=True)
-def apply_db_override():
+def apply_db_override(monkeypatch):
     """Applies the SQLite in-memory DB override before every test and clears overrides after.
 
     This ensures that:
@@ -59,6 +59,7 @@ def apply_db_override():
     2. Overrides do not leak across test modules.
     """
     app.dependency_overrides[get_db] = override_get_db
+    monkeypatch.setattr("app.core.security.AsyncSessionLocal", TestingSessionLocal)
     get_settings.cache_clear()
     yield
     app.dependency_overrides.clear()

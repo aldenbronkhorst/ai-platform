@@ -283,6 +283,13 @@ export HEALTH_CHECK_DEEP="${HEALTH_CHECK_DEEP:-false}"
 
 wait_for_postgres 60
 
+echo "Applying database migrations and canonical tool definitions..."
+(
+  cd "$ROOT_DIR/apps/ai-core-api"
+  .venv/bin/alembic upgrade head
+  PYTHONPATH="$ROOT_DIR/apps/ai-core-api" .venv/bin/python scripts/seed_tools.py
+)
+
 PIDS=()
 trap cleanup INT TERM EXIT
 
