@@ -17,6 +17,11 @@ from app.models.models import AIChatEvent
 logger = logging.getLogger(__name__)
 
 DELTA_EVENT_TYPES = {"message.delta", "reasoning.delta"}
+PERSIST_RETRY_DELAYS = (0.0, 0.1, 0.5)
+
+
+class ChatEventPersistenceError(RuntimeError):
+    """Raised when an ordered event batch cannot be committed."""
 
 
 def _utcnow() -> datetime:
@@ -103,6 +108,17 @@ class ChatEventWriter:
                     break
                 batch.append(item)
 
+            events = _coalesce(batch)
+            await self._persist(events)
+
+            if stopping:
+                return
+
+    async def _persist(self, events: list[tuple[str, dict[str, Any]]]) -> None:
+        last_error: Exception | None = None
+        for attempt, delay in enumerate(PERSIST_RETRY_DELAYS, start=1):
+            if delay:
+                await asyncio.sleep(delay)
             rows = [
                 AIChatEvent(
                     chat_session_id=self.chat_session_id,
@@ -112,19 +128,26 @@ class ChatEventWriter:
                     payload_json=payload,
                     created_at=_utcnow(),
                 )
-                for event_type, payload in _coalesce(batch)
+                for event_type, payload in events
             ]
             try:
                 async with self._session_factory() as db:
                     db.add_all(rows)
                     await db.commit()
-            except Exception:
-                logger.exception(
-                    "Failed to persist chat events | session=%s request=%s count=%d",
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Chat event persistence attempt failed | session=%s request=%s count=%d attempt=%d",
                     self.chat_session_id,
                     self.request_id,
                     len(rows),
+                    attempt,
+                    exc_info=True,
                 )
 
-            if stopping:
-                return
+        raise ChatEventPersistenceError(
+            f"Could not persist {len(events)} chat events for request {self.request_id}."
+        ) from last_error

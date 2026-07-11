@@ -1410,14 +1410,29 @@ async def _run_tool_loop(
         iteration = 0
         while True:
             if MAX_TOOL_LOOP_ITERATIONS > 0 and iteration >= MAX_TOOL_LOOP_ITERATIONS:
-                state.result = {
-                    "error": True,
-                    "error_type": "max_iterations_exceeded",
-                    "message": f"The agent exceeded {MAX_TOOL_LOOP_ITERATIONS} tool iterations.",
-                    "status_code": 502,
-                    "content": "",
-                    "tool_calls": None,
-                }
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You've reached the maximum number of tool-calling iterations allowed. "
+                        "Please provide a final response summarizing what you've found and accomplished so far, "
+                        "without calling any more tools."
+                    ),
+                })
+                result, client = await _call_model(
+                    state.used_model,
+                    state.used_provider,
+                    messages,
+                    temperature,
+                    max_tokens,
+                    [],
+                    trace_svc=trace_svc,
+                    attempt_reason="max_iterations_summary",
+                    client=state.client,
+                    stream_event_sink=stream_event_sink,
+                )
+                state.result = result
+                state.client = client
+                state.stats.add_result(state.result)
                 break
 
             if state.result.get("error"):

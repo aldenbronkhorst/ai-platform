@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useLayoutEffect, type CSSProperties } from "react";
 import type { ChatMessage, ChatSession, AttachedFile, VoiceState } from "../../types";
-import { AssistantMessages } from "./AssistantMessages";
+import { chatMessageParts } from "../../chat/runtime";
+import { AssistantMessages, ResponseLoadingIndicator } from "./AssistantMessages";
 import { ChatComposer } from "./ChatComposer";
 import { ChatEmptyState } from "./ChatEmptyState";
 import { ThreadTimeline } from "./ThreadTimeline";
@@ -85,6 +86,12 @@ export function ChatView({
 
   const hasMessages = chatMessages.length > 0;
   const hasThread = Boolean(activeSession && (hasMessages || isMessagesLoading));
+  const lastMessage = chatMessages.at(-1);
+  const awaitingFirstResponsePart = Boolean(
+    isChatSending
+    && lastMessage?.role === "assistant"
+    && chatMessageParts(lastMessage).length === 0,
+  );
   const shellStyle = composerMetrics.height
     ? ({
       "--composer-measured-height": `${composerMetrics.height}px`,
@@ -110,7 +117,7 @@ export function ChatView({
                 Loading messages...
               </div>
             </div>
-          ) : undefined}
+          ) : awaitingFirstResponsePart ? <ResponseLoadingIndicator /> : undefined}
           messages={chatMessages}
           sessionKey={activeSession?.id ?? null}
           onCopyMessage={onCopyMessage}

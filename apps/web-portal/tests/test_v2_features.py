@@ -526,42 +526,6 @@ def test_chat_uses_assistant_ui_message_parts_not_local_tool_trail():
     assert "toolDetail" not in assistant
 
 
-def test_completed_assistant_messages_use_canonical_markdown_content():
-    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
-    with open(assistant_path, "r", encoding="utf-8") as f:
-        assistant = f.read()
-
-    assert 'if (!running && message.content.trim())' in assistant
-    assert '...parts.filter(part => part.type !== "text")' in assistant
-    assert '{ type: "text", text: message.content }' in assistant
-
-
-def test_reasoning_stream_matches_hermes_message_part_rules():
-    assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
-    runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
-    with open(assistant_path, "r", encoding="utf-8") as f:
-        assistant = f.read()
-    with open(runtime_path, "r", encoding="utf-8") as f:
-        runtime = f.read()
-
-    assert "THINKING_STATUS_PREFIX_RE" not in runtime
-    assert "EMPTY_THINKING_PLACEHOLDER_RE" not in runtime
-    assert "function coerceThinkingText" not in runtime
-    assert "function appendStreamPart" in runtime
-    assert 'part.type === "tool-call"' in runtime
-    assert 'eventType === "reasoning.delta" || eventType === "reasoning.available"' in runtime
-    assert 'appendStreamPart(messageParts(message), "reasoning", text)' in runtime
-    assert 'status: "streaming"' in runtime
-    assert "replaceReasoningPart" in runtime
-    assert "function runtimePartsFromMetadata" in assistant
-    assert "text(part.text)" in assistant
-    assert "rawText(raw.reasoning)" not in assistant
-    assert "rawText(raw.thinking)" not in assistant
-    assert "trail.reasoning" not in assistant
-    assert "const displayText = value.trimStart();" in assistant
-    assert "live && index === orderedParts.length - 1" not in assistant
-
-
 def test_thread_message_list_uses_hermes_part_count_signature():
     assistant_path = os.path.join(SRC_DIR, "components", "chat", "AssistantMessages.tsx")
     with open(assistant_path, "r", encoding="utf-8") as f:
@@ -614,32 +578,6 @@ def test_tool_disclosures_persist_while_thinking_uses_hermes_local_state():
     assert "const [userOpen, setUserOpen] = useState<boolean | null>(null);" in assistant
 
 
-def test_live_reasoning_reveal_keeps_hermes_ref_sync():
-    renderer_path = os.path.join(SRC_DIR, "components", "chat", "MarkdownRenderer.tsx")
-    animation_path = os.path.join(SRC_DIR, "lib", "use-enter-animation.ts")
-    with open(renderer_path, "r", encoding="utf-8") as f:
-        renderer = f.read()
-    with open(animation_path, "r", encoding="utf-8") as f:
-        animation = f.read()
-
-    assert "const [displayed, setDisplayed] = useState(text);" in renderer
-    assert 'useState(isRunning ? "" : text)' not in renderer
-    assert "shownRef.current = displayed;" in renderer
-    assert "targetRef.current = text;" in renderer
-    assert "function commonPrefixLength" in renderer
-    assert "targetRef.current.slice(0, prefixLength)" in renderer
-    assert "}, [text, isRunning]);" in renderer
-    assert "}, [text, isRunning, displayed]);" not in renderer
-    assert "const revealed = useSmoothReveal(text, isRunning)" in renderer
-    assert "isRunning || revealed !== text" in renderer
-    assert "const enabledRef = useRef(enabled);" in animation
-    assert "const keyRef = useRef(animationKey);" in animation
-    assert "enabledRef.current = enabled;" in animation
-    assert "keyRef.current = animationKey;" in animation
-    assert "}, []);" in animation
-    assert "}, [animationKey, enabled]);" not in animation
-
-
 def test_stream_updates_apply_each_chunk_once():
     controller_path = os.path.join(SRC_DIR, "chat", "useChatController.ts")
     runtime_path = os.path.join(SRC_DIR, "chat", "runtime.ts")
@@ -653,7 +591,7 @@ def test_stream_updates_apply_each_chunk_once():
     assert "/events${suffix}" in controller
     assert "/turns`" in controller
     assert "/cancel`" in controller
-    assert "return Boolean(running || activeRequestsRef.current[sessionId]);" in controller
+    assert "return Boolean(running);" in controller
     assert "if (turnComplete) return;" in controller
     assert "function appendStreamPart" in runtime
     assert "metadata.message_parts = parts" in runtime

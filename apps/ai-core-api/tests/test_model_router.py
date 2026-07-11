@@ -23,6 +23,7 @@ from app.services.model_router import (
     _workspace_generated_files,
 )
 from app.services.chat_titles import _sanitize_chat_title
+from app.services.agent_tool_executor import ExecutedToolCall
 
 
 # ── Canonical prompt sanity ──
@@ -59,6 +60,60 @@ def test_canonical_prompt_requires_grounded_connected_system_numbers():
     lower = CANONICAL_SYSTEM_PROMPT.lower()
     assert "never invent quantitative connected-system facts" in lower
     assert "successful current tool results" in lower
+
+
+@pytest.mark.asyncio
+async def test_tool_iteration_limit_requests_a_final_summary_without_tools(monkeypatch):
+    from app.services import model_router
+
+    monkeypatch.setattr(model_router, "MAX_TOOL_LOOP_ITERATIONS", 1)
+    tool_call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "fake_tool", "arguments": "{}"},
+    }
+    model_client = MagicMock()
+    call_model = AsyncMock(side_effect=[
+        ({"content": "", "tool_calls": [tool_call]}, model_client),
+        ({"content": "Final summary", "tool_calls": None}, model_client),
+    ])
+    execute_tools = AsyncMock(return_value=[ExecutedToolCall(
+        tool_call_id="call-1",
+        tool_name="fake_tool",
+        arguments={},
+        raw_result={"ok": True},
+        model_result={"ok": True},
+        duration_ms=1,
+    )])
+    monkeypatch.setattr(model_router, "_call_model", call_model)
+    monkeypatch.setattr(model_router, "execute_model_tool_calls", execute_tools)
+
+    state = model_router.ModelCallState(
+        result={"content": "", "tool_calls": [tool_call]},
+        used_model=MagicMock(),
+        used_provider=MagicMock(),
+        client=model_client,
+        stats=model_router.ModelCallStats(),
+    )
+    messages = [{"role": "user", "content": "Do the work"}]
+    definitions = [{"type": "function", "function": {"name": "fake_tool"}}]
+
+    await model_router._run_tool_loop(
+        AsyncMock(),
+        None,
+        state,
+        messages,
+        [],
+        definitions,
+        0.3,
+        1000,
+    )
+
+    assert state.result["content"] == "Final summary"
+    assert state.result.get("error") is not True
+    assert call_model.await_args_list[-1].args[5] == []
+    assert call_model.await_args_list[-1].kwargs["attempt_reason"] == "max_iterations_summary"
+    assert "without calling any more tools" in messages[-1]["content"]
 
 
 def test_trace_redaction_keeps_token_counts_visible():
@@ -2271,9 +2326,9 @@ class TestToolExecution:
         assert execute_tool.await_count == tool_step_count
 
     @pytest.mark.asyncio
-    async def test_execute_chat_fails_cleanly_at_configured_tool_loop_cap(self):
-        """A configured safety cap stops the loop without injecting a synthetic answer prompt."""
-        from app.services.model_router import execute_chat, ProviderCallError
+    async def test_execute_chat_summarizes_without_tools_at_configured_tool_loop_cap(self):
+        """The configured cap matches Hermes by making one final tool-free summary call."""
+        from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
             id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -2314,8 +2369,8 @@ class TestToolExecution:
                         "id": "call_1",
                         "type": "function",
                         "function": {
-                            "name": "odoo",
-                            "arguments": '{"model": "account.move", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
+                            "name": "workspace",
+                            "arguments": '{"language": "python", "code": "print(call(\\\"odoo\\\", {\\\"model\\\": \\\"account.move\\\", \\\"method\\\": \\\"search_read\\\", \\\"args\\\": [[]], \\\"kwargs\\\": {\\\"limit\\\": 1}}))"}',
                         },
                     }],
                     "prompt_tokens": 10,
@@ -2330,8 +2385,8 @@ class TestToolExecution:
                         "id": "call_2",
                         "type": "function",
                         "function": {
-                            "name": "odoo",
-                            "arguments": '{"model": "account.move.line", "method": "search_read", "args": [[]], "kwargs": {"limit": 1}}',
+                            "name": "workspace",
+                            "arguments": '{"language": "python", "code": "print(call(\\\"odoo\\\", {\\\"model\\\": \\\"account.move.line\\\", \\\"method\\\": \\\"search_read\\\", \\\"args\\\": [[]], \\\"kwargs\\\": {\\\"limit\\\": 1}}))"}',
                         },
                     }],
                     "prompt_tokens": 20,
@@ -2367,12 +2422,16 @@ class TestToolExecution:
             'app.services.model_router._execute_tool_call',
             new=execute_tool,
         ):
-            with pytest.raises(ProviderCallError):
-                await execute_chat(db, [{"role": "user", "content": "check this invoice"}], user_id=uuid.uuid4())
+            result = await execute_chat(
+                db,
+                [{"role": "user", "content": "check this invoice"}],
+                user_id=uuid.uuid4(),
+            )
 
-        assert client.chat_completion.call_count == 2
-        assert client.chat_completion.call_args_list[-1].kwargs["tools"] is not None
-        execute_tool.assert_not_awaited()
+        assert result["content"] == "I found INV-2026-02128 from the gathered Odoo result. I did not run the extra lookup."
+        assert client.chat_completion.call_count == 3
+        assert client.chat_completion.call_args_list[-1].kwargs["tools"] is None
+        execute_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_execute_chat_does_not_retry_blank_length_response_after_tools(self):

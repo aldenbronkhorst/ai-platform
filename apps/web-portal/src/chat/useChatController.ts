@@ -153,8 +153,8 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
     if (activeSessionIdRef.current === sessionId) setChatMessages(messages);
     const running = [...messages].reverse().find(isRunningMessage);
     if (running) markSessionSending(sessionId, messageRequestId(running) || undefined);
-    else if (!activeRequestsRef.current[sessionId]) unmarkSessionSending(sessionId);
-    return Boolean(running || activeRequestsRef.current[sessionId]);
+    else unmarkSessionSending(sessionId);
+    return Boolean(running);
   }, [getHeaders, markSessionSending, unmarkSessionSending]);
 
   const handleStreamEvent = useCallback((sessionId: string, event: ReturnType<typeof parseSseChunk>["events"][number]) => {
@@ -168,11 +168,12 @@ export function useChatController({ accessToken, activeUserEmail, getAccessToken
       markSessionSending(sessionId, requestId);
     } else if (["message.cancelled", "error", "turn.complete"].includes(event.event)) {
       unmarkSessionSending(sessionId, requestId);
+      if (event.event === "turn.complete") void fetchSessionMessages(sessionId);
       void refreshChatSession(sessionId);
     } else if (event.event === "session.title" && typeof payload.title === "string") {
       updateLocalChatSession(sessionId, { title: payload.title });
     }
-  }, [markSessionSending, refreshChatSession, unmarkSessionSending, updateLocalChatSession]);
+  }, [fetchSessionMessages, markSessionSending, refreshChatSession, unmarkSessionSending, updateLocalChatSession]);
 
   useEffect(() => {
     if (!activeSessionId || !accessToken) {

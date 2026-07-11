@@ -2,7 +2,7 @@ import type { ChatMessage, ChatSession } from "../types";
 
 export const CHAT_EVENT_RECONNECT_MS = 1_000;
 
-type StoredMessagePart =
+export type ChatMessagePart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
   | {
@@ -53,17 +53,17 @@ function eventNumber(event: Record<string, unknown>, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function messageParts(message: ChatMessage): StoredMessagePart[] {
+function storedMessageParts(message: ChatMessage): ChatMessagePart[] {
   const metadata = isRecord(message.metadata_json) ? message.metadata_json : {};
   const value = metadata.message_parts;
   if (!Array.isArray(value)) return [];
-  return value.filter(isRecord).flatMap((part): StoredMessagePart[] => {
+  return value.filter(isRecord).flatMap((part): ChatMessagePart[] => {
     if (part.type === "text" && typeof part.text === "string") return [{ type: "text", text: part.text }];
     if (part.type === "reasoning" && typeof part.text === "string") return [{ type: "reasoning", text: part.text }];
     if (part.type !== "tool-call") return [];
     const toolCallId = eventText(part, "toolCallId");
     if (!toolCallId) return [];
-    const next: StoredMessagePart = {
+    const next: ChatMessagePart = {
       type: "tool-call",
       toolCallId,
       toolName: eventText(part, "toolName") || "tool",
@@ -78,13 +78,20 @@ function messageParts(message: ChatMessage): StoredMessagePart[] {
   });
 }
 
-function withMessageParts(message: ChatMessage, parts: StoredMessagePart[]) {
+export function chatMessageParts(message: ChatMessage): ChatMessagePart[] {
+  const parts = storedMessageParts(message);
+  const hasText = parts.some(part => part.type === "text" && part.text.trim());
+  if (message.content.trim() && !hasText) return [...parts, { type: "text", text: message.content }];
+  return parts;
+}
+
+function withMessageParts(message: ChatMessage, parts: ChatMessagePart[]) {
   const metadata = isRecord(message.metadata_json) ? { ...message.metadata_json } : {};
   metadata.message_parts = parts;
   return { ...message, metadata_json: metadata };
 }
 
-function appendStreamPart(parts: StoredMessagePart[], type: "text" | "reasoning", delta: string) {
+function appendStreamPart(parts: ChatMessagePart[], type: "text" | "reasoning", delta: string) {
   if (!delta) return parts;
   const next = [...parts];
   for (let index = next.length - 1; index >= 0; index -= 1) {
@@ -99,7 +106,7 @@ function appendStreamPart(parts: StoredMessagePart[], type: "text" | "reasoning"
   return next;
 }
 
-function replaceReasoningPart(parts: StoredMessagePart[], text: string) {
+function replaceReasoningPart(parts: ChatMessagePart[], text: string) {
   if (!text) return parts;
   const next = [...parts];
   for (let index = next.length - 1; index >= 0; index -= 1) {
@@ -114,10 +121,10 @@ function replaceReasoningPart(parts: StoredMessagePart[], text: string) {
   return next;
 }
 
-function upsertToolPart(parts: StoredMessagePart[], event: Record<string, unknown>) {
+function upsertToolPart(parts: ChatMessagePart[], event: Record<string, unknown>) {
   const id = eventText(event, "id") || eventText(event, "tool_call_id");
   const eventType = eventText(event, "type");
-  const patch: StoredMessagePart = {
+  const patch: ChatMessagePart = {
     type: "tool-call",
     toolCallId: id || `tool:${parts.length}`,
     toolName: eventText(event, "name") || "tool",
@@ -198,7 +205,7 @@ export function applyChatStreamEvent(messages: ChatMessage[], streamEvent: ChatS
       ...message,
       content: message.content + delta,
       status: "streaming",
-    }, appendStreamPart(messageParts(message), "text", delta)));
+    }, appendStreamPart(chatMessageParts(message), "text", delta)));
   }
 
   if (eventType === "reasoning.delta" || eventType === "reasoning.available") {
@@ -206,8 +213,8 @@ export function applyChatStreamEvent(messages: ChatMessage[], streamEvent: ChatS
     if (!text) return messages;
     return updateAssistant(messages, requestId, message => withMessageParts({ ...message, status: "streaming" }, (
       eventType === "reasoning.available"
-        ? replaceReasoningPart(messageParts(message), text)
-        : appendStreamPart(messageParts(message), "reasoning", text)
+        ? replaceReasoningPart(chatMessageParts(message), text)
+        : appendStreamPart(chatMessageParts(message), "reasoning", text)
     )));
   }
 
@@ -215,7 +222,7 @@ export function applyChatStreamEvent(messages: ChatMessage[], streamEvent: ChatS
     return updateAssistant(messages, requestId, message => withMessageParts({
       ...message,
       status: eventType === "tool.start" ? "tool_running" : "streaming",
-    }, upsertToolPart(messageParts(message), event)));
+    }, upsertToolPart(chatMessageParts(message), event)));
   }
 
   if (eventType === "message.cancelled") {

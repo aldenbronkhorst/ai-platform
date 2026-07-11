@@ -12,7 +12,7 @@ class TestMemoryFeedbackAndTracking:
     async def test_chat_tracking_on_message(self, mock_execute_chat):
         # Verify memory usage event is recorded when chat message processes
         from app.routers.chat import _process_chat_turn, ChatMessageCreate
-        from app.models.models import AIChatSession
+        from app.models.models import AIChatMessage, AIChatSession
 
         db = MockSession(has_config=False)
         db.refresh = AsyncMock()
@@ -61,8 +61,37 @@ class TestMemoryFeedbackAndTracking:
         }
 
         req = ChatMessageCreate(content="how to print?")
+        request_id = str(uuid4())
+        user_message = AIChatMessage(
+            id=uuid4(),
+            chat_session_id=session_id,
+            user_id=user_uuid,
+            role="user",
+            content=req.content,
+            metadata_json={"request_id": request_id},
+        )
+        assistant_message = AIChatMessage(
+            id=uuid4(),
+            chat_session_id=session_id,
+            user_id=user_uuid,
+            role="assistant",
+            content="",
+            metadata_json={"request_id": request_id, "status": "streaming"},
+        )
 
-        msg_res = await _process_chat_turn(db, session_id, req, str(uuid4()), user_uuid)
+        with patch(
+            "app.routers.chat._prepared_chat_messages",
+            new=AsyncMock(return_value=(user_message, assistant_message)),
+        ):
+            msg_res = await _process_chat_turn(
+                db,
+                session_id,
+                req,
+                request_id,
+                user_uuid,
+                user_message.id,
+                assistant_message.id,
+            )
 
         assert msg_res.content == "Use Printer-01 for printing downstairs."
 
