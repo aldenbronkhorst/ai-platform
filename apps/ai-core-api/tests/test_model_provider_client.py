@@ -1,7 +1,51 @@
 import pytest
+import httpx
+from unittest.mock import AsyncMock
 
 from app.services import model_provider_client
 from app.services.model_provider_client import ModelProviderClient
+
+
+@pytest.mark.asyncio
+async def test_stream_connection_failure_retries_before_any_delta(monkeypatch):
+    client = ModelProviderClient("https://provider.example/v1", "model", "key")
+    success = {"error": False, "content": "ok"}
+    once = AsyncMock(side_effect=[httpx.ReadTimeout("temporary"), success])
+    monkeypatch.setattr(client, "_streaming_chat_completion_once", once)
+    monkeypatch.setattr(model_provider_client.asyncio, "sleep", AsyncMock())
+
+    result = await client._streaming_chat_completion(
+        "https://provider.example/v1/chat/completions",
+        {"model": "model", "stream": True},
+        "model",
+        lambda _event: None,
+    )
+
+    assert result == success
+    assert once.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_stream_failure_does_not_replay_after_a_visible_delta(monkeypatch):
+    client = ModelProviderClient("https://provider.example/v1", "model", "key")
+    calls = 0
+
+    async def fail_after_delta(_url, _payload, _model, sink):
+        nonlocal calls
+        calls += 1
+        sink({"type": "content_delta", "delta": "partial"})
+        raise httpx.ReadTimeout("stream interrupted")
+
+    monkeypatch.setattr(client, "_streaming_chat_completion_once", fail_after_delta)
+    result = await client._streaming_chat_completion(
+        "https://provider.example/v1/chat/completions",
+        {"model": "model", "stream": True},
+        "model",
+        lambda _event: None,
+    )
+
+    assert result["error_type"] == "timeout"
+    assert calls == 1
 
 
 @pytest.mark.asyncio

@@ -148,12 +148,19 @@ jobs:
 
       - name: Deploy AI Core API
         run: |
+          CONNECTOR_ENDPOINTS_JSON=$(jq -cn \
+            --arg url "${{ steps.env.outputs.connector_url }}" \
+            '{odoo: {base_url: $url, api_key_env: "CONNECTOR_INTERNAL_API_KEY", broker_target: "odoo"}}')
           az containerapp update \
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --image "${{ steps.env.outputs.acr_name }}.azurecr.io/ai-core-api:${{ github.sha }}" \
             --set-env-vars \
-              ODOO_CONNECTOR_URL=${{ steps.env.outputs.connector_url }}
+              "CONNECTOR_ENDPOINTS_JSON=${CONNECTOR_ENDPOINTS_JSON}" \
+              CONNECTOR_INTERNAL_API_KEY=secretref:odoo-connector-api-key \
+            --remove-env-vars \
+              ODOO_CONNECTOR_URL \
+              ODOO_CONNECTOR_API_KEY
           az containerapp revision set-mode \
             --name ${{ steps.env.outputs.container_app }} \
             --resource-group ${{ steps.env.outputs.resource_group }} \

@@ -42,12 +42,8 @@ class AIConnectedAccount(Base, AuditMixin):
     permission_summary = Column(Text, nullable=True)
     last_verified_at = Column(DateTime(timezone=True), nullable=True)
     disconnected_at = Column(DateTime(timezone=True), nullable=True)
-    odoo_url = Column(String(500), nullable=True)
-    odoo_db = Column(String(255), nullable=True)
-    odoo_company_id = Column(Integer, nullable=True)
-    odoo_company_name = Column(String(255), nullable=True)
-    odoo_currency_code = Column(String(10), nullable=True)
-    odoo_currency_symbol = Column(String(10), nullable=True)
+    configuration_json = Column(JSON, nullable=True)
+    connector_metadata_json = Column(JSON, nullable=True)
 
 
 class AIArtifact(Base, AuditMixin):
@@ -138,6 +134,12 @@ class AIChatTurn(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("ai_users.id"), nullable=False, index=True)
     status = Column(String(20), default="active", nullable=False, index=True)
     cancel_requested = Column(Boolean, default=False, nullable=False)
+    request_payload_json = Column(JSON, nullable=True)
+    user_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True)
+    assistant_message_id = Column(UUID(as_uuid=True), ForeignKey("ai_chat_messages.id"), nullable=True)
+    lease_owner = Column(String(255), nullable=True, index=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    attempt_count = Column(Integer, default=0, nullable=False)
     started_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False, index=True)
 

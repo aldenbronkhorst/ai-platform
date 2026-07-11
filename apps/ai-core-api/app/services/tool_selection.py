@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import AITool
 from app.services.connected_account_state import effective_connected_accounts
-from app.services.tool_registry import CONNECTOR_SYSTEMS, is_model_facing_tool
+from app.services.tool_registry import is_model_facing_tool
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +30,6 @@ class ToolSelectionResult:
 
 def _schema_size(tools: list[AITool]) -> int:
     return sum(len(json.dumps(tool.input_schema or {})) for tool in tools)
-
-
-def _is_available_for_user(tool: AITool, connected_systems: set[str]) -> bool:
-    target_system = str(tool.target_system or "")
-    if target_system in CONNECTOR_SYSTEMS:
-        return target_system in connected_systems
-    return True
 
 
 async def get_tool_selection(
@@ -66,7 +59,6 @@ async def get_tool_selection(
         for tool in tool_result.scalars().all()
         if tool.status in (None, "active")
         and is_model_facing_tool(tool.name, tool.target_system)
-        and _is_available_for_user(tool, connected_systems)
     ]
 
     result.selected = tools

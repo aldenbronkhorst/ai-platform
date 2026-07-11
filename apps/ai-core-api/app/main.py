@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
@@ -8,6 +10,18 @@ from app.routers import (
 settings = get_settings()
 docs_enabled = settings.app_env != "production"
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.app_env != "test":
+        chat.start_chat_workers()
+    try:
+        yield
+    finally:
+        if settings.app_env != "test":
+            await chat.stop_chat_workers()
+
+
 app = FastAPI(
     title="AI Platform Core API",
     version="0.1.0",
@@ -15,6 +29,7 @@ app = FastAPI(
     docs_url="/docs" if docs_enabled else None,
     redoc_url="/redoc" if docs_enabled else None,
     openapi_url="/openapi.json" if docs_enabled else None,
+    lifespan=lifespan,
 )
 
 # Enforce secure CORS rules

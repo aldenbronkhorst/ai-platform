@@ -1,360 +1,232 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { ChevronRight, RefreshCw, Search, X } from "lucide-react";
-import { Button } from "../components/ui/Button";
-import { API_BASE_URL, fetchWithTimeout, isAbortError, type AccessTokenGetter } from "../hooks/useApi";
+import { ChevronRight, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { ConnectorLogo, StatusBadge } from "../components/connections/ConnectorSections";
 import {
-  ConnectorLogo,
-  OdooConnectorSection,
-  StatusBadge,
-} from "../components/connections/ConnectorSections";
-import {
-  formatStatusLabel,
-  getStatusTone,
+  formatDateTime,
   panelTitleClass,
   panelToneClass,
-  type ConnectorDef,
+  getStatusTone,
+  type ConnectorField,
   type ConnectorMeta,
-  type OdooStatus,
 } from "../components/connections/connectionShared";
-
-const KV_ERROR_PHRASES = [
-  "forbiddenbyrbac", "setsecret/action", "key vault secrets officer",
-  "rbac", "authorization failed", "authorizationfailed",
-];
-
-interface ConnectorNotice {
-  status?: string;
-  connector?: string;
-  title?: string;
-  message?: string;
-  request_id?: string;
-}
-
-type ApiRecord = Record<string, unknown>;
-
-function errorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function stringValue(value: unknown, fallback = "") {
-  return typeof value === "string" ? value : fallback;
-}
-
-function connectorDefinitions(meta: Record<string, ConnectorMeta> | null): ConnectorDef[] {
-  const odoo = meta?.odoo;
-  if (!odoo) return [];
-  return [{
-    key: "odoo",
-    name: odoo.display_name || "Odoo",
-    subtitle: odoo.subtitle || odoo.auth_method || "ERP connector",
-  }];
-}
+import { Button } from "../components/ui/Button";
+import { TextField } from "../components/ui/TextField";
+import { API_BASE_URL, fetchWithTimeout, isAbortError, type AccessTokenGetter } from "../hooks/useApi";
 
 interface ConnectionsPageProps {
   accessToken: string;
   getAccessToken: AccessTokenGetter;
 }
 
+interface Notice {
+  title: string;
+  message: string;
+  status: "failed" | "success";
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function fieldInputType(field: ConnectorField) {
+  return field.secret ? "password" : field.type === "url" || field.type === "email" ? field.type : "text";
+}
+
 export function ConnectionsPage({ accessToken, getAccessToken }: ConnectionsPageProps) {
-  const [odooStatus, setOdooStatus] = useState<OdooStatus | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [connectorNotice, setConnectorNotice] = useState<ConnectorNotice | null>(null);
-  const [selectedConnector, setSelectedConnector] = useState<string | null>(null);
-  const [odooUrl, setOdooUrl] = useState("");
-  const [odooDb, setOdooDb] = useState("");
-  const [odooUsername, setOdooUsername] = useState("");
-  const [odooApiKey, setOdooApiKey] = useState("");
-  const [connectorMeta, setConnectorMeta] = useState<Record<string, ConnectorMeta> | null>(null);
-  const [connectorStatusError, setConnectorStatusError] = useState<string | null>(null);
-  const [connectorSearch, setConnectorSearch] = useState("");
+  const [connectors, setConnectors] = useState<ConnectorMeta[] | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [search, setSearch] = useState("");
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const headers = useCallback(async () => {
     const token = await getAccessToken({ redirectOnFailure: true });
     if (!token) throw new Error("Microsoft session expired. Please sign in again.");
-    return {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    };
+    return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   }, [getAccessToken]);
 
-  const fetchConnectors = useCallback(async () => {
+  const refresh = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts`, { headers: await headers() });
-      if (!res.ok) {
-        setConnectorStatusError(`Could not load connector statuses (${res.status}).`);
-        return;
-      }
-
-      const data = await res.json() as { connectors?: ConnectorMeta[] } | ConnectorMeta[];
-      const connectors = Array.isArray(data) ? data : data.connectors || [];
-      const meta: Record<string, ConnectorMeta> = {};
-      connectors.forEach((connector) => {
-        if (connector.connector_key) meta[connector.connector_key] = connector;
-      });
-      setConnectorMeta(meta);
-      setConnectorStatusError(null);
-    } catch (err) {
-      setConnectorStatusError(
-        isAbortError(err)
-          ? "Connector statuses are taking too long to load. Please retry."
-          : `Could not load connector statuses: ${errorMessage(err)}`,
-      );
+      const response = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts`, { headers: await headers() });
+      if (!response.ok) throw new Error(`Request failed (${response.status}).`);
+      const payload = await response.json() as { connectors?: ConnectorMeta[] };
+      setConnectors(payload.connectors || []);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(isAbortError(error) ? "Connector statuses are taking too long to load." : errorMessage(error));
     }
   }, [accessToken, headers]);
 
-  const fetchOdooStatus = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetchWithTimeout(`${API_BASE_URL}/connected-accounts/odoo/status`, { headers: await headers() });
-      if (!res.ok) return;
+  useEffect(() => { void Promise.resolve().then(refresh); }, [refresh]);
 
-      const data = await res.json() as OdooStatus;
-      setOdooStatus(data);
-      if (data.status === "connected" || data.status === "error") {
-        if (data.odoo_url) setOdooUrl(data.odoo_url);
-        if (data.odoo_db) setOdooDb(data.odoo_db);
-        if (data.provider_username) setOdooUsername(data.provider_username);
-      }
-    } catch {
-      // Leave the form empty until the backend status can be read.
+  const selected = connectors?.find(connector => connector.connector_key === selectedId) || null;
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return connectors || [];
+    return (connectors || []).filter(connector => [
+      connector.display_name,
+      connector.subtitle,
+      connector.connector_key,
+      connector.status,
+    ].some(value => String(value || "").toLowerCase().includes(query)));
+  }, [connectors, search]);
+
+  const openConnector = (connector: ConnectorMeta) => {
+    setSelectedId(connector.connector_key);
+    const initial: Record<string, string> = {};
+    for (const field of connector.manifest?.connection_fields || []) {
+      if (!field.secret) initial[field.name] = displayValue(connector.configuration?.[field.name]).replace(/^-$|^null$/, "");
     }
-  }, [accessToken, headers]);
+    setValues(initial);
+    setNotice(null);
+  };
 
-  useEffect(() => {
-    if (!accessToken) return;
-    void Promise.resolve().then(() => Promise.all([fetchOdooStatus(), fetchConnectors()]));
-  }, [accessToken, fetchOdooStatus, fetchConnectors]);
-
-  const isKeyVaultError = (msg: string) =>
-    KV_ERROR_PHRASES.some((phrase) => msg.toLowerCase().includes(phrase));
-
-  const handleConnectOdoo = async (event: FormEvent) => {
+  const connect = async (event: FormEvent) => {
     event.preventDefault();
-    if (!accessToken) return;
-
-    setIsConnecting(true);
-    setConnectorNotice(null);
+    if (!selected) return;
+    setBusy(true);
+    setNotice(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/connect`, {
+      const response = await fetch(`${API_BASE_URL}/connected-accounts/${selected.connector_key}/connect`, {
         method: "POST",
         headers: await headers(),
-        body: JSON.stringify({
-          odoo_url: odooUrl,
-          odoo_db: odooDb,
-          odoo_username: odooUsername,
-          odoo_api_key: odooApiKey,
-        }),
+        body: JSON.stringify({ values }),
       });
-      const data = await res.json() as ApiRecord;
-      if (res.ok) {
-        setSelectedConnector(null);
-        setOdooApiKey("");
-        await Promise.all([fetchOdooStatus(), fetchConnectors()]);
-        return;
+      const payload = await response.json() as { detail?: string | { message?: string } };
+      if (!response.ok) {
+        const message = typeof payload.detail === "string" ? payload.detail : payload.detail?.message;
+        throw new Error(message || `Connection failed (${response.status}).`);
       }
-
-      const rawDetail = data.detail;
-      const detail = rawDetail && typeof rawDetail === "object" ? rawDetail as ApiRecord : {};
-      const detailMessage = typeof rawDetail === "string" ? rawDetail : stringValue(detail.message, "Connection failed.");
-      setConnectorNotice({
-        status: "failed",
-        connector: "odoo",
-        title: isKeyVaultError(detailMessage) ? "Key Vault permission error" : "Connection failed",
-        message: detailMessage,
-        request_id: stringValue(detail.request_id),
-      });
-      await Promise.all([fetchOdooStatus(), fetchConnectors()]);
-    } catch (err) {
-      setConnectorNotice({
-        status: "failed",
-        connector: "odoo",
-        title: "Connection failed",
-        message: `Could not reach backend: ${errorMessage(err)}`,
-      });
+      await refresh();
+      setSelectedId(null);
+      setValues({});
+    } catch (error) {
+      setNotice({ status: "failed", title: "Connection failed", message: errorMessage(error) });
     } finally {
-      setIsConnecting(false);
+      setBusy(false);
     }
   };
 
-  const handleDisconnectOdoo = async () => {
-    if (!accessToken) return;
+  const disconnect = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setNotice(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/connected-accounts/odoo/disconnect`, {
-        method: "POST",
+      const response = await fetch(`${API_BASE_URL}/connected-accounts/${selected.connector_key}`, {
+        method: "DELETE",
         headers: await headers(),
       });
-      if (res.ok) {
-        setOdooUrl("");
-        setOdooDb("");
-        setOdooUsername("");
-        setOdooApiKey("");
-        setConnectorNotice(null);
-      }
-      await Promise.all([fetchOdooStatus(), fetchConnectors()]);
-    } catch {
-      // Ignore transient disconnect errors; the next status refresh will show the current state.
+      if (!response.ok) throw new Error(`Disconnect failed (${response.status}).`);
+      await refresh();
+      setSelectedId(null);
+    } catch (error) {
+      setNotice({ status: "failed", title: "Disconnect failed", message: errorMessage(error) });
+    } finally {
+      setBusy(false);
     }
   };
-
-  const availableConnectors = connectorDefinitions(connectorMeta);
-  const normalizedConnectorSearch = connectorSearch.trim().toLowerCase();
-  const filteredConnectors = normalizedConnectorSearch
-    ? availableConnectors.filter((connector) => {
-      const meta = connectorMeta?.[connector.key];
-      const searchable = [
-        connector.key,
-        connector.name,
-        connector.subtitle,
-        meta?.status,
-        meta?.state?.account_status,
-        meta?.state?.token_status,
-        meta?.metadata?.provider_username,
-      ].filter(Boolean).join(" ").toLowerCase();
-      return searchable.includes(normalizedConnectorSearch);
-    })
-    : availableConnectors;
-  const activeConnector = selectedConnector === "odoo" && availableConnectors.some((connector) => connector.key === "odoo")
-    ? "odoo"
-    : null;
 
   return (
     <div className="settings-page mx-auto flex w-full max-w-6xl flex-col gap-4 pb-8 animate-fade-in">
       <div className="settings-page-header">
         <div className="min-w-0">
           <h2 className="settings-title text-xl">Connectors</h2>
-          <p className="settings-copy mt-1 max-w-2xl text-sm">
-            Connect external systems and expose account-specific context to the AI platform.
-          </p>
+          <p className="settings-copy mt-1 max-w-2xl text-sm">Connect external systems for use in chat and Workspace.</p>
         </div>
-        {connectorStatusError ? (
-          <div className="settings-actions">
-            <Button size="sm" onClick={fetchConnectors}>
-              <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </Button>
-          </div>
-        ) : null}
+        {loadError ? <Button size="sm" onClick={refresh}><RefreshCw className="h-3.5 w-3.5" /> Retry</Button> : null}
       </div>
 
-      {connectorMeta === null && !connectorStatusError ? (
-        <div className="settings-empty">
-          <p className="text-sm text-muted">Loading connectors...</p>
-        </div>
-      ) : null}
+      {loadError ? <div className="settings-inline-alert"><p className="text-sm text-muted">{loadError}</p></div> : null}
+      {connectors === null && !loadError ? <div className="settings-empty"><p className="text-sm text-muted">Loading connectors...</p></div> : null}
 
-      {connectorStatusError ? (
-        <div className="settings-inline-alert">
-          <p className="text-sm text-muted">{connectorStatusError}</p>
-        </div>
-      ) : null}
-
-      {availableConnectors.length > 0 ? (
+      {connectors && connectors.length > 0 ? (
         <>
           <div className="settings-toolbar settings-toolbar-search-only">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
-              <input
-                value={connectorSearch}
-                onChange={(event) => setConnectorSearch(event.target.value)}
-                placeholder="Search connectors..."
-                className="settings-search pl-9"
-              />
+              <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search connectors..." className="settings-search pl-9" />
             </div>
           </div>
-
-          {filteredConnectors.length === 0 ? (
-            <div className="settings-empty">
-              <p className="text-sm text-muted">No connectors match your search.</p>
-            </div>
-          ) : (
-            <div className="settings-list">
-              <div className="settings-list-head connector-grid">
-                <span>Connector</span>
-                <span>Status</span>
-                <span className="text-right">Details</span>
-              </div>
-
-              {filteredConnectors.map((connector) => {
-                const status = connectorMeta?.[connector.key]?.status;
-                return (
-                  <button
-                    key={connector.key}
-                    onClick={() => { setSelectedConnector(connector.key); setConnectorNotice(null); }}
-                    className="settings-list-row connector-grid group w-full text-left"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-default bg-transparent">
-                        <ConnectorLogo connectorKey={connector.key} />
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-extrabold text-default">{connector.name}</span>
-                        <span className="mt-1 block truncate text-xs font-semibold text-muted">{connector.subtitle}</span>
-                      </span>
-                    </div>
-
-                    <div className="flex items-center">
-                      <StatusBadge
-                        status={status}
-                        fallback={connectorStatusError ? "Status Unavailable" : "Checking..."}
-                        hasError={Boolean(connectorStatusError && !status)}
-                      />
-                    </div>
-
-                    <span className="flex justify-end">
-                      <ChevronRight className="h-4 w-4 text-soft transition-colors group-hover:text-default" />
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="settings-list">
+            {filtered.map(connector => (
+              <button key={connector.connector_key} type="button" className="settings-list-row" onClick={() => openConnector(connector)}>
+                <span className="settings-list-icon"><ConnectorLogo connectorKey={connector.connector_key} /></span>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate text-sm font-semibold text-default">{connector.display_name || connector.connector_key}</span>
+                  <span className="block truncate text-xs text-muted">{connector.subtitle}</span>
+                </span>
+                <StatusBadge status={connector.status} fallback="Unknown" />
+                <ChevronRight className="h-4 w-4 text-soft" />
+              </button>
+            ))}
+          </div>
         </>
       ) : null}
 
-      {activeConnector ? (
-        <div className="fixed inset-0 z-50 flex justify-end bg-[color-mix(in_srgb,var(--ui-chat-surface-background)_84%,transparent)] animate-fade-in">
-          <div className="w-full max-w-lg bg-raised border-l border-default overflow-y-auto">
-            <div className="p-4 sm:p-6 border-b border-default flex items-center justify-between">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="p-2 rounded-lg bg-transparent border border-default shrink-0">
-                  <ConnectorLogo connectorKey="odoo" />
-                </div>
-                <h2 className="font-bold text-lg text-default truncate">Odoo</h2>
-              </div>
-              <button
-                onClick={() => { setSelectedConnector(null); setConnectorNotice(null); }}
-                className="p-2 rounded-lg hover-bg-subtle text-muted hover-text-default"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-4 sm:p-6">
-              <OdooConnectorSection
-                odooStatus={odooStatus}
-                odooUrl={odooUrl}
-                odooDb={odooDb}
-                odooUsername={odooUsername}
-                odooApiKey={odooApiKey}
-                isConnecting={isConnecting}
-                onConnect={handleConnectOdoo}
-                onDisconnect={handleDisconnectOdoo}
-                onOdooUrlChange={setOdooUrl}
-                onOdooDbChange={setOdooDb}
-                onOdooUsernameChange={setOdooUsername}
-                onOdooApiKeyChange={setOdooApiKey}
-              />
+      {connectors?.length === 0 ? <div className="settings-empty"><p className="text-sm text-muted">No connector packages are registered.</p></div> : null}
 
-              {connectorNotice ? (
-                <div className={`mt-4 p-3 rounded-lg text-sm border ${panelToneClass(getStatusTone(connectorNotice.status, connectorNotice.status === "failed"))}`}>
-                  <p className={`font-semibold ${panelTitleClass(getStatusTone(connectorNotice.status, connectorNotice.status === "failed"))}`}>
-                    {connectorNotice.title || formatStatusLabel(connectorNotice.connector || "connector")}
-                  </p>
-                  {connectorNotice.message ? <p className="text-muted mt-1">{connectorNotice.message}</p> : null}
-                  {connectorNotice.request_id ? <p className="mt-2 text-xs text-muted">Support reference: {connectorNotice.request_id}</p> : null}
-                </div>
-              ) : null}
+      {selected ? (
+        <div className="settings-detail">
+          <div className="settings-detail-header">
+            <div className="flex min-w-0 items-center gap-3">
+              <ConnectorLogo connectorKey={selected.connector_key} className="h-6 w-6" />
+              <div className="min-w-0">
+                <h3 className="truncate text-base font-semibold text-default">{selected.display_name}</h3>
+                <p className="truncate text-xs text-muted">{selected.subtitle}</p>
+              </div>
             </div>
+            <button type="button" className="icon-button" aria-label="Close connector" onClick={() => setSelectedId(null)}><X className="h-4 w-4" /></button>
+          </div>
+
+          <div className="settings-detail-body space-y-5">
+            {selected.status === "connected" || selected.status === "active" ? (
+              <>
+                <dl className="grid grid-cols-[140px_1fr] gap-x-4 gap-y-2 text-sm">
+                  <dt className="text-muted">Status</dt><dd className="text-default"><StatusBadge status={selected.status} fallback="Connected" /></dd>
+                  <dt className="text-muted">Last verified</dt><dd className="text-default">{formatDateTime(selected.last_verified_at)}</dd>
+                  {Object.entries(selected.configuration || {}).map(([key, value]) => (
+                    <div key={key} className="contents"><dt className="text-muted">{key.replaceAll("_", " ")}</dt><dd className="min-w-0 break-words text-default">{displayValue(value)}</dd></div>
+                  ))}
+                  {Object.entries(selected.metadata || {}).map(([key, value]) => (
+                    <div key={key} className="contents"><dt className="text-muted">{key.replaceAll("_", " ")}</dt><dd className="min-w-0 break-words text-default">{displayValue(value)}</dd></div>
+                  ))}
+                </dl>
+                <Button size="sm" variant="danger" disabled={busy} onClick={disconnect}><Trash2 className="h-3.5 w-3.5" /> Disconnect</Button>
+              </>
+            ) : selected.manifest ? (
+              <form onSubmit={connect} className="space-y-4">
+                {(selected.manifest.connection_fields || []).map(field => (
+                  <label key={field.name} className="block space-y-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-muted">{field.label || field.name}</span>
+                    <TextField
+                      type={fieldInputType(field)}
+                      required={field.required}
+                      placeholder={field.placeholder}
+                      value={values[field.name] || ""}
+                      onChange={event => setValues(current => ({ ...current, [field.name]: event.target.value }))}
+                    />
+                  </label>
+                ))}
+                <Button type="submit" disabled={busy}>{busy ? "Connecting..." : "Verify & Save"}</Button>
+              </form>
+            ) : <p className="text-sm text-muted">{selected.error || "Connector package is unavailable."}</p>}
+
+            {notice ? (
+              <div className={`rounded-lg border p-3 text-sm ${panelToneClass(getStatusTone(notice.status, notice.status === "failed"))}`}>
+                <p className={`font-semibold ${panelTitleClass(getStatusTone(notice.status, notice.status === "failed"))}`}>{notice.title}</p>
+                <p className="mt-1 text-muted">{notice.message}</p>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

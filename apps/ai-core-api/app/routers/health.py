@@ -158,22 +158,20 @@ def _validate_startup_config() -> list:
             "message": "APP_ENV=test disables authentication and must not be used in a deployed environment.",
         })
 
-    # ODOO_CONNECTOR_URL
-    connector_url = os.environ.get("ODOO_CONNECTOR_URL", "")
-    if not connector_url:
+    connector_endpoints = os.environ.get("CONNECTOR_ENDPOINTS_JSON", "")
+    if not connector_endpoints:
         issues.append({
-            "check": "ODOO_CONNECTOR_URL",
+            "check": "CONNECTOR_ENDPOINTS_JSON",
             "status": "FAIL",
-            "message": "ODOO_CONNECTOR_URL is not configured. Odoo integration will not work.",
+            "message": "No connector packages are registered.",
         })
 
-    # ODOO_CONNECTOR_API_KEY
-    connector_key = os.environ.get("ODOO_CONNECTOR_API_KEY", "")
+    connector_key = os.environ.get("CONNECTOR_INTERNAL_API_KEY", "")
     if not connector_key:
         issues.append({
-            "check": "ODOO_CONNECTOR_API_KEY",
+            "check": "CONNECTOR_INTERNAL_API_KEY",
             "status": "FAIL",
-            "message": "ODOO_CONNECTOR_API_KEY is not configured.",
+            "message": "The connector package authentication key is not configured.",
         })
 
     # KEY_VAULT_URI

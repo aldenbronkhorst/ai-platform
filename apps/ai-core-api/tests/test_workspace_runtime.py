@@ -70,7 +70,6 @@ async def test_workspace_can_call_odoo_raw_connector_without_credentials():
 
     assert result["status"] == "success"
     assert result["stdout"].strip() == "7"
-    assert result["odoo_calls"] == 1
     assert result["tool_calls"] == 1
     assert result["connector_calls"] == {"odoo": 1}
     assert calls == [
@@ -104,7 +103,6 @@ async def test_workspace_python_has_call_available_by_default():
 
     assert result["status"] == "success"
     assert result["stdout"].strip() == "11"
-    assert result["odoo_calls"] == 1
     assert calls == [
         (
             "odoo",
@@ -231,7 +229,6 @@ async def test_workspace_uses_raw_odoo_rpc_payloads():
 
     assert result["status"] == "success"
     assert result["stdout"].strip() == "7 Example Partner"
-    assert result["odoo_calls"] == 1
     assert calls == [
         (
             "odoo",

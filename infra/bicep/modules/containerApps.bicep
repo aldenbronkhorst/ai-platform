@@ -147,8 +147,17 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'APP_ENV', value: environment == 'prod' ? 'production' : environment }
             { name: 'VERSION', value: apiImageTag }
             { name: 'API_KEY', secretRef: 'api-key' }
-            { name: 'ODOO_CONNECTOR_URL', value: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}' }
-            { name: 'ODOO_CONNECTOR_API_KEY', secretRef: 'odoo-connector-api-key' }
+            {
+              name: 'CONNECTOR_ENDPOINTS_JSON'
+              value: string({
+                odoo: {
+                  base_url: 'https://${odooConnectorApp.properties.configuration.ingress.fqdn}'
+                  api_key_env: 'CONNECTOR_INTERNAL_API_KEY'
+                  broker_target: 'odoo'
+                }
+              })
+            }
+            { name: 'CONNECTOR_INTERNAL_API_KEY', secretRef: 'odoo-connector-api-key' }
             { name: 'KEY_VAULT_URI', value: keyVaultUri }
             { name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT', value: documentIntelligenceEndpoint }
             { name: 'DOCUMENT_OCR_PROVIDER', value: 'azure_document_intelligence' }

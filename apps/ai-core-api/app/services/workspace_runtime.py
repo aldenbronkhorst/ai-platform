@@ -914,7 +914,6 @@ class WorkspaceSession:
                 "connector_calls": connector_calls,
                 "connector_error_calls": connector_error_calls,
                 "connector_error_details": connector_error_details,
-                "odoo_calls": connector_calls.get("odoo", 0),
                 "workspace_tool_calls_total": self._broker.calls,
                 "connector_calls_total": dict(self._broker.call_counts),
                 "connector_error_calls_total": dict(self._broker.error_counts),
