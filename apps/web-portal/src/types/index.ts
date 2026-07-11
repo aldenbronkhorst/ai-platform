@@ -13,7 +13,7 @@ export interface ChatSession {
   last_message_at: string;
 }
 
-type MessageStatus = "sending" | "pending" | "streaming" | "completed" | "failed" | "tool_running" | "tool_completed";
+type MessageStatus = "sending" | "pending" | "streaming" | "completed" | "failed" | "cancelled" | "tool_running" | "tool_completed";
 
 export interface ChatMessage {
   id: string;

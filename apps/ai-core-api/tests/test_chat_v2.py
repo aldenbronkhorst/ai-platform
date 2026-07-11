@@ -1,5 +1,6 @@
 import os
 import uuid
+from datetime import datetime, timezone
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -242,6 +243,66 @@ class TestChatResponseGuards:
         assert parts[-1]["type"] == "text"
         assert parts[-1]["text"] == content
         assert parts[-1]["text"].count("\n") == content.count("\n")
+
+    def test_final_message_parts_replace_partial_final_text_after_tools(self):
+        from app.routers.chat import _message_parts_with_final_text
+
+        parts = _message_parts_with_final_text(
+            [
+                {"type": "text", "text": "I will check that."},
+                {"type": "tool-call", "toolCallId": "tool:1", "toolName": "workspace"},
+                {"type": "text", "text": "The final answer is par"},
+            ],
+            "The final answer is complete.",
+        )
+
+        assert parts == [
+            {"type": "text", "text": "I will check that."},
+            {"type": "tool-call", "toolCallId": "tool:1", "toolName": "workspace"},
+            {"type": "text", "text": "The final answer is complete."},
+        ]
+
+    def test_final_message_parts_append_answer_after_tool_only_stream(self):
+        from app.routers.chat import _message_parts_with_final_text
+
+        parts = _message_parts_with_final_text(
+            [
+                {"type": "text", "text": "I will check that."},
+                {"type": "tool-call", "toolCallId": "tool:1", "toolName": "workspace"},
+            ],
+            "Done.",
+        )
+
+        assert parts[-1] == {"type": "text", "text": "Done."}
+
+    def test_completed_payload_repairs_old_partial_text_without_losing_tool_order(self):
+        from app.routers.chat import _chat_message_payload
+        from app.models.models import AIChatMessage
+
+        message = AIChatMessage(
+            id=uuid.uuid4(),
+            chat_session_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="assistant",
+            content="The complete final answer.",
+            created_at=datetime.now(timezone.utc),
+            metadata_json={
+                "status": "completed",
+                "message_parts": [
+                    {"type": "text", "text": "I will check that."},
+                    {"type": "tool-call", "toolCallId": "tool:1", "toolName": "workspace"},
+                    {"type": "text", "text": "The complete final"},
+                ],
+            },
+        )
+
+        payload = _chat_message_payload(message)
+
+        assert payload["metadata_json"]["message_parts"] == [
+            {"type": "text", "text": "I will check that."},
+            {"type": "tool-call", "toolCallId": "tool:1", "toolName": "workspace"},
+            {"type": "text", "text": "The complete final answer."},
+        ]
 
     def test_unprocessed_textual_tool_call_is_rejected(self):
         import uuid

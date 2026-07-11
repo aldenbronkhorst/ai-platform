@@ -28,6 +28,7 @@ import {
 import { useStickToBottom } from "use-stick-to-bottom";
 
 import type { ChatAttachment, ChatMessage } from "../../types";
+import { chatMessageParts } from "../../chat/runtime";
 import { cn } from "../../lib/utils";
 import { useEnterAnimation } from "../../lib/use-enter-animation";
 import { useIncrementalExternalStoreRuntime } from "../../lib/incremental-external-store-runtime";
@@ -60,20 +61,6 @@ interface AssistantMessagesProps {
   loadingIndicator?: ReactNode;
   sessionKey?: string | null;
 }
-
-type RuntimePart =
-  | { type: "text"; text: string }
-  | { type: "reasoning"; text: string }
-  | {
-    type: "tool-call";
-    toolCallId: string;
-    toolName: string;
-    args: unknown;
-    argsText: string;
-    result?: unknown;
-    isError?: boolean;
-    durationMs?: number;
-  };
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>["components"];
 
@@ -143,59 +130,6 @@ function text(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function runtimePartsFromMetadata(value: unknown): RuntimePart[] {
-  if (!Array.isArray(value)) return [];
-
-  return value.filter(isRecord).flatMap((part): RuntimePart[] => {
-    if (part.type === "text") {
-      const partText = text(part.text);
-      return partText ? [{ type: "text", text: partText }] : [];
-    }
-    if (part.type === "reasoning") {
-      const partText = text(part.text);
-      return partText ? [{ type: "reasoning", text: partText }] : [];
-    }
-    if (part.type === "tool-call") {
-      const toolCallId = text(part.toolCallId);
-      if (!toolCallId) return [];
-      const next: RuntimePart = {
-        type: "tool-call",
-        toolCallId,
-        toolName: text(part.toolName) || "tool",
-        args: "args" in part ? part.args : {},
-        argsText: text(part.argsText),
-      };
-      if ("result" in part) next.result = part.result;
-      if (typeof part.isError === "boolean") next.isError = part.isError;
-      if (typeof part.durationMs === "number") next.durationMs = part.durationMs;
-      return [next];
-    }
-    return [];
-  });
-}
-
-function messageParts(message: ChatMessage): RuntimePart[] {
-  const metadata = isRecord(message.metadata_json) ? message.metadata_json : {};
-  const parts = runtimePartsFromMetadata(metadata.message_parts);
-  const running = message.status === "pending"
-    || message.status === "sending"
-    || message.status === "streaming"
-    || message.status === "tool_running";
-
-  if (!running && message.content.trim()) {
-    return [
-      ...parts.filter(part => part.type !== "text"),
-      { type: "text", text: message.content },
-    ];
-  }
-
-  const hasText = parts.some(part => part.type === "text" && part.text.trim());
-  if (message.content.trim() && !hasText) {
-    return [...parts, { type: "text", text: message.content }];
-  }
-  return parts;
-}
-
 function messageAttachments(message: ChatMessage): ChatAttachment[] {
   const direct = Array.isArray(message.attachments) ? message.attachments : [];
   if (direct.length) return direct.filter(isChatAttachment);
@@ -248,7 +182,7 @@ function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   return {
     id: message.id,
     role: "assistant",
-    content: messageParts(message) as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: chatMessageParts(message) as Extract<ThreadMessage, { role: "assistant" }>["content"],
     createdAt,
     status: message.status === "failed"
       ? { type: "incomplete", reason: "error", error: message.error_message || "Message failed" }
@@ -765,10 +699,9 @@ function resultFailed(isError: boolean | undefined, result: unknown) {
 }
 
 function durationLabel(value: unknown) {
-  const ms = typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  if (ms === undefined || ms < 0) return "";
-  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
-  const seconds = ms / 1000;
+  const seconds = typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  if (seconds === undefined || seconds < 0) return "";
+  if (seconds < 1) return `${Math.max(1, Math.round(seconds * 1000))}ms`;
   if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
   const wholeSeconds = Math.round(seconds);
   const minutes = Math.floor(wholeSeconds / 60);
@@ -893,9 +826,9 @@ function ToolFallback({ args, argsText, isError, result, status, toolCallId, too
               {title}
             </span>
             {!running && countLabel(result) && <span className="shrink-0 text-[0.625rem] tabular-nums text-[var(--ui-text-tertiary)]">{countLabel(result)}</span>}
-            {!running && durationLabel(resultRecord.duration_ms ?? resultRecord.durationMs ?? resultRecord.duration_s) && (
+            {!running && durationLabel(resultRecord.duration_s) && (
               <span className="shrink-0 text-[0.625rem] tabular-nums text-[var(--ui-text-tertiary)]">
-                {durationLabel(resultRecord.duration_ms ?? resultRecord.durationMs ?? resultRecord.duration_s)}
+                {durationLabel(resultRecord.duration_s)}
               </span>
             )}
           </span>
@@ -1014,6 +947,23 @@ function StreamStallIndicator() {
   );
 }
 
+export function ResponseLoadingIndicator() {
+  const elapsed = useElapsedSeconds();
+
+  return (
+    <div
+      aria-label="AI is loading a response"
+      aria-live="polite"
+      className="flex max-w-full items-center gap-2 self-start text-sm text-muted-foreground/70"
+      data-slot="aui_response-loading"
+      role="status"
+    >
+      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <ActivityTimerText seconds={elapsed} />
+    </div>
+  );
+}
+
 function AssistantMessage({
   onCopyMessage,
   onOpenAttachment,
@@ -1030,8 +980,11 @@ function AssistantMessage({
   );
   const messageRuntime = useMessageRuntime();
   const isRunning = status === "running";
+  const isPlaceholder = useAuiState(s => s.message.status?.type === "running" && s.message.content.length === 0);
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`);
   const liveContent = useCallback(() => runtimeText(messageRuntime.getState().content), [messageRuntime]);
+
+  if (isPlaceholder) return null;
 
   if (status === "incomplete") {
     return (

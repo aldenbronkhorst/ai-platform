@@ -24,7 +24,8 @@ from app.models.models import (
     AIMemory, AIMemoryUsageEvent, AIUsageLog,
 )
 from app.services.artifact import ArtifactService
-from app.services.chat_event_stream import ChatEventWriter
+from app.services.chat_event_stream import ChatEventPersistenceError, ChatEventWriter
+from app.services.chat_turn_recovery import reconcile_session_chat_state
 from app.services.document_processing import is_supported_document
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ DEFAULT_CHAT_TITLE = "New Chat"
 TEXT_TOOL_MARKER_RE = re.compile(r"<\|?tool_call", re.IGNORECASE)
 STREAM_HEARTBEAT_SECONDS = 15
 STREAM_EVENT_POLL_SECONDS = 0.25
+STREAM_TURN_STATE_POLL_SECONDS = 2
 TURN_HEARTBEAT_SECONDS = 5
 TURN_STALE_SECONDS = 45
 ACTIVE_STREAM_TURNS: dict[str, tuple[UUID, UUID, asyncio.Task[None]]] = {}
@@ -232,6 +234,13 @@ async def list_chat_messages(
     session = sess_result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
+
+    await reconcile_session_chat_state(
+        db,
+        session_id,
+        user_id,
+        _utcnow() - timedelta(seconds=TURN_STALE_SECONDS),
+    )
 
     result = await db.execute(
         select(AIChatMessage).where(
@@ -734,10 +743,10 @@ async def _persist_failed_message(
     await db.flush()
 
 
-async def _commit_user_turn_start(db: AsyncSession, session: AIChatSession) -> None:
+async def _touch_user_turn_start(db: AsyncSession, session: AIChatSession) -> None:
     session.last_message_at = _utcnow()
     session.updated_at = _utcnow()
-    await db.commit()
+    await db.flush()
 
 
 async def _run_model_router(
@@ -1070,8 +1079,23 @@ def _upsert_tool_call_part(parts: list[dict[str, Any]], event: dict[str, Any]) -
 def _message_parts_with_final_text(parts: list[dict[str, Any]] | None, content: str) -> list[dict[str, Any]] | None:
     next_parts = [dict(part) for part in (parts or []) if isinstance(part, dict)]
     text = str(content or "")
-    if text and not any(part.get("type") == "text" and _safe_text(part.get("text"), 1).strip() for part in next_parts):
-        next_parts.append({"type": "text", "text": text})
+    if text:
+        last_tool_index = max(
+            (index for index, part in enumerate(next_parts) if part.get("type") == "tool-call"),
+            default=-1,
+        )
+        final_text_index = next(
+            (
+                index
+                for index in range(len(next_parts) - 1, last_tool_index, -1)
+                if next_parts[index].get("type") == "text"
+            ),
+            None,
+        )
+        if final_text_index is None:
+            next_parts.append({"type": "text", "text": text})
+        else:
+            next_parts[final_text_index]["text"] = text
     return _compact_message_parts(next_parts)
 
 
@@ -1216,12 +1240,62 @@ async def _persist_generated_files(
         ))
 
 
+async def _prepare_chat_turn(
+    db: AsyncSession,
+    session_id: UUID,
+    req: ChatMessageCreate,
+    request_id: str,
+    user_id: UUID,
+) -> tuple[UUID, UUID]:
+    """Persist the visible turn before execution leaves the request process."""
+    session = await _get_owned_session(db, session_id, user_id)
+    if req.replace_message_id:
+        await _truncate_conversation_from_message(db, session, req.replace_message_id, user_id)
+    artifacts = await _owned_artifacts_for_chat(db, user_id, req.artifact_ids or [])
+    user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
+    pending_assistant_msg = await _persist_pending_assistant_message(
+        db,
+        session_id,
+        user_id,
+        req.content,
+        request_id,
+        len(artifacts),
+    )
+    _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
+    await _touch_user_turn_start(db, session)
+    return user_msg.id, pending_assistant_msg.id
+
+
+async def _prepared_chat_messages(
+    db: AsyncSession,
+    session_id: UUID,
+    user_id: UUID,
+    user_message_id: UUID,
+    assistant_message_id: UUID,
+) -> tuple[AIChatMessage, AIChatMessage]:
+    result = await db.execute(
+        select(AIChatMessage).where(
+            AIChatMessage.id.in_([user_message_id, assistant_message_id]),
+            AIChatMessage.chat_session_id == session_id,
+            AIChatMessage.user_id == user_id,
+        )
+    )
+    by_id = {message.id: message for message in result.scalars().all()}
+    user_msg = by_id.get(user_message_id)
+    assistant_msg = by_id.get(assistant_message_id)
+    if user_msg is None or user_msg.role != "user" or assistant_msg is None or assistant_msg.role != "assistant":
+        raise RuntimeError("Prepared chat turn messages could not be loaded.")
+    return user_msg, assistant_msg
+
+
 async def _process_chat_turn(
     db: AsyncSession,
     session_id: UUID,
     req: ChatMessageCreate,
     request_id: str,
     user_id: UUID,
+    user_message_id: UUID,
+    assistant_message_id: UUID,
     agent_event_sink=None,
 ) -> AIChatMessage:
     message_parts: list[dict[str, Any]] = []
@@ -1247,19 +1321,14 @@ async def _process_chat_turn(
             agent_event_sink(event)
 
     session = await _get_owned_session(db, session_id, user_id)
-    if req.replace_message_id:
-        await _truncate_conversation_from_message(db, session, req.replace_message_id, user_id)
-    artifacts = await _owned_artifacts_for_chat(db, user_id, req.artifact_ids or [])
-    user_msg = await _persist_user_message(db, session_id, user_id, req.content, request_id)
-    pending_assistant_msg = await _persist_pending_assistant_message(
+    user_msg, pending_assistant_msg = await _prepared_chat_messages(
         db,
         session_id,
         user_id,
-        req.content,
-        request_id,
-        len(artifacts),
+        user_message_id,
+        assistant_message_id,
     )
-    _link_chat_artifacts(db, session_id, user_msg.id, artifacts)
+    artifacts = await _owned_artifacts_for_chat(db, user_id, req.artifact_ids or [])
 
     attachment_context = await _attachment_context(db, artifacts)
     previous_artifacts = await _session_artifacts(
@@ -1279,7 +1348,6 @@ async def _process_chat_turn(
             _join_context_blocks(attachment_context, session_artifact_context),
         ),
     )
-    await _commit_user_turn_start(db, session)
     if agent_event_sink:
         attachment_payloads = [
             {
@@ -1420,6 +1488,25 @@ async def _events_after(session_id: UUID, user_id: UUID, cursor: int) -> list[AI
         return list(result.scalars().all())
 
 
+async def _reconciled_latest_turn_state(session_id: UUID, user_id: UUID) -> tuple[str, str] | None:
+    async with AsyncSessionLocal() as turn_db:
+        await reconcile_session_chat_state(
+            turn_db,
+            session_id,
+            user_id,
+            _utcnow() - timedelta(seconds=TURN_STALE_SECONDS),
+        )
+        result = await turn_db.execute(
+            select(AIChatTurn).where(
+                AIChatTurn.chat_session_id == session_id,
+                AIChatTurn.user_id == user_id,
+            ).order_by(AIChatTurn.started_at.desc()).limit(1)
+        )
+        turn = result.scalar_one_or_none()
+        await turn_db.commit()
+        return (turn.request_id, turn.status) if turn else None
+
+
 def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     payload = ChatMessageResponse.model_validate(message, from_attributes=True).model_dump()
     metadata = payload.get("metadata_json") if isinstance(payload.get("metadata_json"), dict) else {}
@@ -1427,6 +1514,17 @@ def _chat_message_payload(message: AIChatMessage, attachments: list[dict[str, An
         metadata = {key: value for key, value in metadata.items() if key != "model_history"}
         payload["metadata_json"] = metadata
     status_value = str(metadata.get("status") or "").strip()
+    if (
+        message.role == "assistant"
+        and not metadata.get("failed")
+        and status_value not in {"pending", "sending", "streaming", "tool_running", "cancelled"}
+        and (message.content or "").strip()
+    ):
+        metadata["message_parts"] = _message_parts_with_final_text(
+            metadata.get("message_parts") if isinstance(metadata.get("message_parts"), list) else None,
+            message.content,
+        )
+        payload["metadata_json"] = metadata
     if metadata.get("failed"):
         payload["status"] = "failed"
         payload["error_message"] = json.dumps({
@@ -1493,6 +1591,9 @@ async def _reserve_chat_turn(
     user_id: UUID,
     request_id: str,
 ) -> tuple[AIChatTurn, bool]:
+    stale_before = _utcnow() - timedelta(seconds=TURN_STALE_SECONDS)
+    await reconcile_session_chat_state(db, session_id, user_id, stale_before)
+
     existing_result = await db.execute(select(AIChatTurn).where(AIChatTurn.request_id == request_id))
     existing = existing_result.scalar_one_or_none()
     if existing is not None:
@@ -1500,16 +1601,6 @@ async def _reserve_chat_turn(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Request ID is already in use")
         return existing, False
 
-    stale_before = _utcnow() - timedelta(seconds=TURN_STALE_SECONDS)
-    await db.execute(
-        update(AIChatTurn)
-        .where(
-            AIChatTurn.chat_session_id == session_id,
-            AIChatTurn.status == "active",
-            AIChatTurn.updated_at < stale_before,
-        )
-        .values(status="failed", updated_at=_utcnow())
-    )
     turn = AIChatTurn(
         request_id=request_id,
         chat_session_id=session_id,
@@ -1521,7 +1612,7 @@ async def _reserve_chat_turn(
     )
     db.add(turn)
     try:
-        await db.commit()
+        await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         active_result = await db.execute(
@@ -1542,25 +1633,45 @@ async def _reserve_chat_turn(
     return turn, True
 
 
-async def _mark_cancelled_assistant(session_id: UUID, user_id: UUID, request_id: str) -> None:
+async def _mark_terminal_assistant(
+    session_id: UUID,
+    user_id: UUID,
+    request_id: str,
+    terminal_status: str,
+    *,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> None:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(AIChatMessage).where(
                 AIChatMessage.chat_session_id == session_id,
                 AIChatMessage.user_id == user_id,
                 AIChatMessage.role == "assistant",
-            ).order_by(AIChatMessage.created_at.desc())
+                AIChatMessage.metadata_json["request_id"].as_string() == request_id,
+            ).order_by(AIChatMessage.created_at.desc()).limit(1)
         )
-        for message in result.scalars().all():
-            metadata = dict(message.metadata_json or {})
-            if metadata.get("request_id") != request_id:
-                continue
-            metadata["status"] = "cancelled"
-            metadata["cancelled"] = True
-            message.metadata_json = metadata
-            message.updated_at = _utcnow()
-            await db.commit()
+        message = result.scalar_one_or_none()
+        if message is None:
             return
+
+        metadata = dict(message.metadata_json or {})
+        if terminal_status == "failed" and metadata.get("status") == "completed":
+            return
+
+        metadata["status"] = terminal_status
+        metadata.pop("progress_context", None)
+        if terminal_status == "cancelled":
+            metadata["cancelled"] = True
+        elif terminal_status == "failed":
+            metadata.update({
+                "failed": True,
+                "error_type": error_type or "server_error",
+                "error_message": error_message or "Something went wrong while generating the response.",
+            })
+        message.metadata_json = metadata
+        message.updated_at = _utcnow()
+        await db.commit()
 
 
 async def _run_detached_turn(
@@ -1568,6 +1679,8 @@ async def _run_detached_turn(
     req: ChatMessageCreate,
     request_id: str,
     user_id: UUID,
+    user_message_id: UUID,
+    assistant_message_id: UUID,
 ) -> None:
     writer = ChatEventWriter(session_id, user_id, request_id)
     writer.start()
@@ -1582,6 +1695,8 @@ async def _run_detached_turn(
                 req,
                 request_id,
                 user_id,
+                user_message_id,
+                assistant_message_id,
                 writer.emit_agent_event,
             )
             attachments_by_message = await _attachments_by_message(db, [assistant_msg.id])
@@ -1594,15 +1709,34 @@ async def _run_detached_turn(
                 writer.emit("session.title", {"session_id": str(session_id), "title": title})
     except asyncio.CancelledError:
         turn_status = "cancelled"
-        await _mark_cancelled_assistant(session_id, user_id, request_id)
+        await _mark_terminal_assistant(session_id, user_id, request_id, "cancelled")
         writer.emit("message.cancelled", {"request_id": request_id})
         raise
     except HTTPException as exc:
         turn_status = "failed"
-        writer.emit("error", exc.detail if isinstance(exc.detail, dict) else {"error_message": str(exc.detail)})
+        detail = exc.detail if isinstance(exc.detail, dict) else {"error_message": str(exc.detail)}
+        error_type = str(detail.get("error_type") or "server_error")
+        error_message = str(detail.get("error_message") or "Something went wrong while generating the response.")
+        await _mark_terminal_assistant(
+            session_id,
+            user_id,
+            request_id,
+            "failed",
+            error_type=error_type,
+            error_message=error_message,
+        )
+        writer.emit("error", detail)
     except Exception as exc:
         turn_status = "failed"
         logger.exception("Detached chat turn failed | request_id=%s", request_id)
+        await _mark_terminal_assistant(
+            session_id,
+            user_id,
+            request_id,
+            "failed",
+            error_type="server_error",
+            error_message="Something went wrong while generating the response. Please try again.",
+        )
         writer.emit(
             "error",
             {
@@ -1618,7 +1752,10 @@ async def _run_detached_turn(
             await asyncio.gather(heartbeat_task, return_exceptions=True)
         writer.emit("turn.complete", {"request_id": request_id})
         try:
-            await writer.close()
+            try:
+                await writer.close()
+            except ChatEventPersistenceError:
+                logger.exception("Chat events could not be persisted | request_id=%s", request_id)
         finally:
             await _finish_chat_turn(request_id, turn_status)
 
@@ -1679,12 +1816,26 @@ async def start_chat_turn(
             AIChatEvent.request_id != request_id,
         )
     )
+    user_message_id, assistant_message_id = await _prepare_chat_turn(
+        db,
+        session_id,
+        req,
+        request_id,
+        user_id,
+    )
     await db.commit()
     active = ACTIVE_STREAM_TURNS.get(request_id)
     if active and not active[2].done():
         return {"request_id": request_id, "accepted": True}
 
-    task = asyncio.create_task(_run_detached_turn(session_id, req, request_id, user_id))
+    task = asyncio.create_task(_run_detached_turn(
+        session_id,
+        req,
+        request_id,
+        user_id,
+        user_message_id,
+        assistant_message_id,
+    ))
     ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
     task.add_done_callback(lambda done_task: _stream_task_done(request_id, session_id, done_task))
     return {"request_id": request_id, "accepted": True}
@@ -1709,6 +1860,7 @@ async def stream_chat_events(
 
         heartbeat_started = _utcnow()
         last_activity = asyncio.get_running_loop().time()
+        last_turn_state_check = 0.0
         while not await request.is_disconnected():
             events = await _finish_database_read(_events_after(session_id, user_id, cursor))
 
@@ -1722,6 +1874,15 @@ async def stream_chat_events(
                 continue
 
             now = asyncio.get_running_loop().time()
+            if now - last_turn_state_check >= STREAM_TURN_STATE_POLL_SECONDS:
+                turn_state = await _finish_database_read(_reconciled_latest_turn_state(session_id, user_id))
+                last_turn_state_check = now
+                if turn_state and turn_state[1] != "active":
+                    yield _sse("turn.complete", {
+                        "request_id": turn_state[0],
+                        "synthetic": True,
+                    }, cursor or None)
+                    return
             if now - last_activity >= STREAM_HEARTBEAT_SECONDS:
                 yield _sse("heartbeat", _stream_heartbeat_payload("", heartbeat_started), cursor or None)
                 last_activity = now

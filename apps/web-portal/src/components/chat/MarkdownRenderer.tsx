@@ -203,24 +203,13 @@ const REVEAL_DRAIN_MS = 500;
 const REVEAL_MAX_CHARS_PER_FRAME = 30;
 const REVEAL_MIN_COMMIT_MS = 33;
 
-function commonPrefixLength(left: string, right: string): number {
-  const max = Math.min(left.length, right.length);
-  let index = 0;
-  while (index < max && left[index] === right[index]) {
-    index += 1;
-  }
-  return index;
-}
-
 function useSmoothReveal(text: string, isRunning: boolean): string {
-  const [displayed, setDisplayed] = useState(text);
+  const [displayed, setDisplayed] = useState(isRunning ? "" : text);
   const targetRef = useRef(text);
   const shownRef = useRef(displayed);
   const frameRef = useRef<number | null>(null);
   const lastTickRef = useRef(0);
 
-  // Hermes keeps these refs synchronized with the current render so the
-  // streaming child always drains from the latest text, not a stale effect.
   // eslint-disable-next-line react-hooks/refs
   shownRef.current = displayed;
   // eslint-disable-next-line react-hooks/refs
@@ -229,19 +218,8 @@ function useSmoothReveal(text: string, isRunning: boolean): string {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    if (!isRunning) {
-      if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
-        frameRef.current = null;
-      }
-      shownRef.current = text;
-      const id = window.setTimeout(() => setDisplayed(text), 0);
-      return () => window.clearTimeout(id);
-    }
-
     if (!text.startsWith(shownRef.current)) {
-      const prefixLength = commonPrefixLength(shownRef.current, text);
-      shownRef.current = targetRef.current.slice(0, prefixLength);
+      shownRef.current = isRunning ? "" : text;
       setDisplayed(shownRef.current);
     }
 
@@ -283,7 +261,7 @@ function useSmoothReveal(text: string, isRunning: boolean): string {
     [],
   );
 
-  return isRunning ? displayed : text;
+  return displayed;
 }
 
 function SmoothStreamingText({ children }: { children: ReactNode }) {

@@ -64,6 +64,7 @@ jobs:
         run: |
           cd apps/web-portal
           npm ci --workspaces=false
+          npm run test --workspaces=false
           npm run lint --workspaces=false
           npm run build --workspaces=false
 

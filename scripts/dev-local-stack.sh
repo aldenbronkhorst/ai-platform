@@ -33,7 +33,25 @@ DOCUMENT_OCR_READ_MODEL_ID="${DOCUMENT_OCR_READ_MODEL_ID:-prebuilt-read}"
 DOCUMENT_OCR_LAYOUT_MODEL_ID="${DOCUMENT_OCR_LAYOUT_MODEL_ID:-prebuilt-layout}"
 
 LOG_DIR="$ROOT_DIR/.local/logs"
-mkdir -p "$LOG_DIR"
+RUN_DIR="$ROOT_DIR/.local/run"
+STACK_LOCK_FILE="$RUN_DIR/dev-local-stack.pid"
+STACK_LOCK_HELD=false
+mkdir -p "$LOG_DIR" "$RUN_DIR"
+
+release_stack_lock() {
+  if [[ "$STACK_LOCK_HELD" == true && -f "$STACK_LOCK_FILE" && "$(cat "$STACK_LOCK_FILE")" == "$$" ]]; then
+    rm -f "$STACK_LOCK_FILE"
+  fi
+  STACK_LOCK_HELD=false
+}
+
+acquire_stack_lock() {
+  if ! shlock -f "$STACK_LOCK_FILE" -p "$$"; then
+    echo "The local AI Platform is already starting or running (PID $(cat "$STACK_LOCK_FILE" 2>/dev/null || echo unknown))." >&2
+    exit 1
+  fi
+  STACK_LOCK_HELD=true
+}
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -219,6 +237,7 @@ cleanup() {
     fi
   done
   wait >/dev/null 2>&1 || true
+  release_stack_lock
   exit "$code"
 }
 
@@ -227,6 +246,10 @@ require_command curl
 require_command lsof
 require_command npm
 require_command python3
+require_command shlock
+
+acquire_stack_lock
+trap release_stack_lock EXIT
 
 require_free_port "$API_PORT" api
 require_free_port "$ODOO_PORT" odoo
@@ -301,10 +324,11 @@ fi
 echo "Starting local Odoo connector on http://127.0.0.1:$ODOO_PORT ..."
 (
   cd "$ODOO_CONNECTOR_DIR"
-  APP_ENV=development \
-  DEBUG=false \
-  INTERNAL_API_KEY="$ODOO_CONNECTOR_API_KEY" \
-  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "$ODOO_PORT" ${UVICORN_RELOAD_ARG:+"$UVICORN_RELOAD_ARG"}
+  exec env \
+    APP_ENV=development \
+    DEBUG=false \
+    INTERNAL_API_KEY="$ODOO_CONNECTOR_API_KEY" \
+    .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "$ODOO_PORT" ${UVICORN_RELOAD_ARG:+"$UVICORN_RELOAD_ARG"}
 ) >"$LOG_DIR/odoo-connector.log" 2>&1 &
 PIDS+=("$!")
 
@@ -313,7 +337,7 @@ wait_for_url "http://127.0.0.1:$ODOO_PORT/health" "Odoo connector" "$ODOO_STARTU
 echo "Starting local AI core API on http://127.0.0.1:$API_PORT ..."
 (
   cd "$ROOT_DIR/apps/ai-core-api"
-  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" ${UVICORN_RELOAD_ARG:+"$UVICORN_RELOAD_ARG"}
+  exec .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" ${UVICORN_RELOAD_ARG:+"$UVICORN_RELOAD_ARG"}
 ) >"$LOG_DIR/ai-core-api.log" 2>&1 &
 PIDS+=("$!")
 
@@ -322,10 +346,11 @@ wait_for_url "http://127.0.0.1:$API_PORT/health/ready" "AI core API" "$API_START
 echo "Starting local web portal on http://localhost:$WEB_PORT ..."
 (
   cd "$ROOT_DIR/apps/web-portal"
-  VITE_API_BASE_URL="http://localhost:$API_PORT" \
-  VITE_ENTRA_CLIENT_ID="$PORTAL_CLIENT_ID" \
-  VITE_ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
-  npm run dev -- --host 127.0.0.1 --port "$WEB_PORT"
+  exec env \
+    VITE_API_BASE_URL="http://localhost:$API_PORT" \
+    VITE_ENTRA_CLIENT_ID="$PORTAL_CLIENT_ID" \
+    VITE_ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+    ./node_modules/.bin/vite --host 127.0.0.1 --port "$WEB_PORT" --strictPort
 ) >"$LOG_DIR/web-portal.log" 2>&1 &
 PIDS+=("$!")
 
