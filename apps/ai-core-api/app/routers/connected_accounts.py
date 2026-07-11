@@ -148,9 +148,8 @@ async def _delete_secret(name: str | None) -> None:
         return
     try:
         await delete_secret(name)
-    except Exception as exc:
-        if "SecretNotFound" not in str(exc) and "NotFound" not in str(exc):
-            logger.warning("Could not delete connected-account secret %s: %s", name, exc)
+    except Exception:
+        logger.warning("Could not delete connected-account credential")
 
 
 @router.get("")
@@ -165,8 +164,8 @@ async def get_connected_accounts(
         try:
             manifest = await load_connector_manifest(connector_id)
             connectors.append(_account_payload(connector_id, manifest, accounts.get(connector_id)))
-        except Exception as exc:
-            logger.warning("Connector manifest unavailable | connector=%s error=%s", connector_id, exc)
+        except Exception:
+            logger.warning("Connector manifest unavailable | connector=%s", connector_id)
             connectors.append({
                 "connector_key": connector_id,
                 "display_name": connector_id.replace("_", " ").title(),
@@ -178,7 +177,7 @@ async def get_connected_accounts(
                 "configuration": {},
                 "metadata": {},
                 "identity": {},
-                "error": str(exc),
+                "error": "Connector package could not be reached.",
             })
     return {"connectors": connectors}
 

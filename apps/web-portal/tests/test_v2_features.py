@@ -446,18 +446,19 @@ def test_connections_page_does_not_load_backend_platform_tools():
     assert "canonicalPlatformTools" not in content
 
 
-def test_connections_page_is_odoo_only_and_has_no_removed_connector_flows():
+def test_connections_page_is_manifest_driven_and_has_no_removed_connector_flows():
     page_path = os.path.join(SRC_DIR, "pages", "ConnectionsPage.tsx")
     with open(page_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "OdooConnectorSection" in content
+    assert "OdooConnectorSection" not in content
+    assert "selected.manifest.connection_fields" in content
+    assert '`${API_BASE_URL}/connected-accounts`' in content
     assert "MICROSOFT_CONSENT_STEPS" not in content
     assert "Authorize Missing Profiles" not in content
     assert "microsoft_admin" not in content
     assert "CONNECTOR_FALLBACKS" not in content
     assert "CONNECTOR_FALLBACK_BY_KEY" not in content
-    assert "connectorDefinitions(meta: Record<string, ConnectorMeta> | null)" in content
     assert "/connector/microsoft-native/" not in content
     assert "/connector/github/" not in content
     assert "azure_cli" not in content
