@@ -4,7 +4,7 @@ import os
 import re
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import UUID
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -32,7 +32,7 @@ from app.services.model_tool_calls import (
 from app.services.tool_guidance import tool_guidance_payload, tool_skill_markdown
 from app.services.workspace_runtime import WORKSPACE_TOOL_NAME, WorkspaceSession, run_workspace
 from app.services.agent_tool_executor import execute_model_tool_calls
-from app.services.context_compressor import prepare_conversation_context
+from app.services.context_compressor import prepare_conversation_context, prepare_tool_loop_context
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,9 @@ MAX_TOOL_STDIO_STRING_CHARS = 20000
 MAX_TOOL_RESULT_LIST_ITEMS = 5
 MAX_TOOL_RESULT_RECORD_ITEMS = 120
 MAX_TOOL_RESULT_DICT_KEYS = 60
-MAX_TOOL_RESULT_JSON_CHARS = 350000
+MAX_TOOL_RESULT_JSON_CHARS = 100000
+MAX_TOOL_RESULT_TURN_CHARS = 200000
+MAX_TOOL_RESULT_PREVIEW_CHARS = 1500
 DOCUMENT_READER_DEFAULT_LIMIT = 500
 DOCUMENT_READER_MAX_LIMIT = 2000
 DOCUMENT_READER_MAX_CHARS = 100000
@@ -830,20 +832,55 @@ def _compact_document_reader_result(result: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(compact, ensure_ascii=False, default=str))
 
 
-def _compact_tool_result_for_model(result: Any) -> Any:
-    if isinstance(result, dict) and result.get("tool_name") == "document_reader":
-        return _compact_document_reader_result(result)
+def _tool_result_budgets(context_window: int | None) -> tuple[int, int]:
+    window_chars = max(16_000, int(context_window or 128_000)) * 4
+    per_result = max(8_000, min(MAX_TOOL_RESULT_JSON_CHARS, int(window_chars * 0.15)))
+    per_turn = max(16_000, min(MAX_TOOL_RESULT_TURN_CHARS, int(window_chars * 0.30)))
+    return per_result, per_turn
 
-    compacted = _compact_tool_value(result)
+
+def _compact_tool_result_for_model(result: Any, max_chars: int = MAX_TOOL_RESULT_JSON_CHARS) -> Any:
+    compacted = (
+        _compact_document_reader_result(result)
+        if isinstance(result, dict) and result.get("tool_name") == "document_reader"
+        else _compact_tool_value(result)
+    )
     payload = json.dumps(compacted, ensure_ascii=False, default=str)
     serializable = json.loads(payload)
-    if len(payload) <= MAX_TOOL_RESULT_JSON_CHARS:
+    if len(payload) <= max_chars:
         return serializable
     return {
         "summary": "Tool result was too large and was compacted before model follow-up.",
-        "result_preview": _truncate_tool_text(payload, MAX_TOOL_RESULT_JSON_CHARS),
+        "result_preview": _truncate_tool_text(payload, min(max_chars, MAX_TOOL_RESULT_PREVIEW_CHARS)),
         "original_compacted_chars": len(payload),
+        "hint": "Use a narrower query, paging, or a Workspace output file to inspect the omitted result.",
     }
+
+
+def _enforce_tool_result_turn_budget(
+    executed_calls: list[Any],
+    max_chars: int,
+) -> list[Any]:
+    serialized = [json.dumps(call.model_result, ensure_ascii=False, default=str) for call in executed_calls]
+    total = sum(len(value) for value in serialized)
+    if total <= max_chars:
+        return executed_calls
+
+    result = list(executed_calls)
+    for index in sorted(range(len(serialized)), key=lambda item: len(serialized[item]), reverse=True):
+        if total <= max_chars:
+            break
+        content = serialized[index]
+        replacement = {
+            "summary": "Tool results in this step exceeded the model context budget.",
+            "result_preview": _truncate_tool_text(content, MAX_TOOL_RESULT_PREVIEW_CHARS),
+            "original_compacted_chars": len(content),
+            "hint": "Use a narrower query, paging, or a Workspace output file to inspect the omitted result.",
+        }
+        replacement_chars = len(json.dumps(replacement, ensure_ascii=False, default=str))
+        total += replacement_chars - len(content)
+        result[index] = replace(result[index], model_result=replacement)
+    return result
 
 
 def _tool_message_content(compacted_result: Any) -> str:
@@ -1040,6 +1077,7 @@ def _append_tool_guidance(system_prompt: str, tools: list[AITool], tool_definiti
         guidance_parts.append(
             "\n\n### Workspace\n"
             "Workspace runs Python and shell/terminal code with session files and brokered connected-system access. "
+            "Each Workspace call is a fresh process: files persist within the turn, but Python variables and imports do not. "
             "Python provides `call`, `call_raw`, `list_files`, `file_info`, `download_file`, `read_document`, "
             "`read_tables`, `read_layout`, `save_output`, and `output_path`. Shell provides `ai-platform-tool`. "
             "Connected-system calls run with the user's saved credentials and permissions. Save user-facing files under "
@@ -1365,6 +1403,57 @@ async def _run_model_once(
     return ModelCallState(result=result, used_model=model, used_provider=provider, client=client, stats=stats)
 
 
+def _blank_model_result(result: dict[str, Any]) -> bool:
+    return bool(
+        not result.get("error")
+        and not result.get("tool_calls")
+        and not str(result.get("content") or "").strip()
+    )
+
+
+async def _recover_blank_model_result(
+    state: ModelCallState,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int,
+    tool_definitions: list[dict[str, Any]],
+    *,
+    after_tools: bool,
+    trace_svc: Any = None,
+    stream_event_sink: Optional[Any] = None,
+) -> None:
+    """Give a successful-but-empty provider response one Hermes-style continuation."""
+    if not _blank_model_result(state.result):
+        return
+
+    nudge = (
+        "You just executed tool calls but returned an empty response. Please process the tool results above "
+        "and continue with the task."
+        if after_tools
+        else "Your previous response was empty. Please answer the user's latest request now."
+    )
+    recovery_messages = [
+        *messages,
+        {"role": "assistant", "content": "(empty)"},
+        {"role": "user", "content": nudge},
+    ]
+    result, client = await _call_model(
+        state.used_model,
+        state.used_provider,
+        recovery_messages,
+        temperature,
+        max_tokens,
+        tool_definitions,
+        trace_svc=trace_svc,
+        attempt_reason="empty_after_tools_recovery" if after_tools else "empty_response_recovery",
+        client=state.client,
+        stream_event_sink=stream_event_sink,
+    )
+    state.result = result
+    state.client = client
+    state.stats.add_result(result)
+
+
 async def _run_tool_loop(
     db: AsyncSession,
     user_id: Optional[UUID],
@@ -1374,6 +1463,8 @@ async def _run_tool_loop(
     tool_definitions: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
+    turn_history_start: int | None = None,
+    context_window: int | None = None,
     trace_svc: Any = None,
     stream_event_sink: Optional[Any] = None,
     workspace_artifacts: list[dict[str, Any]] | None = None,
@@ -1381,6 +1472,45 @@ async def _run_tool_loop(
     tool_results: list[dict[str, Any]] = []
     generated_files: list[dict[str, Any]] = []
     workspace_session: WorkspaceSession | None = None
+    turn_history_start = len(messages) if turn_history_start is None else turn_history_start
+    context_compactions = 0
+    blank_recovery_used = False
+    per_result_budget, per_turn_budget = _tool_result_budgets(context_window)
+
+    async def prepare_next_model_context(next_tool_definitions: list[dict[str, Any]]) -> None:
+        nonlocal context_compactions
+
+        async def summarize_context(summary_messages: list[dict[str, Any]], summary_tokens: int) -> dict[str, Any]:
+            nonlocal context_compactions
+            if context_compactions >= 3:
+                return {"error": True, "error_type": "context_compaction_limit"}
+            summary_result, client = await _call_model(
+                state.used_model,
+                state.used_provider,
+                summary_messages,
+                0.0,
+                summary_tokens,
+                [],
+                trace_svc=trace_svc,
+                attempt_reason="tool_context_compaction",
+                client=state.client,
+            )
+            state.client = client
+            return summary_result
+
+        prepared = await prepare_tool_loop_context(
+            messages=messages,
+            turn_history_start=turn_history_start,
+            tool_definitions=next_tool_definitions,
+            context_window=context_window,
+            max_output_tokens=max_tokens,
+            summarize=summarize_context,
+        )
+        messages[:] = prepared.messages
+        if prepared.summary_result and prepared.summary_result.get("prompt_tokens") is not None:
+            state.stats.add_result(prepared.summary_result)
+        if prepared.compacted:
+            context_compactions += 1
 
     async def workspace_tool_executor(nested_tool_name: str, nested_arguments: dict[str, Any]) -> dict[str, Any]:
         return await _execute_tool_call_impl(
@@ -1418,6 +1548,7 @@ async def _run_tool_loop(
                         "without calling any more tools."
                     ),
                 })
+                await prepare_next_model_context([])
                 result, client = await _call_model(
                     state.used_model,
                     state.used_provider,
@@ -1479,9 +1610,10 @@ async def _run_tool_loop(
                 tool_calls,
                 exposed_tool_names=exposed_tool_names,
                 run_tool=run_exposed_tool,
-                compact_result=_compact_tool_result_for_model,
+                compact_result=lambda result: _compact_tool_result_for_model(result, per_result_budget),
                 serial_tool_names={WORKSPACE_TOOL_NAME},
             )
+            executed_tool_calls = _enforce_tool_result_turn_budget(executed_tool_calls, per_turn_budget)
             for executed in executed_tool_calls:
                 if executed.tool_name in exposed_tool_names:
                     generated_files.extend(_workspace_generated_files(executed.raw_result))
@@ -1520,6 +1652,7 @@ async def _run_tool_loop(
                     "content": _tool_message_content(executed.model_result),
                 })
 
+            await prepare_next_model_context(tool_definitions)
             result, client = await _call_model(
                 state.used_model,
                 state.used_provider,
@@ -1535,6 +1668,18 @@ async def _run_tool_loop(
             state.result = result
             state.client = client
             state.stats.add_result(state.result)
+            if _blank_model_result(state.result) and not blank_recovery_used:
+                blank_recovery_used = True
+                await _recover_blank_model_result(
+                    state,
+                    messages,
+                    temperature,
+                    max_tokens,
+                    tool_definitions,
+                    after_tools=True,
+                    trace_svc=trace_svc,
+                    stream_event_sink=stream_event_sink,
+                )
     finally:
         if workspace_session is not None:
             await workspace_session.__aexit__(None, None, None)
@@ -1763,10 +1908,22 @@ async def execute_chat(
     )
     if prepared_context.summary_result:
         state.stats.add_result(prepared_context.summary_result)
+    await _recover_blank_model_result(
+        state,
+        full_messages,
+        temperature,
+        max_tokens,
+        tool_definitions,
+        after_tools=False,
+        trace_svc=trace_svc,
+        stream_event_sink=stream_event_sink,
+    )
     turn_history_start = len(full_messages)
     tool_results: list[dict[str, Any]] = []
     tool_results.extend(await _run_tool_loop(
         db, user_id, state, full_messages, tools, tool_definitions, temperature, max_tokens,
+        turn_history_start=turn_history_start,
+        context_window=model_obj.context_window,
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
         workspace_artifacts=workspace_artifacts,

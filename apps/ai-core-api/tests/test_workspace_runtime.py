@@ -678,6 +678,8 @@ async def test_workspace_surfaces_runtime_exception_cleanly():
     assert result["status"] == "failed"
     assert result["timed_out"] is False
     assert result["exit_code"] not in (0, None)
+    assert result["error_type"] == "workspace_process_error"
+    assert result["message"] == "ValueError: boom"
     assert "ValueError" in result["stderr"]
     assert "boom" in result["stderr"]
 
@@ -690,3 +692,31 @@ async def test_workspace_enforces_timeout():
 
     assert result["status"] == "failed"
     assert result["timed_out"] is True
+    assert result["error_type"] == "workspace_timeout"
+    assert result["message"] == "Workspace execution timed out after 2 seconds."
+
+
+@pytest.mark.asyncio
+async def test_workspace_promotes_the_connector_error_instead_of_a_generic_failure():
+    async def failing_connector(_tool_name, _arguments):
+        return {
+            "status": "failed",
+            "error": True,
+            "error_type": "odoo_invalid_field",
+            "message": "Invalid field account.move.example",
+        }
+
+    result = await run_workspace(
+        {
+            "code": (
+                "from ai_platform_tools import call_checked\n"
+                "call_checked('odoo', {'model': 'account.move', 'method': 'search_read'})"
+            ),
+            "timeout": 10,
+        },
+        tool_executor=failing_connector,
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_type"] == "odoo_invalid_field"
+    assert result["message"] == "Invalid field account.move.example"
