@@ -16,7 +16,7 @@
     "@assistant-ui/store": "0.2.13",
     "@assistant-ui/tap": "0.5.16",
     "@azure/msal-browser": "^5.13.0",
-    "@azure/msal-react": "^5.4.4",
+    "@azure/msal-react": "^5.5.2",
     "@radix-ui/react-dropdown-menu": "^2.1.18",
     "@radix-ui/react-tooltip": "^1.2.11",
     "@streamdown/code": "^1.1.1",
