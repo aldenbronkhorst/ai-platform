@@ -166,6 +166,34 @@ jobs:
             --resource-group ${{ steps.env.outputs.resource_group }} \
             --mode single
 
+          EXPECTED_REVISION=$(az containerapp show \
+            --name ${{ steps.env.outputs.container_app }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --query properties.latestRevisionName \
+            -o tsv)
+          for attempt in $(seq 1 36); do
+            READY_REVISION=$(az containerapp show \
+              --name ${{ steps.env.outputs.container_app }} \
+              --resource-group ${{ steps.env.outputs.resource_group }} \
+              --query properties.latestReadyRevisionName \
+              -o tsv)
+            if [ "$READY_REVISION" = "$EXPECTED_REVISION" ]; then
+              echo "Azure revision $EXPECTED_REVISION is ready."
+              exit 0
+            fi
+            echo "Waiting for Azure revision $EXPECTED_REVISION ($attempt/36)..."
+            sleep 5
+          done
+
+          az containerapp revision show \
+            --name ${{ steps.env.outputs.container_app }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --revision "$EXPECTED_REVISION" \
+            --query '{name:name,health:properties.healthState,running:properties.runningState}' \
+            -o json
+          echo "Azure revision $EXPECTED_REVISION did not become ready." >&2
+          exit 1
+
   deploy-portal:
     runs-on: ubuntu-latest
     needs: [test-portal, build-and-deploy-api]
