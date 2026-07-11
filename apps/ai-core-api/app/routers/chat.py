@@ -4,7 +4,9 @@ import binascii
 import json
 import uuid
 import logging
+import os
 import re
+import socket
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -38,7 +40,13 @@ STREAM_EVENT_POLL_SECONDS = 0.25
 STREAM_TURN_STATE_POLL_SECONDS = 2
 TURN_HEARTBEAT_SECONDS = 5
 TURN_STALE_SECONDS = 45
+CHAT_WORKER_POLL_SECONDS = float(os.environ.get("CHAT_WORKER_POLL_SECONDS", "0.5"))
+CHAT_WORKER_CONCURRENCY = max(1, int(os.environ.get("CHAT_WORKER_CONCURRENCY", "1")))
+CHAT_WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 ACTIVE_STREAM_TURNS: dict[str, tuple[UUID, UUID, asyncio.Task[None]]] = {}
+CHAT_WORKER_TASKS: list[asyncio.Task[None]] = []
+CHAT_WORKER_WAKE: asyncio.Event | None = None
+CHAT_WORKER_STOP: asyncio.Event | None = None
 
 
 def _utcnow() -> datetime:
@@ -1572,6 +1580,7 @@ async def _turn_heartbeat(request_id: str, parent_task: asyncio.Task[Any]) -> No
                 parent_task.cancel()
                 return
             turn.updated_at = _utcnow()
+            turn.lease_expires_at = _utcnow() + timedelta(seconds=TURN_STALE_SECONDS)
             await db.commit()
 
 
@@ -1580,7 +1589,12 @@ async def _finish_chat_turn(request_id: str, turn_status: str) -> None:
         await db.execute(
             update(AIChatTurn)
             .where(AIChatTurn.request_id == request_id)
-            .values(status=turn_status, updated_at=_utcnow())
+            .values(
+                status=turn_status,
+                updated_at=_utcnow(),
+                lease_owner=None,
+                lease_expires_at=None,
+            )
         )
         await db.commit()
 
@@ -1760,6 +1774,135 @@ async def _run_detached_turn(
             await _finish_chat_turn(request_id, turn_status)
 
 
+async def _claim_next_chat_turn() -> dict[str, Any] | None:
+    """Claim one committed turn exactly once across all API replicas."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(AIChatTurn)
+            .where(
+                AIChatTurn.status == "active",
+                AIChatTurn.attempt_count == 0,
+                AIChatTurn.request_payload_json.is_not(None),
+                AIChatTurn.user_message_id.is_not(None),
+                AIChatTurn.assistant_message_id.is_not(None),
+            )
+            .order_by(AIChatTurn.started_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        turn = result.scalar_one_or_none()
+        if turn is None:
+            return None
+        turn.attempt_count = 1
+        turn.lease_owner = CHAT_WORKER_ID
+        turn.lease_expires_at = _utcnow() + timedelta(seconds=TURN_STALE_SECONDS)
+        turn.updated_at = _utcnow()
+        payload = {
+            "request_id": turn.request_id,
+            "session_id": turn.chat_session_id,
+            "user_id": turn.user_id,
+            "request": dict(turn.request_payload_json or {}),
+            "user_message_id": turn.user_message_id,
+            "assistant_message_id": turn.assistant_message_id,
+            "cancel_requested": bool(turn.cancel_requested),
+        }
+        await db.commit()
+        return payload
+
+
+async def _finish_cancelled_queued_turn(payload: dict[str, Any]) -> None:
+    request_id = str(payload["request_id"])
+    session_id = UUID(str(payload["session_id"]))
+    user_id = UUID(str(payload["user_id"]))
+    await _mark_terminal_assistant(session_id, user_id, request_id, "cancelled")
+    writer = ChatEventWriter(session_id, user_id, request_id)
+    writer.start()
+    writer.emit("message.cancelled", {"request_id": request_id})
+    writer.emit("turn.complete", {"request_id": request_id})
+    await writer.close()
+    await _finish_chat_turn(request_id, "cancelled")
+
+
+async def _chat_worker_loop(worker_index: int) -> None:
+    assert CHAT_WORKER_WAKE is not None and CHAT_WORKER_STOP is not None
+    while not CHAT_WORKER_STOP.is_set():
+        payload = await _claim_next_chat_turn()
+        if payload is None:
+            CHAT_WORKER_WAKE.clear()
+            try:
+                await asyncio.wait_for(CHAT_WORKER_WAKE.wait(), timeout=CHAT_WORKER_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        if payload["cancel_requested"]:
+            await _finish_cancelled_queued_turn(payload)
+            continue
+
+        request_id = str(payload["request_id"])
+        session_id = UUID(str(payload["session_id"]))
+        user_id = UUID(str(payload["user_id"]))
+        req = ChatMessageCreate.model_validate(payload["request"])
+        task = asyncio.create_task(
+            _run_detached_turn(
+                session_id,
+                req,
+                request_id,
+                user_id,
+                UUID(str(payload["user_message_id"])),
+                UUID(str(payload["assistant_message_id"])),
+            ),
+            name=f"chat-turn-{request_id}",
+        )
+        ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
+        task.add_done_callback(lambda done, rid=request_id, sid=session_id: _stream_task_done(rid, sid, done))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if CHAT_WORKER_STOP.is_set():
+                raise
+        finally:
+            active = ACTIVE_STREAM_TURNS.get(request_id)
+            if active and active[2] is task:
+                ACTIVE_STREAM_TURNS.pop(request_id, None)
+
+    logger.info("Chat worker stopped | worker=%s:%d", CHAT_WORKER_ID, worker_index)
+
+
+def start_chat_workers() -> None:
+    global CHAT_WORKER_WAKE, CHAT_WORKER_STOP
+    if CHAT_WORKER_TASKS:
+        return
+    CHAT_WORKER_WAKE = asyncio.Event()
+    CHAT_WORKER_STOP = asyncio.Event()
+    for index in range(CHAT_WORKER_CONCURRENCY):
+        CHAT_WORKER_TASKS.append(
+            asyncio.create_task(_chat_worker_loop(index), name=f"chat-worker-{index}")
+        )
+    CHAT_WORKER_WAKE.set()
+
+
+async def stop_chat_workers() -> None:
+    if CHAT_WORKER_STOP is not None:
+        CHAT_WORKER_STOP.set()
+    if CHAT_WORKER_WAKE is not None:
+        CHAT_WORKER_WAKE.set()
+    tasks = list(CHAT_WORKER_TASKS)
+    CHAT_WORKER_TASKS.clear()
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    active_tasks = [entry[2] for entry in ACTIVE_STREAM_TURNS.values() if not entry[2].done()]
+    for task in active_tasks:
+        task.cancel()
+    await asyncio.gather(*active_tasks, return_exceptions=True)
+
+
+def _wake_chat_workers() -> None:
+    if CHAT_WORKER_WAKE is not None:
+        CHAT_WORKER_WAKE.set()
+
+
 @router.post("/sessions/{session_id}/messages/{request_id}/cancel")
 async def cancel_stream_chat_message(
     session_id: UUID,
@@ -1823,21 +1966,12 @@ async def start_chat_turn(
         request_id,
         user_id,
     )
+    turn.request_payload_json = req.model_dump(mode="json")
+    turn.user_message_id = user_message_id
+    turn.assistant_message_id = assistant_message_id
+    turn.updated_at = _utcnow()
     await db.commit()
-    active = ACTIVE_STREAM_TURNS.get(request_id)
-    if active and not active[2].done():
-        return {"request_id": request_id, "accepted": True}
-
-    task = asyncio.create_task(_run_detached_turn(
-        session_id,
-        req,
-        request_id,
-        user_id,
-        user_message_id,
-        assistant_message_id,
-    ))
-    ACTIVE_STREAM_TURNS[request_id] = (session_id, user_id, task)
-    task.add_done_callback(lambda done_task: _stream_task_done(request_id, session_id, done_task))
+    _wake_chat_workers()
     return {"request_id": request_id, "accepted": True}
 
 

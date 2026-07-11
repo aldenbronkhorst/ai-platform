@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 os.environ["DEBUG"] = "true"
-os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
-os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
+os.environ["CONNECTOR_ENDPOINTS_JSON"] = '{"odoo":{"base_url":"http://mock-connector:8000"}}'
+os.environ["CONNECTOR_INTERNAL_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
@@ -20,10 +20,20 @@ from app.services.model_router import (
     _append_tool_guidance,
     _assistant_tool_call_message,
     _execute_tool_call_impl,
+    _reported_context_window,
     _workspace_generated_files,
 )
 from app.services.chat_titles import _sanitize_chat_title
 from app.services.agent_tool_executor import ExecutedToolCall
+
+CONNECTOR_MANIFEST = {
+    "id": "odoo",
+    "display_name": "Test ERP",
+    "broker_target": "odoo",
+    "skill": {"name": "erp-api", "description": "Use the connected ERP API."},
+    "endpoints": {"guidance": "/odoo/guidance", "run": "/odoo/orm/run"},
+    "credentialless_operations": ["guidance", "playbook"],
+}
 
 
 # ── Canonical prompt sanity ──
@@ -60,6 +70,14 @@ def test_canonical_prompt_requires_grounded_connected_system_numbers():
     lower = CANONICAL_SYSTEM_PROMPT.lower()
     assert "never invent quantitative connected-system facts" in lower
     assert "successful current tool results" in lower
+
+
+def test_context_overflow_reads_provider_reported_window():
+    assert _reported_context_window({
+        "error_type": "context_overflow",
+        "message": "This model's maximum context length is 65,536 tokens.",
+    }) == 65_536
+    assert _reported_context_window({"error_type": "server_error", "message": "maximum context length is 65536"}) is None
 
 
 @pytest.mark.asyncio
@@ -412,8 +430,8 @@ async def mock_get_db_empty():
 
 
 @pytest.mark.asyncio
-async def test_odoo_tool_credentials_require_saved_connection_details():
-    from app.services.external_connectors import EXTERNAL_CONNECTORS, resolve_connector_credentials
+async def test_connector_values_merge_configuration_and_secret_fields():
+    from app.services.external_connectors import resolve_connector_values
 
     user_id = uuid.uuid4()
     account = AIConnectedAccount(
@@ -423,8 +441,7 @@ async def test_odoo_tool_credentials_require_saved_connection_details():
         provider_username="odoo@example.com",
         status="connected",
         secret_reference="odoo-secret",
-        odoo_url=None,
-        odoo_db=None,
+        configuration_json={"url": "https://example.invalid", "username": "person@example.com"},
     )
 
     class FakeResult:
@@ -442,10 +459,19 @@ async def test_odoo_tool_credentials_require_saved_connection_details():
             return FakeResult()
 
     with patch("app.services.external_connectors.key_vault_uri", return_value="https://vault.example.com"), patch(
-        "app.services.external_connectors.get_secret_value", new=AsyncMock(return_value="api-key")
+        "app.services.external_connectors.get_secret_value", new=AsyncMock(return_value='{"api_key":"api-key"}')
     ):
-        with pytest.raises(RuntimeError, match="missing its saved URL or database"):
-            await resolve_connector_credentials(FakeSession(), user_id, EXTERNAL_CONNECTORS["odoo"])
+        values = await resolve_connector_values(
+            FakeSession(),
+            user_id,
+            "odoo",
+            {"connection_fields": [{"name": "api_key", "secret": True}]},
+        )
+    assert values == {
+        "url": "https://example.invalid",
+        "username": "person@example.com",
+        "api_key": "api-key",
+    }
 
 
 @pytest.mark.asyncio
@@ -1183,8 +1209,11 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.external_connectors.resolve_connector_credentials",
+            "app.services.external_connectors.resolve_connector_values",
             new=AsyncMock(return_value=fake_credentials),
+        ), patch(
+            "app.services.external_connectors.load_connector_manifest",
+            new=AsyncMock(return_value=CONNECTOR_MANIFEST),
         ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
@@ -1236,8 +1265,11 @@ class TestToolExecution:
                 return FakeResponse()
 
         with patch(
-            "app.services.external_connectors.resolve_connector_credentials",
+            "app.services.external_connectors.resolve_connector_values",
             new=AsyncMock(side_effect=AssertionError("guidance must not require user credentials")),
+        ), patch(
+            "app.services.external_connectors.load_connector_manifest",
+            new=AsyncMock(return_value=CONNECTOR_MANIFEST),
         ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
@@ -1285,8 +1317,11 @@ class TestToolExecution:
                 return FakeResponse()
 
         with patch(
-            "app.services.external_connectors.resolve_connector_credentials",
+            "app.services.external_connectors.resolve_connector_values",
             new=AsyncMock(side_effect=AssertionError("playbook must not require user credentials")),
+        ), patch(
+            "app.services.external_connectors.load_connector_manifest",
+            new=AsyncMock(return_value=CONNECTOR_MANIFEST),
         ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call_impl(
                 MockSession(has_config=True),
@@ -1315,10 +1350,14 @@ class TestToolExecution:
             )
         ]
 
-        context = await _connector_skill_context({"odoo"}, tools)
+        with patch(
+            "app.services.external_connectors.load_connector_manifests",
+            new=AsyncMock(return_value={"odoo": CONNECTOR_MANIFEST}),
+        ):
+            context = await _connector_skill_context({"odoo"}, tools)
 
         assert "## Connector Skills" in context
-        assert "odoo-api" in context
+        assert "erp-api" in context
         assert "operation': 'guidance'" in context
         assert "Financial Reports" not in context
         assert len(context) < 800
@@ -1635,8 +1674,11 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.external_connectors.resolve_connector_credentials",
+            "app.services.external_connectors.resolve_connector_values",
             new=AsyncMock(return_value=fake_credentials),
+        ), patch(
+            "app.services.external_connectors.load_connector_manifest",
+            new=AsyncMock(return_value=CONNECTOR_MANIFEST),
         ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call(
                 db,
@@ -1712,8 +1754,11 @@ class TestToolExecution:
         }
 
         with patch(
-            "app.services.external_connectors.resolve_connector_credentials",
+            "app.services.external_connectors.resolve_connector_values",
             new=AsyncMock(return_value=fake_credentials),
+        ), patch(
+            "app.services.external_connectors.load_connector_manifest",
+            new=AsyncMock(return_value=CONNECTOR_MANIFEST),
         ), patch("app.services.external_connectors.httpx.AsyncClient", FakeAsyncClient):
             result = await _execute_tool_call(
                 db,

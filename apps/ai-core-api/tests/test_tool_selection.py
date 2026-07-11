@@ -4,10 +4,7 @@ import pytest
 
 from app.models.models import AITool
 from app.services.tool_selection import get_tool_selection
-from app.services.tool_registry import (
-    CONNECTOR_TOOLS_BY_SYSTEM,
-    is_model_facing_tool,
-)
+from app.services.tool_registry import is_model_facing_tool
 
 
 def _tool(name: str, target_system: str, status: str = "active") -> AITool:
@@ -38,10 +35,11 @@ class FakeDb:
         return Result()
 
 
-def test_connector_tool_registry_keeps_odoo_broker_only():
-    assert CONNECTOR_TOOLS_BY_SYSTEM == {"odoo": frozenset()}
-    assert not is_model_facing_tool("odoo", "odoo")
-    assert not is_model_facing_tool("odoo_query", "odoo")
+def test_tool_registry_only_exposes_canonical_platform_tools():
+    assert is_model_facing_tool("workspace", "ai-platform")
+    assert is_model_facing_tool("document_reader", "ai-platform")
+    assert not is_model_facing_tool("connector", "external")
+    assert not is_model_facing_tool("connector_query", "external")
     assert not is_model_facing_tool("runner.run_python", "runner")
     assert not is_model_facing_tool("ai.save_artifact", "ai-platform")
 

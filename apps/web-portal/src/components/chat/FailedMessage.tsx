@@ -10,7 +10,7 @@ const ERROR_HEADINGS: Record<string, string> = {
   timeout: "The request took too long to complete.",
   network: "The AI service could not be reached.",
   model_error: "The model service could not generate a response right now.",
-  odoo_error: "I couldn\u2019t retrieve data from a connected system.",
+  connector_error: "I couldn\u2019t retrieve data from a connected system.",
   configuration_error: "AI chat is not configured yet.",
   server_error: "Something went wrong while generating the response.",
 };

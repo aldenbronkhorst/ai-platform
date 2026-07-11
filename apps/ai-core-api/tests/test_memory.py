@@ -5,8 +5,8 @@ import pytest
 from datetime import datetime, timezone
 
 os.environ["DEBUG"] = "true"
-os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
-os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
+os.environ["CONNECTOR_ENDPOINTS_JSON"] = '{"odoo":{"base_url":"http://mock-connector:8000"}}'
+os.environ["CONNECTOR_INTERNAL_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db

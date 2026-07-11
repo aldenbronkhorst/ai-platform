@@ -16,7 +16,7 @@ from app.main import app
 
 client = TestClient(app)
 USER_HEADER = {"X-User-Id": "e4807f22-97c8-4778-87a2-160f56d25247"}
-STATUS_URL = "/connected-accounts/odoo/status"
+STATUS_URL = "/connected-accounts"
 
 
 # ── F4: test-mode auth must be inert outside the pytest harness ──

@@ -1,3 +1,4 @@
+import asyncio
 import time
 import re
 import json
@@ -16,9 +17,15 @@ QUOTA_RATE_LIMIT_PATTERNS = [
     re.compile(r"throttl", re.IGNORECASE),
     re.compile(r"429", re.IGNORECASE),
 ]
+PROVIDER_RETRY_DELAYS = (0.4, 1.2)
 
 
 def _classify_error(status_code: int, message: str) -> str:
+    normalized = message.lower()
+    if any(marker in normalized for marker in ("context length", "context window", "too many tokens", "prompt is too long")):
+        return "context_overflow"
+    if any(marker in normalized for marker in ("timed out", "timeout", "deadline exceeded")):
+        return "timeout"
     if status_code == 429:
         return "rate_limit_exceeded"
     if status_code == 401:
@@ -38,6 +45,24 @@ def _classify_error(status_code: int, message: str) -> str:
     if status_code == 400:
         return "bad_request"
     return "unknown"
+
+
+def _transport_error_result(exc: Exception, elapsed_ms: int = 0) -> dict[str, Any]:
+    message = str(exc) or type(exc).__name__
+    return {
+        "error": True,
+        "error_type": "timeout" if isinstance(exc, httpx.TimeoutException) else "transport_error",
+        "status_code": 0,
+        "message": message,
+        "raw_response": message,
+        "latency_ms": elapsed_ms,
+    }
+
+
+def _retryable_provider_result(result: dict[str, Any]) -> bool:
+    if not result.get("error"):
+        return False
+    return result.get("error_type") in {"server_error", "timeout", "transport_error"}
 
 
 def _error_detail(body: Any, default_detail: str) -> str:
@@ -455,8 +480,11 @@ class ModelProviderClient:
             return await self._streaming_chat_completion(url, payload, model, stream_event_sink)
 
         start = time.monotonic()
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, headers=await self._get_headers(), json=payload)
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(url, headers=await self._get_headers(), json=payload)
+        except httpx.TransportError as exc:
+            return _transport_error_result(exc, int((time.monotonic() - start) * 1000))
         elapsed = int((time.monotonic() - start) * 1000)
 
         if response.status_code != 200:
@@ -505,8 +533,11 @@ class ModelProviderClient:
         url = _responses_url(self.base_url)
         payload, sent_tool_outputs = self._responses_payload(messages, max_tokens, model, tools)
         start = time.monotonic()
-        async with httpx.AsyncClient(timeout=240.0) as client:
-            response = await client.post(url, headers=await self._get_headers(), json=payload)
+        try:
+            async with httpx.AsyncClient(timeout=240.0) as client:
+                response = await client.post(url, headers=await self._get_headers(), json=payload)
+        except httpx.TransportError as exc:
+            return _transport_error_result(exc, int((time.monotonic() - start) * 1000))
         elapsed = int((time.monotonic() - start) * 1000)
 
         if response.status_code != 200:
@@ -551,6 +582,34 @@ class ModelProviderClient:
         }
 
     async def _streaming_responses_completion(
+        self,
+        messages: list,
+        max_tokens: int,
+        model: str,
+        tools: Optional[list[dict[str, Any]]],
+        stream_event_sink: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        emitted = False
+
+        def observed_sink(event: dict[str, Any]) -> None:
+            nonlocal emitted
+            emitted = True
+            stream_event_sink(event)
+
+        for attempt in range(len(PROVIDER_RETRY_DELAYS) + 1):
+            start = time.monotonic()
+            try:
+                result = await self._streaming_responses_completion_once(
+                    messages, max_tokens, model, tools, observed_sink
+                )
+            except httpx.TransportError as exc:
+                result = _transport_error_result(exc, int((time.monotonic() - start) * 1000))
+            if emitted or not _retryable_provider_result(result) or attempt >= len(PROVIDER_RETRY_DELAYS):
+                return result
+            await asyncio.sleep(PROVIDER_RETRY_DELAYS[attempt])
+        raise RuntimeError("Provider retry loop exited unexpectedly")
+
+    async def _streaming_responses_completion_once(
         self,
         messages: list,
         max_tokens: int,
@@ -705,6 +764,33 @@ class ModelProviderClient:
         }
 
     async def _streaming_chat_completion(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        model: str,
+        stream_event_sink: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        emitted = False
+
+        def observed_sink(event: dict[str, Any]) -> None:
+            nonlocal emitted
+            emitted = True
+            stream_event_sink(event)
+
+        for attempt in range(len(PROVIDER_RETRY_DELAYS) + 1):
+            start = time.monotonic()
+            try:
+                result = await self._streaming_chat_completion_once(
+                    url, payload, model, observed_sink
+                )
+            except httpx.TransportError as exc:
+                result = _transport_error_result(exc, int((time.monotonic() - start) * 1000))
+            if emitted or not _retryable_provider_result(result) or attempt >= len(PROVIDER_RETRY_DELAYS):
+                return result
+            await asyncio.sleep(PROVIDER_RETRY_DELAYS[attempt])
+        raise RuntimeError("Provider retry loop exited unexpectedly")
+
+    async def _streaming_chat_completion_once(
         self,
         url: str,
         payload: dict[str, Any],

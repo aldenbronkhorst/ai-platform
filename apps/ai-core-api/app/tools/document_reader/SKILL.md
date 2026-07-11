@@ -47,7 +47,7 @@ Do not parse dense tables from raw text when structured tables are available. Fo
 - Treat OCR output as evidence to validate, not as final truth.
 - Preserve source file name, page/table index, product code, quantity, unit price, and line total in comparisons.
 - For accounting comparisons, compare parsed PDF rows against the system of record instead of relying on OCR totals alone.
-- Flag probable OCR code mistakes instead of silently correcting them. Example: if Odoo has `022173` and OCR returned `002173`, report it as a likely OCR/code issue.
+- Flag probable OCR code mistakes instead of silently correcting them. Example: if the connected system has `022173` and OCR returned `002173`, report it as a likely OCR/code issue.
 - When exact values matter, include counts for matched rows, price discrepancies, PDF-only rows, and system-only rows.
 
 ## Workspace Usage

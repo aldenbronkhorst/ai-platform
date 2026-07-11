@@ -20,11 +20,11 @@ from app.services.model_provider_client import ModelProviderClient
 from app.services.key_vault import get_secret_value
 from app.services.connected_account_state import effective_connected_accounts
 from app.services.external_connectors import (
-    EXTERNAL_CONNECTOR_DISPLAY_NAMES,
-    EXTERNAL_CONNECTOR_TOOL_NAMES,
-    EXTERNAL_CONNECTOR_TYPES,
+    configured_connector_ids,
     connector_skill_context as external_connector_skill_context,
     execute_external_connector_tool,
+    is_external_connector_tool,
+    load_connector_manifests,
 )
 from app.services.model_tool_calls import (
     _build_tool_definitions,
@@ -247,12 +247,6 @@ async def build_model_client(provider: AIProvider, model: AIModel) -> ModelProvi
         request_options=config.get("request_options") if isinstance(config.get("request_options"), dict) else None,
     )
 
-
-KNOWN_CONNECTOR_TYPES = [*EXTERNAL_CONNECTOR_TYPES]
-
-CONNECTOR_DISPLAY_NAMES: dict[str, str] = {
-    **EXTERNAL_CONNECTOR_DISPLAY_NAMES,
-}
 
 async def _connector_skill_context(connected_systems: set[str], tools: list[AITool]) -> str:
     return await external_connector_skill_context(
@@ -620,7 +614,7 @@ async def _execute_tool_call_impl(
     if tool_name == "document_reader":
         return await _execute_document_reader_tool(db, user_id, arguments)
 
-    if tool_name in EXTERNAL_CONNECTOR_TOOL_NAMES:
+    if is_external_connector_tool(tool_name):
         return await execute_external_connector_tool(db, user_id, tool_name, arguments)
 
     return {
@@ -1014,8 +1008,10 @@ async def _get_connector_context(
         else:
             conn_map[acct.provider] = status
 
-    for conn_type in KNOWN_CONNECTOR_TYPES:
-        display_name = CONNECTOR_DISPLAY_NAMES.get(conn_type, conn_type.replace("_", " ").title())
+    manifests = await load_connector_manifests()
+    for conn_type in configured_connector_ids():
+        manifest = manifests.get(conn_type) or {}
+        display_name = str(manifest.get("display_name") or conn_type.replace("_", " ").title())
         if conn_type in conn_map:
             status = conn_map[conn_type]
             icon = "✓" if status == "connected" else "✗"
@@ -1740,8 +1736,30 @@ def _provider_error_message(
         "authorization_error": "The AI service is unavailable due to an authorization issue. Please contact support.",
         "model_not_found": "The configured AI model could not be found. Please contact support.",
         "server_error": "The AI service is temporarily unavailable. Please try again shortly, or contact support if this continues.",
+        "timeout": "The AI service timed out before returning a response. Please try again.",
+        "transport_error": "The AI service connection was interrupted. Please try again.",
+        "context_overflow": "The conversation is too large for the configured model context window.",
         "bad_request": "The AI service received an invalid request. Please try again, or contact support if this continues.",
     }.get(error_type, "The AI service is temporarily unavailable. Please try again shortly, or contact support if this continues.")
+
+
+def _reported_context_window(result: dict[str, Any]) -> int | None:
+    if result.get("error_type") != "context_overflow":
+        return None
+    message = str(result.get("message") or "")
+    patterns = (
+        r"maximum context length (?:is|of)\s*([\d,]+)",
+        r"context window (?:is|of|supports)\s*([\d,]+)",
+        r"max(?:imum)?[_ ](?:model[_ ]len|tokens?)\D+([\d,]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if not match:
+            continue
+        value = int(match.group(1).replace(",", ""))
+        if 8_000 <= value <= 10_000_000:
+            return value
+    return None
 
 
 def _raise_if_provider_failed(
@@ -1906,6 +1924,45 @@ async def execute_chat(
         trace_svc=trace_svc,
         stream_event_sink=stream_event_sink,
     )
+    if state.result.get("error_type") == "context_overflow":
+        reported_window = _reported_context_window(state.result)
+        current_window = int(model_obj.context_window or 128_000)
+        recovery_window = reported_window or max(16_000, current_window // 2)
+        recovered_context = await prepare_conversation_context(
+            db,
+            chat_session_id=chat_session_id,
+            messages=messages,
+            system_prompt=injected.system_prompt,
+            tool_definitions=tool_definitions,
+            context_window=recovery_window,
+            max_output_tokens=max_tokens,
+            summarize=summarize_context,
+        )
+        if recovered_context.compacted:
+            recovered_messages = (
+                [{"role": "system", "content": injected.system_prompt}, *recovered_context.messages]
+                if injected.system_prompt
+                else recovered_context.messages
+            )
+            initial_stats = state.stats
+            state = await _run_model_once(
+                model_obj,
+                provider,
+                recovered_messages,
+                temperature,
+                max_tokens,
+                tool_definitions,
+                trace_svc=trace_svc,
+                stream_event_sink=stream_event_sink,
+            )
+            state.stats.prompt_tokens += initial_stats.prompt_tokens
+            state.stats.completion_tokens += initial_stats.completion_tokens
+            state.stats.latency_ms += initial_stats.latency_ms
+            full_messages = recovered_messages
+            prepared_context = recovered_context
+            if reported_window and reported_window != model_obj.context_window:
+                model_obj.context_window = reported_window
+                model_obj.updated_at = datetime.now(timezone.utc)
     if prepared_context.summary_result:
         state.stats.add_result(prepared_context.summary_result)
     await _recover_blank_model_result(

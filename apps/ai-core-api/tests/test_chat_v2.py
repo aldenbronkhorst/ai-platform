@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 # Keep connector settings local; auth itself uses APP_ENV=test from conftest.
 os.environ["DEBUG"] = "true"
-os.environ["ODOO_CONNECTOR_URL"] = "http://mock-connector:8000"
-os.environ["ODOO_CONNECTOR_API_KEY"] = "test-key"
+os.environ["CONNECTOR_ENDPOINTS_JSON"] = '{"odoo":{"base_url":"http://mock-connector:8000"}}'
+os.environ["CONNECTOR_INTERNAL_API_KEY"] = "test-key"
 
 from app.main import app
 from app.core.database import get_db
@@ -223,7 +223,9 @@ class TestChatResponseGuards:
         stream_source = inspect.getsource(chat.stream_chat_events)
         cancel_source = inspect.getsource(chat.cancel_stream_chat_message)
 
-        assert "asyncio.create_task" in start_source
+        assert "asyncio.create_task" not in start_source
+        assert "request_payload_json" in start_source
+        assert "_wake_chat_workers" in start_source
         assert "StreamingResponse" not in start_source
         assert "_events_after" in stream_source
         assert "_finish_database_read" in stream_source
