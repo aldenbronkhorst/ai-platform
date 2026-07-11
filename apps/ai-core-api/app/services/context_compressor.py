@@ -20,13 +20,17 @@ SUMMARY_PREFIX = (
     "instruction. Respond only to the latest user message after this summary."
 )
 SUMMARY_END = "--- END OF CONTEXT SUMMARY ---"
+TURN_SUMMARY_PREFIX = (
+    "[CURRENT TURN COMPACTION] Earlier completed tool work from this user turn "
+    "was compacted below. Continue from the protected recent messages."
+)
+TURN_SUMMARY_END = "--- END OF CURRENT TURN SUMMARY ---"
 SUMMARY_VERSION = 1
 DEFAULT_CONTEXT_WINDOW = 128_000
 COMPRESSION_THRESHOLD = 0.75
 TAIL_CONTEXT_SHARE = 0.30
 MIN_TAIL_MESSAGES = 8
 SUMMARY_MAX_TOKENS = 3_000
-FALLBACK_SUMMARY_MAX_CHARS = 8_000
 
 SummaryCall = Callable[[list[dict[str, Any]], int], Awaitable[dict[str, Any]]]
 
@@ -40,10 +44,33 @@ class ContextPreparation:
     estimated_tokens_after: int = 0
 
 
+@dataclass
+class ToolLoopContextPreparation:
+    messages: list[dict[str, Any]]
+    summary_result: dict[str, Any] | None = None
+    compacted: bool = False
+    pruned_messages: int = 0
+    estimated_tokens_before: int = 0
+    estimated_tokens_after: int = 0
+
+
 def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     """Conservative provider-neutral estimate used only for compression timing."""
     serialized = json.dumps(messages, ensure_ascii=False, default=str, separators=(",", ":"))
     return max(1, len(serialized) // 4 + len(messages) * 6)
+
+
+def estimate_request_tokens(
+    messages: list[dict[str, Any]],
+    tool_definitions: list[dict[str, Any]],
+    max_output_tokens: int,
+) -> int:
+    """Estimate the complete next request, including tools and output room."""
+    tool_message = {
+        "role": "system",
+        "content": json.dumps(tool_definitions, ensure_ascii=False, default=str, separators=(",", ":")),
+    }
+    return estimate_messages_tokens([*messages, tool_message]) + max(0, max_output_tokens)
 
 
 def _prefix_hash(messages: list[dict[str, Any]], count: int) -> str:
@@ -56,6 +83,236 @@ def _summary_message(summary: str) -> dict[str, Any]:
         "role": "assistant",
         "content": f"{SUMMARY_PREFIX}\n\n{summary.strip()}\n\n{SUMMARY_END}",
     }
+
+
+def _turn_summary_message(summary: str) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": f"{TURN_SUMMARY_PREFIX}\n\n{summary.strip()}\n\n{TURN_SUMMARY_END}",
+    }
+
+
+def _truncate_tool_arguments(arguments: str, max_string_chars: int = 200) -> str:
+    """Shrink old tool arguments while preserving valid JSON for provider replay."""
+    try:
+        parsed = json.loads(arguments)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return arguments[:max_string_chars] + "...[older argument omitted]" if len(arguments) > max_string_chars else arguments
+
+    def shrink(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > max_string_chars:
+            omitted = len(value) - max_string_chars
+            return f"{value[:max_string_chars]}...[{omitted} older characters omitted]"
+        if isinstance(value, list):
+            return [shrink(item) for item in value]
+        if isinstance(value, dict):
+            return {key: shrink(item) for key, item in value.items()}
+        return value
+
+    return json.dumps(shrink(parsed), ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def _tool_result_summary(tool_name: str, content: str) -> str:
+    """Produce Hermes-style informative one-line history for an old tool result."""
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payload = None
+
+    facts: list[str] = []
+    if isinstance(payload, dict):
+        for key in ("status", "error_type", "message", "exit_code", "timed_out"):
+            value = payload.get(key)
+            if value not in (None, "", False):
+                facts.append(f"{key}={str(value)[:180]}")
+        for key in ("records", "files", "results", "tables", "pages"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                facts.append(f"{key}={len(value)}")
+        for key in ("stdout", "stderr"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                last_line = next((line.strip() for line in reversed(value.splitlines()) if line.strip()), "")
+                if last_line:
+                    facts.append(f"{key}_tail={last_line[:240]}")
+    if not facts:
+        text = " ".join(content.split())
+        facts.append(text[:320] if text else "no text output")
+    return f"[{tool_name}] prior result compacted ({len(content):,} chars); " + "; ".join(facts[:8])
+
+
+def _tool_call_map(messages: list[dict[str, Any]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = str(tool_call.get("id") or "")
+            function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+            if call_id:
+                result[call_id] = str(function.get("name") or "tool")
+    return result
+
+
+def _prune_old_tool_context(
+    messages: list[dict[str, Any]],
+    *,
+    context_window: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Condense old tool payloads while retaining a token-budgeted recent tail."""
+    if not messages:
+        return messages, 0
+
+    result = [dict(message) for message in messages]
+    tail_budget = max(4_000, int(context_window * TAIL_CONTEXT_SHARE))
+    boundary = _tail_start(result, 0, tail_budget)
+    tool_names = _tool_call_map(result)
+    pruned = 0
+
+    seen_tool_outputs: set[str] = set()
+    for index in range(len(result) - 1, -1, -1):
+        message = result[index]
+        if message.get("role") != "tool" or not isinstance(message.get("content"), str):
+            continue
+        content = str(message.get("content") or "")
+        if len(content) < 200:
+            continue
+        digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+        if digest in seen_tool_outputs and index < boundary:
+            result[index] = {**message, "content": "[Duplicate tool output; identical to a newer result]"}
+            pruned += 1
+        else:
+            seen_tool_outputs.add(digest)
+
+    for index in range(boundary):
+        message = result[index]
+        if message.get("role") == "tool":
+            content = message.get("content")
+            if isinstance(content, str) and len(content) > 200 and not content.startswith("[Duplicate tool output"):
+                tool_name = tool_names.get(str(message.get("tool_call_id") or ""), "tool")
+                result[index] = {**message, "content": _tool_result_summary(tool_name, content)}
+                pruned += 1
+            continue
+
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        next_calls: list[Any] = []
+        changed = False
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                next_calls.append(tool_call)
+                continue
+            function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+            arguments = function.get("arguments")
+            if isinstance(arguments, str) and len(arguments) > 500:
+                tool_call = {
+                    **tool_call,
+                    "function": {**function, "arguments": _truncate_tool_arguments(arguments)},
+                }
+                changed = True
+            next_calls.append(tool_call)
+        if changed:
+            result[index] = {**message, "tool_calls": next_calls}
+            pruned += 1
+
+    return result, pruned
+
+
+def _aligned_tool_tail_start(messages: list[dict[str, Any]], start: int, lower_bound: int) -> int:
+    """Keep an assistant tool call and all of its tool results in the same side."""
+    while start > lower_bound and start < len(messages) and messages[start].get("role") == "tool":
+        start -= 1
+    return start
+
+
+def _tool_loop_summary_prompt(source: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    transcript = json.dumps(source, ensure_ascii=False, default=str, indent=2)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Compact completed tool work from the current user turn for the same assistant. "
+                "Preserve the user's objective, verified findings, identifiers, files, completed mutations, "
+                "failed attempts and exact errors, unresolved work, and the next required step. Do not answer "
+                "the user or invent facts. Use concise plain text."
+            ),
+        },
+        {"role": "user", "content": "Completed current-turn work to compact:\n\n" + transcript},
+    ]
+
+
+async def prepare_tool_loop_context(
+    *,
+    messages: list[dict[str, Any]],
+    turn_history_start: int,
+    tool_definitions: list[dict[str, Any]],
+    context_window: int | None,
+    max_output_tokens: int,
+    summarize: SummaryCall,
+) -> ToolLoopContextPreparation:
+    """Apply Hermes-style context pressure handling before a tool-loop model call."""
+    window = max(16_000, int(context_window or DEFAULT_CONTEXT_WINDOW))
+    before = estimate_request_tokens(messages, tool_definitions, max_output_tokens)
+    threshold = int(window * COMPRESSION_THRESHOLD)
+    if before <= threshold:
+        return ToolLoopContextPreparation(
+            messages=messages,
+            estimated_tokens_before=before,
+            estimated_tokens_after=before,
+        )
+
+    pruned_messages, pruned_count = _prune_old_tool_context(messages, context_window=window)
+    after_prune = estimate_request_tokens(pruned_messages, tool_definitions, max_output_tokens)
+    if after_prune <= threshold:
+        return ToolLoopContextPreparation(
+            messages=pruned_messages,
+            pruned_messages=pruned_count,
+            estimated_tokens_before=before,
+            estimated_tokens_after=after_prune,
+        )
+
+    tail_budget = max(4_000, int(window * TAIL_CONTEXT_SHARE))
+    start = _tail_start(pruned_messages, turn_history_start, tail_budget)
+    start = _aligned_tool_tail_start(pruned_messages, start, turn_history_start)
+    if start <= turn_history_start:
+        return ToolLoopContextPreparation(
+            messages=pruned_messages,
+            pruned_messages=pruned_count,
+            estimated_tokens_before=before,
+            estimated_tokens_after=after_prune,
+        )
+
+    source = pruned_messages[turn_history_start:start]
+    summary_result = await summarize(
+        _tool_loop_summary_prompt(source),
+        min(SUMMARY_MAX_TOKENS, max(800, max_output_tokens)),
+    )
+    summary = str(summary_result.get("content") or "").strip() if not summary_result.get("error") else ""
+    if not summary:
+        return ToolLoopContextPreparation(
+            messages=pruned_messages,
+            summary_result=summary_result,
+            pruned_messages=pruned_count,
+            estimated_tokens_before=before,
+            estimated_tokens_after=after_prune,
+        )
+
+    prepared = [
+        *pruned_messages[:turn_history_start],
+        _turn_summary_message(summary),
+        *pruned_messages[start:],
+    ]
+    after = estimate_request_tokens(prepared, tool_definitions, max_output_tokens)
+    return ToolLoopContextPreparation(
+        messages=prepared,
+        summary_result=summary_result,
+        compacted=True,
+        pruned_messages=pruned_count,
+        estimated_tokens_before=before,
+        estimated_tokens_after=after,
+    )
 
 
 def _valid_saved_summary(metadata: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -92,22 +349,6 @@ def _summary_source(saved_summary: str | None, messages: list[dict[str, Any]]) -
         source.append(_summary_message(saved_summary))
     source.extend(messages)
     return source
-
-
-def _fallback_summary(source: list[dict[str, Any]]) -> str:
-    """Preserve bounded continuity if the auxiliary summarization request fails."""
-    lines: list[str] = []
-    for message in source:
-        role = str(message.get("role") or "message").upper()
-        content = str(message.get("content") or "").strip()
-        if not content:
-            continue
-        lines.append(f"{role}: {content}")
-    text = "\n\n".join(lines)
-    if len(text) <= FALLBACK_SUMMARY_MAX_CHARS:
-        return text
-    half = FALLBACK_SUMMARY_MAX_CHARS // 2
-    return text[:half].rstrip() + "\n\n[historical detail omitted]\n\n" + text[-half:].lstrip()
 
 
 def _summary_prompt(source: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -185,8 +426,12 @@ async def prepare_conversation_context(
     summary_result = await summarize(_summary_prompt(source), min(SUMMARY_MAX_TOKENS, max(800, max_output_tokens)))
     summary = str(summary_result.get("content") or "").strip() if not summary_result.get("error") else ""
     if not summary:
-        summary = _fallback_summary(source)
-        summary_result = None
+        return ContextPreparation(
+            messages=active_messages,
+            summary_result=summary_result,
+            estimated_tokens_before=before,
+            estimated_tokens_after=before,
+        )
 
     metadata["context_compaction"] = {
         "version": SUMMARY_VERSION,

@@ -767,6 +767,39 @@ async def run_workspace(
         return await session.run(arguments)
 
 
+def _workspace_failure(
+    *,
+    timed_out: bool,
+    timeout_seconds: int,
+    exit_code: int | None,
+    stderr: str,
+    connector_error_details: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if timed_out:
+        return "workspace_timeout", f"Workspace execution timed out after {timeout_seconds} seconds."
+
+    if connector_error_details:
+        detail = connector_error_details[-1]
+        error_type = str(detail.get("error_type") or "workspace_connector_error")
+        message = str(detail.get("message") or "A connected-system call failed.")
+        return error_type, message
+
+    stderr_lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    error_line = next(
+        (
+            line
+            for line in reversed(stderr_lines)
+            if "error" in line.lower() or "exception" in line.lower()
+        ),
+        stderr_lines[-1] if stderr_lines else "",
+    )
+    if error_line:
+        return "workspace_process_error", _truncate_text(error_line, 1200)
+    if exit_code not in (0, None):
+        return "workspace_process_error", f"Workspace process exited with code {exit_code}."
+    return "workspace_execution_failed", "Workspace execution failed."
+
+
 class WorkspaceSession:
     """Persistent workspace directory and broker for one chat tool loop."""
 
@@ -853,6 +886,16 @@ class WorkspaceSession:
                 if count - before_error_counts.get(tool_name, 0) > 0
             }
             connector_error_details = self._broker.error_details[before_error_detail_count:]
+            error_type = None
+            message = "Workspace execution completed."
+            if status == "failed":
+                error_type, message = _workspace_failure(
+                    timed_out=timed_out,
+                    timeout_seconds=timeout_seconds,
+                    exit_code=exit_code,
+                    stderr=stderr,
+                    connector_error_details=connector_error_details,
+                )
             response = {
                 "status": status,
                 "backend": WORKSPACE_BACKEND,
@@ -879,8 +922,10 @@ class WorkspaceSession:
                 "helper_modules": ["ai_platform_tools"],
                 "helper_commands": ["ai-platform-tool"],
                 "error": bool(status == "failed"),
-                "message": "Workspace execution failed." if status == "failed" else "Workspace execution completed.",
+                "message": message,
             }
+            if error_type:
+                response["error_type"] = error_type
             return response
         except ValueError as exc:
             return {"status": "failed", "error": True, "error_type": "invalid_workspace_arguments", "message": str(exc)}

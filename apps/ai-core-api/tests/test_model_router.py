@@ -1859,6 +1859,36 @@ class TestToolExecution:
         assert compacted["records"][0]["datas"]["omitted"] is True
         assert "truncated" in compacted["records"][0]["body"]
 
+    def test_tool_result_budget_scales_with_the_active_model_context(self):
+        from app.services.model_router import _tool_result_budgets
+
+        small_result, small_turn = _tool_result_budgets(16_000)
+        large_result, large_turn = _tool_result_budgets(262_144)
+
+        assert (small_result, small_turn) == (9_600, 19_200)
+        assert (large_result, large_turn) == (100_000, 200_000)
+
+    def test_tool_result_turn_budget_compacts_the_largest_results_first(self):
+        from app.services.model_router import _enforce_tool_result_turn_budget
+
+        calls = [
+            ExecutedToolCall(
+                tool_call_id=f"call-{index}",
+                tool_name="workspace",
+                arguments={},
+                raw_result={"stdout": "x" * size},
+                model_result={"stdout": "x" * size},
+                duration_ms=1,
+            )
+            for index, size in enumerate((9_000, 8_000, 2_000))
+        ]
+
+        compacted = _enforce_tool_result_turn_budget(calls, 12_000)
+
+        assert compacted[0].model_result["summary"].startswith("Tool results in this step")
+        assert compacted[1].model_result == calls[1].model_result
+        assert compacted[2].model_result == calls[2].model_result
+
     def test_tool_result_compaction_caps_oversized_record_pages(self):
         from app.services.model_router import _compact_tool_result_for_model, MAX_TOOL_RESULT_RECORD_ITEMS
 
@@ -2034,8 +2064,8 @@ class TestToolExecution:
             assert [event["type"] for event in events if event["type"].startswith("tool.")] == ["tool.start", "tool.complete"]
 
     @pytest.mark.asyncio
-    async def test_execute_chat_does_not_inject_a_retry_for_blank_length_response(self):
-        """Provider output is returned as-is; the router does not add hidden recovery prompts."""
+    async def test_execute_chat_recovers_a_blank_initial_response_once(self):
+        """A successful-but-empty initial response gets one provider-neutral continuation."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2126,11 +2156,15 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == ""
-        assert result["finish_reason"] == "length"
-        assert result["tool_call_count"] == 0
-        assert client.chat_completion.call_count == 1
-        execute_tool.assert_not_awaited()
+        assert result["content"] == "I found one sales order from Odoo and can continue the import."
+        assert result["finish_reason"] == "stop"
+        assert result["tool_call_count"] == 1
+        assert result["total_tokens"] == 16360
+        assert client.chat_completion.call_count == 3
+        recovery_call = client.chat_completion.call_args_list[1]
+        assert recovery_call.kwargs["messages"][-1]["role"] == "user"
+        assert "previous response was empty" in recovery_call.kwargs["messages"][-1]["content"]
+        execute_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_execute_chat_reuses_workspace_session_across_tool_calls(self):
@@ -2434,8 +2468,8 @@ class TestToolExecution:
         execute_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_execute_chat_does_not_retry_blank_length_response_after_tools(self):
-        """The provider finish state is preserved without a model-specific retry prompt."""
+    async def test_execute_chat_recovers_blank_response_after_tools_once(self):
+        """A blank post-tool response gets the generic Hermes continuation nudge."""
         from app.services.model_router import execute_chat
 
         account = AIConnectedAccount(
@@ -2523,15 +2557,18 @@ class TestToolExecution:
                 user_id=uuid.uuid4(),
             )
 
-        assert result["content"] == ""
-        assert result["finish_reason"] == "length"
-        assert result["total_tokens"] == 8035
-        assert client.chat_completion.call_count == 2
+        assert result["content"] == "The receipt has one matching line."
+        assert result["finish_reason"] == "stop"
+        assert result["total_tokens"] == 8073
+        assert client.chat_completion.call_count == 3
 
         post_tool_call = client.chat_completion.call_args_list[1]
         assert post_tool_call.kwargs["max_tokens"] == 2000
         assert post_tool_call.kwargs["tools"] is not None
         assert post_tool_call.kwargs["messages"][-1]["role"] == "tool"
+        recovery_call = client.chat_completion.call_args_list[2]
+        assert recovery_call.kwargs["messages"][-2] == {"role": "assistant", "content": "(empty)"}
+        assert "executed tool calls" in recovery_call.kwargs["messages"][-1]["content"]
 
     @pytest.mark.asyncio
     async def test_execute_chat_preserves_nonblank_length_response_after_tools(self):
