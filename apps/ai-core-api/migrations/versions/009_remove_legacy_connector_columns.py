@@ -1,6 +1,6 @@
 """Remove connector-specific columns from connected accounts.
 
-Revision ID: 009_remove_legacy_connector_columns
+Revision ID: 009_drop_connector_columns
 Revises: 008_durable_chat_queue
 Create Date: 2026-07-11
 """
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "009_remove_legacy_connector_columns"
+revision: str = "009_drop_connector_columns"
 down_revision: Union[str, None] = "008_durable_chat_queue"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
